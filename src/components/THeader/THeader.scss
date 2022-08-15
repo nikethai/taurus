@@ -1,0 +1,24 @@
+.theader_grid{
+    height: 100%;
+    margin: 0;
+    .theader_col{
+        height: 100%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+    .theader_col.theader_col--between{
+        justify-content: space-between;
+    }
+}
+
+.mantine-Input-input{
+    border: none;
+    padding: 0 10px;
+    font-size: 14px;
+    outline: none;
+    &:focus{
+        border: 1px solid rgb(54, 165, 255);
+        border-radius: 5px;
+    }
+}

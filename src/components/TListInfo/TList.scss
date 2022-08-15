@@ -1,0 +1,12 @@
+.tlist_grid{
+    background-color: #f9f9f9;
+    height: 55px;
+    margin: 0;
+    .tlist_col{
+        display: flex;
+        align-items: center;
+    }
+}
+.mantine-Col-root{
+    padding-left: 0;
+}
