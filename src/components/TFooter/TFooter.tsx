@@ -1,17 +1,17 @@
-import { ActionIcon } from "@mantine/core";
+import { ActionIcon, Footer } from "@mantine/core";
 import {
   CheckIcon,
   DownloadIcon,
   TriangleDownIcon,
   TriangleUpIcon,
   TrashIcon,
-  GearIcon
+  GearIcon,
 } from "@radix-ui/react-icons";
 import "./TFooter.scss";
 
 const TFooter = () => {
   return (
-    <footer className="tfooter">
+    <Footer height={55} className="tfooter">
       <div className="tfooter-align-center tfooter-align-center-left">
         <span className="tfooter_download_display">
           <ActionIcon>
@@ -40,7 +40,7 @@ const TFooter = () => {
           <GearIcon width={24} height={24} />
         </ActionIcon>
       </div>
-    </footer>
+    </Footer>
   );
 };
 
