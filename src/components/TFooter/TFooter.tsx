@@ -1,12 +1,13 @@
-import { ActionIcon, Footer } from "@mantine/core";
+import { ActionIcon, Footer, Tooltip } from "@mantine/core";
 import {
   CheckIcon,
   DownloadIcon,
   TriangleDownIcon,
   TriangleUpIcon,
-  TrashIcon,
   GearIcon,
+  CounterClockwiseClockIcon,
 } from "@radix-ui/react-icons";
+import { TOOLTIP } from "../../app/util/constant";
 import "./TFooter.scss";
 
 const TFooter = () => {
@@ -28,16 +29,24 @@ const TFooter = () => {
       </div>
       <div className="tfooter-align-center tfooter-align-center-right nav-gap">
         <ActionIcon>
-          <DownloadIcon width={24} height={24} />
+          <Tooltip transition="pop" transitionDuration={300} label={TOOLTIP.PAGE.CURRENT}>
+            <DownloadIcon width={24} height={24} />
+          </Tooltip>
         </ActionIcon>
         <ActionIcon>
-          <CheckIcon width={24} height={24} />
+          <Tooltip transition="pop" transitionDuration={300} label={TOOLTIP.PAGE.COMPLETE}>
+            <CheckIcon width={24} height={24} />
+          </Tooltip>
         </ActionIcon>
         <ActionIcon>
-          <TrashIcon width={24} height={24} />
+          <Tooltip transition="pop" transitionDuration={300} label={TOOLTIP.PAGE.PAUSE}>
+            <CounterClockwiseClockIcon width={24} height={24} />
+          </Tooltip>
         </ActionIcon>
         <ActionIcon>
-          <GearIcon width={24} height={24} />
+          <Tooltip transition="pop" transitionDuration={300} label={TOOLTIP.PAGE.SETTING}>
+            <GearIcon width={24} height={24} />
+          </Tooltip>
         </ActionIcon>
       </div>
     </Footer>
