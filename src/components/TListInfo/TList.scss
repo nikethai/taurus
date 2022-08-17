@@ -1,5 +1,5 @@
 .tlist_grid {
-  background-color: #ffe0e0e0;
+  background-color: var(--light-gainsboro);
   margin: 0;
   .tlist_col {
     display: flex;
@@ -70,4 +70,7 @@
 }
 p {
   margin: 0;
+}
+.mantine-Progress-root{
+  background-color: #fff;
 }

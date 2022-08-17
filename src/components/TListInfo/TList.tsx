@@ -33,10 +33,10 @@ const TList = () => {
         </div>
       </Grid.Col>
       <Grid.Col span={4} className="tlist_col tfile_single_action">
-        <ActionIcon>
+        <ActionIcon color="dark">
           <PauseIcon height={20} width={20} />
         </ActionIcon>
-        <ActionIcon>
+        <ActionIcon color="dark">
           <StopIcon height={20} width={20} />
         </ActionIcon>
       </Grid.Col>

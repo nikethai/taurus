@@ -1,4 +1,32 @@
-body{
-    margin: 0;
-    font-family: 'Noto Sans',sans-serif;
+body {
+  margin: 0;
+  font-family: "Noto Sans", sans-serif;
+}
+:root {
+  --rich-black-fogra-29: #0d1321ff;
+  --mauvelous: #ff9fb2ff;
+  --slate-gray: #5f758eff;
+  --celeste: #afece7ff;
+  --space-cadet: #383961ff;
+  --cerulean-crayola: #06aed5ff;
+  --blue-sapphire: #086788ff;
+  --jonquil: #f0c808ff;
+  --papaya-whip: #fff1d0ff;
+  --maximum-red: #dd1c1aff;
+  --almond: #eae0d5ff;
+  --isabelle: #f2efe9ff;
+  --alice-blue: #eaf6ffff;
+  --max-blue: #5eb1bfff;
+  --light-cyan: #cdedf6ff;
+  --light-maya-blue: #dbf7ffff;
+  --light-gainsboro: #ebf3faff;
+  --mandarin: #f6ac89ff;
+  --puce: #d496a7ff;
+  --black-olive: #363732ff;
+  --sky-blue-crayola: #53d8fbff;
+  --maya-blue: #66c3ffff;
+  --gainsboro: #dce1e9ff;
+  --cameo-pink: #d4afb9ff;
+  --bg-h: var(--light-maya-blue);
+  --bg-f: var(--light-maya-blue);
 }

@@ -1,5 +1,41 @@
+.gray-text-small {
+  color: gray;
+  opacity: 0.5;
+  font-size: 13px;
+}
+
 .tlist_display {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.tmodal {
+  display: flex;
+  margin-top: 10px;
+  justify-content: space-between;
+  align-items: center;
+  .tadd-error {
+    color: #ff0000;
+    font-size: 12px;
+  }
+  .tadd-buttons {
+    display: flex;
+    gap: 10px;
+  }
+  .tdownload-permission {
+    @extend .gray-text-small;
+    padding-left: 2px;
+  }
+}
+
+.tdownload-file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  .tdownload-info {
+    @extend .gray-text-small;
+    text-align: end;
+  }
 }

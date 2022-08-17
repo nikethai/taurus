@@ -20,14 +20,23 @@ const ACTION = {
 const TOOLTIP = {
   ADD: "Thêm mới",
   PAUSE: "Tạm dừng tải",
-  RESUME: "Tiếp tục tải xuống",
-  DELETE: "Xóa",
+  RESUME: "Tiếp tục tải",
+  DELETE: "Xoá mục đã chọn",
+  METER: {
+    UP: "Tổng tốc độ tải lên",
+    DOWN: "Tổng tốc độ tải xuống",
+  },
   PAGE: {
-    CURRENT: "Tệp đang tải",
-    COMPLETE: "Tệp đã hoàn thành",
-    PAUSE: "Tệp đang tạm dừng",
+    CURRENT: "Đang tải",
+    COMPLETE: "Đã hoàn thành",
+    PAUSE: "Đang tạm dừng",
     SETTING: "Cài đặt hệ thống",
   },
 };
 
-export { TOOLTIP, ACTION };
+const TITLE = {
+  ADD: "Thêm tập tin mới",
+  DOWNLOAD: "Tải xuống",
+}
+
+export { TOOLTIP, ACTION, TITLE };

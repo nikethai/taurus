@@ -4,7 +4,8 @@
 )]
 
 use tauri::Manager;
-use window_vibrancy::{apply_acrylic, apply_vibrancy, NSVisualEffectMaterial};
+mod command;
+use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
 
 fn main() {
     tauri::Builder::default()
@@ -21,6 +22,7 @@ fn main() {
 
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![command::greet])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .expect("Error while running tauri application");
 }
