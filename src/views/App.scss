@@ -15,27 +15,30 @@
   margin-top: 10px;
   justify-content: space-between;
   align-items: center;
-  .tadd-error {
+  .tadd_error {
     color: #ff0000;
     font-size: 12px;
   }
-  .tadd-buttons {
+  .tadd_buttons {
     display: flex;
     gap: 10px;
   }
-  .tdownload-permission {
+  .tdownload_permission {
     @extend .gray-text-small;
     padding-left: 2px;
   }
 }
 
-.tdownload-file-info {
+.tdownload_file_info {
   display: flex;
   flex-direction: column;
   gap: 12px;
 
-  .tdownload-info {
+  .tdownload_info {
     @extend .gray-text-small;
     text-align: end;
+  }
+  .tdownload_file_location{
+    
   }
 }
