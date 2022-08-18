@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AppShell, Button, Header, Modal, TextInput } from "@mantine/core";
 import { invoke } from "@tauri-apps/api/tauri";
+import { open } from "@tauri-apps/api/dialog";
+import { appDir } from "@tauri-apps/api/path";
 
 import "./App.scss";
 import { THeader } from "../components/THeader/THeader";
@@ -32,6 +34,23 @@ function App() {
 
     setFileName(name as string);
     setIsGettingLink(false);
+  };
+
+  const cancelGetInfo = () => {
+    invoke("cancel_get_download_info").catch((err) => console.log(err));
+    setIsAddModalOpened(false);
+    isCancel.current = true;
+    setFileName("");
+  };
+
+  const getSavePath = async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: await appDir(),
+    });
+
+    console.log(selected);
   };
 
   // use to reset the state when the request is cancelled
@@ -74,7 +93,7 @@ function App() {
           <div className="tadd_buttons">
             <Button
               onClick={async () => {
-                await getDownloadInfo();
+                // await getDownloadInfo();
                 if (!isCancel.current) {
                   setIsAddModalOpened(false);
                   setIsDownloadModalOpened(true);
@@ -85,14 +104,7 @@ function App() {
             >
               Thêm
             </Button>
-            <Button
-              onClick={() => {
-                setIsAddModalOpened(false);
-                isCancel.current = true;
-                setFileName("");
-              }}
-              variant="outline"
-            >
+            <Button onClick={cancelGetInfo} variant="outline">
               Huỷ
             </Button>
           </div>
@@ -102,12 +114,19 @@ function App() {
       {/* DownloadModal */}
       <TModal
         isModalOpened={isDownloadModalOpened}
-        title={TITLE.ADD}
+        title={TITLE.DOWNLOAD}
         setModalOpened={(isOpened) => setIsDownloadModalOpened(isOpened)}
       >
         <div className="tdownload_file_info">
           <div className="tdownload_file_location">
-            <TextInput label="Nơi lưu" placeholder="Nhập nơi bạn muốn lưu..." />
+            <TextInput
+              className="tdownload_input"
+              label="Nơi lưu"
+              placeholder="Nhập nơi bạn muốn lưu..."
+            />
+            <Button onClick={getSavePath} variant="subtle">
+              Chọn chỗ lưu
+            </Button>
           </div>
           <div>
             <TextInput

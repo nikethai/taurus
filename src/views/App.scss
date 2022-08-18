@@ -39,6 +39,11 @@
     text-align: end;
   }
   .tdownload_file_location{
-    
+    display: flex;
+    gap: 5px;
+    align-items: flex-end;
+  }
+  .tdownload_input{
+    flex: 1
   }
 }

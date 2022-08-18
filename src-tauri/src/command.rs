@@ -21,3 +21,8 @@ pub async fn get_download_info(link: &str) -> Result<String, String> {
         None => Err(anyhow::anyhow!("Cannot get file name").to_string()),
     }
 }
+
+#[tauri::command]
+pub fn cancel_get_download_info() {
+    drop(get_download_info);
+}
