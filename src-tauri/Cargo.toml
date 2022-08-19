@@ -1,11 +1,11 @@
 [package]
-name = "app"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+name = "taurus"
+version = "0.0.1"
+description = "Taurus Downloader"
+authors = ["Nikethai"]
 license = ""
 repository = ""
-default-run = "app"
+default-run = "taurus"
 edition = "2021"
 rust-version = "1.57"
 
@@ -21,6 +21,8 @@ tauri = { version = "1.0.5", features = ["api-all"] }
 window-vibrancy = "0.1.3"
 anyhow = "1.0"
 reqwest =  { version = "0.11", features = ["json"] }
+tauri-awesome-rpc = { git = "https://github.com/ahkohd/tauri-awesome-rpc", branch = "dev" }
+tokio = { version = "1.18.2", features = ["rt", "time"] }
 
 [features]
 # by default Tauri runs in production mode

@@ -5,12 +5,19 @@
 
 use tauri::Manager;
 mod command;
+mod model;
+use tauri_awesome_rpc::AwesomeRpc;
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
 
 fn main() {
+    let awesome_rpc = AwesomeRpc::new(vec!["tauri://localhost", "http://localhost:*"]);
+
     tauri::Builder::default()
-        .setup(|app| {
+        .invoke_system(awesome_rpc.initialization_script(), AwesomeRpc::responder())
+        .setup(move |app| {
             let win = app.get_window("main").unwrap();
+
+            awesome_rpc.start(app.handle());
 
             #[cfg(target_os = "macos")]
             apply_vibrancy(&win, NSVisualEffectMaterial::HudWindow)
@@ -25,7 +32,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             command::greet,
             command::get_download_info,
-            command::cancel_get_download_info
+            command::cancel_get_download_info,
+            command::rp_time_elapsed
         ])
         .run(tauri::generate_context!())
         .expect("Error while running tauri application");

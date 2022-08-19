@@ -3,6 +3,7 @@ import { AppShell, Button, Header, Modal, TextInput } from "@mantine/core";
 import { invoke } from "@tauri-apps/api/tauri";
 import { open } from "@tauri-apps/api/dialog";
 import { appDir } from "@tauri-apps/api/path";
+import short from "short-uuid";
 
 import "./App.scss";
 import { THeader } from "../components/THeader/THeader";
@@ -10,6 +11,10 @@ import { TFooter } from "../components/TFooter/TFooter";
 import { TList } from "../components/TListInfo/TList";
 import { TITLE } from "../app/util/constant";
 import { TModal } from "../components/TModal/TModal";
+import { useFileInfoStore } from "../app/model/fileInfo";
+import { useListFileStore } from "../app/model/listFile";
+import { IFileInfoRust } from "../app/interface/IFileInfo";
+import { formatBytes } from "../app/util/bytesFormat";
 
 function App() {
   const [isAddModalOpened, setIsAddModalOpened] = useState(false);
@@ -22,17 +27,23 @@ function App() {
 
   const [downloadLink, setDownloadLink] = useState("");
   const [fileName, setFileName] = useState("");
+  const [savePath, setSavePath] = useState("");
+  
+  const [fileSize, setFileSize] = useState("");
+
+  const fileList = useListFileStore();
 
   const getDownloadInfo = async () => {
     setIsGettingLink(true);
     if (!downloadLink || downloadLink.length === 0) {
       return;
     }
-    const name = await invoke("get_download_info", {
+    const fileInfo = await invoke<IFileInfoRust>("get_download_info", {
       link: downloadLink,
-    }).catch((err) => console.log(err));
+    });
 
-    setFileName(name as string);
+    setFileName(fileInfo.name);
+    setFileSize(formatBytes(fileInfo.size));
     setIsGettingLink(false);
   };
 
@@ -41,6 +52,7 @@ function App() {
     setIsAddModalOpened(false);
     isCancel.current = true;
     setFileName("");
+    setSavePath("");
   };
 
   const getSavePath = async () => {
@@ -49,8 +61,43 @@ function App() {
       multiple: false,
       defaultPath: await appDir(),
     });
+    if (!selected) return;
 
     console.log(selected);
+    if (selected.length > 0) {
+      if (Array.isArray(selected)) {
+        setSavePath(selected[0]);
+      } else {
+        setSavePath(selected);
+      }
+    }
+  };
+
+  const downloadFile = async () => {
+    if (!downloadLink || downloadLink.length === 0) {
+      return;
+    }
+    if (!savePath || savePath.length === 0) {
+      return;
+    }
+    // const result = await invoke("download_file", {
+    //   link: downloadLink,
+    //   savePath: savePath,
+    // }).catch((err) => console.log(err));
+
+    const id = short.generate();
+
+    fileList.setListFile({
+      id,
+      name: fileName,
+      size: 100,
+      type: "video",
+    });
+
+    // Fake download
+    invoke("rp_time_elapsed", { id }).catch((err) => console.log(err));
+
+    setIsDownloadModalOpened(false);
   };
 
   // use to reset the state when the request is cancelled
@@ -73,9 +120,21 @@ function App() {
       footer={<TFooter />}
     >
       <div className="tlist_display">
-        {[...Array(2)].map((_, i) => (
-          <TList key={i} />
-        ))}
+        {fileList.listFile.length > 0 ? (
+          fileList.listFile.map((fileInfo, i) => (
+            <TList
+              id={fileInfo.id}
+              fileName={fileInfo.name}
+              percentDone={1}
+              speed={1}
+              type={fileInfo.type}
+              totalSize={fileInfo.size}
+              key={i}
+            />
+          ))
+        ) : (
+          <div className="no_file">Chưa có tập tin nào</div>
+        )}
       </div>
       {/*  AddModal */}
       <TModal
@@ -93,7 +152,7 @@ function App() {
           <div className="tadd_buttons">
             <Button
               onClick={async () => {
-                // await getDownloadInfo();
+                await getDownloadInfo();
                 if (!isCancel.current) {
                   setIsAddModalOpened(false);
                   setIsDownloadModalOpened(true);
@@ -120,6 +179,10 @@ function App() {
         <div className="tdownload_file_info">
           <div className="tdownload_file_location">
             <TextInput
+              value={savePath}
+              onChange={(e) => {
+                // setSavePath(e.target.value);
+              }}
               className="tdownload_input"
               label="Nơi lưu"
               placeholder="Nhập nơi bạn muốn lưu..."
@@ -131,21 +194,25 @@ function App() {
           <div>
             <TextInput
               value={fileName}
+              onChange={(e) => {
+                // setFileName(e.target.value);
+              }}
               label="Tên tập tin"
               placeholder="Nhập tên..."
             />
-            <p className="tdownload_info">File: 6,9GB (Còn trống: 100GB)</p>
+            <p className="tdownload_info">File: {fileSize} (Còn trống: 100GB)</p>
           </div>
         </div>
         <div className="tmodal">
           <p className="tdownload_permission">Không có quyền truy cập</p>
           <div className="tadd_buttons">
-            <Button onClick={getDownloadInfo} variant="outline">
-              Thêm
+            <Button onClick={downloadFile} variant="outline">
+              Tải
             </Button>
             <Button
               onClick={() => {
                 setFileName("");
+                setSavePath("");
                 setIsDownloadModalOpened(false);
               }}
               variant="outline"
