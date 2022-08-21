@@ -34,10 +34,15 @@ const useSelectedListFileStore = create<ISelectedListFileState>()(
               (item: string) => item !== id
             );
           } else {
-          state.selectedListFile.push(id);
+            state.selectedListFile.push(id);
           }
         })
       );
+    },
+    getIsHavingUnresumable: () => {
+      const listFile = useListFileStore.getState().listFile;
+      const haveUnresumableItem = listFile.some((item) => !item.isResumable);
+      return haveUnresumableItem;
     },
   }))
 );

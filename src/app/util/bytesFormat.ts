@@ -1,7 +1,7 @@
 export function formatBytes(bytes: number, decimals = 2) {
   if (bytes === 0) return "0 Bytes";
 
-  const k = 1024; // or 1024 for binary
+  const k = 1000; // or 1024 for binary
   const dm = decimals < 0 ? 0 : decimals;
   const sizes = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
 

@@ -3,9 +3,14 @@
     windows_subsystem = "windows"
 )]
 
-use tauri::Manager;
 mod command;
 mod model;
+mod client;
+mod retry;
+mod tau_err;
+
+use tauri::Manager;
+mod user_agent;
 use tauri_awesome_rpc::AwesomeRpc;
 use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
 
@@ -37,6 +42,7 @@ fn main() {
             command::get_disk_info,
             command::check_permission,
             command::exists,
+            command::download_file,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running tauri application");

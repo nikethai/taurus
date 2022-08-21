@@ -33,8 +33,11 @@ function App() {
   const [savePath, setSavePath] = useState("");
   const [fileSize, setFileSize] = useState("");
   const [availableSpace, setAvailableSpace] = useState("");
+  const [contentLength, setContentLength] = useState("");
 
   const [isPathWritable, setIsPathWritable] = useState(false);
+  const [isResumable, setIsResumable] = useState(false);
+
 
   const fileList = useListFileStore((state) => state.listFile);
   const setFileList = useListFileStore((state) => state.setListFile);
@@ -59,6 +62,8 @@ function App() {
 
     setFileName(fileInfo.name);
     setFileSize(formatBytes(Number(fileInfo.size)));
+    setContentLength(fileInfo.size);
+    setIsResumable(fileInfo.isResumable);
     setIsGettingLink(false);
   };
 
@@ -109,10 +114,6 @@ function App() {
     if (!savePath || savePath.length === 0) {
       return;
     }
-    // const result = await invoke("download_file", {
-    //   link: downloadLink,
-    //   savePath: savePath,
-    // }).catch((err) => console.log(err));
 
     const id = short.generate();
 
@@ -120,18 +121,28 @@ function App() {
       id,
       name: fileName,
       size: fileSize,
+      contentLength,
       type: "video",
+      isResumable: isResumable,
     });
 
     // Fake download
-    invoke("rp_time_elapsed", { id }).catch((err) => console.log(err));
+    // invoke("rp_time_elapsed", { id }).catch((err) => console.log(err));
+
+    invoke("download_file", {
+      id,
+      link: downloadLink,
+      savePath,
+      fileName,
+      contentLength,
+    }).catch((err) => console.log(err));
 
     setIsDownloadModalOpened(false);
   };
 
   const selectFile = async (id: string) => {
     console.log(id);
-    
+
     setSelectListFile(id);
   };
 
@@ -160,10 +171,11 @@ function App() {
             <TList
               id={fileInfo.id}
               fileName={fileInfo.name}
-              percentDone={1}
-              speed={1}
               type={fileInfo.type}
               totalSize={fileInfo.size}
+              contentLength={fileInfo.contentLength}
+              isResumable={fileInfo.isResumable}
+              speed={1}
               setSelectFile={selectFile}
               key={i}
             />

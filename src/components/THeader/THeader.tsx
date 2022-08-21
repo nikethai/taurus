@@ -18,10 +18,14 @@ const THeader: FC<ITHeaderProps> = ({ onAdd }) => {
   const selectedListFiles = useSelectedListFileStore(
     (state) => state.selectedListFile
   );
+  const haveUnresumable = useSelectedListFileStore(state => state.getIsHavingUnresumable);
+
   const [haveFile, setHaveFile] = useState(selectedListFiles.length > 0);
+  const [haveFileCannotBeResumed, setHaveFileCannotBeResumed] = useState(haveUnresumable);
 
   useEffect(() => {
     setHaveFile(selectedListFiles.length > 0);
+    setHaveFileCannotBeResumed(haveUnresumable);
   }, [selectedListFiles]);
 
   return (
@@ -67,7 +71,7 @@ const THeader: FC<ITHeaderProps> = ({ onAdd }) => {
               <PlayIcon height={30} width={30} />
             </Tooltip>
           </ActionIcon>
-          <ActionIcon disabled={!haveFile} color="dark">
+          <ActionIcon disabled={!haveFile || haveFileCannotBeResumed} color="dark">
             <Tooltip
               transition="pop"
               transitionDuration={300}

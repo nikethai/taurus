@@ -8,5 +8,6 @@ export interface IListFileState {
 export interface ISelectedListFileState {
     selectedListFile: string[];
     setSelectListFile: (id: string) => void;
+    getIsHavingUnresumable: () => boolean;
 }
 
