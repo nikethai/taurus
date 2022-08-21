@@ -10,8 +10,9 @@ interface ITListProp {
   fileName: string;
   percentDone: number;
   speed: number;
-  totalSize: number;
+  totalSize: string;
   type: string;
+  setSelectFile: (file: string) => void;
 }
 
 const TList: FC<ITListProp> = ({
@@ -21,11 +22,13 @@ const TList: FC<ITListProp> = ({
   totalSize,
   type,
   id,
+  setSelectFile
 }) => {
   const [percentProg, setPercentProg] = useState(0);
 
   useEffect(() => {
     // Listen to fake download event
+    // load the percentage
     window.AwesomeEvent.listen(`time_elapsed_${id}`, (data) => {
       let t = JSON.stringify(data);
       setPercentProg(Number(t));
@@ -35,7 +38,7 @@ const TList: FC<ITListProp> = ({
   return (
     <Grid className="tlist_grid" columns={24}>
       <Grid.Col span={4} className="tlist_col">
-        <Checkbox className="tlist_checkbox"></Checkbox>
+        <Checkbox onChange={e => setSelectFile(id)} className="tlist_checkbox"></Checkbox>
         <div className="tlist_flex_grow_center">
           <img
             className="tlist_file_type_img"

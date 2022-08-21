@@ -1,4 +1,6 @@
+use faccess::PathExt;
 use serde_json::{json, Value};
+use std::path::Path;
 use tauri::{Manager, Window, Wry};
 use tauri_awesome_rpc::AwesomeEmit;
 
@@ -69,4 +71,24 @@ pub async fn rp_time_elapsed(window: Window<Wry>, id: &str) -> Result<(), ()> {
             json!(start_time.elapsed().as_secs()),
         );
     }
+}
+
+#[tauri::command]
+pub fn get_disk_info(path: &str) -> Result<u64, String> {
+    let available_space = fs2::available_space(path);
+    match available_space {
+        Ok(space) => Ok(space),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn check_permission(path: &str) -> bool {
+    let path = Path::new(path);
+    path.writable()
+}
+
+#[tauri::command]
+pub async fn exists(path: String) -> bool {
+    Path::new(&path).exists()
 }

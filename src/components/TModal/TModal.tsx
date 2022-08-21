@@ -27,6 +27,7 @@ const TModal: FC<ITModalProps> = ({
       transitionDuration={200}
       transitionTimingFunction="ease"
       size="75%"
+      closeOnClickOutside={false}
     >
       {children}
     </Modal>

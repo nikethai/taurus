@@ -5,7 +5,8 @@ import {
   PauseIcon,
   TrashIcon,
 } from "@radix-ui/react-icons";
-import { FC } from "react";
+import { FC, useEffect, useState } from "react";
+import { useSelectedListFileStore } from "../../app/model/listFile";
 import { TOOLTIP } from "../../app/util/constant";
 import "./THeader.scss";
 
@@ -14,6 +15,15 @@ export interface ITHeaderProps {
 }
 
 const THeader: FC<ITHeaderProps> = ({ onAdd }) => {
+  const selectedListFiles = useSelectedListFileStore(
+    (state) => state.selectedListFile
+  );
+  const [haveFile, setHaveFile] = useState(selectedListFiles.length > 0);
+
+  useEffect(() => {
+    setHaveFile(selectedListFiles.length > 0);
+  }, [selectedListFiles]);
+
   return (
     <Header height={60} title="Taurus Downloader" className="theader_colour">
       <Grid className="theader_grid" columns={12} align="center">
@@ -42,7 +52,13 @@ const THeader: FC<ITHeaderProps> = ({ onAdd }) => {
           <TextInput className="theader_input" placeholder="Tìm kiếm..." />
         </Grid.Col>
         <Grid.Col className="theader_col theader_col--between" span={2}>
-          <ActionIcon color="dark">
+          <ActionIcon
+            sx={{
+              backgroundColor: "transparent",
+            }}
+            disabled={!haveFile}
+            color="dark"
+          >
             <Tooltip
               transition="pop"
               transitionDuration={300}
@@ -51,7 +67,7 @@ const THeader: FC<ITHeaderProps> = ({ onAdd }) => {
               <PlayIcon height={30} width={30} />
             </Tooltip>
           </ActionIcon>
-          <ActionIcon color="dark">
+          <ActionIcon disabled={!haveFile} color="dark">
             <Tooltip
               transition="pop"
               transitionDuration={300}
@@ -60,7 +76,7 @@ const THeader: FC<ITHeaderProps> = ({ onAdd }) => {
               <PauseIcon height={30} width={30} />
             </Tooltip>
           </ActionIcon>
-          <ActionIcon color="dark">
+          <ActionIcon disabled={!haveFile} color="dark">
             <Tooltip
               transition="pop"
               transitionDuration={300}

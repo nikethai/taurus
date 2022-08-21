@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { AppShell, Button, Header, Modal, TextInput } from "@mantine/core";
 import { invoke } from "@tauri-apps/api/tauri";
 import { open } from "@tauri-apps/api/dialog";
-import { appDir } from "@tauri-apps/api/path";
+import { readDir } from "@tauri-apps/api/fs";
+import { appDir, downloadDir } from "@tauri-apps/api/path";
 import short from "short-uuid";
 
 import "./App.scss";
@@ -11,9 +12,11 @@ import { TFooter } from "../components/TFooter/TFooter";
 import { TList } from "../components/TListInfo/TList";
 import { TITLE } from "../app/util/constant";
 import { TModal } from "../components/TModal/TModal";
-import { useFileInfoStore } from "../app/model/fileInfo";
-import { useListFileStore } from "../app/model/listFile";
-import { IFileInfoRust } from "../app/interface/IFileInfo";
+import {
+  useListFileStore,
+  useSelectedListFileStore,
+} from "../app/model/listFile";
+import { IFileInfo, IFileInfoRust } from "../app/interface/IFileInfo";
 import { formatBytes } from "../app/util/bytesFormat";
 
 function App() {
@@ -28,10 +31,17 @@ function App() {
   const [downloadLink, setDownloadLink] = useState("");
   const [fileName, setFileName] = useState("");
   const [savePath, setSavePath] = useState("");
-  
   const [fileSize, setFileSize] = useState("");
+  const [availableSpace, setAvailableSpace] = useState("");
 
-  const fileList = useListFileStore();
+  const [isPathWritable, setIsPathWritable] = useState(false);
+
+  const fileList = useListFileStore((state) => state.listFile);
+  const setFileList = useListFileStore((state) => state.setListFile);
+
+  const setSelectListFile = useSelectedListFileStore(
+    (state) => state.setSelectListFile
+  );
 
   const getDownloadInfo = async () => {
     setIsGettingLink(true);
@@ -42,8 +52,13 @@ function App() {
       link: downloadLink,
     });
 
+    const defaultPath = await downloadDir();
+    setSavePath(defaultPath);
+    getAvailableSpace(defaultPath);
+    checkPathPermission(defaultPath);
+
     setFileName(fileInfo.name);
-    setFileSize(formatBytes(fileInfo.size));
+    setFileSize(formatBytes(Number(fileInfo.size)));
     setIsGettingLink(false);
   };
 
@@ -60,17 +75,31 @@ function App() {
       directory: true,
       multiple: false,
       defaultPath: await appDir(),
+      title: "Chọn thư mục lưu",
     });
     if (!selected) return;
 
-    console.log(selected);
     if (selected.length > 0) {
-      if (Array.isArray(selected)) {
-        setSavePath(selected[0]);
-      } else {
+      if (!Array.isArray(selected)) {
         setSavePath(selected);
+        getAvailableSpace(selected);
+        checkPathPermission(selected);
       }
     }
+  };
+
+  const getAvailableSpace = async (selected: string) => {
+    const availableSpace = await invoke<number>("get_disk_info", {
+      path: selected,
+    });
+    setAvailableSpace(formatBytes(availableSpace));
+  };
+
+  const checkPathPermission = async (path: string) => {
+    const result = await invoke<boolean>("check_permission", {
+      path: path,
+    });
+    setIsPathWritable(result);
   };
 
   const downloadFile = async () => {
@@ -87,10 +116,10 @@ function App() {
 
     const id = short.generate();
 
-    fileList.setListFile({
+    setFileList({
       id,
       name: fileName,
-      size: 100,
+      size: fileSize,
       type: "video",
     });
 
@@ -98,6 +127,12 @@ function App() {
     invoke("rp_time_elapsed", { id }).catch((err) => console.log(err));
 
     setIsDownloadModalOpened(false);
+  };
+
+  const selectFile = async (id: string) => {
+    console.log(id);
+    
+    setSelectListFile(id);
   };
 
   // use to reset the state when the request is cancelled
@@ -120,8 +155,8 @@ function App() {
       footer={<TFooter />}
     >
       <div className="tlist_display">
-        {fileList.listFile.length > 0 ? (
-          fileList.listFile.map((fileInfo, i) => (
+        {fileList.length > 0 ? (
+          fileList.map((fileInfo, i) => (
             <TList
               id={fileInfo.id}
               fileName={fileInfo.name}
@@ -129,6 +164,7 @@ function App() {
               speed={1}
               type={fileInfo.type}
               totalSize={fileInfo.size}
+              setSelectFile={selectFile}
               key={i}
             />
           ))
@@ -200,13 +236,25 @@ function App() {
               label="Tên tập tin"
               placeholder="Nhập tên..."
             />
-            <p className="tdownload_info">File: {fileSize} (Còn trống: 100GB)</p>
+            <p className="tdownload_info">
+              File: {fileSize} (Còn trống: {availableSpace})
+            </p>
           </div>
         </div>
         <div className="tmodal">
-          <p className="tdownload_permission">Không có quyền truy cập</p>
+          {isPathWritable ? (
+            <div />
+          ) : (
+            <p className="tdownload_permission">
+              Không có quyền truy cập thư mục
+            </p>
+          )}
           <div className="tadd_buttons">
-            <Button onClick={downloadFile} variant="outline">
+            <Button
+              disabled={!isPathWritable}
+              onClick={downloadFile}
+              variant="outline"
+            >
               Tải
             </Button>
             <Button

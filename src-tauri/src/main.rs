@@ -33,7 +33,10 @@ fn main() {
             command::greet,
             command::get_download_info,
             command::cancel_get_download_info,
-            command::rp_time_elapsed
+            command::rp_time_elapsed,
+            command::get_disk_info,
+            command::check_permission,
+            command::exists,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running tauri application");

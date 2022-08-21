@@ -20,6 +20,7 @@
     "@radix-ui/react-icons": "^1.1.1",
     "@tauri-apps/api": "^1.0.2",
     "dayjs": "^1.11.5",
+    "idb-keyval": "^6.2.0",
     "immer": "^9.0.15",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

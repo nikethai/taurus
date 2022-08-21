@@ -12,6 +12,10 @@
   }
   .theader_col.theader_col--between {
     justify-content: space-between;
+    .mantine-UnstyledButton-root[data-disabled]{
+      background-color: transparent;
+      border-color: transparent;
+    }
   }
 }
 
