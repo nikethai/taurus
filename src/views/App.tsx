@@ -28,7 +28,7 @@ function App() {
   // ref is synchronous
   const isCancel = useRef(false);
 
-  const [downloadLink, setDownloadLink] = useState("");
+  const [downloadLink, setDownloadLink] = useState("https://speed.hetzner.de/100MB.bin");
   const [fileName, setFileName] = useState("");
   const [savePath, setSavePath] = useState("");
   const [fileSize, setFileSize] = useState("");
@@ -192,6 +192,7 @@ function App() {
       >
         <TextInput
           onChange={(e) => setDownloadLink(e.target.value)}
+          value={downloadLink}
           label="Đường dẫn"
           placeholder="Nhập đường dẫn..."
         />

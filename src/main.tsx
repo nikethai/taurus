@@ -8,9 +8,9 @@ import "./styles.css";
 import { mantineTheme } from "./app/util/mantineTheme";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
+  // <React.StrictMode>
     <MantineProvider theme={mantineTheme}>
       <App />
     </MantineProvider>
-  </React.StrictMode>
+  // </React.StrictMode>
 );

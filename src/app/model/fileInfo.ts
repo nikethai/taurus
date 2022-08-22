@@ -9,8 +9,9 @@ const useFileInfoStore = create<IFileInfoState>()(
     persist(
       (set) => ({
         name: "",
-        size: 0,
+        size: "",
         type: "",
+        isResumable: false,
         setFileInfo: (fileInfo: IFileInfo) => {
           set(
             produce((state) => {

@@ -147,13 +147,14 @@ async fn download(
     save_path: &str,
     file_name: &str,
     content_length: &u64,
-) -> Result<String, TauError> {
+) -> Result<(), TauError> {
     let final_file_path = &format!("{}/{}", save_path, file_name);
     let event_name = format!("download_progress_{}", id);
+    let event_name_status = format!("download_status_{}", id);
 
     if Path::new(final_file_path).exists() {
-        let msg = format!("File already exists at {}", save_path);
-        Ok(msg)
+        let message = format!("File already exists at {}", save_path);
+        Err(TauError::Other { message })
     } else {
         // Heztner close connecttion if head request is sent
         // For some fking reason
@@ -199,9 +200,18 @@ async fn download(
                 let message = format!("{} {}", link, dl_response.status());
                 Err(TauError::ResponseStatusNotSuccess { message })
             } else {
-                // incremental save chunk by chunk into part file
-                // aka chunk every sec (not sure)
+                // timeout for download (auto drop)
                 let chunk_timeout = Duration::from_secs(60);
+                // emit download status (started)
+                window.state::<AwesomeEmit>().emit(
+                    "main",
+                    event_name_status.as_str(),
+                    json!({
+                        "status": "started",
+                        // "isStarted": true,
+                    }),
+                );
+                // incremental save chunk by chunk into part file
                 while let Some(chunk) = timeout(chunk_timeout, dl_response.chunk()).await?? {
                     file.write_all(&chunk).await?;
                     //emit
@@ -215,8 +225,16 @@ async fn download(
                 }
                 // rename part file to final
                 tfs::rename(&tmp_name, final_file_path).await?;
-                let msg = format!("Completed {}", file_name,);
-                Ok(msg)
+                // emit download status (done)
+                window.state::<AwesomeEmit>().emit(
+                    "main",
+                    event_name_status.as_str(),
+                    json!({
+                        "status": "done",
+                        // "isStarted": true,
+                    }),
+                );
+                Ok(())
             }
         }
     }
