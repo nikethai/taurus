@@ -1,10 +1,10 @@
-# Taurus v2 — Design Spec
+# Hyades (codename Taurus) — v2 Design Spec
 
 Date: 2026-10-27 · Branch: `v2` · Status: draft for review
 
 ## 1. Summary
 
-Taurus is an open-source, cross-platform desktop download manager in the spirit of Deepin Download Manager and Free Download Manager. v2 is a rewrite of the 2022 Tauri + React prototype into a pure-Rust engine with a native Slint UI. It handles direct HTTP(S) downloads with parallel segments, torrents and magnet links, and video/audio from sites supported by yt-dlp, including live recording.
+**Hyades** (codename and crate prefix: `taurus`) is an open-source, cross-platform desktop download manager in the spirit of Deepin Download Manager and Free Download Manager. v2 is a rewrite of the 2022 Tauri + React prototype into a pure-Rust engine with a native Slint UI. It handles direct HTTP(S) downloads with parallel segments, torrents and magnet links, and video/audio from sites supported by yt-dlp, including live recording.
 
 **Goal:** both a daily-driver app other people use and a Rust project worth showing — built engine-first, polished after.
 
