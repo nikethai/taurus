@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::plan::Segment;
@@ -262,6 +262,36 @@ impl Store {
         Ok(Store {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Opens an existing database for reading only: nothing is created,
+    /// migrated or repaired. `None` if there is no database or no schema yet.
+    pub fn open_read_only(path: &Path) -> Result<Option<Store>, CoreError> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(path, flags).map_err(db_err)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(db_err)?;
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(db_err)?;
+        if version > SCHEMA_VERSION {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: format!(
+                    "database schema version {version} is newer than supported version \
+                     {SCHEMA_VERSION}"
+                ),
+            });
+        }
+        if version < 1 {
+            return Ok(None);
+        }
+        Ok(Some(Store {
+            conn: Arc::new(Mutex::new(conn)),
+        }))
     }
 
     fn lock(&self) -> MutexGuard<'_, Connection> {

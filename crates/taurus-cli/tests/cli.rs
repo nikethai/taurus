@@ -185,3 +185,64 @@ async fn missing_dir_exits_1() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("FolderUnavailable"), "stderr: {stderr}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn second_process_beside_running_add() {
+    tokio::time::timeout(TIMEOUT, beside_running_add())
+        .await
+        .expect("did not finish in 60 s");
+}
+
+async fn beside_running_add() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(16 * MIB);
+    spec.bytes_per_sec = Some(4 * MIB as u64);
+    let url = fx.server.serve(PATH, spec.clone());
+
+    let mut child = fx
+        .taurus()
+        .args(["--json", "add", &url, "--dir", fx.out.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn taurus");
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    loop {
+        let line = lines
+            .next_line()
+            .await
+            .unwrap()
+            .expect("taurus ended before any progress");
+        if line.contains("\"Progress\"") {
+            break;
+        }
+    }
+
+    // `list` reads the stored state without touching the running job.
+    let list = fx.run(&["--json", "list"]).await;
+    assert_exit(&list, 0);
+    let jobs: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(jobs.as_array().unwrap().len(), 1);
+    assert_eq!(jobs[0]["state"], "Downloading");
+
+    // A second download of the same job is refused.
+    let resume = fx.run(&["resume", "1"]).await;
+    assert_exit(&resume, 1);
+    let stderr = String::from_utf8_lossy(&resume.stderr);
+    assert!(
+        stderr.contains("another taurus instance"),
+        "stderr: {stderr}"
+    );
+
+    while lines.next_line().await.unwrap().is_some() {}
+    let status = child.wait().await.unwrap();
+    assert_eq!(status.code(), Some(0));
+    assert_same_bytes(&fx.file(), &spec);
+    assert!(
+        fx.server.bytes_served(PATH) < 2 * spec.size as u64,
+        "served {} bytes",
+        fx.server.bytes_served(PATH)
+    );
+    let list = fx.run(&["--json", "list"]).await;
+    let jobs: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(jobs[0]["state"], "Completed");
+}

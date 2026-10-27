@@ -78,7 +78,22 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<ExitCode> {
     let data_dir = data_dir(cli.data_dir)?;
-    let engine = Engine::open(EngineConfig { data_dir }).await?;
+    let engine = match Engine::open(EngineConfig {
+        data_dir: data_dir.clone(),
+    })
+    .await
+    {
+        Ok(engine) => engine,
+        // Another process runs a download here: show what it has stored.
+        Err(e) if e.is_instance_locked() && matches!(cli.command, Command::List) => {
+            print_list(
+                &Engine::read_snapshot(&EngineConfig { data_dir })?,
+                cli.json,
+            )?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        Err(e) => return Err(e.into()),
+    };
     let result = execute(&engine, cli.command, cli.json).await;
     engine.shutdown().await?;
     result
@@ -115,12 +130,7 @@ async fn execute(engine: &Engine, command: Command, json: bool) -> Result<ExitCo
             follow(engine, id, &mut events, &mut printer).await
         }
         Command::List => {
-            let views = engine.snapshot();
-            if json {
-                println!("{}", serde_json::to_string(&views)?);
-            } else {
-                print!("{}", render::job_table(&views));
-            }
+            print_list(&engine.snapshot(), json)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Remove { id, delete_files } => {
@@ -134,6 +144,15 @@ async fn execute(engine: &Engine, command: Command, json: bool) -> Result<ExitCo
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn print_list(views: &[JobView], json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string(views)?);
+    } else {
+        print!("{}", render::job_table(views));
+    }
+    Ok(())
 }
 
 /// Prints the job's events until it is Completed, Paused or Failed. Ctrl-C

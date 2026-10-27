@@ -393,3 +393,67 @@ async fn remove_with_files_spares_a_replaced_file() {
     assert!(!downloaded.exists());
     assert!(engine.snapshot().is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn second_engine_on_same_data_dir_is_refused() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let url = fx.server.serve(PATH, throttled(20 * MIB));
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let config = EngineConfig {
+        data_dir: fx.data_dir(),
+    };
+    let err = match Engine::open(config).await {
+        Ok(_) => panic!("a second engine opened the same data dir"),
+        Err(e) => e,
+    };
+    assert_eq!(err.kind, ErrorKind::Unknown);
+    assert!(err.is_instance_locked(), "{err}");
+    assert_eq!(
+        err.detail,
+        format!(
+            "another taurus instance is using {}",
+            fx.data_dir().display()
+        )
+    );
+
+    // The running job is untouched and still readable from beside it.
+    let config = EngineConfig {
+        data_dir: fx.data_dir(),
+    };
+    let stored = Engine::read_snapshot(&config).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!((stored[0].id, stored[0].state), (id, JobState::Downloading));
+    assert_eq!(view(&engine, id).state, JobState::Downloading);
+
+    // Shutting down releases the data dir.
+    engine.shutdown().await.unwrap();
+    let engine = fx.engine().await;
+    assert_eq!(view(&engine, id).state, JobState::Paused);
+    let stored = Engine::read_snapshot(&config).unwrap();
+    assert_eq!(stored[0].state, JobState::Paused);
+    assert!(stored[0].downloaded > 0, "{stored:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn read_snapshot_without_database_is_empty() {
+    let fx = Fixture::new().await;
+    let config = EngineConfig {
+        data_dir: fx.data_dir(),
+    };
+    assert!(Engine::read_snapshot(&config).unwrap().is_empty());
+    assert!(!fx.data_dir().exists());
+
+    // A closed engine's database reads back too.
+    let engine = fx.engine().await;
+    let url = fx.server.serve(PATH, FileSpec::new(MIB));
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    engine.shutdown().await.unwrap();
+    let stored = Engine::read_snapshot(&config).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].state, JobState::Completed);
+    assert_eq!(stored[0].downloaded, MIB as u64);
+}

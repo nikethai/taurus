@@ -20,9 +20,15 @@ use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
 
 const COMMAND_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 1024;
+const DB_FILE: &str = "taurus.db";
+const LOCK_FILE: &str = "taurus.lock";
+/// Start of the detail of the error `Engine::open` returns when another
+/// engine holds the data dir.
+const IN_USE: &str = "another taurus instance is using";
 
 pub struct EngineConfig {
-    /// Holds the database, `taurus.db`. Created if missing.
+    /// Holds the database, `taurus.db`, and the lock file, `taurus.lock`.
+    /// Created if missing.
     pub data_dir: PathBuf,
 }
 
@@ -122,11 +128,17 @@ enum JobMsg {
 impl Engine {
     /// Opens the database in `config.data_dir` and restores its jobs. Jobs
     /// recorded as Downloading (interrupted) or Queued become Paused.
+    ///
+    /// The engine holds `data_dir` exclusively until it shuts down or its
+    /// last handle is dropped. While another engine (in any process) holds
+    /// it, `open` fails without writing anything and the error's
+    /// `is_instance_locked` is true; `read_snapshot` still works.
     pub async fn open(config: EngineConfig) -> Result<Engine, CoreError> {
         tokio::fs::create_dir_all(&config.data_dir)
             .await
             .map_err(io_error)?;
-        let store = Store::open(&config.data_dir.join("taurus.db"))?;
+        let lock = lock_data_dir(&config.data_dir)?;
+        let store = Store::open(&config.data_dir.join(DB_FILE))?;
         let mut views = HashMap::new();
         for mut job in store.list_jobs()? {
             // Nothing is running yet, and M1 has no queue to start Queued jobs.
@@ -144,6 +156,7 @@ impl Engine {
         let (job_tx, job_rx) = mpsc::unbounded_channel();
         let client = build_client();
         let actor = Actor {
+            _lock: lock,
             store,
             client: client.clone(),
             views: views.clone(),
@@ -160,6 +173,21 @@ impl Engine {
             views,
             client,
         })
+    }
+
+    /// Every stored job, ordered by id, read without opening an engine or
+    /// writing anything, so it works while another engine holds `data_dir`.
+    /// Views show the stored state (a running job is Downloading) and the
+    /// durable progress. No database yet means no jobs.
+    pub fn read_snapshot(config: &EngineConfig) -> Result<Vec<JobView>, CoreError> {
+        let Some(store) = Store::open_read_only(&config.data_dir.join(DB_FILE))? else {
+            return Ok(Vec::new());
+        };
+        store
+            .list_jobs()?
+            .iter()
+            .map(|job| Ok(view_of(job, downloaded(&store, job.id)?)))
+            .collect()
     }
 
     /// Probes the URL, reserves a file name that no other file or job in
@@ -276,6 +304,8 @@ impl Engine {
 }
 
 struct Actor {
+    /// Holds the data dir; released when the actor stops.
+    _lock: std::fs::File,
     store: Store,
     client: reqwest::Client,
     views: Views,
@@ -671,6 +701,33 @@ fn io_error(e: std::io::Error) -> CoreError {
     CoreError {
         kind: classify_io(&e),
         detail: e.to_string(),
+    }
+}
+
+impl CoreError {
+    /// Whether this is `Engine::open` refusing a data dir that another
+    /// engine (in this or another process) holds.
+    pub fn is_instance_locked(&self) -> bool {
+        self.kind == ErrorKind::Unknown && self.detail.starts_with(IN_USE)
+    }
+}
+
+/// Takes the exclusive lock on `data_dir/taurus.lock` without waiting.
+fn lock_data_dir(data_dir: &Path) -> Result<std::fs::File, CoreError> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data_dir.join(LOCK_FILE))
+        .map_err(io_error)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(CoreError {
+            kind: ErrorKind::Unknown,
+            detail: format!("{IN_USE} {}", data_dir.display()),
+        }),
+        Err(std::fs::TryLockError::Error(e)) => Err(io_error(e)),
     }
 }
 
