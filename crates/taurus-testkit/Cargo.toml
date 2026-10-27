@@ -6,3 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+
+[dependencies]
+axum.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["net"] }
+
+[dev-dependencies]
+reqwest.workspace = true
