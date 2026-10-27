@@ -1,0 +1,22 @@
+[package]
+name = "taurus-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "taurus"
+path = "src/main.rs"
+
+[dependencies]
+taurus-core = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["full"] }
+directories = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+taurus-testkit = { workspace = true }
+tempfile = { workspace = true }
