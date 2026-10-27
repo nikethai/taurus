@@ -1,6 +1,7 @@
 pub mod errors;
 pub mod filename;
 pub mod plan;
+pub mod store;
 
 /// Crate version, as declared in `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
