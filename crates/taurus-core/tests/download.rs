@@ -347,3 +347,33 @@ async fn stale_open_ended_segment_is_replanned() {
     assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
     assert_eq!(fx.store.load_segments(id).unwrap().len(), 3);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gapped_segment_list_is_replanned() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(4 * MIB);
+    let id = fx.add(&spec, 16);
+    // A hole at [1 MiB, 3 MiB): never trust such a list, even with progress.
+    fs::write(fx.tapa(), &content(&spec)[..MIB]).unwrap();
+    let mib = MIB as u64;
+    let gapped = [
+        taurus_core::plan::Segment {
+            start: 0,
+            end: mib,
+            done: mib,
+        },
+        taurus_core::plan::Segment {
+            start: 3 * mib,
+            end: 4 * mib,
+            done: 0,
+        },
+    ];
+    fx.store.replace_segments(id, &gapped).unwrap();
+
+    assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    let mut segments = fx.store.load_segments(id).unwrap();
+    segments.sort_by_key(|s| s.start);
+    assert_eq!(segments[0].start, 0);
+    assert_eq!(segments.last().unwrap().end, spec.size as u64);
+    assert!(segments.windows(2).all(|w| w[0].end == w[1].start));
+}

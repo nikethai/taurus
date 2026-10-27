@@ -122,12 +122,8 @@ async fn prepare(
     let stored = ctx.store.load_segments(job.id)?;
     let mut segments = match job.total {
         Some(0) => plan::plan_segments(0, 1),
-        // Keep an earlier run's segments only if they fit the current size.
-        Some(total)
-            if job.resumable && !stored.is_empty() && stored.iter().all(|s| s.end <= total) =>
-        {
-            stored
-        }
+        // Keep an earlier run's segments only if they tile the current size.
+        Some(total) if job.resumable && tiles(&stored, total) => stored,
         Some(total) if job.resumable => plan::plan_segments(total, job.connections),
         // Without ranges a stream can only start over from byte 0.
         _ => vec![open_ended()],
@@ -141,6 +137,20 @@ async fn prepare(
     }
     ctx.store.replace_segments(job.id, &segments)?;
     Ok(segments)
+}
+
+/// Whether the segments, ordered by start, cover `[0, total)` exactly once.
+fn tiles(segments: &[Segment], total: u64) -> bool {
+    let mut sorted = segments.to_vec();
+    sorted.sort_by_key(|s| s.start);
+    let mut next = 0;
+    for s in &sorted {
+        if s.start != next || s.end < s.start {
+            return false;
+        }
+        next = s.end;
+    }
+    !sorted.is_empty() && next == total
 }
 
 fn open_ended() -> Segment {
@@ -418,6 +428,7 @@ impl Round<'_> {
         let Some((idx, split)) = plan::steal(&live) else {
             return Ok(None);
         };
+        // Lowered before the write so the worker cannot pass the split meanwhile.
         let old_end = {
             let mut w = lock(&self.slots[idx].window);
             // The worker moved past the split since the snapshot: skip this round.
@@ -426,15 +437,22 @@ impl Round<'_> {
             }
             std::mem::replace(&mut w.end, split)
         };
-        self.slots[idx].seg.end = split;
-        self.slots.push(Slot::new(Segment {
+        let stolen = Segment {
             start: split,
             end: old_end,
             done: 0,
-        }));
-        self.ctx
-            .store
-            .replace_segments(self.job.id, &self.segments())?;
+        };
+        let mut segments = self.segments();
+        segments[idx].end = split;
+        segments.push(stolen);
+        if let Err(e) = self.ctx.store.replace_segments(self.job.id, &segments) {
+            // Nothing was written past the split: hand the bytes back, so
+            // memory matches the store again.
+            lock(&self.slots[idx].window).end = old_end;
+            return Err(e);
+        }
+        self.slots[idx].seg.end = split;
+        self.slots.push(Slot::new(stolen));
         Ok(Some(self.slots.len() - 1))
     }
 
@@ -809,6 +827,56 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
         file.set_len(5).await.unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+    }
+
+    #[tokio::test]
+    async fn failed_steal_leaves_memory_as_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("taurus.db")).unwrap();
+        let id = store
+            .insert_job(&crate::store::NewJob {
+                url: "http://127.0.0.1:9/x.bin".into(),
+                dest_dir: dir.path().to_path_buf(),
+                file_name: "x.bin".into(),
+                connections: 2,
+            })
+            .unwrap();
+        let mut job = store.get_job(id).unwrap().unwrap();
+        job.total = Some(4 * plan::MIN_SEGMENT);
+        job.resumable = true;
+        let whole = Segment {
+            start: 0,
+            end: 4 * plan::MIN_SEGMENT,
+            done: 0,
+        };
+        store.replace_segments(id, &[whole]).unwrap();
+        // Writing segments of a deleted job violates the foreign key.
+        store.delete_job(id).unwrap();
+
+        let (progress, _progress_rx) = mpsc::unbounded_channel();
+        let ctx = JobContext {
+            id,
+            client: crate::http::build_client(),
+            store,
+            cancel: CancellationToken::new(),
+            progress,
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tapa = dir.path().join("x.bin.tapa");
+        let mut round = Round {
+            ctx: &ctx,
+            job: &job,
+            tapa: &tapa,
+            slots: vec![Slot::new(whole)],
+            workers: JoinSet::new(),
+            tx,
+            stop: CancellationToken::new(),
+            end: None,
+        };
+
+        assert!(round.steal().is_err());
+        assert_eq!(round.segments(), [whole]);
+        assert_eq!(round.slots[0].live(), whole);
     }
 
     #[test]

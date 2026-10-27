@@ -396,6 +396,7 @@ impl Store {
 
     /// Persists each segment's `done` and `end` (work stealing lowers ends)
     /// by position, together with the job's `updated_at`, in one transaction.
+    /// A segment with no stored row is an error and nothing is written.
     pub fn commit_progress(&self, id: JobId, segs: &[Segment]) -> Result<(), CoreError> {
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(db_err)?;
@@ -406,11 +407,23 @@ impl Store {
                      WHERE job_id = ?1 AND idx = ?2",
                 )
                 .map_err(db_err)?;
+            let mut updated = 0;
             for (idx, seg) in segs.iter().enumerate() {
                 let (_, end, done) = encode(seg)?;
-                update
+                updated += update
                     .execute(params![id.0, idx as i64, done, end])
                     .map_err(db_err)?;
+            }
+            // Dropping `tx` unchanged rolls the updates back.
+            if updated < segs.len() {
+                return Err(CoreError {
+                    kind: ErrorKind::Unknown,
+                    detail: format!(
+                        "job {} has {updated} stored segments, progress was for {}",
+                        id.0,
+                        segs.len()
+                    ),
+                });
             }
         }
         tx.execute(
@@ -596,6 +609,20 @@ mod tests {
                 .replace_segments(id, &[seg(0, 10, 0), seg(10, 20, u64::MAX)])
                 .is_err()
         );
+        assert_eq!(store.load_segments(id).unwrap(), segs);
+    }
+
+    #[test]
+    fn commit_progress_with_unknown_segment_changes_nothing() {
+        let (_dir, store) = open_temp();
+        let id = store.insert_job(&new_job("a", "/d")).unwrap();
+        let segs = [seg(0, 100, 0), seg(100, 200, 0)];
+        store.replace_segments(id, &segs).unwrap();
+
+        // A third segment that was never stored would leave a hole.
+        let more = [seg(0, 50, 50), seg(100, 200, 10), seg(50, 100, 0)];
+        let err = store.commit_progress(id, &more).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Unknown);
         assert_eq!(store.load_segments(id).unwrap(), segs);
     }
 
