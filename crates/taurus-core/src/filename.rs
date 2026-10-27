@@ -176,27 +176,30 @@ fn truncate_name(name: String) -> String {
     if name.len() <= MAX_NAME_BYTES {
         return name;
     }
-    let ext_start = name
-        .rfind('.')
-        .filter(|&i| i > 0 && name.len() - i <= MAX_EXT_BYTES);
-    match ext_start {
-        Some(i) => {
-            let (stem, ext) = name.split_at(i);
-            format!(
-                "{}{ext}",
-                &stem[..floor_boundary(stem, MAX_NAME_BYTES - ext.len())]
-            )
-        }
-        None => {
-            let cut = &name[..floor_boundary(&name, MAX_NAME_BYTES)];
-            let cut = cut.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
-            if cut.is_empty() {
-                FALLBACK_NAME.to_string()
-            } else {
-                cut.to_string()
-            }
-        }
+    let candidate = fit_name(&name, "", MAX_NAME_BYTES);
+    let trimmed = candidate.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+    if trimmed.is_empty() {
+        FALLBACK_NAME.to_string()
+    } else {
+        trimmed.to_string()
     }
+}
+
+/// Splits off the extension (from the last `.`), unless the name starts with
+/// that dot or the extension is longer than `MAX_EXT_BYTES`.
+fn split_ext(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(i) if i > 0 && name.len() - i <= MAX_EXT_BYTES => name.split_at(i),
+        _ => (name, ""),
+    }
+}
+
+/// `stem + suffix + ext` of `name`, with the stem truncated on a char
+/// boundary so the whole is at most `max` bytes.
+fn fit_name(name: &str, suffix: &str, max: usize) -> String {
+    let (stem, ext) = split_ext(name);
+    let budget = max.saturating_sub(suffix.len() + ext.len());
+    format!("{}{suffix}{ext}", &stem[..floor_boundary(stem, budget)])
 }
 
 /// Largest char boundary of `s` that is `<= max`.
@@ -209,7 +212,8 @@ fn floor_boundary(s: &str, max: usize) -> usize {
 
 /// First free `dir/<name>` (then `name (1).ext`, `name (2).ext`, ...). A
 /// candidate is taken if the file or its `.tapa` partial exists, or it is in
-/// `reserved`.
+/// `reserved`. Every candidate is cut (stem only, extension kept) so that
+/// `<candidate>.tapa` stays within 255 bytes.
 pub fn unique_path(dir: &Path, name: &str, reserved: &HashSet<String>) -> PathBuf {
     let taken = |candidate: &str| {
         reserved.contains(candidate)
@@ -219,15 +223,9 @@ pub fn unique_path(dir: &Path, name: &str, reserved: &HashSet<String>) -> PathBu
                 .symlink_metadata()
                 .is_ok()
     };
-    if !taken(name) {
-        return dir.join(name);
-    }
-    let (stem, ext) = match name.rfind('.') {
-        Some(i) if i > 0 => name.split_at(i),
-        _ => (name, ""),
-    };
-    (1..)
-        .map(|n| format!("{stem} ({n}){ext}"))
+    let max = MAX_NAME_BYTES - (PARTIAL_EXT.len() + 1);
+    std::iter::once(fit_name(name, "", max))
+        .chain((1..).map(|n| fit_name(name, &format!(" ({n})"), max)))
         .find(|candidate| !taken(candidate))
         .map(|candidate| dir.join(candidate))
         .expect("unbounded counter yields a free name")
@@ -405,5 +403,37 @@ mod tests {
 
         fs::write(d.join("b.tar.gz.tapa"), b"").unwrap();
         assert_eq!(unique_path(d, "b.tar.gz", &none), d.join("b.tar (1).gz"));
+    }
+
+    #[test]
+    fn unique_path_keeps_partial_name_within_255_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let none = HashSet::new();
+        let max = 255 - ".tapa".len();
+
+        let name = format!("{}a.iso", "é".repeat(125));
+        assert_eq!(name.len(), 255);
+        let name = sanitize(&name);
+        assert!(name.len() > max);
+
+        let first = unique_path(d, &name, &none);
+        let first_name = first.file_name().unwrap().to_str().unwrap().to_string();
+        assert!(
+            first_name.len() + ".tapa".len() <= 255,
+            "{}",
+            first_name.len()
+        );
+        assert!(first_name.ends_with(".iso"));
+        assert!(first_name.starts_with('é'));
+
+        fs::write(&first, b"").unwrap();
+        let second = unique_path(d, &name, &none);
+        let second_name = second.file_name().unwrap().to_str().unwrap();
+        assert_ne!(second_name, first_name);
+        assert!(second_name.len() <= max, "{}", second_name.len());
+        assert!(second_name.contains(" (1)"));
+        assert!(second_name.ends_with(".iso"));
+        assert!(second_name.starts_with('é'));
     }
 }
