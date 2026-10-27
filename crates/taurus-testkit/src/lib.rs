@@ -269,11 +269,12 @@ async fn handle(
 
     // Window is [start, end); the drop fires once, in the first window holding the offset.
     let mut stop_at = None;
-    if let Some(offset) = spec.drop_once_after {
-        if !entry.drop_spent && (start..end).contains(&offset) {
-            entry.drop_spent = true;
-            stop_at = Some(offset);
-        }
+    if let Some(offset) = spec.drop_once_after
+        && !entry.drop_spent
+        && (start..end).contains(&offset)
+    {
+        entry.drop_spent = true;
+        stop_at = Some(offset);
     }
 
     let mut resp = Response::new(Body::from_stream(body_stream(Pacing {

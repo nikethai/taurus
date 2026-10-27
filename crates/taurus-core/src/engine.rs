@@ -429,12 +429,10 @@ impl Actor {
             cancel.cancel();
             self.settle(&[id]).await;
         }
-        if delete_files {
-            if let Some(job) = self.store.get_job(id)? {
-                remove_if_exists(&partial_path(&job))?;
-                if job.state == JobState::Completed {
-                    remove_if_exists(&job.dest_dir.join(&job.file_name))?;
-                }
+        if delete_files && let Some(job) = self.store.get_job(id)? {
+            remove_if_exists(&partial_path(&job))?;
+            if job.state == JobState::Completed {
+                remove_if_exists(&job.dest_dir.join(&job.file_name))?;
             }
         }
         self.store.delete_job(id)?;

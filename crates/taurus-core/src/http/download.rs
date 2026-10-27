@@ -541,10 +541,10 @@ impl Worker {
                 _ = self.stop.cancelled() => return WorkerEnd::Cancelled,
                 _ = tokio::time::sleep(backoff_delay(attempt - 1)) => {}
             }
-            if !self.resumable {
-                if let Err(e) = self.restart(&file).await {
-                    return WorkerEnd::Failed(e);
-                }
+            if !self.resumable
+                && let Err(e) = self.restart(&file).await
+            {
+                return WorkerEnd::Failed(e);
             }
         }
     }
