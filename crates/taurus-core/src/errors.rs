@@ -106,7 +106,9 @@ pub fn classify_reqwest(e: &reqwest::Error) -> ErrorKind {
         ErrorKind::Timeout
     } else if let Some(status) = e.status() {
         classify_status(status.as_u16())
-    } else if e.is_connect() || e.is_body() || e.is_request() {
+    } else if e.is_connect() || e.is_body() || e.is_request() || e.is_decode() {
+        // Bodies are always requested with identity encoding, so a decode
+        // error is reqwest's wrapper around a body read that failed mid-stream.
         ErrorKind::ConnectionLost
     } else {
         ErrorKind::Unknown
@@ -263,6 +265,34 @@ mod tests {
             .unwrap_err();
         assert_eq!(classify_reqwest(&err), ErrorKind::Timeout);
         drop(listener);
+    }
+
+    #[tokio::test]
+    async fn reqwest_body_cut_short_is_connection_lost() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf).await;
+            s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort")
+                .await
+                .unwrap();
+        });
+        let mut resp = reqwest::get(format!("http://127.0.0.1:{port}/"))
+            .await
+            .unwrap();
+        let err = loop {
+            match resp.chunk().await {
+                Ok(Some(_)) => continue,
+                Ok(None) => panic!("body ended cleanly"),
+                Err(e) => break e,
+            }
+        };
+        // reqwest wraps a failed body read as a decode error.
+        assert!(err.is_decode(), "{err:?}");
+        assert_eq!(classify_reqwest(&err), ErrorKind::ConnectionLost);
     }
 
     #[tokio::test]

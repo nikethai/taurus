@@ -1449,6 +1449,7 @@ dependencies = [
 name = "taurus-core"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "fastrand",
  "hex",
  "percent-encoding",

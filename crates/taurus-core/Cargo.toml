@@ -18,6 +18,7 @@ percent-encoding = { workspace = true }
 tokio-util = { workspace = true }
 fastrand = { workspace = true }
 tracing = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 taurus-testkit = { workspace = true }

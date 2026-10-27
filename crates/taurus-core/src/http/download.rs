@@ -5,15 +5,15 @@
 //! job loop commits it to the store, so recorded progress never exceeds the
 //! bytes on disk.
 
-use std::io::SeekFrom;
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use reqwest::StatusCode;
 use reqwest::header::{CONTENT_RANGE, RANGE};
-use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::fs::OpenOptions;
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -504,7 +504,7 @@ struct Worker {
 
 impl Worker {
     async fn run(mut self) -> WorkerExit {
-        let end = match OpenOptions::new().write(true).open(&self.tapa).await {
+        let end = match PartFile::open(&self.tapa).await {
             Ok(file) => self.download(file).await,
             Err(e) => WorkerEnd::Failed(io_error(e)),
         };
@@ -516,24 +516,22 @@ impl Worker {
 
     /// Fetches until the window is complete, retrying transient errors from
     /// the durable position with backoff.
-    async fn download(&mut self, mut file: File) -> WorkerEnd {
-        let mut attempt = 0;
+    async fn download(&mut self, file: PartFile) -> WorkerEnd {
+        let mut attempts = Attempts::new(self.written);
         loop {
-            let begin = self.written;
-            let fetched = self.fetch(&mut file).await;
-            // Keep whatever arrived, even on error: it is the resume point.
-            let synced = self.sync(&mut file).await;
+            let fetched = self.fetch(&file).await;
+            // Keep whatever was written, even on error: it is the resume point.
+            // `written` only counts writes that succeeded, so this never
+            // records bytes that did not reach the file.
+            let synced = self.sync(&file).await;
             let e = match (fetched, synced) {
                 (Ok(end), Ok(())) => return end,
                 (Err(e), Ok(())) => e,
-                // A non-transient fetch error (e.g. a failed write) explains a failed sync.
+                // The fetch error (e.g. disk full) is the root cause.
                 (Err(e), Err(_)) if !e.kind.is_transient() => e,
                 (_, Err(e)) => e,
             };
-            if self.written > begin {
-                attempt = 0;
-            }
-            attempt += 1;
+            let attempt = attempts.failed_at(self.written);
             if !e.kind.is_transient() || attempt >= MAX_SEGMENT_ATTEMPTS {
                 return WorkerEnd::Failed(e);
             }
@@ -551,7 +549,7 @@ impl Worker {
     }
 
     /// One request, streamed into the file from `written` up to the window end.
-    async fn fetch(&mut self, file: &mut File) -> Result<WorkerEnd, CoreError> {
+    async fn fetch(&mut self, file: &PartFile) -> Result<WorkerEnd, CoreError> {
         let end = lock(&self.window).end;
         if self.written >= end {
             return Ok(WorkerEnd::Complete);
@@ -567,19 +565,21 @@ impl Worker {
         if let Some(end) = self.check_response(&response, end)? {
             return Ok(end);
         }
-        file.seek(SeekFrom::Start(self.written))
-            .await
-            .map_err(io_error)?;
         loop {
             let chunk = tokio::select! {
                 _ = self.stop.cancelled() => return Ok(WorkerEnd::Cancelled),
-                chunk = response.chunk() => chunk.map_err(body_error)?,
+                chunk = response.chunk() => chunk.map_err(request_error)?,
             };
             let Some(chunk) = chunk else { break };
             let take = self.reserve(chunk.len() as u64);
-            file.write_all(&chunk[..take as usize])
+            if let Err(e) = file
+                .write_at(self.written, chunk.slice(..take as usize))
                 .await
-                .map_err(io_error)?;
+            {
+                // None of this chunk counts: hand the reservation back.
+                lock(&self.window).pos = self.written;
+                return Err(io_error(e));
+            }
             self.written += take;
             if self.written >= lock(&self.window).end {
                 return Ok(WorkerEnd::Complete);
@@ -656,11 +656,10 @@ impl Worker {
     }
 
     /// Makes the written bytes durable, then reports them.
-    async fn sync(&mut self, file: &mut File) -> Result<(), CoreError> {
+    async fn sync(&mut self, file: &PartFile) -> Result<(), CoreError> {
         if self.written == self.synced {
             return Ok(());
         }
-        file.flush().await.map_err(io_error)?;
         file.sync_data().await.map_err(io_error)?;
         self.synced = self.written;
         self.last_sync = Instant::now();
@@ -671,7 +670,7 @@ impl Worker {
     /// An unranged stream cannot resume: drop what it wrote and start at 0.
     /// The zero is reported before truncating; a job that is not resumable
     /// never resumes from recorded progress, so the order is safe.
-    async fn restart(&mut self, file: &File) -> Result<(), CoreError> {
+    async fn restart(&mut self, file: &PartFile) -> Result<(), CoreError> {
         lock(&self.window).pos = 0;
         self.written = 0;
         self.synced = 0;
@@ -687,6 +686,79 @@ impl Worker {
     }
 }
 
+/// Consecutive failed attempts of one worker. Only progress past the furthest
+/// byte reached so far resets the count: an unranged stream restarts from 0,
+/// so re-downloading up to the same point again is not progress.
+struct Attempts {
+    failed: u32,
+    high_water: u64,
+}
+
+impl Attempts {
+    fn new(written: u64) -> Attempts {
+        Attempts {
+            failed: 0,
+            high_water: written,
+        }
+    }
+
+    /// Records a failed attempt that ended with `written` bytes written;
+    /// returns the number of consecutive failures (1-based).
+    fn failed_at(&mut self, written: u64) -> u32 {
+        if written > self.high_water {
+            self.high_water = written;
+            self.failed = 0;
+        }
+        self.failed += 1;
+        self.failed
+    }
+}
+
+/// One worker's handle on the partial file. Every operation runs on the
+/// blocking pool and returns its own result, so a chunk is counted as
+/// written only if its write succeeded. (`tokio::fs::File` acknowledges a
+/// write before it happens and reports a failure on a later call, after
+/// which `flush` and `sync_data` succeed.)
+struct PartFile(Arc<std::fs::File>);
+
+impl PartFile {
+    async fn open(path: &Path) -> io::Result<PartFile> {
+        let path = path.to_path_buf();
+        let file = blocking(move || std::fs::OpenOptions::new().write(true).open(path)).await?;
+        Ok(PartFile(Arc::new(file)))
+    }
+
+    async fn write_at(&self, offset: u64, data: Bytes) -> io::Result<()> {
+        let file = self.0.clone();
+        blocking(move || {
+            let mut file = &*file;
+            file.seek(SeekFrom::Start(offset))?;
+            file.write_all(&data)
+        })
+        .await
+    }
+
+    async fn sync_data(&self) -> io::Result<()> {
+        let file = self.0.clone();
+        blocking(move || file.sync_data()).await
+    }
+
+    async fn set_len(&self, len: u64) -> io::Result<()> {
+        let file = self.0.clone();
+        blocking(move || file.set_len(len)).await
+    }
+}
+
+async fn blocking<T, F>(op: F) -> io::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> io::Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(op)
+        .await
+        .unwrap_or_else(|e| Err(io::Error::other(e)))
+}
+
 fn lock(window: &Mutex<Window>) -> MutexGuard<'_, Window> {
     // A worker panic cannot leave the two integers inconsistent.
     window.lock().unwrap_or_else(|p| p.into_inner())
@@ -699,17 +771,60 @@ fn error(kind: ErrorKind, detail: impl Into<String>) -> CoreError {
     }
 }
 
-/// reqwest reports a failed body read as a decode error, which
-/// `classify_reqwest` cannot place; with identity encoding it is the
-/// connection failing (or timing out) mid-body.
-fn body_error(e: reqwest::Error) -> CoreError {
-    let mut err = request_error(e);
-    if err.kind != ErrorKind::Timeout {
-        err.kind = ErrorKind::ConnectionLost;
-    }
-    err
-}
-
 fn io_error(e: std::io::Error) -> CoreError {
     error(classify_io(&e), e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_failed_write_fails_that_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.tapa");
+        std::fs::write(&path, b"").unwrap();
+        // Every write through a read-only handle fails, and must fail at once
+        // (tokio's `File` would report it only on a later call).
+        let file = PartFile(Arc::new(std::fs::File::open(&path).unwrap()));
+        assert!(file.write_at(0, Bytes::from_static(b"abc")).await.is_err());
+        assert!(file.write_at(3, Bytes::from_static(b"def")).await.is_err());
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn writes_land_at_their_offsets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.tapa");
+        std::fs::write(&path, b"").unwrap();
+        let file = PartFile::open(&path).await.unwrap();
+        file.write_at(6, Bytes::from_static(b"world"))
+            .await
+            .unwrap();
+        file.write_at(0, Bytes::from_static(b"hello "))
+            .await
+            .unwrap();
+        file.sync_data().await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
+        file.set_len(5).await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn attempts_reset_only_past_the_high_water_mark() {
+        // Ranged: a failure after new progress counts as a first attempt.
+        let mut attempts = Attempts::new(0);
+        assert_eq!(attempts.failed_at(1000), 1);
+        assert_eq!(attempts.failed_at(2000), 1);
+        assert_eq!(attempts.failed_at(2000), 2);
+
+        // Unranged restarts re-download from 0: getting back to the same
+        // byte is not progress, so the attempts run out.
+        let mut attempts = Attempts::new(0);
+        let counts: Vec<u32> = (0..MAX_SEGMENT_ATTEMPTS)
+            .map(|_| attempts.failed_at(5000))
+            .collect();
+        assert_eq!(counts, (1..=MAX_SEGMENT_ATTEMPTS).collect::<Vec<_>>());
+        assert_eq!(attempts.failed_at(6000), 1);
+    }
 }
