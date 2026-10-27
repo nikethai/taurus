@@ -128,19 +128,31 @@ async fn kill_then_resume() {
             .next_line()
             .await
             .unwrap()
-            .expect("taurus ended before downloading 8 MiB");
+            .expect("taurus ended before downloading 12 MiB");
         let event: serde_json::Value = serde_json::from_str(&line).unwrap();
         let downloaded = event["Progress"]["downloaded"].as_u64().unwrap_or(0);
-        if downloaded > 8 * MIB as u64 {
+        // 1.5 s in at 8 MiB/s: past the ~1 s progress commit cadence.
+        if downloaded > 12 * MIB as u64 {
             break;
         }
     }
     // SIGKILL on Unix, TerminateProcess on Windows: no chance to save anything.
+    // `kill` also waits for the process to exit.
     child.kill().await.unwrap();
 
     assert!(!fx.file().exists(), "the download finished before the kill");
     assert!(fx.out.join("x.bin.tapa").exists());
+    // Lets the server finish counting writes that were in flight.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let served_at_kill = fx.server.bytes_served(PATH);
     let requests_before = fx.server.requests(PATH);
+
+    let list = fx.run(&["--json", "list"]).await;
+    assert_exit(&list, 0);
+    let jobs: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(jobs[0]["state"], "Paused");
+    let durable = jobs[0]["downloaded"].as_u64().unwrap();
+    assert!(durable > 0, "no progress was saved before the kill");
 
     let output = fx.run(&["resume", "1"]).await;
 
@@ -148,6 +160,13 @@ async fn kill_then_resume() {
     assert_same_bytes(&fx.file(), &spec);
     assert!(fx.server.requests(PATH) > requests_before);
     let served = fx.server.bytes_served(PATH);
+    // A restart from zero would serve the whole file again.
+    let resumed = served - served_at_kill;
+    assert!(
+        resumed < spec.size as u64,
+        "resume served {resumed} bytes for a {} byte file ({durable} saved)",
+        spec.size
+    );
     assert!(
         served < 2 * spec.size as u64,
         "served {served} bytes for a {} byte file",
