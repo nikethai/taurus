@@ -50,7 +50,9 @@ pub enum JobOutcome {
 }
 
 /// Downloads the job's remaining bytes and records the resulting state
-/// (Completed, Paused or Failed with its error) in the store.
+/// (Completed, Paused or Failed with its error) in the store. The job's
+/// recorded error is the caller's to set or clear before a run; it is
+/// replaced only if the run fails.
 pub async fn run_job(ctx: JobContext) -> JobOutcome {
     let mut job = match ctx.store.get_job(ctx.id) {
         Ok(Some(job)) => job,
@@ -72,7 +74,6 @@ pub async fn run_job(ctx: JobContext) -> JobOutcome {
 
 async fn drive(ctx: &JobContext, job: &mut JobRecord) -> Result<JobOutcome, CoreError> {
     job.state = JobState::Downloading;
-    job.error = None;
     // Ranges are only usable against a known size.
     job.resumable &= job.total.is_some();
     ctx.store.update_job(job)?;

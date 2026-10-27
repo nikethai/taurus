@@ -1,9 +1,14 @@
+pub mod engine;
 pub mod errors;
 pub mod filename;
 pub mod http;
 pub mod plan;
 pub mod progress;
 pub mod store;
+
+pub use engine::{AddRequest, Engine, EngineConfig, Event, JobView};
+pub use errors::{CoreError, ErrorKind};
+pub use store::{JobId, JobState};
 
 /// Crate version, as declared in `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
