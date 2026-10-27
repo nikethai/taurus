@@ -12,3 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 taurus-core = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["full"] }
+directories = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+taurus-testkit = { workspace = true }
+tempfile = { workspace = true }
