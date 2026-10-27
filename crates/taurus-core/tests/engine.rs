@@ -349,3 +349,47 @@ async fn open_turns_interrupted_jobs_into_paused() {
     let states: Vec<JobState> = store.list_jobs().unwrap().iter().map(|j| j.state).collect();
     assert_eq!(states, vec![JobState::Paused, JobState::Paused]);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_with_files_spares_another_jobs_file() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let first = FileSpec::new(MIB);
+    let url = fx.server.serve(PATH, first.clone());
+    let a = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, a).await, JobState::Completed);
+    // The user moves the finished file away, so the name is free again.
+    fs::rename(fx.dest.join("x.bin"), fx.tmp.path().join("moved.bin")).unwrap();
+
+    let mut second = FileSpec::new(MIB);
+    second.seed = 2;
+    fx.server.replace(PATH, second.clone());
+    let b = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, b).await, JobState::Completed);
+    assert_eq!(view(&engine, b).file_name, "x.bin");
+
+    engine.remove(a, true).await.unwrap();
+    assert_file(&fx.dest.join("x.bin"), &second);
+    assert_eq!(engine.snapshot().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_with_files_spares_a_replaced_file() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let url = fx.server.serve(PATH, FileSpec::new(MIB));
+    let a = engine.add(fx.request(&url)).await.unwrap();
+    let b = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, a).await, JobState::Completed);
+    assert_eq!(wait(&engine, b).await, JobState::Completed);
+    let replaced = fx.dest.join(&view(&engine, a).file_name);
+    let downloaded = fx.dest.join(&view(&engine, b).file_name);
+    // Not the size that was downloaded: someone else's file now.
+    fs::write(&replaced, b"user data").unwrap();
+
+    engine.remove(a, true).await.unwrap();
+    assert_eq!(fs::read(&replaced).unwrap(), b"user data");
+    engine.remove(b, true).await.unwrap();
+    assert!(!downloaded.exists());
+    assert!(engine.snapshot().is_empty());
+}

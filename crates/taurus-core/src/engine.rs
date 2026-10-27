@@ -208,7 +208,9 @@ impl Engine {
     }
 
     /// Stops the job if it runs and forgets it. With `delete_files`, also
-    /// deletes its partial file, or the downloaded file of a completed job.
+    /// deletes its partial file, or the downloaded file of a completed job,
+    /// unless another job uses the same name or the downloaded file's size
+    /// has changed.
     pub async fn remove(&self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
         self.call(|reply| Command::Remove {
             id,
@@ -430,10 +432,7 @@ impl Actor {
             self.settle(&[id]).await;
         }
         if delete_files && let Some(job) = self.store.get_job(id)? {
-            remove_if_exists(&partial_path(&job))?;
-            if job.state == JobState::Completed {
-                remove_if_exists(&job.dest_dir.join(&job.file_name))?;
-            }
+            delete_job_files(&self.store, &job)?;
         }
         self.store.delete_job(id)?;
         write(&self.views).remove(&id);
@@ -631,6 +630,25 @@ fn downloaded(store: &Store, id: JobId) -> Result<u64, CoreError> {
 fn partial_path(job: &JobRecord) -> PathBuf {
     job.dest_dir
         .join(format!("{}.{PARTIAL_EXT}", job.file_name))
+}
+
+/// Deletes the job's partial file and, once completed, its downloaded file.
+/// Spares both if another job is recorded under the same name, and spares a
+/// downloaded file whose size is no longer the downloaded size.
+fn delete_job_files(store: &Store, job: &JobRecord) -> Result<(), CoreError> {
+    if store.name_used_by_other(job.id, &job.dest_dir, &job.file_name)? {
+        return Ok(());
+    }
+    remove_if_exists(&partial_path(job))?;
+    if job.state == JobState::Completed {
+        let path = job.dest_dir.join(&job.file_name);
+        let ours = std::fs::metadata(&path)
+            .is_ok_and(|m| m.is_file() && job.total.is_none_or(|total| m.len() == total));
+        if ours {
+            remove_if_exists(&path)?;
+        }
+    }
+    Ok(())
 }
 
 fn remove_if_exists(path: &Path) -> Result<(), CoreError> {

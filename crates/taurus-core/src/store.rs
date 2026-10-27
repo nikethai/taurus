@@ -434,6 +434,23 @@ impl Store {
         tx.commit().map_err(db_err)
     }
 
+    /// Whether a job other than `id` is recorded as `file_name` in `dir`.
+    pub fn name_used_by_other(
+        &self,
+        id: JobId,
+        dir: &Path,
+        file_name: &str,
+    ) -> Result<bool, CoreError> {
+        self.lock()
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM jobs \
+                 WHERE dest_dir = ?1 AND file_name = ?2 AND id != ?3)",
+                params![dir.to_string_lossy(), file_name, id.0],
+                |row| row.get(0),
+            )
+            .map_err(db_err)
+    }
+
     /// File names claimed by unfinished jobs whose destination is `dir`.
     pub fn reserved_names(&self, dir: &Path) -> Result<HashSet<String>, CoreError> {
         let conn = self.lock();
