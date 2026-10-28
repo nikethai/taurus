@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use reqwest::StatusCode;
-use reqwest::header::{CONTENT_RANGE, RANGE};
+use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE};
 use tokio::fs::OpenOptions;
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinSet};
@@ -20,8 +20,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::errors::{CoreError, ErrorKind, MAX_SEGMENT_ATTEMPTS, backoff_delay, classify_io};
 use crate::filename::{PARTIAL_EXT, unique_path};
-use crate::http::client::{request_error, status_error};
+use crate::http::client::{bot_check_error, request_error, status_error};
 use crate::http::probe::parse_content_range;
+use crate::page;
 use crate::plan::{self, Segment};
 use crate::progress::ProgressMeter;
 use crate::store::{JobId, JobRecord, JobState, Store};
@@ -622,12 +623,27 @@ impl Worker {
     }
 
     /// Accepts the response, asks for the fallback, or returns the error.
+    /// Runs before any byte of the response is written.
     fn check_response(
         &self,
         response: &reqwest::Response,
         end: u64,
     ) -> Result<Option<WorkerEnd>, CoreError> {
         let status = response.status();
+        let headers = response.headers();
+        if page::is_bot_check(status.as_u16(), headers, "") {
+            return Err(bot_check_error(status));
+        }
+        // The probe never admits an HTML job, so a page here is not the file.
+        let content_type = headers.get(CONTENT_TYPE).and_then(|v| v.to_str().ok());
+        if matches!(status, StatusCode::OK | StatusCode::PARTIAL_CONTENT)
+            && page::is_html(content_type)
+        {
+            return Err(error(
+                ErrorKind::CaptivePortal,
+                format!("server sent a web page instead of file data (HTTP {status})"),
+            ));
+        }
         if !status.is_success() {
             return Err(status_error(status));
         }

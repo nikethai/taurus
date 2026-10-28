@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use reqwest::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue};
 
-use crate::errors::{CoreError, classify_reqwest, classify_status};
+use crate::errors::{CoreError, ErrorKind, classify_reqwest, classify_status};
 
 const USER_AGENT: &str = concat!(
     "Taurus/",
@@ -44,6 +44,14 @@ pub(crate) fn status_error(status: reqwest::StatusCode) -> CoreError {
     CoreError {
         kind: classify_status(status.as_u16()),
         detail: format!("server answered HTTP {status}"),
+    }
+}
+
+/// A bot check is never solved or retried: the job stops here.
+pub(crate) fn bot_check_error(status: reqwest::StatusCode) -> CoreError {
+    CoreError {
+        kind: ErrorKind::BlockedByBotCheck,
+        detail: format!("server answered HTTP {status} with a bot check"),
     }
 }
 

@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::filename::{PARTIAL_EXT, sanitize, unique_path};
-use crate::http::{JobContext, JobOutcome, Probe, build_client, probe, run_job};
+use crate::http::{JobContext, JobOutcome, Probe, build_client, resolve, run_job};
 use crate::plan::DEFAULT_CONNECTIONS;
 use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
 
@@ -194,7 +194,8 @@ impl Engine {
             .collect()
     }
 
-    /// Probes the URL, reserves a file name that no other file or job in
+    /// Resolves the URL (following a confirm page; failing on any other web
+    /// page or bot check), reserves a file name that no other file or job in
     /// `dest_dir` uses, and starts downloading. A missing `dest_dir` fails
     /// with `FolderUnavailable`; nothing is recorded when `add` fails.
     pub async fn add(&self, req: AddRequest) -> Result<JobId, CoreError> {
@@ -208,7 +209,7 @@ impl Engine {
                 detail: format!("folder {} is not available", req.dest_dir.display()),
             });
         }
-        let probe = probe(&self.client, &req.url).await?;
+        let probe = resolve(&self.client, &req.url, None).await?;
         self.call(|reply| Command::Add { req, probe, reply })
             .await?
     }
@@ -219,7 +220,7 @@ impl Engine {
         self.call(|reply| Command::Pause { id, reply }).await?
     }
 
-    /// Re-probes the job's URL and continues it. If the file changed on the
+    /// Re-resolves the job's URL and continues it. If the file changed on the
     /// server (ETag, else Last-Modified, or size) or the download cannot be
     /// resumed, it restarts from zero; a change is noted as the job's error
     /// (`FileChangedOnServer`) while it downloads. Resuming a running or
@@ -234,7 +235,7 @@ impl Engine {
             }
             Some(v) => v.url,
         };
-        let probe = probe(&self.client, &url).await?;
+        let probe = resolve(&self.client, &url, None).await?;
         self.call(|reply| Command::Resume { id, probe, reply })
             .await?
     }
@@ -386,8 +387,11 @@ impl Actor {
             .file_name()
             .map_or(name, |n| n.to_string_lossy().into_owned());
         let connections = req.connections.unwrap_or(DEFAULT_CONNECTIONS).max(1);
+        // The link that served the file (a confirm form's, if one was
+        // followed), so segment requests skip the page.
+        let url = probe.requested_url.to_string();
         let id = self.store.insert_job(&NewJob {
-            url: req.url.clone(),
+            url: url.clone(),
             dest_dir: req.dest_dir.clone(),
             file_name: file_name.clone(),
             connections,
@@ -398,7 +402,7 @@ impl Actor {
         })?;
         let mut job = JobRecord {
             id,
-            url: req.url,
+            url,
             final_url: None,
             dest_dir: req.dest_dir,
             file_name,

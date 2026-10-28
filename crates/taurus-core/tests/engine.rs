@@ -461,3 +461,33 @@ async fn read_snapshot_without_database_is_empty() {
     assert_eq!(stored[0].state, JobState::Completed);
     assert_eq!(stored[0].downloaded, MIB as u64);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_through_confirm_form_downloads_the_file() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let form = r#"<form action="/x.bin"><input type="hidden" name="confirm" value="t"></form>"#;
+    let page = fx.server.serve_page("/view", 200, &[], form);
+    let spec = FileSpec::new(3 * MIB);
+    let file = fx.server.serve(PATH, spec.clone());
+
+    let id = engine.add(fx.request(&page)).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    // Segments re-follow the download link, not the page.
+    assert_eq!(view(&engine, id).url, format!("{file}?confirm=t"));
+    assert_eq!(fx.server.requests("/view"), 1);
+    assert_file(&fx.dest.join("x.bin"), &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_web_page_fails_and_records_nothing() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let page = fx
+        .server
+        .serve_page("/blog/", 200, &[], "<html><body>Hello</body></html>");
+
+    let err = engine.add(fx.request(&page)).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::SiteNotSupported);
+    assert!(engine.snapshot().is_empty());
+}

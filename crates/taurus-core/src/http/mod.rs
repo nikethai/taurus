@@ -6,4 +6,4 @@ pub mod probe;
 
 pub use client::build_client;
 pub use download::{JobContext, JobOutcome, run_job};
-pub use probe::{Probe, probe};
+pub use probe::{Probe, probe, resolve};

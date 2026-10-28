@@ -29,6 +29,7 @@ clap = "4.6"
 directories = "6"
 bytes = "1"
 futures-util = "0.3"
+scraper = "0.29"
 
 # Tests only
 axum = "0.8"

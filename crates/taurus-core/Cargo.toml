@@ -19,6 +19,7 @@ tokio-util = { workspace = true }
 fastrand = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
+scraper = { workspace = true }
 
 [dev-dependencies]
 taurus-testkit = { workspace = true }

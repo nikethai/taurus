@@ -2,6 +2,7 @@ pub mod engine;
 pub mod errors;
 pub mod filename;
 pub mod http;
+pub mod page;
 pub mod plan;
 pub mod progress;
 pub mod settings;
