@@ -8,7 +8,8 @@
 //! A host that refuses extra connections (429, 503 or 403 while another of
 //! the job's responses from the same URL is being served) lowers the job's
 //! worker cap instead of failing it; the primary's cap is remembered per
-//! host for the next job. A round
+//! host for the next job once the job completes (a run that fails may have
+//! been refused for another reason, e.g. an expiring link). A round
 //! starts one worker and the rest once that one is served, so the host's
 //! first refusals already come while a response is open.
 //!
@@ -131,6 +132,7 @@ async fn drive(ctx: &JobContext, job: &mut JobRecord) -> Result<JobOutcome, Core
     let mut limit = HostLimit {
         host,
         cap: job.connections.min(learned.unwrap_or(u32::MAX)).max(1) as usize,
+        lowered: None,
     };
     let mut sources = Sources::new(&job.url, &job.mirrors);
     loop {
@@ -141,7 +143,13 @@ async fn drive(ctx: &JobContext, job: &mut JobRecord) -> Result<JobOutcome, Core
         }
         committed?;
         match end {
-            RoundEnd::Done => return finish(ctx, job, &tapa).await,
+            RoundEnd::Done => {
+                let outcome = finish(ctx, job, &tapa).await?;
+                if matches!(outcome, JobOutcome::Completed(_)) {
+                    remember_cap(ctx, job, &limit);
+                }
+                return Ok(outcome);
+            }
             RoundEnd::Fallback => {
                 segments = fall_back(ctx, job, &tapa).await?;
                 if !ctx.cancel.is_cancelled() {
@@ -306,6 +314,21 @@ async fn finish(
     Ok(JobOutcome::Completed(path))
 }
 
+/// Saves the cap the primary's host allowed during the run, if it refused a
+/// connection; the store keeps the lowest one known. Remembering only saves
+/// the next job some refusals, so a failure is just logged.
+fn remember_cap(ctx: &JobContext, job: &JobRecord, limit: &HostLimit) {
+    let (Some(host), Some(cap)) = (&limit.host, limit.lowered) else {
+        return;
+    };
+    if let Err(e) = ctx.store.set_host_cap(host, cap) {
+        tracing::warn!(
+            job = job.id.0,
+            "could not remember the limit of {host}: {e}"
+        );
+    }
+}
+
 /// Pauses a job whose bytes are all downloaded but not yet verified; the
 /// next run finds its segments complete and verifies it again.
 fn pause_complete(ctx: &JobContext, job: &mut JobRecord) -> Result<JobOutcome, CoreError> {
@@ -393,6 +416,8 @@ struct HostLimit {
     /// Where a lowered cap is remembered; `None` if the URL has no host.
     host: Option<String>,
     cap: usize,
+    /// The cap after the primary's last refusal in this run, if any.
+    lowered: Option<u32>,
 }
 
 enum RoundEnd {
@@ -614,8 +639,8 @@ impl Round<'_> {
 
     /// A host refused a connection while `active` workers (the refused one
     /// included) were running: allow one fewer from now on and, if the
-    /// primary refused, remember that for its host if it is lower than what
-    /// was known.
+    /// primary refused, note the cap for its host (saved if the job
+    /// completes).
     fn lower_cap(&mut self, active: usize, source: usize) {
         let cap = self.limit.cap.min(active.saturating_sub(1).max(1));
         self.limit.cap = cap;
@@ -629,22 +654,7 @@ impl Round<'_> {
         if source != 0 {
             return;
         }
-        let Some(host) = &self.limit.host else { return };
-        let cap = u32::try_from(cap).unwrap_or(u32::MAX);
-        // Remembering the limit only saves the next job some refusals.
-        let remembered = self.ctx.store.host_cap(host).and_then(|known| {
-            if known.is_none_or(|known| cap < known) {
-                self.ctx.store.set_host_cap(host, cap)
-            } else {
-                Ok(())
-            }
-        });
-        if let Err(e) = remembered {
-            tracing::warn!(
-                job = self.job.id.0,
-                "could not remember the limit of {host}: {e}"
-            );
-        }
+        self.limit.lowered = Some(u32::try_from(cap).unwrap_or(u32::MAX));
     }
 
     /// Starts workers up to the connection cap (one while ramping up):
@@ -1232,7 +1242,11 @@ mod tests {
         };
         let (tx, _rx) = mpsc::unbounded_channel();
         let tapa = dir.path().join("x.bin.tapa");
-        let mut limit = HostLimit { host: None, cap: 2 };
+        let mut limit = HostLimit {
+            host: None,
+            cap: 2,
+            lowered: None,
+        };
         let mut round = Round {
             ctx: &ctx,
             job: &job,

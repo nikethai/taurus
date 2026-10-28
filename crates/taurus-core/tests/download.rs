@@ -673,6 +673,26 @@ async fn connection_limit_is_learned_with_403() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connection_limit_of_a_failed_job_is_not_remembered() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(20 * MIB);
+    spec.max_concurrent = Some(2);
+    spec.bytes_per_sec = Some(16 * MIB as u64);
+    // The link expires once the first 16 requests (2 served, the rest
+    // refused while those are open) are answered.
+    spec.fail_after = Some(html_after(16, 410, &[]));
+    let id = fx.add(&spec, 16);
+
+    match fx.run(id, CancellationToken::new()).await {
+        JobOutcome::Failed(e) => assert_eq!(e.kind, ErrorKind::LinkExpired),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert!(fx.server.over_limit_rejections(PATH) > 0);
+    let url = fx.store.get_job(id).unwrap().unwrap().url;
+    assert_eq!(fx.store.host_cap(&host_key(&url).unwrap()).unwrap(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn single_connection_429_is_still_rate_limited() {
     let fx = Fixture::new().await;
     let mut spec = FileSpec::new(2 * MIB);

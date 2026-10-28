@@ -106,6 +106,9 @@ CREATE TABLE host_flags (
 );
 ";
 
+/// A learned connection limit older than this is forgotten: hosts change.
+const HOST_CAP_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
+
 const SETTINGS_KEY: &str = "settings";
 const MEASURED_PEAK_KEY: &str = "measured_peak";
 
@@ -643,13 +646,14 @@ impl Store {
         self.put_setting(MEASURED_PEAK_KEY, &format!("{bps},{at}"))
     }
 
-    /// The learned connection limit of `host` (`host[:port]`), if any.
+    /// The learned connection limit of `host` (`host[:port]`), if one was
+    /// learned in the last 7 days.
     pub fn host_cap(&self, host: &str) -> Result<Option<u32>, CoreError> {
         let cap: Option<i64> = self
             .lock()
             .query_row(
-                "SELECT max_connections FROM host_flags WHERE host = ?1",
-                [host],
+                "SELECT max_connections FROM host_flags WHERE host = ?1 AND updated_at >= ?2",
+                params![host, now_secs().saturating_sub(HOST_CAP_MAX_AGE_SECS)],
                 |row| row.get(0),
             )
             .optional()
@@ -663,13 +667,22 @@ impl Store {
         .transpose()
     }
 
+    /// Records `cap` for `host` unless a lower one was learned in the last 7
+    /// days, in one statement, so concurrent saves never raise it; refreshes
+    /// its age.
     pub fn set_host_cap(&self, host: &str, cap: u32) -> Result<(), CoreError> {
+        self.set_host_cap_at(host, cap, now_secs())
+    }
+
+    fn set_host_cap_at(&self, host: &str, cap: u32, at: i64) -> Result<(), CoreError> {
         self.lock()
             .execute(
                 "INSERT INTO host_flags (host, max_connections, updated_at) \
                  VALUES (?1, ?2, ?3) ON CONFLICT(host) DO UPDATE SET \
-                 max_connections = excluded.max_connections, updated_at = excluded.updated_at",
-                params![host, cap, now_secs()],
+                 max_connections = CASE WHEN updated_at < ?4 THEN excluded.max_connections \
+                 ELSE MIN(max_connections, excluded.max_connections) END, \
+                 updated_at = excluded.updated_at",
+                params![host, cap, at, at.saturating_sub(HOST_CAP_MAX_AGE_SECS)],
             )
             .map_err(db_err)?;
         Ok(())
@@ -1118,6 +1131,44 @@ mod tests {
         store.set_host_cap("example.test", 1).unwrap();
         assert_eq!(store.host_cap("example.test").unwrap(), Some(1));
         assert_eq!(store.host_cap("other.test:8080").unwrap(), Some(5));
+    }
+
+    #[test]
+    fn host_cap_is_never_raised() {
+        let (_dir, store) = open_temp();
+        // Saves arriving in any order keep the lowest cap.
+        store.set_host_cap("example.test", 1).unwrap();
+        store.set_host_cap("example.test", 3).unwrap();
+        assert_eq!(store.host_cap("example.test").unwrap(), Some(1));
+        // Concurrent saves from clones (jobs) do too.
+        let threads: Vec<_> = (1..=8)
+            .rev()
+            .map(|cap| {
+                let store = store.clone();
+                std::thread::spawn(move || store.set_host_cap("busy.test", cap).unwrap())
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(store.host_cap("busy.test").unwrap(), Some(1));
+    }
+
+    #[test]
+    fn stale_host_cap_is_ignored() {
+        let (_dir, store) = open_temp();
+        let day = 24 * 60 * 60;
+        store
+            .set_host_cap_at("old.test", 1, now_secs() - 8 * day)
+            .unwrap();
+        assert_eq!(store.host_cap("old.test").unwrap(), None);
+        store
+            .set_host_cap_at("recent.test", 2, now_secs() - 6 * day)
+            .unwrap();
+        assert_eq!(store.host_cap("recent.test").unwrap(), Some(2));
+        // A new refusal starts it over, at the new cap.
+        store.set_host_cap("old.test", 4).unwrap();
+        assert_eq!(store.host_cap("old.test").unwrap(), Some(4));
     }
 
     #[test]
