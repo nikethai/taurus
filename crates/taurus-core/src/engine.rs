@@ -25,6 +25,7 @@ use crate::limit::{Limiter, PeakTracker};
 use crate::plan::DEFAULT_CONNECTIONS;
 use crate::settings::{PowerMode, Settings, SpeedLimit, WhenDone};
 use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
+use crate::system::marks::loggable;
 use crate::system::{AwakeGuard, check_fits};
 use crate::timing::Timing;
 use crate::when_done::WhenDoneRunner;
@@ -1214,7 +1215,7 @@ async fn vet_mirrors(
                 continue;
             }
         };
-        tracing::info!(mirror = mirror.as_str(), "dropping the mirror: {why}");
+        tracing::info!(mirror = loggable(mirror), "dropping the mirror: {why}");
     }
     kept
 }

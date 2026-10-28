@@ -59,12 +59,18 @@ fn write_mark(_path: &Path, _url: Option<&str>, _referer: Option<&str>) -> std::
 
 /// `url` without user name and password, as browsers write it into these
 /// marks; `None` if it does not parse.
-fn without_credentials(url: &str) -> Option<String> {
+pub(crate) fn without_credentials(url: &str) -> Option<String> {
     let mut url = url::Url::parse(url).ok()?;
     // Both fail only for URLs that cannot carry credentials anyway.
     let _ = url.set_username("");
     let _ = url.set_password(None);
     Some(url.into())
+}
+
+/// `url` as it may appear in logs: without user name and password, or a
+/// placeholder if it does not parse (so nothing unstripped is logged).
+pub(crate) fn loggable(url: &str) -> String {
+    without_credentials(url).unwrap_or_else(|| "<unparseable URL>".to_owned())
 }
 
 #[cfg(any(windows, test))]
@@ -181,6 +187,16 @@ mod tests {
         );
         assert_eq!(without_credentials(URL).as_deref(), Some(URL));
         assert_eq!(without_credentials("not a url"), None);
+    }
+
+    #[test]
+    fn logged_urls_carry_no_credentials() {
+        assert_eq!(
+            loggable("https://user:secret@example.com/x.iso?token=t"),
+            "https://example.com/x.iso?token=t"
+        );
+        assert_eq!(loggable(URL), URL);
+        assert_eq!(loggable("http://user:secret@[bad/x"), "<unparseable URL>");
     }
 
     #[test]

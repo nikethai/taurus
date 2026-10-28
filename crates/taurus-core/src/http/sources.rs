@@ -2,6 +2,7 @@
 //! them have failed during this run.
 
 use crate::errors::CoreError;
+use crate::system::marks::loggable;
 
 /// `[primary] + mirrors`. A URL marked bad stays bad for the rest of the run.
 pub(crate) struct Sources {
@@ -42,7 +43,7 @@ impl Sources {
     /// source remains.
     pub fn mark_bad(&mut self, source: usize, e: CoreError) -> bool {
         tracing::info!(
-            url = self.urls[source].as_str(),
+            url = loggable(&self.urls[source]),
             "not using this URL any more: {e}"
         );
         self.bad[source] = true;
