@@ -119,6 +119,7 @@ async fn execute(engine: &Engine, command: Command, json: bool) -> Result<ExitCo
                     dest_dir,
                     file_name: name,
                     connections,
+                    ..AddRequest::default()
                 })
                 .await?;
             follow(engine, id, &mut events, &mut printer).await

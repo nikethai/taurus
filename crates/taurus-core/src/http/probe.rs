@@ -196,6 +196,24 @@ fn header(headers: &HeaderMap, name: HeaderName) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// How the validators of a response say it is not the file the job was
+/// started on: by ETag when both sides have one, else by Last-Modified when
+/// both have one. `None` when they match or cannot tell.
+pub(crate) fn validator_change(
+    (old_etag, old_modified): (Option<&str>, Option<&str>),
+    (new_etag, new_modified): (Option<&str>, Option<&str>),
+) -> Option<String> {
+    match ((old_etag, new_etag), (old_modified, new_modified)) {
+        ((Some(old), Some(new)), _) => {
+            (old != new).then(|| format!("ETag changed from {old} to {new}"))
+        }
+        (_, (Some(old), Some(new))) if old != new => {
+            Some(format!("Last-Modified changed from {old} to {new}"))
+        }
+        _ => None,
+    }
+}
+
 /// A parsed `Content-Range: bytes <first>-<last>/<total>` (either side may be `*`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ContentRange {
@@ -223,6 +241,25 @@ mod tests {
 
     fn cr(first: Option<u64>, total: Option<u64>) -> Option<ContentRange> {
         Some(ContentRange { first, total })
+    }
+
+    #[test]
+    fn validators_compare_etag_first_then_last_modified() {
+        let (v1, v2) = (Some("\"v1\""), Some("\"v2\""));
+        let (monday, tuesday) = (Some("Mon"), Some("Tue"));
+        assert_eq!(
+            validator_change((v1, monday), (v2, monday)).as_deref(),
+            Some("ETag changed from \"v1\" to \"v2\"")
+        );
+        // Matching ETags win over a differing Last-Modified.
+        assert_eq!(validator_change((v1, monday), (v1, tuesday)), None);
+        // Without an ETag on both sides, Last-Modified decides.
+        assert_eq!(
+            validator_change((v1, monday), (None, tuesday)).as_deref(),
+            Some("Last-Modified changed from Mon to Tue")
+        );
+        assert_eq!(validator_change((None, monday), (None, monday)), None);
+        assert_eq!(validator_change((None, None), (v2, tuesday)), None);
     }
 
     #[test]

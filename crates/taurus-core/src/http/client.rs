@@ -11,7 +11,8 @@ const USER_AGENT: &str = concat!(
 );
 
 /// The one client every download uses: stable User-Agent, no content
-/// encoding (byte offsets must match the file), system proxy settings.
+/// encoding (byte offsets must match the file), system proxy settings, no
+/// automatic Referer.
 pub fn build_client() -> reqwest::Client {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
@@ -21,6 +22,9 @@ pub fn build_client() -> reqwest::Client {
         .connect_timeout(Duration::from_secs(20))
         .read_timeout(Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::limited(10))
+        // A redirect keeps the job's Referer (as browsers do) instead of
+        // naming the redirecting URL.
+        .referer(false)
         .build()
         .expect("static HTTP client configuration is valid")
 }

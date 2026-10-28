@@ -10,6 +10,14 @@
 //! of failing it; the cap is remembered per host for the next job. A round
 //! starts one worker and the rest once that one is served, so the host's
 //! first refusals already come while a response is open.
+//!
+//! A job may have mirrors. Segment `i` starts on URL `i % len` of
+//! `[url] + mirrors`. A URL that fails a worker for good (a non-transient
+//! error, or out of attempts) is dropped for the run and the segment goes on
+//! from the next good URL; the job fails only when every URL is dropped,
+//! with the primary's error. Every 206 must match the job's size and
+//! validators before any of its bytes is written, so another version of the
+//! file (or a mirror serving another file) is never stitched in.
 
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -19,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use reqwest::StatusCode;
-use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE};
+use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, ETAG, LAST_MODIFIED, RANGE, REFERER};
 use tokio::fs::OpenOptions;
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinSet};
@@ -28,7 +36,8 @@ use tokio_util::sync::CancellationToken;
 use crate::errors::{CoreError, ErrorKind, backoff_delay_with, classify_io};
 use crate::filename::{PARTIAL_EXT, unique_path};
 use crate::http::client::{bot_check_error, request_error, status_error};
-use crate::http::probe::parse_content_range;
+use crate::http::probe::{parse_content_range, validator_change};
+use crate::http::sources::Sources;
 use crate::limit::Limiter;
 use crate::page;
 use crate::plan::{self, Segment};
@@ -115,8 +124,9 @@ async fn drive(ctx: &JobContext, job: &mut JobRecord) -> Result<JobOutcome, Core
         host,
         cap: job.connections.min(learned.unwrap_or(u32::MAX)).max(1) as usize,
     };
+    let mut sources = Sources::new(&job.url, &job.mirrors);
     loop {
-        let end = run_round(ctx, job, &tapa, &mut segments, &mut limit).await;
+        let end = run_round(ctx, job, &tapa, &mut segments, &mut limit, &mut sources).await;
         let committed = ctx.store.commit_progress(job.id, &segments);
         if let RoundEnd::Failed(e) = end {
             return Err(e);
@@ -275,7 +285,8 @@ async fn rename_with_retry(from: &Path, to: &Path) -> Result<(), CoreError> {
     }
 }
 
-/// How many workers a job may run against its host.
+/// How many workers a job may run against its host: the primary's. Mirrors
+/// share the job's cap; they are not capped per host.
 struct HostLimit {
     /// Where a lowered cap is remembered; `None` if the URL has no host.
     host: Option<String>,
@@ -292,13 +303,14 @@ enum RoundEnd {
 
 /// Runs workers for the given segments until all finish or the round stops;
 /// `segments` comes back with the durable progress of every worker, `limit`
-/// with the cap the host allowed.
+/// with the cap the host allowed, `sources` with the URLs that failed.
 async fn run_round(
     ctx: &JobContext,
     job: &JobRecord,
     tapa: &Path,
     segments: &mut Vec<Segment>,
     limit: &mut HostLimit,
+    sources: &mut Sources,
 ) -> RoundEnd {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut round = Round {
@@ -311,6 +323,7 @@ async fn run_round(
         stop: ctx.cancel.child_token(),
         end: None,
         limit,
+        sources,
         open: Arc::default(),
         ramping: true,
     };
@@ -398,6 +411,7 @@ struct Round<'a> {
     /// Why the round stops early; the first reason wins.
     end: Option<RoundEnd>,
     limit: &'a mut HostLimit,
+    sources: &'a mut Sources,
     /// The workers' 206 responses currently being read.
     open: Arc<AtomicUsize>,
     /// Only one worker runs until a response opens or a worker exits.
@@ -463,21 +477,55 @@ impl Round<'_> {
             WorkerEnd::Cancelled => {}
             WorkerEnd::ConnectionLimit => {
                 // The segment waits, idle, for a worker under the new cap.
-                self.lower_cap(self.running() + 1);
+                self.lower_cap(self.running() + 1, exit.source);
                 self.fill_idle_slots();
+            }
+            // The primary now serves another version: never stitch it to the
+            // bytes already written, whatever the mirrors serve.
+            WorkerEnd::SourceFailed(e)
+                if exit.source == 0 && e.kind == ErrorKind::FileChangedOnServer =>
+            {
+                self.stop_with(RoundEnd::Failed(e));
+            }
+            WorkerEnd::SourceFailed(e) => self.drop_source(exit.source, e),
+            // Only the primary's answers decide that the job cannot use ranges.
+            WorkerEnd::Fallback if exit.source != 0 => {
+                let e = error(ErrorKind::Unknown, "the mirror ignored the Range header");
+                self.drop_source(exit.source, e);
             }
             WorkerEnd::Fallback => self.stop_with(RoundEnd::Fallback),
             WorkerEnd::Failed(e) => self.stop_with(RoundEnd::Failed(e)),
         }
     }
 
-    /// The host refused a connection while `active` workers (the refused
-    /// one included) were running: allow one fewer from now on, and remember
-    /// that for the host if it is lower than what was known.
-    fn lower_cap(&mut self, active: usize) {
+    /// Stops using a URL that failed a worker: its segment goes on from the
+    /// next good URL, and the round fails once none is left.
+    fn drop_source(&mut self, source: usize, e: CoreError) {
+        if self.sources.mark_bad(source, e) {
+            self.fill_idle_slots();
+        } else {
+            let e = self.sources.take_error();
+            self.stop_with(RoundEnd::Failed(e));
+        }
+    }
+
+    /// A host refused a connection while `active` workers (the refused one
+    /// included) were running: allow one fewer from now on and, if the
+    /// primary refused, remember that for its host if it is lower than what
+    /// was known.
+    fn lower_cap(&mut self, active: usize, source: usize) {
         let cap = self.limit.cap.min(active.saturating_sub(1).max(1));
         self.limit.cap = cap;
-        tracing::info!(job = self.job.id.0, cap, "host refused a connection");
+        tracing::info!(
+            job = self.job.id.0,
+            cap,
+            source,
+            "host refused a connection"
+        );
+        // A mirror's refusal says nothing about the primary's host.
+        if source != 0 {
+            return;
+        }
         let Some(host) = &self.limit.host else { return };
         let cap = u32::try_from(cap).unwrap_or(u32::MAX);
         // Remembering the limit only saves the next job some refusals.
@@ -552,14 +600,23 @@ impl Round<'_> {
     }
 
     fn spawn(&mut self, idx: usize) {
+        let Some(source) = self.sources.pick(idx) else {
+            let e = self.sources.take_error();
+            return self.stop_with(RoundEnd::Failed(e));
+        };
         let slot = &mut self.slots[idx];
         slot.running = true;
         let written = slot.seg.cursor();
         lock(&slot.window).pos = written;
         let worker = Worker {
             idx,
+            source,
             client: self.ctx.client.clone(),
-            url: self.job.url.clone(),
+            // The link itself, so every request re-follows its redirects.
+            url: self.sources.url(source).to_owned(),
+            referer: self.job.referer.clone(),
+            etag: self.job.etag.clone(),
+            last_modified: self.job.last_modified.clone(),
             tapa: self.tapa.to_path_buf(),
             start: slot.seg.start,
             written,
@@ -589,6 +646,8 @@ impl Round<'_> {
 }
 
 struct WorkerExit {
+    /// The URL the worker used.
+    source: usize,
     /// Durable progress of the segment when the worker stopped.
     done: u64,
     end: WorkerEnd,
@@ -602,13 +661,30 @@ enum WorkerEnd {
     ConnectionLimit,
     /// A ranged request got the whole file; the job must restart unranged.
     Fallback,
+    /// The worker's URL failed for good: a non-transient error, or out of
+    /// attempts.
+    SourceFailed(CoreError),
+    /// The job cannot go on, whatever URL it uses (e.g. the disk is full).
     Failed(CoreError),
+}
+
+/// Why a request failed: the URL (network, server, response) or this
+/// machine (the partial file).
+enum Fault {
+    Source(CoreError),
+    Local(CoreError),
 }
 
 struct Worker {
     idx: usize,
+    /// Index of `url` in the job's sources.
+    source: usize,
     client: reqwest::Client,
     url: String,
+    referer: Option<String>,
+    /// The job's validators, which every 206 must match.
+    etag: Option<String>,
+    last_modified: Option<String>,
     tapa: PathBuf,
     start: u64,
     /// Absolute offsets: bytes written so far, and how many of them are synced.
@@ -633,6 +709,7 @@ impl Worker {
             Err(e) => WorkerEnd::Failed(io_error(e)),
         };
         WorkerExit {
+            source: self.source,
             done: self.synced - self.start,
             end,
         }
@@ -641,6 +718,13 @@ impl Worker {
     /// Fetches until the window is complete, retrying transient errors from
     /// the durable position with backoff.
     async fn download(&mut self, file: PartFile) -> WorkerEnd {
+        // Moved over from another URL: an unranged stream starts over.
+        if !self.resumable
+            && self.written > 0
+            && let Err(e) = self.restart(&file).await
+        {
+            return WorkerEnd::Failed(e);
+        }
         let mut attempts = Attempts::new(self.written);
         loop {
             let fetched = self.fetch(&file).await;
@@ -650,14 +734,14 @@ impl Worker {
             let synced = self.sync(&file).await;
             let e = match (fetched, synced) {
                 (Ok(end), Ok(())) => return end,
-                (Err(e), Ok(())) => e,
-                // The fetch error (e.g. disk full) is the root cause.
-                (Err(e), Err(_)) if !e.kind.is_transient() => e,
-                (_, Err(e)) => e,
+                (Err(Fault::Source(e)), Ok(())) => e,
+                // No URL helps against a local error; a failed write (e.g.
+                // disk full) is the root cause of a failed sync.
+                (Err(Fault::Local(e)), _) | (_, Err(e)) => return WorkerEnd::Failed(e),
             };
             let attempt = attempts.failed_at(self.written);
             if !e.kind.is_transient() || attempt >= self.timing.max_segment_attempts {
-                return WorkerEnd::Failed(e);
+                return WorkerEnd::SourceFailed(e);
             }
             tracing::debug!(segment = self.idx, attempt, "retrying: {e}");
             let delay = backoff_delay_with(
@@ -678,7 +762,7 @@ impl Worker {
     }
 
     /// One request, streamed into the file from `written` up to the window end.
-    async fn fetch(&mut self, file: &PartFile) -> Result<WorkerEnd, CoreError> {
+    async fn fetch(&mut self, file: &PartFile) -> Result<WorkerEnd, Fault> {
         let end = lock(&self.window).end;
         if self.written >= end {
             return Ok(WorkerEnd::Complete);
@@ -687,11 +771,14 @@ impl Worker {
         if self.resumable {
             request = request.header(RANGE, format!("bytes={}-{}", self.written, end - 1));
         }
+        if let Some(referer) = &self.referer {
+            request = request.header(REFERER, referer);
+        }
         let mut response = tokio::select! {
             _ = self.stop.cancelled() => return Ok(WorkerEnd::Cancelled),
-            sent = request.send() => sent.map_err(request_error)?,
+            sent = request.send() => sent.map_err(|e| Fault::Source(request_error(e)))?,
         };
-        if let Some(end) = self.check_response(&response, end)? {
+        if let Some(end) = self.check_response(&response, end).map_err(Fault::Source)? {
             return Ok(end);
         }
         // Counted before it is announced, so the workers it lets start see it.
@@ -703,7 +790,7 @@ impl Worker {
         loop {
             let chunk = tokio::select! {
                 _ = self.stop.cancelled() => return Ok(WorkerEnd::Cancelled),
-                chunk = response.chunk() => chunk.map_err(request_error)?,
+                chunk = response.chunk() => chunk.map_err(|e| Fault::Source(request_error(e)))?,
             };
             let Some(chunk) = chunk else { break };
             // Not reading meanwhile is what slows the server down.
@@ -718,7 +805,7 @@ impl Worker {
             {
                 // None of this chunk counts: hand the reservation back.
                 lock(&self.window).pos = self.written;
-                return Err(io_error(e));
+                return Err(Fault::Local(io_error(e)));
             }
             self.written += take;
             if self.written >= lock(&self.window).end {
@@ -726,7 +813,7 @@ impl Worker {
             }
             if self.written - self.synced >= SYNC_BYTES || self.last_sync.elapsed() >= SYNC_INTERVAL
             {
-                self.sync(file).await?;
+                self.sync(file).await.map_err(Fault::Local)?;
             }
         }
         // The body ended before the window did. Only an unranged stream of
@@ -735,10 +822,10 @@ impl Worker {
         if complete {
             Ok(WorkerEnd::Complete)
         } else {
-            Err(error(
+            Err(Fault::Source(error(
                 ErrorKind::ConnectionLost,
                 format!("server closed the response early at byte {}", self.written),
-            ))
+            )))
         }
     }
 
@@ -795,6 +882,14 @@ impl Worker {
                             self.total
                         ),
                     ));
+                }
+                // Same size, another version (or another file on a mirror).
+                let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
+                if let Some(change) = validator_change(
+                    (self.etag.as_deref(), self.last_modified.as_deref()),
+                    (header(ETAG), header(LAST_MODIFIED)),
+                ) {
+                    return Err(error(ErrorKind::FileChangedOnServer, change));
                 }
                 if first == Some(self.written) {
                     Ok(None)
@@ -1042,6 +1137,7 @@ mod tests {
             stop: CancellationToken::new(),
             end: None,
             limit: &mut limit,
+            sources: &mut Sources::new(&job.url, &job.mirrors),
             open: Arc::default(),
             ramping: false,
         };

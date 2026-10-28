@@ -3,12 +3,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use taurus_core::store::{NewJob, Store};
+use taurus_core::store::{JobRecord, NewJob, Store};
 use taurus_core::{
     AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, JobView, Settings,
     SpeedLimit,
 };
-use taurus_testkit::{FileSpec, TestServer, content, sha256_hex};
+use taurus_testkit::{FailAfter, FileSpec, TestServer, content, sha256_hex};
 use tokio::sync::broadcast;
 
 const MIB: usize = 1024 * 1024;
@@ -49,9 +49,17 @@ impl Fixture {
         AddRequest {
             url: url.to_string(),
             dest_dir: self.dest.clone(),
-            file_name: None,
-            connections: None,
+            ..AddRequest::default()
         }
+    }
+
+    /// The job as stored, read beside the running engine.
+    fn stored(&self, id: JobId) -> JobRecord {
+        Store::open(&self.data_dir().join("taurus.db"))
+            .unwrap()
+            .get_job(id)
+            .unwrap()
+            .expect("job is stored")
     }
 
     fn tapa(&self) -> PathBuf {
@@ -656,4 +664,213 @@ async fn pause_is_not_held_up_by_a_slow_limit() {
     let elapsed = start.elapsed();
     assert!(elapsed < Duration::from_secs(5), "pause took {elapsed:?}");
     assert_eq!(view(&engine, id).state, JobState::Paused);
+}
+
+/// Every request after the first `after_requests` answers `status`.
+fn fail_after(after_requests: usize, status: u16) -> FailAfter {
+    FailAfter {
+        after_requests,
+        status,
+        headers: Vec::new(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mirrors_share_the_work() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let spec = FileSpec::new(16 * MIB);
+    let url = fx.server.serve(PATH, spec.clone());
+    let mirror = TestServer::start().await;
+    let mirror_url = mirror.serve(PATH, spec.clone());
+
+    let id = engine
+        .add(AddRequest {
+            connections: Some(4),
+            mirrors: vec![mirror_url.clone()],
+            ..fx.request(&url)
+        })
+        .await
+        .unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("x.bin"), &spec);
+    // More than the 1-byte probes: each served whole segments.
+    assert!(fx.server.bytes_served(PATH) > MIB as u64);
+    assert!(mirror.bytes_served(PATH) > MIB as u64);
+    assert_eq!(fx.stored(id).mirrors, [mirror_url]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn broken_mirror_is_skipped() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let spec = FileSpec::new(8 * MIB);
+    let url = fx.server.serve(PATH, spec.clone());
+    // Passes the check at add, then answers 404.
+    let mut broken = spec.clone();
+    broken.fail_after = Some(fail_after(1, 404));
+    let mirror = TestServer::start().await;
+    let mirror_url = mirror.serve(PATH, broken);
+
+    let id = engine
+        .add(AddRequest {
+            connections: Some(4),
+            mirrors: vec![mirror_url.clone()],
+            ..fx.request(&url)
+        })
+        .await
+        .unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("x.bin"), &spec);
+    assert_eq!(fx.stored(id).mirrors, [mirror_url]);
+    assert!(mirror.requests(PATH) > 1, "the mirror was not tried");
+    assert_eq!(view(&engine, id).error, None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn all_mirrors_broken_reports_primary_error() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let mut primary = FileSpec::new(4 * MIB);
+    primary.fail_after = Some(fail_after(1, 410));
+    let url = fx.server.serve(PATH, primary.clone());
+    let mut broken = primary.clone();
+    broken.fail_after = Some(fail_after(1, 404));
+    let mirror = TestServer::start().await;
+    let mirror_url = mirror.serve(PATH, broken);
+
+    let id = engine
+        .add(AddRequest {
+            connections: Some(4),
+            mirrors: vec![mirror_url],
+            ..fx.request(&url)
+        })
+        .await
+        .unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Failed);
+    assert!(mirror.requests(PATH) > 1, "the mirror was not tried");
+    let (kind, detail) = view(&engine, id).error.expect("an error is recorded");
+    assert_eq!(kind, ErrorKind::LinkExpired);
+    assert!(detail.contains("410"), "{detail}");
+    let stored = fx.stored(id).error.expect("an error is stored");
+    assert_eq!(stored, (kind, detail));
+    assert!(!fx.dest.join("x.bin").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mismatched_mirror_dropped_at_add() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let mut spec = FileSpec::new(4 * MIB);
+    spec.etag = Some("\"v1\"".into());
+    let url = fx.server.serve(PATH, spec.clone());
+    let mirror = TestServer::start().await;
+    let mut longer = spec.clone();
+    longer.size += 1;
+    let mut other_etag = spec.clone();
+    other_etag.etag = Some("\"v2\"".into());
+    let mut gone = spec.clone();
+    gone.fail_first = vec![404];
+    let mirrors = vec![
+        mirror.serve("/longer.bin", longer),
+        mirror.serve("/etag.bin", other_etag),
+        mirror.serve("/gone.bin", gone),
+    ];
+
+    let id = engine
+        .add(AddRequest {
+            mirrors,
+            ..fx.request(&url)
+        })
+        .await
+        .unwrap();
+    assert_eq!(fx.stored(id).mirrors, Vec::<String>::new());
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("x.bin"), &spec);
+    for path in ["/longer.bin", "/etag.bin", "/gone.bin"] {
+        assert_eq!(mirror.requests(path), 1, "{path}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expiring_redirect_target_still_completes() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    // A signed link: each target serves 6 requests, then refuses with 403.
+    let mut spec = FileSpec::new(8 * MIB);
+    spec.fail_after = Some(fail_after(6, 403));
+    fx.server.serve("/s1", spec.clone());
+    fx.server.serve("/s2", spec.clone());
+    let dl = fx.server.redirect_cycle("/dl", &["/s1", "/s2"]);
+
+    // 8 connections make 1 MiB segments, too small to steal from: exactly 8
+    // segment requests. Through `/dl` they alternate /s2, /s1, ... after the
+    // probe's /s1, so /s1 serves 5 and /s2 4. Reusing the redirect target
+    // would send all 9 requests to /s1, which refuses after 6.
+    let id = engine
+        .add(AddRequest {
+            connections: Some(8),
+            ..fx.request(&dl)
+        })
+        .await
+        .unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    let v = view(&engine, id);
+    assert_eq!(v.url, dl);
+    assert_file(&fx.dest.join(&v.file_name), &spec);
+    assert_eq!(fx.server.requests("/dl"), 9);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn referer_is_sent() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let referer = "https://forum.example/thread/42";
+    let spec = FileSpec::new(2 * MIB);
+    fx.server.serve(PATH, spec.clone());
+    // Through a redirect, which must keep the given Referer.
+    let dl = fx.server.redirect_cycle("/dl", &[PATH]);
+    let mirror = TestServer::start().await;
+    let mirror_url = mirror.serve(PATH, spec.clone());
+
+    // Two 1 MiB segments: one from the primary, one from the mirror.
+    let id = engine
+        .add(AddRequest {
+            connections: Some(2),
+            mirrors: vec![mirror_url],
+            referer: Some(referer.into()),
+            ..fx.request(&dl)
+        })
+        .await
+        .unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_eq!(fx.stored(id).referer.as_deref(), Some(referer));
+    // Each path's last request is a segment request.
+    for (server, path) in [(&fx.server, "/dl"), (&fx.server, PATH), (&mirror, PATH)] {
+        assert!(server.requests(path) >= 2, "{path}: no segment request");
+        let headers = server.last_request_headers(path);
+        assert!(
+            headers.contains(&("referer".into(), referer.into())),
+            "{path}: {headers:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resume_follows_a_fresh_confirm_link() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let spec = throttled(20 * MIB);
+    let id = add_and_pause(&fx, &engine, &spec).await;
+
+    // The stored link now answers with a confirm page for a new link.
+    let form = r#"<form action="/y.bin"><input type="hidden" name="confirm" value="u"></form>"#;
+    fx.server.serve_page(PATH, 200, &[], form);
+    let fresh = fx.server.serve("/y.bin", unthrottled(&spec));
+    engine.resume(id).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("x.bin"), &spec);
+    assert_eq!(view(&engine, id).url, format!("{fresh}?confirm=u"));
+    assert_eq!(fx.stored(id).url, format!("{fresh}?confirm=u"));
+    assert_eq!(fx.server.requests(PATH), 1);
 }

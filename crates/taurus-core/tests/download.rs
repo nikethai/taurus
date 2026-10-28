@@ -670,3 +670,131 @@ async fn single_connection_429_is_still_rate_limited() {
     let url = fx.store.get_job(id).unwrap().unwrap().url;
     assert_eq!(fx.store.host_cap(&host_key(&url).unwrap()).unwrap(), None);
 }
+
+impl Fixture {
+    /// Records `mirrors` as the job's mirrors.
+    fn set_mirrors(&self, id: JobId, mirrors: Vec<String>) {
+        let mut job = self.store.get_job(id).unwrap().unwrap();
+        job.mirrors = mirrors;
+        self.store.update_job(&job).unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn etag_change_mid_download_fails_without_stitching() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(4 * MIB);
+    spec.etag = Some("\"v1\"".into());
+    // The one connection drops after 1 MiB and retries after about 0.5 s.
+    spec.drop_once_after = Some(MIB);
+    let id = fx.add(&spec, 1);
+    // Same size, other content.
+    let mut changed = FileSpec::new(4 * MIB);
+    changed.seed = 2;
+    changed.etag = Some("\"v2\"".into());
+    let server = &fx.server;
+    let change = async {
+        while server.bytes_served(PATH) < MIB as u64 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        server.replace(PATH, changed.clone());
+    };
+
+    let (outcome, ()) = tokio::join!(fx.run(id, CancellationToken::new()), change);
+    match outcome {
+        JobOutcome::Failed(e) => {
+            assert_eq!(e.kind, ErrorKind::FileChangedOnServer);
+            assert!(e.detail.contains("\"v2\""), "{}", e.detail);
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert!(!fx.dest.join("x.bin").exists());
+    // Only the first version's bytes are on disk.
+    let on_disk = fs::read(fx.tapa()).unwrap();
+    let done = fx.store.load_segments(id).unwrap()[0].done as usize;
+    assert!(done <= MIB && done <= on_disk.len(), "recorded {done}");
+    assert!(on_disk[..done] == content(&spec)[..done]);
+    assert!(fx.server.requests(PATH) >= 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mirror_with_another_etag_is_not_stitched() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(8 * MIB);
+    spec.etag = Some("\"v1\"".into());
+    let id = fx.add(&spec, 4);
+    // Changed since it was checked: same size, other content.
+    let mut other = spec.clone();
+    other.seed = 2;
+    other.etag = Some("\"v2\"".into());
+    let mirror = TestServer::start().await;
+    fx.set_mirrors(id, vec![mirror.serve(PATH, other)]);
+
+    assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    assert!(mirror.requests(PATH) > 0, "the mirror was not tried");
+    assert_eq!(fx.store.get_job(id).unwrap().unwrap().error, None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mirror_out_of_attempts_is_dropped() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(4 * MIB);
+    let id = fx.add(&spec, 4);
+    let mut failing = spec.clone();
+    failing.fail_first = vec![500; 100];
+    let mirror = TestServer::start().await;
+    fx.set_mirrors(id, vec![mirror.serve(PATH, failing)]);
+
+    let outcome = fx
+        .run_with(id, CancellationToken::new(), Timing::fast_for_tests())
+        .await;
+    assert_completed(outcome, &spec);
+    // Retried (the 500s are transient) until out of attempts.
+    assert!(mirror.requests(PATH) >= 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mirror_refusals_are_not_remembered_for_the_primary_host() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(8 * MIB);
+    // Paced, so the primary's response is open when the mirror refuses.
+    spec.bytes_per_sec = Some(8 * MIB as u64);
+    let id = fx.add(&spec, 2);
+    let mut refusing = FileSpec::new(8 * MIB);
+    refusing.fail_first = vec![429; 100];
+    let mirror = TestServer::start().await;
+    fx.set_mirrors(id, vec![mirror.serve(PATH, refusing)]);
+
+    let outcome = fx
+        .run_with(id, CancellationToken::new(), Timing::fast_for_tests())
+        .await;
+    assert_completed(outcome, &spec);
+    assert!(mirror.requests(PATH) > 0, "the mirror was not tried");
+    let url = fx.store.get_job(id).unwrap().unwrap().url;
+    assert_eq!(fx.store.host_cap(&host_key(&url).unwrap()).unwrap(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unranged_job_switching_to_a_mirror_restarts_from_zero() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(3 * MIB);
+    spec.ranges = false;
+    // Dies after 1 MiB; with one attempt the worker leaves 1 MiB written.
+    spec.drop_once_after = Some(MIB);
+    let id = fx.add(&spec, 4);
+    let mut healthy = FileSpec::new(3 * MIB);
+    healthy.ranges = false;
+    let mirror = TestServer::start().await;
+    fx.set_mirrors(id, vec![mirror.serve(PATH, healthy)]);
+    let timing = Timing {
+        max_segment_attempts: 1,
+        ..Timing::fast_for_tests()
+    };
+
+    assert_completed(
+        fx.run_with(id, CancellationToken::new(), timing).await,
+        &spec,
+    );
+    assert_eq!(fx.server.requests(PATH), 1);
+    assert_eq!(mirror.requests(PATH), 1);
+}

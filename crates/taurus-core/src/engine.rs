@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::filename::{PARTIAL_EXT, sanitize, unique_path};
 use crate::fixups;
+use crate::http::probe::validator_change;
 use crate::http::{JobContext, JobOutcome, Probe, build_client, resolve, run_job};
 use crate::limit::{Limiter, PeakTracker};
 use crate::plan::DEFAULT_CONNECTIONS;
@@ -40,6 +41,7 @@ pub struct EngineConfig {
     pub data_dir: PathBuf,
 }
 
+#[derive(Clone, Debug, Default)]
 pub struct AddRequest {
     pub url: String,
     pub dest_dir: PathBuf,
@@ -47,6 +49,13 @@ pub struct AddRequest {
     pub file_name: Option<String>,
     /// Defaults to `DEFAULT_CONNECTIONS`.
     pub connections: Option<u32>,
+    /// Other URLs serving the same file. Each is checked at `add`; one that
+    /// fails to resolve or serves another size (or ETag) is dropped.
+    pub mirrors: Vec<String>,
+    /// The file's expected checksum, stored with the job.
+    pub checksum: Option<String>,
+    /// Sent as `Referer` with every request of the job.
+    pub referer: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -107,6 +116,10 @@ enum Command {
         id: JobId,
         probe: Probe,
         reply: Reply<()>,
+    },
+    Get {
+        id: JobId,
+        reply: Reply<JobRecord>,
     },
     Remove {
         id: JobId,
@@ -227,10 +240,11 @@ impl Engine {
     }
 
     /// Resolves the URL (following a confirm page; failing on any other web
-    /// page or bot check), reserves a file name that no other file or job in
-    /// `dest_dir` uses, and starts downloading. A missing `dest_dir` fails
-    /// with `FolderUnavailable`; nothing is recorded when `add` fails.
-    pub async fn add(&self, req: AddRequest) -> Result<JobId, CoreError> {
+    /// page or bot check), keeps the mirrors that serve the same file,
+    /// reserves a file name that no other file or job in `dest_dir` uses, and
+    /// starts downloading. A missing `dest_dir` fails with
+    /// `FolderUnavailable`; nothing is recorded when `add` fails.
+    pub async fn add(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         self.check_running()?;
         let is_dir = tokio::fs::metadata(&req.dest_dir)
             .await
@@ -241,12 +255,9 @@ impl Engine {
                 detail: format!("folder {} is not available", req.dest_dir.display()),
             });
         }
-        // An unparseable URL goes to `resolve` as is, which reports it.
-        let url = match url::Url::parse(&req.url) {
-            Ok(parsed) => fixups::rewrite(&parsed).unwrap_or(parsed).to_string(),
-            Err(_) => req.url.clone(),
-        };
-        let probe = resolve(&self.client, &url, None).await?;
+        let referer = req.referer.clone();
+        let probe = resolve(&self.client, &fixed_url(&req.url), referer.as_deref()).await?;
+        req.mirrors = vet_mirrors(&self.client, &probe, &req.mirrors, referer.as_deref()).await;
         self.call(|reply| Command::Add { req, probe, reply })
             .await?
     }
@@ -257,7 +268,9 @@ impl Engine {
         self.call(|reply| Command::Pause { id, reply }).await?
     }
 
-    /// Re-resolves the job's URL and continues it. If the file changed on the
+    /// Re-resolves the job's URL (with its Referer) and continues it from
+    /// the link that serves the file now (a confirm form may hand out a fresh
+    /// one). If the file changed on the
     /// server (ETag, else Last-Modified, or size) or the download cannot be
     /// resumed, it restarts from zero; a change is noted as the job's error
     /// (`FileChangedOnServer`) while it downloads. Resuming a running or
@@ -265,14 +278,13 @@ impl Engine {
     /// job as it was.
     pub async fn resume(&self, id: JobId) -> Result<(), CoreError> {
         self.check_running()?;
-        let url = match self.view(id) {
-            None => return Err(no_such_job()),
-            Some(v) if matches!(v.state, JobState::Downloading | JobState::Completed) => {
-                return Ok(());
-            }
-            Some(v) => v.url,
-        };
-        let probe = resolve(&self.client, &url, None).await?;
+        let job = self.call(|reply| Command::Get { id, reply }).await??;
+        if matches!(job.state, JobState::Downloading | JobState::Completed) {
+            return Ok(());
+        }
+        // Mirrors are not checked again: one that fails is dropped while
+        // the job runs.
+        let probe = resolve(&self.client, &job.url, job.referer.as_deref()).await?;
         self.call(|reply| Command::Resume { id, probe, reply })
             .await?
     }
@@ -420,6 +432,13 @@ impl Actor {
             Command::Resume { id, probe, reply } => {
                 let _ = reply.send(self.resume(id, &probe));
             }
+            Command::Get { id, reply } => {
+                let _ = reply.send(
+                    self.store
+                        .get_job(id)
+                        .and_then(|j| j.ok_or_else(no_such_job)),
+                );
+            }
             Command::Remove {
                 id,
                 delete_files,
@@ -456,9 +475,9 @@ impl Actor {
             dest_dir: req.dest_dir.clone(),
             file_name: file_name.clone(),
             connections,
-            mirrors: Vec::new(),
-            checksum: None,
-            referer: None,
+            mirrors: req.mirrors.clone(),
+            checksum: req.checksum.clone(),
+            referer: req.referer.clone(),
             queue_pos: 0,
         })?;
         let mut job = JobRecord {
@@ -474,9 +493,9 @@ impl Actor {
             last_modified: None,
             connections,
             error: None,
-            mirrors: Vec::new(),
-            checksum: None,
-            referer: None,
+            mirrors: req.mirrors,
+            checksum: req.checksum,
+            referer: req.referer,
             queue_pos: id.0,
         };
         apply_probe(&mut job, probe);
@@ -509,6 +528,9 @@ impl Actor {
         if self.running.contains_key(&id) || job.state == JobState::Completed {
             return Ok(());
         }
+        // The link that served the file now: a confirm form may hand out a
+        // fresh one.
+        job.url = probe.requested_url.to_string();
         let change = change_on_server(&job, probe);
         let resumable = probe.ranges && probe.size.is_some();
         if change.is_some() || !job.resumable || !resumable {
@@ -725,6 +747,48 @@ fn unix_now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
+/// The URL after the host's link fixups; an unparseable URL as is, for
+/// `resolve` to report.
+fn fixed_url(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(parsed) => fixups::rewrite(&parsed).unwrap_or(parsed).to_string(),
+        Err(_) => url.to_owned(),
+    }
+}
+
+/// The mirrors that serve the primary's file, each as the link to request
+/// (a confirm form's, if one was followed). A mirror that fails to resolve,
+/// serves another size, or has another ETag (when both have one) is dropped.
+async fn vet_mirrors(
+    client: &reqwest::Client,
+    primary: &Probe,
+    mirrors: &[String],
+    referer: Option<&str>,
+) -> Vec<String> {
+    let mut kept = Vec::new();
+    for mirror in mirrors {
+        let why = match resolve(client, &fixed_url(mirror), referer).await {
+            Err(e) => e.to_string(),
+            Ok(probe) if probe.size != primary.size => format!(
+                "size {} differs from {}",
+                describe_size(probe.size),
+                describe_size(primary.size)
+            ),
+            Ok(Probe {
+                etag: Some(etag), ..
+            }) if primary.etag.as_ref().is_some_and(|p| *p != etag) => {
+                format!("ETag {etag} differs from the primary's")
+            }
+            Ok(probe) => {
+                kept.push(probe.requested_url.to_string());
+                continue;
+            }
+        };
+        tracing::info!(mirror = mirror.as_str(), "dropping the mirror: {why}");
+    }
+    kept
+}
+
 /// Copies what the probe learned into the record.
 fn apply_probe(job: &mut JobRecord, probe: &Probe) {
     job.final_url = Some(probe.final_url.to_string());
@@ -737,15 +801,10 @@ fn apply_probe(job: &mut JobRecord, probe: &Probe) {
 /// What says the file on the server is no longer the one partly downloaded:
 /// the ETag, else (no ETag on both sides) Last-Modified, or the size.
 fn change_on_server(job: &JobRecord, probe: &Probe) -> Option<String> {
-    let validator = match (&job.etag, &probe.etag) {
-        (Some(old), Some(new)) => (old != new).then(|| format!("ETag changed from {old} to {new}")),
-        _ => match (&job.last_modified, &probe.last_modified) {
-            (Some(old), Some(new)) if old != new => {
-                Some(format!("Last-Modified changed from {old} to {new}"))
-            }
-            _ => None,
-        },
-    };
+    let validator = validator_change(
+        (job.etag.as_deref(), job.last_modified.as_deref()),
+        (probe.etag.as_deref(), probe.last_modified.as_deref()),
+    );
     validator.or_else(|| {
         (job.total != probe.size).then(|| {
             format!(
