@@ -874,3 +874,111 @@ async fn resume_follows_a_fresh_confirm_link() {
     assert_eq!(fx.stored(id).url, format!("{fresh}?confirm=u"));
     assert_eq!(fx.server.requests(PATH), 1);
 }
+
+/// A 1-byte answer to the probe claiming a file of `size` bytes.
+fn serve_claimed_size(fx: &Fixture, path: &str, size: u64) -> String {
+    let range = format!("bytes 0-0/{size}");
+    fx.server.serve_page(
+        path,
+        206,
+        &[
+            ("content-type", "application/octet-stream"),
+            ("content-range", &range),
+        ],
+        "x",
+    )
+}
+
+/// Far more than any test machine's free space.
+const HUGE: u64 = 1 << 60;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_refuses_a_file_larger_than_the_free_space() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let url = serve_claimed_size(&fx, PATH, HUGE);
+
+    let err = engine.add(fx.request(&url)).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::DiskFull);
+    assert!(err.detail.contains(&HUGE.to_string()), "{err}");
+    assert!(engine.snapshot().is_empty());
+    assert!(!fx.tapa().exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resume_refuses_when_the_file_no_longer_fits() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let id = add_and_pause(&fx, &engine, &throttled(20 * MIB)).await;
+
+    // The file grew past the free space: it restarts, and does not fit.
+    serve_claimed_size(&fx, PATH, HUGE);
+    let err = engine.resume(id).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::DiskFull);
+    let v = view(&engine, id);
+    assert_eq!(v.state, JobState::Failed);
+    assert_eq!(v.error.map(|(kind, _)| kind), Some(ErrorKind::DiskFull));
+    let stored = fx.stored(id);
+    assert_eq!(stored.state, JobState::Failed);
+    assert_eq!(
+        stored.error.map(|(kind, _)| kind),
+        Some(ErrorKind::DiskFull)
+    );
+    assert_eq!(wait(&engine, id).await, JobState::Failed);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_rejects_an_invalid_checksum() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let url = fx.server.serve(PATH, FileSpec::new(MIB));
+
+    let err = engine
+        .add(AddRequest {
+            checksum: Some("sha256:abc".into()),
+            ..fx.request(&url)
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Unknown);
+    assert_eq!(err.detail, "invalid checksum");
+    assert!(engine.snapshot().is_empty());
+    assert_eq!(fx.server.requests(PATH), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_checksum_follows_the_setting() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let spec = FileSpec::new(MIB);
+    let url = fx.server.serve("/rel/x.iso", spec.clone());
+    let wrong = "d".repeat(64);
+    fx.server.serve_page(
+        "/rel/SHA256SUMS",
+        200,
+        &[("content-type", "text/plain")],
+        &format!("{wrong}  x.iso\n"),
+    );
+
+    // On by default.
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Failed);
+    let (kind, detail) = view(&engine, id).error.unwrap();
+    assert_eq!(kind, ErrorKind::ChecksumMismatch);
+    assert!(
+        detail.starts_with(&format!("expected {wrong}, got ")),
+        "{detail}"
+    );
+
+    engine
+        .set_settings(Settings {
+            auto_checksum: false,
+            ..Settings::default()
+        })
+        .await
+        .unwrap();
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join(view(&engine, id).file_name), &spec);
+    assert_eq!(fx.server.requests("/rel/SHA256SUMS"), 1);
+}

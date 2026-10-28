@@ -13,6 +13,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use crate::checksum;
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::filename::{PARTIAL_EXT, sanitize, unique_path};
 use crate::fixups;
@@ -22,6 +23,7 @@ use crate::limit::{Limiter, PeakTracker};
 use crate::plan::DEFAULT_CONNECTIONS;
 use crate::settings::{Settings, SpeedLimit};
 use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
+use crate::system::check_fits;
 use crate::timing::Timing;
 
 const COMMAND_CAPACITY: usize = 64;
@@ -243,7 +245,9 @@ impl Engine {
     /// page or bot check), keeps the mirrors that serve the same file,
     /// reserves a file name that no other file or job in `dest_dir` uses, and
     /// starts downloading. A missing `dest_dir` fails with
-    /// `FolderUnavailable`; nothing is recorded when `add` fails.
+    /// `FolderUnavailable`, a file that does not fit on its disk with
+    /// `DiskFull` or `FileTooLargeForDisk`, a checksum that is not a SHA-256
+    /// with `Unknown`; nothing is recorded when `add` fails.
     pub async fn add(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         self.check_running()?;
         let is_dir = tokio::fs::metadata(&req.dest_dir)
@@ -255,8 +259,21 @@ impl Engine {
                 detail: format!("folder {} is not available", req.dest_dir.display()),
             });
         }
+        if req
+            .checksum
+            .as_deref()
+            .is_some_and(|c| checksum::parse_sum(c).is_none())
+        {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: "invalid checksum".to_string(),
+            });
+        }
         let referer = req.referer.clone();
         let probe = resolve(&self.client, &fixed_url(&req.url), referer.as_deref()).await?;
+        if let Some(size) = probe.size {
+            check_fits(&req.dest_dir, size, Some(size))?;
+        }
         req.mirrors = vet_mirrors(&self.client, &probe, &req.mirrors, referer.as_deref()).await;
         self.call(|reply| Command::Add { req, probe, reply })
             .await?
@@ -275,7 +292,8 @@ impl Engine {
     /// resumed, it restarts from zero; a change is noted as the job's error
     /// (`FileChangedOnServer`) while it downloads. Resuming a running or
     /// completed job does nothing. A failed probe is returned and leaves the
-    /// job as it was.
+    /// job as it was. If the rest of the file does not fit on its disk, the
+    /// job is recorded as Failed with that error, which is also returned.
     pub async fn resume(&self, id: JobId) -> Result<(), CoreError> {
         self.check_running()?;
         let job = self.call(|reply| Command::Get { id, reply }).await??;
@@ -544,10 +562,20 @@ impl Actor {
         }
         job.error = change.map(|what| (ErrorKind::FileChangedOnServer, what));
         job.state = JobState::Downloading;
+        let done = downloaded(&self.store, id)?;
+        let fits = match job.total {
+            Some(total) => check_fits(&job.dest_dir, total.saturating_sub(done), Some(total)),
+            None => Ok(()),
+        };
+        if let Err(e) = &fits {
+            job.state = JobState::Failed;
+            job.error = Some((e.kind, e.detail.clone()));
+        }
         self.store.update_job(&job)?;
-        let view = view_of(&job, downloaded(&self.store, id)?);
+        let view = view_of(&job, done);
         write(&self.views).insert(id, view.clone());
         self.emit(Event::JobUpdated(view));
+        fits?;
         self.start(id);
         Ok(())
     }
@@ -618,6 +646,7 @@ impl Actor {
             progress,
             limiter: self.limiter.clone(),
             timing: Timing::default(),
+            auto_checksum: self.settings.auto_checksum,
         };
         let tx = self.job_tx.clone();
         tokio::spawn(async move {

@@ -1,3 +1,4 @@
+pub mod checksum;
 pub mod engine;
 pub mod errors;
 pub mod filename;
@@ -9,6 +10,7 @@ pub mod plan;
 pub mod progress;
 pub mod settings;
 pub mod store;
+pub mod system;
 pub mod timing;
 
 pub use engine::{AddRequest, Engine, EngineConfig, Event, JobView};

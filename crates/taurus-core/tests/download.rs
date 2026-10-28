@@ -69,6 +69,22 @@ impl Fixture {
     }
 
     async fn run_with(&self, id: JobId, cancel: CancellationToken, timing: Timing) -> JobOutcome {
+        self.run_ctx(id, cancel, timing, false).await
+    }
+
+    /// `run`, looking for a `SHA256SUMS` file next to the download.
+    async fn run_auto(&self, id: JobId) -> JobOutcome {
+        self.run_ctx(id, CancellationToken::new(), Timing::default(), true)
+            .await
+    }
+
+    async fn run_ctx(
+        &self,
+        id: JobId,
+        cancel: CancellationToken,
+        timing: Timing,
+        auto_checksum: bool,
+    ) -> JobOutcome {
         let (progress, _progress_rx) = mpsc::unbounded_channel();
         let ctx = JobContext {
             id,
@@ -78,6 +94,7 @@ impl Fixture {
             progress,
             limiter: Limiter::new(None),
             timing,
+            auto_checksum,
         };
         tokio::time::timeout(Duration::from_secs(30), run_job(ctx))
             .await
@@ -823,4 +840,201 @@ async fn unranged_job_switching_to_a_mirror_restarts_from_zero() {
     );
     assert_eq!(fx.server.requests(PATH), 1);
     assert_eq!(mirror.requests(PATH), 1);
+}
+
+const SUMS_PATH: &str = "/rel/SHA256SUMS";
+
+impl Fixture {
+    fn set_checksum(&self, id: JobId, checksum: &str) {
+        let mut job = self.store.get_job(id).unwrap().unwrap();
+        job.checksum = Some(checksum.to_owned());
+        self.store.update_job(&job).unwrap();
+    }
+
+    fn set_referer(&self, id: JobId, referer: &str) {
+        let mut job = self.store.get_job(id).unwrap().unwrap();
+        job.referer = Some(referer.to_owned());
+        self.store.update_job(&job).unwrap();
+    }
+
+    /// Serves `text` as the `SHA256SUMS` beside `/rel/x.iso`.
+    fn serve_sums(&self, text: &str) {
+        self.server
+            .serve_page(SUMS_PATH, 200, &[("content-type", "text/plain")], text);
+    }
+
+    /// Asserts a failed checksum: no partial, no final file, no segments.
+    fn assert_checksum_failed(&self, id: JobId, outcome: JobOutcome, expected: &str, got: &str) {
+        let detail = format!("expected {expected}, got {got}");
+        match outcome {
+            JobOutcome::Failed(e) => {
+                assert_eq!(e.kind, ErrorKind::ChecksumMismatch);
+                assert_eq!(e.detail, detail);
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        let job = self.store.get_job(id).unwrap().unwrap();
+        assert_eq!(job.state, JobState::Failed);
+        assert_eq!(job.error, Some((ErrorKind::ChecksumMismatch, detail)));
+        assert!(self.store.load_segments(id).unwrap().is_empty());
+        let left: Vec<_> = fs::read_dir(&self.dest).unwrap().collect();
+        assert!(left.is_empty(), "files left behind: {left:?}");
+    }
+}
+
+/// Asserts the xdg origin mark where the file system has user xattrs.
+#[cfg(target_os = "linux")]
+fn assert_marked(path: &std::path::Path, url: &str) {
+    if let Err(e) = xattr::set(path, "user.taurus.probe", b"1") {
+        eprintln!("not checking the mark: no user xattrs here ({e})");
+        return;
+    }
+    assert_eq!(
+        xattr::get(path, "user.xdg.origin.url").unwrap().as_deref(),
+        Some(url.as_bytes())
+    );
+}
+
+/// Each OS's own mark has unit tests in `system::marks`.
+#[cfg(not(target_os = "linux"))]
+fn assert_marked(_path: &std::path::Path, _url: &str) {}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_checksum_ok() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(3 * MIB);
+    let id = fx.add(&spec, 4);
+    let sum = sha256_hex(&content(&spec)).to_ascii_uppercase();
+    fx.set_checksum(id, &format!("sha256:{sum}"));
+
+    let path = assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    assert_eq!(
+        fx.store.get_job(id).unwrap().unwrap().state,
+        JobState::Completed
+    );
+    assert_marked(&path, &fx.store.get_job(id).unwrap().unwrap().url);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_checksum_mismatch_fails_and_removes_partial() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(3 * MIB);
+    let id = fx.add(&spec, 4);
+    let wrong = "0".repeat(64);
+    fx.set_checksum(id, &wrong);
+
+    let outcome = fx.run(id, CancellationToken::new()).await;
+    fx.assert_checksum_failed(id, outcome, &wrong, &sha256_hex(&content(&spec)));
+    assert!(!fx.tapa().exists());
+    assert!(!fx.dest.join("x.bin").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_sums_file_verifies() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(2 * MIB);
+    let other = "a".repeat(64);
+    fx.serve_sums(&format!(
+        "{other}  x (1).iso\n{}  x.iso\n",
+        sha256_hex(&content(&spec))
+    ));
+    // Saved under another name: the URL's name is the one looked up.
+    let id = fx.add_at("/rel/x.iso", "x (1).iso", &spec, 4);
+    fx.set_referer(id, "https://example.com/page");
+
+    let path = assert_completed(fx.run_auto(id).await, &spec);
+    assert_eq!(path, fx.dest.join("x (1).iso"));
+    assert_eq!(fx.server.requests(SUMS_PATH), 1);
+    let headers = fx.server.last_request_headers(SUMS_PATH);
+    assert!(
+        headers
+            .iter()
+            .any(|(n, v)| n == "referer" && v == "https://example.com/page"),
+        "{headers:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_sums_missing_is_skipped() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(2 * MIB);
+    let id = fx.add_at("/rel/x.iso", "x.iso", &spec, 4);
+
+    assert_completed(fx.run_auto(id).await, &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_sums_mismatch_fails() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(2 * MIB);
+    let wrong = "b".repeat(64);
+    fx.serve_sums(&format!("{wrong} *x.iso\n"));
+    let id = fx.add_at("/rel/x.iso", "x.iso", &spec, 4);
+
+    let outcome = fx.run_auto(id).await;
+    fx.assert_checksum_failed(id, outcome, &wrong, &sha256_hex(&content(&spec)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_sums_not_fetched_when_off() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(MIB);
+    fx.serve_sums(&format!("{}  x.iso\n", "b".repeat(64)));
+    let id = fx.add_at("/rel/x.iso", "x.iso", &spec, 4);
+
+    assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    assert_eq!(fx.server.requests(SUMS_PATH), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_sums_over_one_mib_is_skipped() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(MIB);
+    let mut text = format!("{}  x.iso\n", "b".repeat(64));
+    while text.len() <= MIB {
+        text.push_str(&format!("{}  filler.bin\n", "c".repeat(64)));
+    }
+    fx.serve_sums(&text);
+    let id = fx.add_at("/rel/x.iso", "x.iso", &spec, 4);
+
+    assert_completed(fx.run_auto(id).await, &spec);
+    assert_eq!(fx.server.requests(SUMS_PATH), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_during_sums_fetch_pauses() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(MIB);
+    // About 14 s to serve, under the 1 MiB cap.
+    let mut slow_sums = FileSpec::new(900 * 1024);
+    slow_sums.bytes_per_sec = Some(64 * 1024);
+    fx.server.serve(SUMS_PATH, slow_sums);
+    let id = fx.add_at("/rel/x.iso", "x.iso", &spec, 4);
+
+    let cancel = CancellationToken::new();
+    let stop = async {
+        while fx.server.requests(SUMS_PATH) == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        cancel.cancel();
+    };
+    let (outcome, ()) = tokio::join!(
+        fx.run_ctx(id, cancel.clone(), Timing::default(), true),
+        stop
+    );
+    assert!(matches!(outcome, JobOutcome::Paused), "{outcome:?}");
+    assert_eq!(
+        fx.store.get_job(id).unwrap().unwrap().state,
+        JobState::Paused
+    );
+    assert_eq!(
+        fs::metadata(fx.dest.join("x.iso.tapa")).unwrap().len(),
+        spec.size as u64
+    );
+
+    // The next run verifies it without downloading again.
+    fx.serve_sums(&format!("{}  x.iso\n", sha256_hex(&content(&spec))));
+    let served = fx.server.bytes_served("/rel/x.iso");
+    assert_completed(fx.run_auto(id).await, &spec);
+    assert_eq!(fx.server.bytes_served("/rel/x.iso"), served);
 }
