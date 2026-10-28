@@ -84,7 +84,7 @@ impl ErrorKind {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 #[error("{kind:?}: {detail}")]
 pub struct CoreError {
     pub kind: ErrorKind,

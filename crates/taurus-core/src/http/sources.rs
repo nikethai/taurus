@@ -54,12 +54,16 @@ impl Sources {
         self.bad.iter().any(|bad| !bad)
     }
 
+    pub fn len(&self) -> usize {
+        self.urls.len()
+    }
+
     /// The job's error once every source is bad: the primary's last error,
-    /// else the last error seen. Taken, so asked for once.
-    pub fn take_error(&mut self) -> CoreError {
+    /// else the last error seen.
+    pub fn error(&self) -> CoreError {
         self.primary_error
-            .take()
-            .or_else(|| self.mirror_error.take())
+            .clone()
+            .or_else(|| self.mirror_error.clone())
             .unwrap_or_else(|| CoreError {
                 kind: crate::errors::ErrorKind::Unknown,
                 detail: "no URL to download from".to_owned(),
@@ -107,12 +111,24 @@ mod tests {
         let mut s = sources(1);
         s.mark_bad(0, err("primary 410"));
         s.mark_bad(1, err("mirror 404"));
-        assert_eq!(s.take_error().detail, "primary 410");
+        assert_eq!(s.error().detail, "primary 410");
 
         let mut s = sources(2);
         s.mark_bad(2, err("m2"));
         s.mark_bad(1, err("m1"));
-        assert_eq!(s.take_error().detail, "m1");
+        assert_eq!(s.error().detail, "m1");
+    }
+
+    #[test]
+    fn error_can_be_asked_for_again() {
+        // A round may already have stopped for another reason when the last
+        // URL goes bad; the next round asks for the error again.
+        let mut s = sources(1);
+        s.mark_bad(0, err("primary 410"));
+        assert_eq!(s.error().detail, "primary 410");
+        s.mark_bad(1, err("mirror 404"));
+        assert_eq!(s.error().detail, "primary 410");
+        assert_eq!(s.error().detail, "primary 410");
     }
 
     #[test]
@@ -120,6 +136,6 @@ mod tests {
         let mut s = sources(0);
         assert_eq!(s.pick(7), Some(0));
         assert!(!s.mark_bad(0, err("gone")));
-        assert_eq!(s.take_error().detail, "gone");
+        assert_eq!(s.error().detail, "gone");
     }
 }

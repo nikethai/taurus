@@ -754,22 +754,48 @@ async fn mirror_out_of_attempts_is_dropped() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mirror_refusals_are_not_remembered_for_the_primary_host() {
+async fn refusing_mirror_does_not_slow_the_primary() {
     let fx = Fixture::new().await;
     let mut spec = FileSpec::new(8 * MIB);
     // Paced, so the primary's response is open when the mirror refuses.
     spec.bytes_per_sec = Some(8 * MIB as u64);
     let id = fx.add(&spec, 2);
-    let mut refusing = FileSpec::new(8 * MIB);
-    refusing.fail_first = vec![429; 100];
+    // An expired signed link: 403 for good.
+    let mut expired = FileSpec::new(8 * MIB);
+    expired.fail_first = vec![403; 100];
     let mirror = TestServer::start().await;
-    fx.set_mirrors(id, vec![mirror.serve(PATH, refusing)]);
+    fx.set_mirrors(id, vec![mirror.serve(PATH, expired)]);
 
-    let outcome = fx
-        .run_with(id, CancellationToken::new(), Timing::fast_for_tests())
-        .await;
-    assert_completed(outcome, &spec);
-    assert!(mirror.requests(PATH) > 0, "the mirror was not tried");
+    assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    // The mirror is dropped, not taken for a connection limit of the job:
+    // its segment moves to the primary while the primary's other is open.
+    assert_eq!(mirror.requests(PATH), 1);
+    assert_eq!(fx.server.peak_concurrency(PATH), 2);
+    let url = fx.store.get_job(id).unwrap().unwrap().url;
+    assert_eq!(fx.store.host_cap(&host_key(&url).unwrap()).unwrap(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mirror_connection_limit_is_not_remembered_for_the_primary_host() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(8 * MIB);
+    let id = fx.add(&spec, 4);
+    // Serves one connection at a time; paced, so it is open when refusing.
+    let mut limited = spec.clone();
+    limited.max_concurrent = Some(1);
+    limited.bytes_per_sec = Some(4 * MIB as u64);
+    let mirror = TestServer::start().await;
+    fx.set_mirrors(id, vec![mirror.serve(PATH, limited)]);
+    let timing = Timing {
+        max_segment_attempts: 8,
+        ..Timing::fast_for_tests()
+    };
+
+    assert_completed(
+        fx.run_with(id, CancellationToken::new(), timing).await,
+        &spec,
+    );
+    assert!(mirror.over_limit_rejections(PATH) > 0);
     let url = fx.store.get_job(id).unwrap().unwrap().url;
     assert_eq!(fx.store.host_cap(&host_key(&url).unwrap()).unwrap(), None);
 }

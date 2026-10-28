@@ -6,8 +6,9 @@
 //! bytes on disk.
 //!
 //! A host that refuses extra connections (429, 503 or 403 while another of
-//! the job's responses is being served) lowers the job's worker cap instead
-//! of failing it; the cap is remembered per host for the next job. A round
+//! the job's responses from the same URL is being served) lowers the job's
+//! worker cap instead of failing it; the primary's cap is remembered per
+//! host for the next job. A round
 //! starts one worker and the rest once that one is served, so the host's
 //! first refusals already come while a response is open.
 //!
@@ -313,6 +314,7 @@ async fn run_round(
     sources: &mut Sources,
 ) -> RoundEnd {
     let (tx, mut rx) = mpsc::unbounded_channel();
+    let open = (0..sources.len()).map(|_| Arc::default()).collect();
     let mut round = Round {
         ctx,
         job,
@@ -324,7 +326,7 @@ async fn run_round(
         end: None,
         limit,
         sources,
-        open: Arc::default(),
+        open,
         ramping: true,
     };
     let mut meter = ProgressMeter::new();
@@ -412,8 +414,8 @@ struct Round<'a> {
     end: Option<RoundEnd>,
     limit: &'a mut HostLimit,
     sources: &'a mut Sources,
-    /// The workers' 206 responses currently being read.
-    open: Arc<AtomicUsize>,
+    /// The workers' 206 responses currently being read, per source.
+    open: Vec<Arc<AtomicUsize>>,
     /// Only one worker runs until a response opens or a worker exits.
     ramping: bool,
 }
@@ -504,7 +506,7 @@ impl Round<'_> {
         if self.sources.mark_bad(source, e) {
             self.fill_idle_slots();
         } else {
-            let e = self.sources.take_error();
+            let e = self.sources.error();
             self.stop_with(RoundEnd::Failed(e));
         }
     }
@@ -601,7 +603,7 @@ impl Round<'_> {
 
     fn spawn(&mut self, idx: usize) {
         let Some(source) = self.sources.pick(idx) else {
-            let e = self.sources.take_error();
+            let e = self.sources.error();
             return self.stop_with(RoundEnd::Failed(e));
         };
         let slot = &mut self.slots[idx];
@@ -629,7 +631,7 @@ impl Round<'_> {
             tx: self.tx.clone(),
             limiter: self.ctx.limiter.clone(),
             timing: self.ctx.timing.clone(),
-            open: self.open.clone(),
+            open: self.open[source].clone(),
         };
         self.workers.spawn(async move { (idx, worker.run().await) });
     }
@@ -698,7 +700,7 @@ struct Worker {
     tx: mpsc::UnboundedSender<Report>,
     limiter: Limiter,
     timing: Timing,
-    /// The job's 206 responses being read, this worker's included.
+    /// The job's 206 responses from `url` being read, this worker's included.
     open: Arc<AtomicUsize>,
 }
 
@@ -852,8 +854,10 @@ impl Worker {
                 format!("server sent a web page instead of file data (HTTP {status})"),
             ));
         }
-        // Another worker's response is being served, so the host is up: it
-        // limits connections. (This worker holds no open response here.)
+        // Another worker's response from this URL is being served, so the
+        // host is up: it limits connections. (This worker holds no open
+        // response here.) A refusal from a URL serving nothing to the job
+        // is an ordinary error, e.g. an expired mirror link.
         if matches!(
             status,
             StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE | StatusCode::FORBIDDEN
@@ -946,7 +950,7 @@ impl Worker {
     }
 }
 
-/// Counts one 206 response in the job's open responses while held.
+/// Counts one 206 response in its source's open responses while held.
 struct OpenResponse(Arc<AtomicUsize>);
 
 impl OpenResponse {
@@ -1138,7 +1142,7 @@ mod tests {
             end: None,
             limit: &mut limit,
             sources: &mut Sources::new(&job.url, &job.mirrors),
-            open: Arc::default(),
+            open: vec![Arc::default()],
             ramping: false,
         };
 
