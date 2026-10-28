@@ -263,12 +263,16 @@ async fn finish(
     let expected = expected_sum(ctx, job).await?;
     if looks_up && ctx.cancel.is_cancelled() {
         // Stopped while fetching the sums: verified on the next run.
-        job.state = JobState::Paused;
-        ctx.store.update_job(job)?;
-        return Ok(JobOutcome::Paused);
+        return pause_complete(ctx, job);
     }
     if let Some(expected) = expected {
-        let got = checksum::hash_file(tapa).await.map_err(io_error)?;
+        // A multi-GB file takes minutes to hash; a pause must not wait for
+        // it. The blocking read runs on and its result is dropped.
+        let got = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => return pause_complete(ctx, job),
+            got = checksum::hash_file(tapa) => got.map_err(io_error)?,
+        };
         if got != expected {
             // Bad bytes are not kept; with no segments the next run starts over.
             if let Err(e) = tokio::fs::remove_file(tapa).await
@@ -300,6 +304,14 @@ async fn finish(
     job.state = JobState::Completed;
     ctx.store.update_job(job)?;
     Ok(JobOutcome::Completed(path))
+}
+
+/// Pauses a job whose bytes are all downloaded but not yet verified; the
+/// next run finds its segments complete and verifies it again.
+fn pause_complete(ctx: &JobContext, job: &mut JobRecord) -> Result<JobOutcome, CoreError> {
+    job.state = JobState::Paused;
+    ctx.store.update_job(job)?;
+    Ok(JobOutcome::Paused)
 }
 
 /// The sum the file must have: the job's own, else (with `auto_checksum`)

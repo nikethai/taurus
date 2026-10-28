@@ -5,6 +5,7 @@ use std::time::Duration;
 use taurus_core::errors::ErrorKind;
 use taurus_core::http::{JobContext, JobOutcome, build_client, host_key, probe, resolve, run_job};
 use taurus_core::limit::Limiter;
+use taurus_core::plan;
 use taurus_core::store::{JobId, JobState, NewJob, Store};
 use taurus_core::timing::Timing;
 use taurus_testkit::{FailAfter, FileSpec, TestServer, content, sha256_hex};
@@ -1037,4 +1038,34 @@ async fn cancel_during_sums_fetch_pauses() {
     let served = fx.server.bytes_served("/rel/x.iso");
     assert_completed(fx.run_auto(id).await, &spec);
     assert_eq!(fx.server.bytes_served("/rel/x.iso"), served);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_while_hashing_pauses() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(3 * MIB);
+    let id = fx.add(&spec, 4);
+    fx.set_checksum(id, &sha256_hex(&content(&spec)));
+    // Everything is downloaded already: the run goes straight to the hash,
+    // and a pause already requested must win over it.
+    fs::write(fx.tapa(), content(&spec)).unwrap();
+    let mut segments = plan::plan_segments(spec.size as u64, 4);
+    segments.iter_mut().for_each(|s| s.done = s.end - s.start);
+    fx.store.replace_segments(id, &segments).unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let outcome = fx.run(id, cancel).await;
+    assert!(matches!(outcome, JobOutcome::Paused), "{outcome:?}");
+    assert_eq!(
+        fx.store.get_job(id).unwrap().unwrap().state,
+        JobState::Paused
+    );
+    assert_eq!(fs::read(fx.tapa()).unwrap(), content(&spec));
+    assert!(!fx.dest.join("x.bin").exists());
+    assert_eq!(fx.server.requests(PATH), 0);
+
+    // The next run verifies and completes it without downloading.
+    assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    assert_eq!(fx.server.requests(PATH), 0);
 }

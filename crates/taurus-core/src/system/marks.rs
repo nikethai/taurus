@@ -7,9 +7,12 @@
 use std::path::Path;
 
 /// Marks the file at `path` as downloaded from `url`, linked from `referer`.
-/// A failure is logged, never returned.
+/// User names and passwords are left out of the URLs (the query stays); a
+/// URL that does not parse is left out. A failure is logged, never returned.
 pub fn mark_downloaded(path: &Path, url: &str, referer: Option<&str>) {
-    if let Err(e) = write_mark(path, url, referer) {
+    let url = without_credentials(url);
+    let referer = referer.and_then(without_credentials);
+    if let Err(e) = write_mark(path, url.as_deref(), referer.as_deref()) {
         tracing::warn!(
             path = %path.display(),
             "could not mark the file as downloaded: {e}"
@@ -19,7 +22,7 @@ pub fn mark_downloaded(path: &Path, url: &str, referer: Option<&str>) {
 
 /// Writes the `Zone.Identifier` stream of Internet zone (3).
 #[cfg(windows)]
-fn write_mark(path: &Path, url: &str, referer: Option<&str>) -> std::io::Result<()> {
+fn write_mark(path: &Path, url: Option<&str>, referer: Option<&str>) -> std::io::Result<()> {
     let mut stream = path.as_os_str().to_owned();
     stream.push(":Zone.Identifier");
     std::fs::write(
@@ -30,7 +33,7 @@ fn write_mark(path: &Path, url: &str, referer: Option<&str>) -> std::io::Result<
 
 /// Sets the quarantine attribute, as a browser does.
 #[cfg(target_os = "macos")]
-fn write_mark(path: &Path, _url: &str, _referer: Option<&str>) -> std::io::Result<()> {
+fn write_mark(path: &Path, _url: Option<&str>, _referer: Option<&str>) -> std::io::Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -39,8 +42,10 @@ fn write_mark(path: &Path, _url: &str, _referer: Option<&str>) -> std::io::Resul
 
 /// Sets the xdg origin attributes, as browsers on Linux do.
 #[cfg(target_os = "linux")]
-fn write_mark(path: &Path, url: &str, referer: Option<&str>) -> std::io::Result<()> {
-    xattr::set(path, "user.xdg.origin.url", url.as_bytes())?;
+fn write_mark(path: &Path, url: Option<&str>, referer: Option<&str>) -> std::io::Result<()> {
+    if let Some(url) = url {
+        xattr::set(path, "user.xdg.origin.url", url.as_bytes())?;
+    }
     if let Some(referer) = referer {
         xattr::set(path, "user.xdg.referrer.url", referer.as_bytes())?;
     }
@@ -48,14 +53,30 @@ fn write_mark(path: &Path, url: &str, referer: Option<&str>) -> std::io::Result<
 }
 
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
-fn write_mark(_path: &Path, _url: &str, _referer: Option<&str>) -> std::io::Result<()> {
+fn write_mark(_path: &Path, _url: Option<&str>, _referer: Option<&str>) -> std::io::Result<()> {
     Ok(())
 }
 
+/// `url` without user name and password, as browsers write it into these
+/// marks; `None` if it does not parse.
+fn without_credentials(url: &str) -> Option<String> {
+    let mut url = url::Url::parse(url).ok()?;
+    // Both fail only for URLs that cannot carry credentials anyway.
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    Some(url.into())
+}
+
 #[cfg(any(windows, test))]
-fn zone_identifier(url: &str, referer: Option<&str>) -> String {
-    let referrer = referer.map_or_else(String::new, |r| format!("ReferrerUrl={r}\r\n"));
-    format!("[ZoneTransfer]\r\nZoneId=3\r\n{referrer}HostUrl={url}\r\n")
+fn zone_identifier(url: Option<&str>, referer: Option<&str>) -> String {
+    let line = |key: &str, value: Option<&str>| {
+        value.map_or_else(String::new, |v| format!("{key}={v}\r\n"))
+    };
+    format!(
+        "[ZoneTransfer]\r\nZoneId=3\r\n{}{}",
+        line("ReferrerUrl", referer),
+        line("HostUrl", url)
+    )
 }
 
 /// The quarantine value: flags, the time in hex, the agent.
@@ -77,7 +98,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.iso");
         std::fs::write(&path, b"x").unwrap();
-        match write_mark(&path, URL, Some(REFERER)) {
+        match write_mark(&path, Some(URL), Some(REFERER)) {
             Err(e)
                 if matches!(e.raw_os_error(), Some(code)
                     if code == libc::ENOTSUP || code == libc::EOPNOTSUPP) =>
@@ -93,10 +114,10 @@ mod tests {
             get("user.xdg.referrer.url").as_deref(),
             Some(REFERER.as_bytes())
         );
-        // Without a referer only the origin is set.
+        // Without a referer only the origin is set, without credentials.
         let bare = dir.path().join("bare");
         std::fs::write(&bare, b"x").unwrap();
-        mark_downloaded(&bare, URL, None);
+        mark_downloaded(&bare, "https://user:secret@example.com/x.iso", None);
         assert_eq!(
             xattr::get(&bare, "user.xdg.origin.url").unwrap().as_deref(),
             Some(URL.as_bytes())
@@ -110,7 +131,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.iso");
         std::fs::write(&path, b"x").unwrap();
-        write_mark(&path, URL, Some(REFERER)).unwrap();
+        write_mark(&path, Some(URL), Some(REFERER)).unwrap();
         let value = xattr::get(&path, "com.apple.quarantine")
             .unwrap()
             .expect("quarantine attribute is set");
@@ -125,7 +146,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.iso");
         std::fs::write(&path, b"x").unwrap();
-        write_mark(&path, URL, Some(REFERER)).unwrap();
+        write_mark(&path, Some(URL), Some(REFERER)).unwrap();
         let mut stream = path.as_os_str().to_owned();
         stream.push(":Zone.Identifier");
         let text = std::fs::read_to_string(std::path::PathBuf::from(stream)).unwrap();
@@ -138,13 +159,28 @@ mod tests {
     #[test]
     fn zone_identifier_format() {
         assert_eq!(
-            zone_identifier(URL, Some(REFERER)),
+            zone_identifier(Some(URL), Some(REFERER)),
             format!("[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl={REFERER}\r\nHostUrl={URL}\r\n")
         );
         assert_eq!(
-            zone_identifier(URL, None),
+            zone_identifier(Some(URL), None),
             format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={URL}\r\n")
         );
+    }
+
+    #[test]
+    fn credentials_are_left_out() {
+        assert_eq!(
+            without_credentials("https://user:pa%20ss@example.com:8443/a/x.iso?token=t#f")
+                .as_deref(),
+            Some("https://example.com:8443/a/x.iso?token=t#f")
+        );
+        assert_eq!(
+            without_credentials("ftp://user@example.com/x.iso").as_deref(),
+            Some("ftp://example.com/x.iso")
+        );
+        assert_eq!(without_credentials(URL).as_deref(), Some(URL));
+        assert_eq!(without_credentials("not a url"), None);
     }
 
     #[test]
