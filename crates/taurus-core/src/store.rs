@@ -29,7 +29,11 @@ pub enum JobState {
 #[derive(Clone, Debug, PartialEq)]
 pub struct JobRecord {
     pub id: JobId,
+    /// The link requested for the file: `source_url` after link fixups and
+    /// any confirm form.
     pub url: String,
+    /// The link exactly as the user gave it; resolved again on resume.
+    pub source_url: String,
     pub final_url: Option<String>,
     pub dest_dir: PathBuf,
     pub file_name: String,
@@ -48,6 +52,7 @@ pub struct JobRecord {
 
 pub struct NewJob {
     pub url: String,
+    pub source_url: String,
     pub dest_dir: PathBuf,
     pub file_name: String,
     pub connections: u32,
@@ -58,7 +63,7 @@ pub struct NewJob {
     pub queue_pos: i64,
 }
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE jobs (
@@ -109,6 +114,12 @@ CREATE TABLE host_flags (
 /// A learned connection limit older than this is forgotten: hosts change.
 const HOST_CAP_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
 
+/// Applied on top of v2: the user's own link, before fixups and forms.
+const MIGRATE_V2_TO_V3: &str = "
+ALTER TABLE jobs ADD COLUMN source_url TEXT;
+UPDATE jobs SET source_url = url;
+";
+
 const SETTINGS_KEY: &str = "settings";
 /// Where `load_settings_lenient` keeps saved settings it could not read.
 const UNREADABLE_SETTINGS_KEY: &str = "settings.unreadable";
@@ -116,7 +127,7 @@ const MEASURED_PEAK_KEY: &str = "measured_peak";
 
 const JOB_COLUMNS: &str = "id, url, final_url, dest_dir, file_name, state, total, resumable, \
                            etag, last_modified, connections, error_kind, error_detail, \
-                           mirrors, checksum, referer, queue_pos";
+                           mirrors, checksum, referer, queue_pos, source_url";
 
 impl JobState {
     fn as_str(self) -> &'static str {
@@ -211,9 +222,12 @@ fn job_from_row(row: &Row<'_>) -> rusqlite::Result<JobRecord> {
     let mirrors = serde_json::from_str(&mirrors).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(13, rusqlite::types::Type::Text, Box::new(e))
     })?;
+    let url: String = row.get(1)?;
+    let source_url: Option<String> = row.get(17)?;
     Ok(JobRecord {
         id: JobId(row.get(0)?),
-        url: row.get(1)?,
+        source_url: source_url.unwrap_or_else(|| url.clone()),
+        url,
         final_url: row.get(2)?,
         dest_dir: PathBuf::from(row.get::<_, String>(3)?),
         file_name: row.get(4)?,
@@ -257,15 +271,15 @@ fn init(path: &Path) -> rusqlite::Result<Connection> {
         )));
     }
     // Each upgrade is one transaction; a failure leaves the old version intact.
-    if version < 1 {
-        conn.execute_batch(&format!(
-            "BEGIN; {SCHEMA_V1} {MIGRATE_V1_TO_V2} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
-        ))?;
-    } else if version < 2 {
-        conn.execute_batch(&format!(
-            "BEGIN; {MIGRATE_V1_TO_V2} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
-        ))?;
-    }
+    let steps = match version {
+        0 => [SCHEMA_V1, MIGRATE_V1_TO_V2, MIGRATE_V2_TO_V3].concat(),
+        1 => [MIGRATE_V1_TO_V2, MIGRATE_V2_TO_V3].concat(),
+        2 => MIGRATE_V2_TO_V3.to_owned(),
+        _ => return Ok(conn),
+    };
+    conn.execute_batch(&format!(
+        "BEGIN; {steps} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+    ))?;
     Ok(conn)
 }
 
@@ -365,8 +379,8 @@ impl Store {
         let tx = conn.transaction().map_err(db_err)?;
         tx.execute(
             "INSERT INTO jobs (url, dest_dir, file_name, state, resumable, connections, \
-             created_at, updated_at, mirrors, checksum, referer, queue_pos) \
-             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?6, ?7, ?8, ?9, ?10)",
+             created_at, updated_at, mirrors, checksum, referer, queue_pos, source_url) \
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 job.url,
                 job.dest_dir.to_string_lossy(),
@@ -378,6 +392,7 @@ impl Store {
                 job.checksum,
                 job.referer,
                 job.queue_pos,
+                job.source_url,
             ],
         )
         .map_err(db_err)?;
@@ -412,8 +427,8 @@ impl Store {
             .map_err(db_err)
     }
 
-    /// Writes every mutable field of `job`. Updating a job that no longer
-    /// exists is a no-op.
+    /// Writes every mutable field of `job` (all but `id` and `source_url`).
+    /// Updating a job that no longer exists is a no-op.
     pub fn update_job(&self, job: &JobRecord) -> Result<(), CoreError> {
         let total = opt_to_i64(job.total, "total size")?;
         let (error_kind, error_detail) = match &job.error {
@@ -791,6 +806,7 @@ mod tests {
     fn new_job(name: &str, dest: &str) -> NewJob {
         NewJob {
             url: format!("http://example.test/{name}"),
+            source_url: format!("http://example.test/share/{name}"),
             dest_dir: PathBuf::from(dest),
             file_name: name.to_string(),
             connections: 8,
@@ -816,6 +832,7 @@ mod tests {
             JobRecord {
                 id,
                 url: "http://example.test/a.iso".into(),
+                source_url: "http://example.test/share/a.iso".into(),
                 final_url: None,
                 dest_dir: PathBuf::from("/data/dl"),
                 file_name: "a.iso".into(),
@@ -1045,11 +1062,11 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[test]
-    fn v1_database_migrates_to_v2() {
+    fn v1_database_migrates_to_v3() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("taurus.db");
         {
@@ -1076,6 +1093,7 @@ mod tests {
         assert_eq!(jobs.len(), 2);
         for job in &jobs {
             assert_eq!(job.mirrors, Vec::<String>::new());
+            assert_eq!(job.source_url, job.url);
             assert_eq!(job.queue_pos, job.id.0);
             assert_eq!((job.checksum.clone(), job.referer.clone()), (None, None));
             assert_eq!(job.state, JobState::Paused);
@@ -1085,7 +1103,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 2);
+            assert_eq!(version, 3);
             let other: String = conn
                 .query_row("SELECT value FROM settings WHERE key = 'other'", [], |r| {
                     r.get(0)
@@ -1097,6 +1115,58 @@ mod tests {
         // Reopening a migrated database is a no-op.
         drop(store);
         assert_eq!(Store::open(&path).unwrap().list_jobs().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn v2_database_migrates_to_v3() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taurus.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(MIGRATE_V1_TO_V2).unwrap();
+            conn.pragma_update(None, "user_version", 2).unwrap();
+            conn.execute(
+                "INSERT INTO jobs (url, dest_dir, file_name, state, connections, created_at, \
+                 updated_at, mirrors, referer, queue_pos) \
+                 VALUES ('http://a.test/x?confirm=t', '/d', 'x', 'paused', 4, 1, 1, \
+                 '[\"http://m.test/x\"]', 'http://page.test/', 7)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        let jobs = store.list_jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        let job = &jobs[0];
+        // Unknown before v3: the stored link is the best guess.
+        assert_eq!(job.source_url, "http://a.test/x?confirm=t");
+        assert_eq!(job.url, job.source_url);
+        assert_eq!(job.mirrors, ["http://m.test/x"]);
+        assert_eq!(job.referer.as_deref(), Some("http://page.test/"));
+        assert_eq!(job.queue_pos, 7);
+        let version: i64 = store
+            .lock()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        drop(store);
+        assert_eq!(Store::open(&path).unwrap().list_jobs().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn read_only_open_refuses_an_older_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taurus.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(MIGRATE_V1_TO_V2).unwrap();
+            conn.pragma_update(None, "user_version", 2).unwrap();
+        }
+        let err = Store::open_read_only(&path).err().unwrap();
+        assert!(err.detail.contains("older"), "{}", err.detail);
     }
 
     #[test]

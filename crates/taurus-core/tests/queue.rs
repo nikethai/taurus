@@ -412,6 +412,7 @@ fn seed_jobs(fx: &Fixture, spec: &FileSpec, jobs: &[(&str, JobState)]) -> Vec<Jo
             let id = store
                 .insert_job(&NewJob {
                     url: url.clone(),
+                    source_url: url.clone(),
                     dest_dir: fx.dest.clone(),
                     file_name: name.into(),
                     connections: 4,

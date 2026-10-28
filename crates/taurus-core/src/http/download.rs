@@ -308,7 +308,8 @@ async fn finish(
         ctx.store.update_job(job)?;
     }
     rename_with_retry(tapa, &path).await?;
-    system::mark_downloaded(&path, &job.url, job.referer.as_deref());
+    // The link the user gave, as a browser marks the page's link.
+    system::mark_downloaded(&path, &job.source_url, job.referer.as_deref());
     job.state = JobState::Completed;
     ctx.store.update_job(job)?;
     Ok(JobOutcome::Completed(path))
@@ -1208,6 +1209,7 @@ mod tests {
         let id = store
             .insert_job(&crate::store::NewJob {
                 url: "http://127.0.0.1:9/x.bin".into(),
+                source_url: "http://127.0.0.1:9/x.bin".into(),
                 dest_dir: dir.path().to_path_buf(),
                 file_name: "x.bin".into(),
                 connections: 2,

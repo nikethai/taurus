@@ -334,6 +334,7 @@ async fn open_turns_interrupted_jobs_into_paused() {
             let id = store
                 .insert_job(&NewJob {
                     url: "http://127.0.0.1:9/x.bin".into(),
+                    source_url: "http://127.0.0.1:9/x.bin".into(),
                     dest_dir: fx.dest.clone(),
                     file_name: "x.bin".into(),
                     connections: 4,
@@ -480,6 +481,62 @@ async fn add_through_confirm_form_downloads_the_file() {
     assert_eq!(view(&engine, id).url, format!("{file}?confirm=t"));
     assert_eq!(fx.server.requests("/view"), 1);
     assert_file(&fx.dest.join("x.bin"), &spec);
+    // The link as added is kept, and is what the file is marked with.
+    assert_eq!(view(&engine, id).source_url, page);
+    assert_eq!(fx.stored(id).source_url, page);
+    assert_marked(&fx.dest.join("x.bin"), &page);
+}
+
+/// Asserts the xdg origin mark where the file system has user xattrs.
+#[cfg(target_os = "linux")]
+fn assert_marked(path: &Path, url: &str) {
+    if let Err(e) = xattr::set(path, "user.taurus.probe", b"1") {
+        eprintln!("not checking the mark: no user xattrs here ({e})");
+        return;
+    }
+    assert_eq!(
+        xattr::get(path, "user.xdg.origin.url").unwrap().as_deref(),
+        Some(url.as_bytes())
+    );
+}
+
+/// Each OS's own mark has unit tests in `system::marks`.
+#[cfg(not(target_os = "linux"))]
+fn assert_marked(_path: &Path, _url: &str) {}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resume_resolves_the_link_as_added() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let form = |to: &str, token: &str| {
+        format!(
+            r#"<form action="{to}"><input type="hidden" name="confirm" value="{token}"></form>"#
+        )
+    };
+    let page = fx.server.serve_page("/view", 200, &[], &form(PATH, "t"));
+    let spec = throttled(20 * MIB);
+    fx.server.serve(PATH, spec.clone());
+    let id = engine.add(fx.request(&page)).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    engine.pause(id).await.unwrap();
+
+    // The page now hands out another link; the old one has expired.
+    fx.server
+        .serve_page("/view", 200, &[], &form("/y.bin", "u"));
+    fx.server.serve_page(PATH, 410, &[], "gone");
+    let fresh = fx.server.serve("/y.bin", unthrottled(&spec));
+    engine.resume(id).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("x.bin"), &spec);
+    let v = view(&engine, id);
+    assert_eq!(v.url, format!("{fresh}?confirm=u"));
+    assert_eq!(v.source_url, page);
+    assert_eq!(fx.stored(id).url, format!("{fresh}?confirm=u"));
+    assert_eq!(
+        fx.server.requests(PATH),
+        0,
+        "the expired link was requested"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

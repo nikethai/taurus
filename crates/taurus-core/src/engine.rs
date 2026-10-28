@@ -88,7 +88,11 @@ pub struct AddRequest {
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct JobView {
     pub id: JobId,
+    /// The link requested for the file (after link fixups and any confirm
+    /// form).
     pub url: String,
+    /// The link as it was added.
+    pub source_url: String,
     pub file_name: String,
     pub dest_dir: PathBuf,
     pub state: JobState,
@@ -379,9 +383,9 @@ impl Engine {
         self.call(|reply| Command::Pause { id, reply }).await?
     }
 
-    /// Re-resolves the job's URL (with its Referer) and continues it from
-    /// the link that serves the file now (a confirm form may hand out a fresh
-    /// one). If the file changed on the
+    /// Re-resolves the job's link as it was added (after link fixups, with
+    /// its Referer) and continues it from the link that serves the file now
+    /// (a confirm form may hand out a fresh one). If the file changed on the
     /// server (validators or size) or the download cannot be
     /// resumed, it restarts from zero; a change is noted as the job's error
     /// (`FileChangedOnServer`) while it downloads. The job is queued, like a
@@ -397,7 +401,12 @@ impl Engine {
         }
         // Mirrors are not checked again: one that fails is dropped while
         // the job runs.
-        let probe = resolve(&self.client, &job.url, job.referer.as_deref()).await?;
+        let probe = resolve(
+            &self.client,
+            &fixed_url(&job.source_url),
+            job.referer.as_deref(),
+        )
+        .await?;
         self.call(|reply| Command::Resume { id, probe, reply })
             .await?
     }
@@ -656,6 +665,7 @@ impl Actor {
         let url = probe.requested_url.to_string();
         let id = self.store.insert_job(&NewJob {
             url: url.clone(),
+            source_url: req.url.clone(),
             dest_dir: req.dest_dir.clone(),
             file_name: file_name.clone(),
             connections,
@@ -667,6 +677,7 @@ impl Actor {
         let mut job = JobRecord {
             id,
             url,
+            source_url: req.url,
             final_url: None,
             dest_dir: req.dest_dir,
             file_name,
@@ -1267,6 +1278,7 @@ fn view_of(job: &JobRecord, downloaded: u64) -> JobView {
     JobView {
         id: job.id,
         url: job.url.clone(),
+        source_url: job.source_url.clone(),
         file_name: job.file_name.clone(),
         dest_dir: job.dest_dir.clone(),
         state: job.state,

@@ -47,6 +47,7 @@ impl Fixture {
         let id = self
             .store
             .insert_job(&NewJob {
+                source_url: url.clone(),
                 url,
                 dest_dir: self.dest.clone(),
                 file_name: file_name.into(),

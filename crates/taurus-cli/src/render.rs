@@ -171,6 +171,7 @@ mod tests {
         JobView {
             id: JobId(7),
             url: "http://example.test/x.bin".to_string(),
+            source_url: "http://example.test/x.bin".to_string(),
             file_name: "x.bin".to_string(),
             dest_dir: PathBuf::from("out"),
             state,
