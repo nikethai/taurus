@@ -51,7 +51,7 @@ pub async fn resolve(
         let content_type = header(response.headers(), CONTENT_TYPE);
         if !page::is_html(content_type.as_deref()) {
             let status = response.status();
-            if page::is_bot_check(status.as_u16(), response.headers(), "") {
+            if page::is_challenge_header(response.headers()) {
                 return Err(bot_check_error(status));
             }
             let final_url = response.url().clone();

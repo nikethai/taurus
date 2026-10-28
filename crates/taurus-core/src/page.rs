@@ -36,21 +36,26 @@ pub fn is_html(content_type: Option<&str>) -> bool {
     })
 }
 
-/// A Cloudflare challenge: `cf-mitigated: challenge`, or a Cloudflare server
-/// whose page shows a challenge. An empty `body` means it was not read (a
-/// segment response): then a Cloudflare HTML 403/503 counts.
-pub fn is_bot_check(status: u16, headers: &HeaderMap, body: &str) -> bool {
-    let value = |name| headers.get(name).and_then(|v| v.to_str().ok());
-    if value("cf-mitigated").is_some_and(|v| v.trim().eq_ignore_ascii_case("challenge")) {
+/// A Cloudflare challenge, at any status: [`is_challenge_header`], or a
+/// Cloudflare server whose page shows a challenge.
+pub fn is_bot_check(_status: u16, headers: &HeaderMap, body: &str) -> bool {
+    if is_challenge_header(headers) {
         return true;
     }
-    if !value("server").is_some_and(|v| v.to_ascii_lowercase().contains("cloudflare")) {
-        return false;
-    }
-    if body.is_empty() {
-        return matches!(status, 403 | 503) && is_html(value("content-type"));
-    }
-    body.contains("Just a moment") || body.contains("challenge-platform")
+    let cloudflare = headers
+        .get("server")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("cloudflare"));
+    cloudflare && (body.contains("Just a moment") || body.contains("challenge-platform"))
+}
+
+/// `cf-mitigated: challenge`: the bot check visible without reading a body,
+/// and the only one a segment response is judged by.
+pub fn is_challenge_header(headers: &HeaderMap) -> bool {
+    headers
+        .get("cf-mitigated")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("challenge"))
 }
 
 /// Judges an HTML answer to a request for `requested`. Rules 1-2 (bot check,
@@ -211,17 +216,18 @@ mod tests {
     }
 
     #[test]
-    fn cloudflare_html_error_without_body_is_bot_check() {
-        // Segment responses are judged on headers alone (empty body).
+    fn only_the_challenge_header_counts_without_a_body() {
+        // Behind Cloudflare every answer says `server: cloudflare`, including
+        // the origin's own 403/503 pages.
         let h = headers(&[("server", "cloudflare"), ("content-type", "text/html")]);
-        assert!(is_bot_check(403, &h, ""));
-        assert!(is_bot_check(503, &h, ""));
-        assert!(!is_bot_check(200, &h, ""));
-        let binary = headers(&[
-            ("server", "cloudflare"),
-            ("content-type", "application/zip"),
-        ]);
-        assert!(!is_bot_check(403, &binary, ""));
+        assert!(!is_challenge_header(&h));
+        assert!(!is_bot_check(403, &h, ""));
+        assert!(!is_bot_check(503, &h, ""));
+        assert!(is_challenge_header(&headers(&[(
+            "cf-mitigated",
+            "Challenge"
+        )])));
+        assert!(!is_challenge_header(&headers(&[("cf-mitigated", "none")])));
     }
 
     #[test]

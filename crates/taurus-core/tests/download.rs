@@ -507,6 +507,11 @@ async fn resolve_keeps_status_errors_for_error_pages() {
         .server
         .serve_page("/gone.iso", 404, &[], "<html><body>Not Found</body></html>");
     assert_eq!(resolve_err(&url).await.kind, ErrorKind::LinkExpired);
+    // The origin's own overload page behind Cloudflare is no bot check.
+    let cloudflare = [("server", "cloudflare")];
+    let busy = "<html><body>Service Unavailable</body></html>";
+    let url = fx.server.serve_page("/busy.iso", 503, &cloudflare, busy);
+    assert_eq!(resolve_err(&url).await.kind, ErrorKind::RateLimited);
 }
 
 #[tokio::test]
@@ -569,4 +574,28 @@ async fn bot_check_mid_download_fails() {
         JobOutcome::Failed(e) => assert_eq!(e.kind, ErrorKind::BlockedByBotCheck),
         other => panic!("expected Failed, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cloudflare_error_page_mid_download_is_retried() {
+    let fx = Fixture::new().await;
+    let healthy = FileSpec::new(8 * MIB);
+    let mut spec = healthy.clone();
+    // The origin is overloaded: an HTML 503 through Cloudflare, no challenge.
+    spec.fail_after = Some(html_after(
+        3,
+        503,
+        &[("server", "cloudflare"), ("content-type", "text/html")],
+    ));
+    let id = fx.add(&spec, 16);
+    let server = &fx.server;
+    let recover = async {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        server.replace(PATH, healthy.clone());
+    };
+
+    let (outcome, ()) = tokio::join!(fx.run(id, CancellationToken::new()), recover);
+    // Retried as transient until the origin recovered, not stopped as a bot check.
+    assert_completed(outcome, &healthy);
+    assert!(fx.server.requests(PATH) > 8);
 }

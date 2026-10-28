@@ -631,7 +631,8 @@ impl Worker {
     ) -> Result<Option<WorkerEnd>, CoreError> {
         let status = response.status();
         let headers = response.headers();
-        if page::is_bot_check(status.as_u16(), headers, "") {
+        // Bodies are not read here, so only the header can tell.
+        if page::is_challenge_header(headers) {
             return Err(bot_check_error(status));
         }
         // The probe never admits an HTML job, so a page here is not the file.
