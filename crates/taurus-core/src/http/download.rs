@@ -4,9 +4,16 @@
 //! handle. A worker reports a segment's `done` only after `sync_data`, and the
 //! job loop commits it to the store, so recorded progress never exceeds the
 //! bytes on disk.
+//!
+//! A host that refuses extra connections (429, 503 or 403 while another of
+//! the job's responses is being served) lowers the job's worker cap instead
+//! of failing it; the cap is remembered per host for the next job. A round
+//! starts one worker and the rest once that one is served, so the host's
+//! first refusals already come while a response is open.
 
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -46,6 +53,17 @@ pub struct JobContext {
     /// Shared with every other job: the user's speed limit.
     pub limiter: Limiter,
     pub timing: Timing,
+}
+
+/// The key a host's learned connection limit is stored under: the host,
+/// lower-cased, plus `:port` when the URL names a port. `None` without a host.
+pub fn host_key(url: &str) -> Option<String> {
+    let url = url::Url::parse(url).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    Some(match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
 }
 
 #[derive(Debug)]
@@ -88,8 +106,17 @@ async fn drive(ctx: &JobContext, job: &mut JobRecord) -> Result<JobOutcome, Core
         .dest_dir
         .join(format!("{}.{PARTIAL_EXT}", job.file_name));
     let mut segments = prepare(ctx, job, &tapa).await?;
+    let host = host_key(job.final_url.as_deref().unwrap_or(&job.url));
+    let learned = match &host {
+        Some(host) => ctx.store.host_cap(host)?,
+        None => None,
+    };
+    let mut limit = HostLimit {
+        host,
+        cap: job.connections.min(learned.unwrap_or(u32::MAX)).max(1) as usize,
+    };
     loop {
-        let end = run_round(ctx, job, &tapa, &mut segments).await;
+        let end = run_round(ctx, job, &tapa, &mut segments, &mut limit).await;
         let committed = ctx.store.commit_progress(job.id, &segments);
         if let RoundEnd::Failed(e) = end {
             return Err(e);
@@ -248,6 +275,13 @@ async fn rename_with_retry(from: &Path, to: &Path) -> Result<(), CoreError> {
     }
 }
 
+/// How many workers a job may run against its host.
+struct HostLimit {
+    /// Where a lowered cap is remembered; `None` if the URL has no host.
+    host: Option<String>,
+    cap: usize,
+}
+
 enum RoundEnd {
     /// Every segment is complete.
     Done,
@@ -257,12 +291,14 @@ enum RoundEnd {
 }
 
 /// Runs workers for the given segments until all finish or the round stops;
-/// `segments` comes back with the durable progress of every worker.
+/// `segments` comes back with the durable progress of every worker, `limit`
+/// with the cap the host allowed.
 async fn run_round(
     ctx: &JobContext,
     job: &JobRecord,
     tapa: &Path,
     segments: &mut Vec<Segment>,
+    limit: &mut HostLimit,
 ) -> RoundEnd {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut round = Round {
@@ -274,6 +310,9 @@ async fn run_round(
         tx,
         stop: ctx.cancel.child_token(),
         end: None,
+        limit,
+        open: Arc::default(),
+        ramping: true,
     };
     let mut meter = ProgressMeter::new();
     let mut tick = tokio::time::interval(PROGRESS_TICK);
@@ -282,13 +321,13 @@ async fn run_round(
         tokio::select! {
             // Durable reports first: a worker's last reports precede its exit.
             biased;
-            Some(report) = rx.recv() => round.on_durable(report),
+            Some(report) = rx.recv() => round.on_report(report),
             Some(joined) = round.workers.join_next() => round.on_exit(joined),
             _ = tick.tick() => round.report_progress(&mut meter),
         }
     }
     while let Ok(report) = rx.try_recv() {
-        round.on_durable(report);
+        round.on_report(report);
     }
     *segments = round.segments();
     match round.end {
@@ -340,9 +379,11 @@ impl Slot {
     }
 }
 
-struct Durable {
-    idx: usize,
-    done: u64,
+enum Report {
+    /// Segment `idx` is durable up to `done`.
+    Durable { idx: usize, done: u64 },
+    /// A worker started reading a 206 response.
+    Opened,
 }
 
 struct Round<'a> {
@@ -351,16 +392,25 @@ struct Round<'a> {
     tapa: &'a Path,
     slots: Vec<Slot>,
     workers: JoinSet<(usize, WorkerExit)>,
-    tx: mpsc::UnboundedSender<Durable>,
+    tx: mpsc::UnboundedSender<Report>,
     /// Stops this round's workers; a child of the job's cancel token.
     stop: CancellationToken,
     /// Why the round stops early; the first reason wins.
     end: Option<RoundEnd>,
+    limit: &'a mut HostLimit,
+    /// The workers' 206 responses currently being read.
+    open: Arc<AtomicUsize>,
+    /// Only one worker runs until a response opens or a worker exits.
+    ramping: bool,
 }
 
 impl Round<'_> {
     fn segments(&self) -> Vec<Segment> {
         self.slots.iter().map(|s| s.seg).collect()
+    }
+
+    fn running(&self) -> usize {
+        self.slots.iter().filter(|s| s.running).count()
     }
 
     fn stop_with(&mut self, end: RoundEnd) {
@@ -378,9 +428,18 @@ impl Round<'_> {
         }
     }
 
-    fn on_durable(&mut self, report: Durable) {
-        self.slots[report.idx].seg.done = report.done;
-        self.commit();
+    fn on_report(&mut self, report: Report) {
+        match report {
+            Report::Durable { idx, done } => {
+                self.slots[idx].seg.done = done;
+                self.commit();
+            }
+            Report::Opened if self.ramping => {
+                self.ramping = false;
+                self.fill_idle_slots();
+            }
+            Report::Opened => {}
+        }
     }
 
     fn on_exit(&mut self, joined: Result<(usize, WorkerExit), JoinError>) {
@@ -391,6 +450,7 @@ impl Round<'_> {
                 return self.stop_with(RoundEnd::Failed(error(ErrorKind::Unknown, detail)));
             }
         };
+        self.ramping = false;
         let slot = &mut self.slots[idx];
         slot.running = false;
         slot.seg.done = exit.done;
@@ -401,18 +461,47 @@ impl Round<'_> {
                 self.fill_idle_slots();
             }
             WorkerEnd::Cancelled => {}
+            WorkerEnd::ConnectionLimit => {
+                // The segment waits, idle, for a worker under the new cap.
+                self.lower_cap(self.running() + 1);
+                self.fill_idle_slots();
+            }
             WorkerEnd::Fallback => self.stop_with(RoundEnd::Fallback),
             WorkerEnd::Failed(e) => self.stop_with(RoundEnd::Failed(e)),
         }
     }
 
-    /// Starts workers up to the connection limit: unfinished segments first,
-    /// then (resumable jobs only) new segments stolen from the largest one.
+    /// The host refused a connection while `active` workers (the refused
+    /// one included) were running: allow one fewer from now on, and remember
+    /// that for the host if it is lower than what was known.
+    fn lower_cap(&mut self, active: usize) {
+        let cap = self.limit.cap.min(active.saturating_sub(1).max(1));
+        self.limit.cap = cap;
+        tracing::info!(job = self.job.id.0, cap, "host refused a connection");
+        let Some(host) = &self.limit.host else { return };
+        let cap = u32::try_from(cap).unwrap_or(u32::MAX);
+        // Remembering the limit only saves the next job some refusals.
+        let remembered = self.ctx.store.host_cap(host).and_then(|known| {
+            if known.is_none_or(|known| cap < known) {
+                self.ctx.store.set_host_cap(host, cap)
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(e) = remembered {
+            tracing::warn!(
+                job = self.job.id.0,
+                "could not remember the limit of {host}: {e}"
+            );
+        }
+    }
+
+    /// Starts workers up to the connection cap (one while ramping up):
+    /// unfinished segments first, then (resumable jobs only) new segments
+    /// stolen from the largest one.
     fn fill_idle_slots(&mut self) {
-        let max_workers = self.job.connections.max(1) as usize;
-        while !self.stop.is_cancelled()
-            && self.slots.iter().filter(|s| s.running).count() < max_workers
-        {
+        let cap = if self.ramping { 1 } else { self.limit.cap };
+        while !self.stop.is_cancelled() && self.running() < cap {
             let idle = self.slots.iter().position(|s| !s.running && !s.complete);
             let next = match idle {
                 Some(idx) => idx,
@@ -483,6 +572,7 @@ impl Round<'_> {
             tx: self.tx.clone(),
             limiter: self.ctx.limiter.clone(),
             timing: self.ctx.timing.clone(),
+            open: self.open.clone(),
         };
         self.workers.spawn(async move { (idx, worker.run().await) });
     }
@@ -507,6 +597,9 @@ struct WorkerExit {
 enum WorkerEnd {
     Complete,
     Cancelled,
+    /// The host refused this connection while serving another of the job's:
+    /// the segment waits for a free worker. Not a failed attempt.
+    ConnectionLimit,
     /// A ranged request got the whole file; the job must restart unranged.
     Fallback,
     Failed(CoreError),
@@ -526,9 +619,11 @@ struct Worker {
     resumable: bool,
     total: Option<u64>,
     stop: CancellationToken,
-    tx: mpsc::UnboundedSender<Durable>,
+    tx: mpsc::UnboundedSender<Report>,
     limiter: Limiter,
     timing: Timing,
+    /// The job's 206 responses being read, this worker's included.
+    open: Arc<AtomicUsize>,
 }
 
 impl Worker {
@@ -599,6 +694,12 @@ impl Worker {
         if let Some(end) = self.check_response(&response, end)? {
             return Ok(end);
         }
+        // Counted before it is announced, so the workers it lets start see it.
+        let _open = (response.status() == StatusCode::PARTIAL_CONTENT).then(|| {
+            let open = OpenResponse::enter(&self.open);
+            let _ = self.tx.send(Report::Opened);
+            open
+        });
         loop {
             let chunk = tokio::select! {
                 _ = self.stop.cancelled() => return Ok(WorkerEnd::Cancelled),
@@ -663,6 +764,15 @@ impl Worker {
                 ErrorKind::CaptivePortal,
                 format!("server sent a web page instead of file data (HTTP {status})"),
             ));
+        }
+        // Another worker's response is being served, so the host is up: it
+        // limits connections. (This worker holds no open response here.)
+        if matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE | StatusCode::FORBIDDEN
+        ) && self.open.load(Ordering::SeqCst) > 0
+        {
+            return Ok(Some(WorkerEnd::ConnectionLimit));
         }
         if !status.is_success() {
             return Err(status_error(status));
@@ -734,10 +844,26 @@ impl Worker {
     }
 
     fn report(&self) {
-        let _ = self.tx.send(Durable {
+        let _ = self.tx.send(Report::Durable {
             idx: self.idx,
             done: self.synced - self.start,
         });
+    }
+}
+
+/// Counts one 206 response in the job's open responses while held.
+struct OpenResponse(Arc<AtomicUsize>);
+
+impl OpenResponse {
+    fn enter(open: &Arc<AtomicUsize>) -> OpenResponse {
+        open.fetch_add(1, Ordering::SeqCst);
+        OpenResponse(open.clone())
+    }
+}
+
+impl Drop for OpenResponse {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -905,6 +1031,7 @@ mod tests {
         };
         let (tx, _rx) = mpsc::unbounded_channel();
         let tapa = dir.path().join("x.bin.tapa");
+        let mut limit = HostLimit { host: None, cap: 2 };
         let mut round = Round {
             ctx: &ctx,
             job: &job,
@@ -914,11 +1041,32 @@ mod tests {
             tx,
             stop: CancellationToken::new(),
             end: None,
+            limit: &mut limit,
+            open: Arc::default(),
+            ramping: false,
         };
 
         assert!(round.steal().is_err());
         assert_eq!(round.segments(), [whole]);
         assert_eq!(round.slots[0].live(), whole);
+    }
+
+    #[test]
+    fn host_key_is_lowercase_host_and_explicit_port() {
+        assert_eq!(
+            host_key("https://CDN.Example.com/a.bin").as_deref(),
+            Some("cdn.example.com")
+        );
+        assert_eq!(
+            host_key("http://127.0.0.1:8080/a.bin").as_deref(),
+            Some("127.0.0.1:8080")
+        );
+        // The scheme's default port is not explicit.
+        assert_eq!(
+            host_key("https://example.com:443/a").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(host_key("not a url"), None);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use taurus_core::errors::ErrorKind;
-use taurus_core::http::{JobContext, JobOutcome, build_client, probe, resolve, run_job};
+use taurus_core::http::{JobContext, JobOutcome, build_client, host_key, probe, resolve, run_job};
 use taurus_core::limit::Limiter;
 use taurus_core::store::{JobId, JobState, NewJob, Store};
 use taurus_core::timing::Timing;
@@ -37,13 +37,18 @@ impl Fixture {
 
     /// Serves `spec` and inserts a job for it carrying the spec's probe fields.
     fn add(&self, spec: &FileSpec, connections: u32) -> JobId {
-        let url = self.server.serve(PATH, spec.clone());
+        self.add_at(PATH, "x.bin", spec, connections)
+    }
+
+    /// `add`, for a file at `path` saved as `file_name`.
+    fn add_at(&self, path: &str, file_name: &str, spec: &FileSpec, connections: u32) -> JobId {
+        let url = self.server.serve(path, spec.clone());
         let id = self
             .store
             .insert_job(&NewJob {
                 url,
                 dest_dir: self.dest.clone(),
-                file_name: "x.bin".into(),
+                file_name: file_name.into(),
                 connections,
                 mirrors: Vec::new(),
                 checksum: None,
@@ -60,6 +65,10 @@ impl Fixture {
     }
 
     async fn run(&self, id: JobId, cancel: CancellationToken) -> JobOutcome {
+        self.run_with(id, cancel, Timing::default()).await
+    }
+
+    async fn run_with(&self, id: JobId, cancel: CancellationToken, timing: Timing) -> JobOutcome {
         let (progress, _progress_rx) = mpsc::unbounded_channel();
         let ctx = JobContext {
             id,
@@ -68,7 +77,7 @@ impl Fixture {
             cancel,
             progress,
             limiter: Limiter::new(None),
-            timing: Timing::default(),
+            timing,
         };
         tokio::time::timeout(Duration::from_secs(30), run_job(ctx))
             .await
@@ -602,4 +611,62 @@ async fn cloudflare_error_page_mid_download_is_retried() {
     // Retried as transient until the origin recovered, not stopped as a bot check.
     assert_completed(outcome, &healthy);
     assert!(fx.server.requests(PATH) > 8);
+}
+
+/// A host that serves two connections at once and refuses the rest with
+/// `over_limit_status`: the job finishes on fewer connections and the next
+/// download from that host stays within the learned limit.
+async fn learns_connection_limit(over_limit_status: u16) {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(20 * MIB);
+    spec.max_concurrent = Some(2);
+    spec.over_limit_status = over_limit_status;
+    // Paced, so the accepted responses are still open when extras are refused.
+    spec.bytes_per_sec = Some(16 * MIB as u64);
+    let id = fx.add(&spec, 16);
+
+    assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    assert!(fx.server.over_limit_rejections(PATH) > 0);
+    let job = fx.store.get_job(id).unwrap().unwrap();
+    assert_eq!(job.error, None);
+    let host = host_key(&job.url).unwrap();
+    let cap = fx.store.host_cap(&host).unwrap();
+    assert!(matches!(cap, Some(1 | 2)), "learned cap {cap:?}");
+
+    let mut next = FileSpec::new(20 * MIB);
+    next.seed = 7;
+    next.max_concurrent = Some(2);
+    next.over_limit_status = over_limit_status;
+    let id = fx.add_at("/y.bin", "y.bin", &next, 16);
+    assert_completed(fx.run(id, CancellationToken::new()).await, &next);
+    assert_eq!(fx.server.over_limit_rejections("/y.bin"), 0);
+    assert!(fx.server.peak_concurrency("/y.bin") <= 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connection_limit_is_learned() {
+    learns_connection_limit(429).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connection_limit_is_learned_with_403() {
+    learns_connection_limit(403).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn single_connection_429_is_still_rate_limited() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(2 * MIB);
+    spec.fail_first = vec![429; 50];
+    let id = fx.add(&spec, 1);
+
+    let outcome = fx
+        .run_with(id, CancellationToken::new(), Timing::fast_for_tests())
+        .await;
+    match outcome {
+        JobOutcome::Failed(e) => assert_eq!(e.kind, ErrorKind::RateLimited),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    let url = fx.store.get_job(id).unwrap().unwrap().url;
+    assert_eq!(fx.store.host_cap(&host_key(&url).unwrap()).unwrap(), None);
 }
