@@ -46,6 +46,10 @@ pub struct EngineConfig {
     pub timing: Timing,
     /// Whether when-done actions that touch the OS really run.
     pub power: PowerMode,
+    /// Whether the queue runs on its own. Without it, no job starts, is
+    /// retried or is restored to the queue unless `start_now` starts it:
+    /// for short-lived front ends that only look at or edit the jobs.
+    pub autostart: bool,
 }
 
 impl EngineConfig {
@@ -55,6 +59,7 @@ impl EngineConfig {
             data_dir: data_dir.into(),
             timing: Timing::default(),
             power: PowerMode::Execute,
+            autostart: true,
         }
     }
 }
@@ -188,7 +193,8 @@ impl Engine {
     /// Opens the database in `config.data_dir`, restores its jobs, applies
     /// the saved settings and starts the queue. Jobs recorded as Downloading
     /// (interrupted) become Paused; Waiting jobs are queued again at once,
-    /// with Queued ones.
+    /// with Queued ones. Without `config.autostart`, Queued and Waiting jobs
+    /// are left as stored.
     ///
     /// The engine holds `data_dir` exclusively until it shuts down or its
     /// last handle is dropped. While another engine (in any process) holds
@@ -215,7 +221,7 @@ impl Engine {
                     store.update_job(&job)?;
                 }
                 // The connection may well be back by now.
-                JobState::Waiting => {
+                JobState::Waiting if config.autostart => {
                     store.requeue(job.id)?;
                     job.state = JobState::Queued;
                     job.error = None;
@@ -247,6 +253,7 @@ impl Engine {
             next_retry_seq: 0,
             busy: false,
             stopping: false,
+            autostart: config.autostart,
             job_tx,
             job_rx,
             timing: config.timing.clone(),
@@ -397,8 +404,8 @@ impl Engine {
 
     /// Saves the settings and applies them at once, also to running jobs,
     /// then emits `SettingsChanged`. A higher `max_active` starts more
-    /// Queued jobs; a lower one lets running jobs finish. Nothing changes if
-    /// saving fails.
+    /// Queued jobs; a lower one lets running jobs finish. A `max_active` of
+    /// 0 is refused. Nothing changes if saving fails.
     pub async fn set_settings(&self, settings: Settings) -> Result<(), CoreError> {
         self.call(|reply| Command::SetSettings { settings, reply })
             .await?
@@ -470,6 +477,8 @@ struct Actor {
     busy: bool,
     /// Shutting down: start nothing more.
     stopping: bool,
+    /// Whether jobs start and retry on their own; else only `start_now`.
+    autostart: bool,
     job_tx: mpsc::UnboundedSender<JobMsg>,
     job_rx: mpsc::UnboundedReceiver<JobMsg>,
     timing: Timing,
@@ -743,6 +752,13 @@ impl Actor {
     }
 
     fn set_settings(&mut self, settings: Settings) -> Result<(), CoreError> {
+        // Queued jobs, and their waiters, would wait for ever.
+        if settings.max_active == 0 {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: "max_active must be at least 1".to_string(),
+            });
+        }
         self.store.save_settings(&settings)?;
         self.limiter
             .set_rate(speed_limit(&settings, self.measured_peak));
@@ -795,6 +811,9 @@ impl Actor {
     }
 
     fn schedule(&mut self) {
+        if !self.autostart {
+            return;
+        }
         let max_active = usize::try_from(self.settings.max_active).unwrap_or(usize::MAX);
         if self.running.len() >= max_active {
             return;
@@ -1008,8 +1027,8 @@ impl Actor {
                 if let Err(e) = self.store.set_state(id, JobState::Waiting) {
                     tracing::warn!(job = id.0, "could not record the wait: {e}");
                 }
-                // On shutdown it stays Waiting, for the next open to queue.
-                if !self.stopping {
+                // On shutdown, or without autostart, it stays Waiting.
+                if !self.stopping && self.autostart {
                     let progressed =
                         run.is_some_and(|run| view.downloaded > run.downloaded_at_start);
                     self.retry_later(id, progressed);

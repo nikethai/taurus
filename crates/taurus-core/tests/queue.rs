@@ -389,15 +389,13 @@ async fn pausing_a_queued_job_holds_it_and_resume_requeues_it() {
     assert_eq!(wait(&engine, second).await, JobState::Completed);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn open_keeps_queued_and_waiting_jobs_and_starts_them() {
-    let fx = Fixture::new().await;
-    let spec = FileSpec::new(MIB);
-    let mut ids = Vec::new();
+/// Records a job per `(name, state)` straight in the database, as an
+/// earlier engine would have left it, each serving `spec` at `/<name>`.
+fn seed_jobs(fx: &Fixture, spec: &FileSpec, jobs: &[(&str, JobState)]) -> Vec<JobId> {
     fs::create_dir_all(fx.data_dir()).unwrap();
-    {
-        let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
-        for (name, state) in [("a.bin", JobState::Queued), ("b.bin", JobState::Waiting)] {
+    let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
+    jobs.iter()
+        .map(|&(name, state)| {
             let url = fx.server.serve(&format!("/{name}"), spec.clone());
             let id = store
                 .insert_job(&NewJob {
@@ -420,9 +418,20 @@ async fn open_keeps_queued_and_waiting_jobs_and_starts_them() {
                 job.error = Some((ErrorKind::ConnectionLost, "offline".into()));
             }
             store.update_job(&job).unwrap();
-            ids.push(id);
-        }
-    }
+            id
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn open_keeps_queued_and_waiting_jobs_and_starts_them() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(MIB);
+    let ids = seed_jobs(
+        &fx,
+        &spec,
+        &[("a.bin", JobState::Queued), ("b.bin", JobState::Waiting)],
+    );
 
     let engine = fx.engine().await;
     for id in ids {
@@ -433,6 +442,76 @@ async fn open_keeps_queued_and_waiting_jobs_and_starts_them() {
         let got = fs::read(fx.dest.join(name)).unwrap();
         assert_eq!(sha256_hex(&got), sha256_hex(&content(&spec)));
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_autostart_only_start_now_runs_jobs() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(MIB);
+    let seeded = seed_jobs(
+        &fx,
+        &spec,
+        &[("a.bin", JobState::Queued), ("b.bin", JobState::Waiting)],
+    );
+    let mut config = fx.config();
+    config.autostart = false;
+    let engine = Engine::open(config).await.unwrap();
+
+    // Nothing starts on open, on add, or on any other change.
+    let added = fx.add(&engine, "c.bin", &spec).await;
+    let probes = fx.server.requests("/c.bin");
+    engine
+        .set_settings(Settings {
+            max_active: 5,
+            ..Settings::default()
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Timing::fast_for_tests().waiting_retry_cap * 2).await;
+    let states: Vec<JobState> = engine.snapshot().iter().map(|v| v.state).collect();
+    assert_eq!(
+        states,
+        [JobState::Queued, JobState::Waiting, JobState::Queued]
+    );
+    assert_eq!(fx.server.requests("/a.bin"), 0);
+    assert_eq!(fx.server.requests("/b.bin"), 0);
+    assert_eq!(fx.server.requests("/c.bin"), probes);
+    assert!(!fx.dest.join("a.bin.tapa").exists());
+
+    engine.start_now(added).await.unwrap();
+    assert_eq!(wait(&engine, added).await, JobState::Completed);
+    assert_eq!(view(&engine, seeded[0]).state, JobState::Queued);
+    engine.shutdown().await.unwrap();
+
+    let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
+    let states: Vec<JobState> = store.list_jobs().unwrap().iter().map(|j| j.state).collect();
+    assert_eq!(
+        states,
+        [JobState::Queued, JobState::Waiting, JobState::Completed]
+    );
+    assert_eq!(fx.server.requests("/a.bin"), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn max_active_zero_is_rejected() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine_with_max(2).await;
+    let mut events = engine.subscribe();
+    let err = engine
+        .set_settings(Settings {
+            max_active: 0,
+            ..Settings::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (err.kind, err.detail.as_str()),
+        (ErrorKind::Unknown, "max_active must be at least 1")
+    );
+    assert_eq!(engine.settings().max_active, 2);
+    assert!(drain(&mut events).is_empty());
+    engine.shutdown().await.unwrap();
+    assert_eq!(fx.engine().await.settings().max_active, 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
