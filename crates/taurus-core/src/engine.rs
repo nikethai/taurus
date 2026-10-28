@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::filename::{PARTIAL_EXT, sanitize, unique_path};
+use crate::fixups;
 use crate::http::{JobContext, JobOutcome, Probe, build_client, resolve, run_job};
 use crate::plan::DEFAULT_CONNECTIONS;
 use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
@@ -209,7 +210,12 @@ impl Engine {
                 detail: format!("folder {} is not available", req.dest_dir.display()),
             });
         }
-        let probe = resolve(&self.client, &req.url, None).await?;
+        // An unparseable URL goes to `resolve` as is, which reports it.
+        let url = match url::Url::parse(&req.url) {
+            Ok(parsed) => fixups::rewrite(&parsed).unwrap_or(parsed).to_string(),
+            Err(_) => req.url.clone(),
+        };
+        let probe = resolve(&self.client, &url, None).await?;
         self.call(|reply| Command::Add { req, probe, reply })
             .await?
     }

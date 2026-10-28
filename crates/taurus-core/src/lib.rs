@@ -1,6 +1,7 @@
 pub mod engine;
 pub mod errors;
 pub mod filename;
+pub mod fixups;
 pub mod http;
 pub mod page;
 pub mod plan;
