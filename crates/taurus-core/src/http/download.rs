@@ -839,6 +839,10 @@ mod tests {
                 dest_dir: dir.path().to_path_buf(),
                 file_name: "x.bin".into(),
                 connections: 2,
+                mirrors: Vec::new(),
+                checksum: None,
+                referer: None,
+                queue_pos: 0,
             })
             .unwrap();
         let mut job = store.get_job(id).unwrap().unwrap();

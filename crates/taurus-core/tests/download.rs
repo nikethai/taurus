@@ -43,6 +43,10 @@ impl Fixture {
                 dest_dir: self.dest.clone(),
                 file_name: "x.bin".into(),
                 connections,
+                mirrors: Vec::new(),
+                checksum: None,
+                referer: None,
+                queue_pos: 0,
             })
             .unwrap();
         let mut job = self.store.get_job(id).unwrap().unwrap();

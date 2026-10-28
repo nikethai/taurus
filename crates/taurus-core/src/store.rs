@@ -9,6 +9,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::plan::Segment;
+use crate::settings::Settings;
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -20,6 +21,7 @@ pub enum JobState {
     Queued,
     Downloading,
     Paused,
+    Waiting,
     Completed,
     Failed,
 }
@@ -38,6 +40,10 @@ pub struct JobRecord {
     pub last_modified: Option<String>,
     pub connections: u32,
     pub error: Option<(ErrorKind, String)>,
+    pub mirrors: Vec<String>,
+    pub checksum: Option<String>,
+    pub referer: Option<String>,
+    pub queue_pos: i64,
 }
 
 pub struct NewJob {
@@ -45,9 +51,14 @@ pub struct NewJob {
     pub dest_dir: PathBuf,
     pub file_name: String,
     pub connections: u32,
+    pub mirrors: Vec<String>,
+    pub checksum: Option<String>,
+    pub referer: Option<String>,
+    /// 0 appends the job to the queue (its position becomes its id).
+    pub queue_pos: i64,
 }
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE jobs (
@@ -81,8 +92,26 @@ CREATE TABLE settings (
 );
 ";
 
+/// Applied on top of `SCHEMA_V1`, to fresh and existing v1 databases alike.
+const MIGRATE_V1_TO_V2: &str = "
+ALTER TABLE jobs ADD COLUMN mirrors TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE jobs ADD COLUMN checksum TEXT;
+ALTER TABLE jobs ADD COLUMN referer TEXT;
+ALTER TABLE jobs ADD COLUMN queue_pos INTEGER NOT NULL DEFAULT 0;
+UPDATE jobs SET queue_pos = id;
+CREATE TABLE host_flags (
+    host            TEXT PRIMARY KEY,
+    max_connections INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+";
+
+const SETTINGS_KEY: &str = "settings";
+const MEASURED_PEAK_KEY: &str = "measured_peak";
+
 const JOB_COLUMNS: &str = "id, url, final_url, dest_dir, file_name, state, total, resumable, \
-                           etag, last_modified, connections, error_kind, error_detail";
+                           etag, last_modified, connections, error_kind, error_detail, \
+                           mirrors, checksum, referer, queue_pos";
 
 impl JobState {
     fn as_str(self) -> &'static str {
@@ -90,6 +119,7 @@ impl JobState {
             Self::Queued => "queued",
             Self::Downloading => "downloading",
             Self::Paused => "paused",
+            Self::Waiting => "waiting",
             Self::Completed => "completed",
             Self::Failed => "failed",
         }
@@ -100,6 +130,7 @@ impl JobState {
             "queued" => Self::Queued,
             "downloading" => Self::Downloading,
             "paused" => Self::Paused,
+            "waiting" => Self::Waiting,
             "completed" => Self::Completed,
             "failed" => Self::Failed,
             _ => return None,
@@ -171,6 +202,10 @@ fn job_from_row(row: &Row<'_>) -> rusqlite::Result<JobRecord> {
     let error_kind: Option<String> = row.get(11)?;
     let error_detail: Option<String> = row.get(12)?;
     let error = error_kind.map(|k| (ErrorKind::from_str(&k), error_detail.unwrap_or_default()));
+    let mirrors: String = row.get(13)?;
+    let mirrors = serde_json::from_str(&mirrors).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(13, rusqlite::types::Type::Text, Box::new(e))
+    })?;
     Ok(JobRecord {
         id: JobId(row.get(0)?),
         url: row.get(1)?,
@@ -184,6 +219,10 @@ fn job_from_row(row: &Row<'_>) -> rusqlite::Result<JobRecord> {
         last_modified: row.get(9)?,
         connections,
         error,
+        mirrors,
+        checksum: row.get(14)?,
+        referer: row.get(15)?,
+        queue_pos: row.get(16)?,
     })
 }
 
@@ -212,9 +251,14 @@ fn init(path: &Path) -> rusqlite::Result<Connection> {
             "database schema version {version} is newer than supported version {SCHEMA_VERSION}"
         )));
     }
+    // Each upgrade is one transaction; a failure leaves the old version intact.
     if version < 1 {
         conn.execute_batch(&format!(
-            "BEGIN; {SCHEMA_V1} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+            "BEGIN; {SCHEMA_V1} {MIGRATE_V1_TO_V2} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+        ))?;
+    } else if version < 2 {
+        conn.execute_batch(&format!(
+            "BEGIN; {MIGRATE_V1_TO_V2} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
         ))?;
     }
     Ok(conn)
@@ -289,6 +333,16 @@ impl Store {
         if version < 1 {
             return Ok(None);
         }
+        // Only the instance holding the data dir may migrate it.
+        if version < SCHEMA_VERSION {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: format!(
+                    "database schema version {version} is older than {SCHEMA_VERSION}; \
+                     start taurus once (with no other instance running) to upgrade it"
+                ),
+            });
+        }
         Ok(Some(Store {
             conn: Arc::new(Mutex::new(conn)),
         }))
@@ -301,10 +355,13 @@ impl Store {
 
     pub fn insert_job(&self, job: &NewJob) -> Result<JobId, CoreError> {
         let now = now_secs();
-        let conn = self.lock();
-        conn.execute(
+        let mirrors = mirrors_json(&job.mirrors)?;
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(db_err)?;
+        tx.execute(
             "INSERT INTO jobs (url, dest_dir, file_name, state, resumable, connections, \
-             created_at, updated_at) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?6)",
+             created_at, updated_at, mirrors, checksum, referer, queue_pos) \
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?6, ?7, ?8, ?9, ?10)",
             params![
                 job.url,
                 job.dest_dir.to_string_lossy(),
@@ -312,10 +369,20 @@ impl Store {
                 JobState::Queued.as_str(),
                 job.connections,
                 now,
+                mirrors,
+                job.checksum,
+                job.referer,
+                job.queue_pos,
             ],
         )
         .map_err(db_err)?;
-        Ok(JobId(conn.last_insert_rowid()))
+        let id = tx.last_insert_rowid();
+        if job.queue_pos == 0 {
+            tx.execute("UPDATE jobs SET queue_pos = id WHERE id = ?1", [id])
+                .map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(JobId(id))
     }
 
     pub fn get_job(&self, id: JobId) -> Result<Option<JobRecord>, CoreError> {
@@ -348,11 +415,13 @@ impl Store {
             Some((kind, detail)) => (Some(kind.as_str()), Some(detail.as_str())),
             None => (None, None),
         };
+        let mirrors = mirrors_json(&job.mirrors)?;
         self.lock()
             .execute(
                 "UPDATE jobs SET url = ?2, final_url = ?3, dest_dir = ?4, file_name = ?5, \
                  state = ?6, total = ?7, resumable = ?8, etag = ?9, last_modified = ?10, \
-                 connections = ?11, error_kind = ?12, error_detail = ?13, updated_at = ?14 \
+                 connections = ?11, error_kind = ?12, error_detail = ?13, updated_at = ?14, \
+                 mirrors = ?15, checksum = ?16, referer = ?17, queue_pos = ?18 \
                  WHERE id = ?1",
                 params![
                     job.id.0,
@@ -369,6 +438,10 @@ impl Store {
                     error_kind,
                     error_detail,
                     now_secs(),
+                    mirrors,
+                    job.checksum,
+                    job.referer,
+                    job.queue_pos,
                 ],
             )
             .map_err(db_err)?;
@@ -495,6 +568,103 @@ impl Store {
         .collect::<rusqlite::Result<HashSet<_>>>()
         .map_err(db_err)
     }
+
+    /// The saved settings, or the defaults when none were saved. Unreadable
+    /// saved settings are an error, never silently reset.
+    pub fn load_settings(&self) -> Result<Settings, CoreError> {
+        match self.setting(SETTINGS_KEY)? {
+            None => Ok(Settings::default()),
+            Some(json) => serde_json::from_str(&json).map_err(|e| CoreError {
+                kind: ErrorKind::Unknown,
+                detail: format!("saved settings are unreadable: {e}"),
+            }),
+        }
+    }
+
+    pub fn save_settings(&self, s: &Settings) -> Result<(), CoreError> {
+        let json = serde_json::to_string(s).map_err(|e| CoreError {
+            kind: ErrorKind::Unknown,
+            detail: e.to_string(),
+        })?;
+        self.put_setting(SETTINGS_KEY, &json)
+    }
+
+    /// The best download speed seen so far (bytes/s) and when (unix secs).
+    pub fn measured_peak(&self) -> Result<Option<(u64, i64)>, CoreError> {
+        let Some(raw) = self.setting(MEASURED_PEAK_KEY)? else {
+            return Ok(None);
+        };
+        let parsed = raw
+            .split_once(',')
+            .and_then(|(bps, at)| Some((bps.parse().ok()?, at.parse().ok()?)));
+        parsed.map(Some).ok_or_else(|| CoreError {
+            kind: ErrorKind::Unknown,
+            detail: format!("saved measured peak {raw:?} is unreadable"),
+        })
+    }
+
+    pub fn save_measured_peak(&self, bps: u64, at: i64) -> Result<(), CoreError> {
+        self.put_setting(MEASURED_PEAK_KEY, &format!("{bps},{at}"))
+    }
+
+    /// The learned connection limit of `host` (`host[:port]`), if any.
+    pub fn host_cap(&self, host: &str) -> Result<Option<u32>, CoreError> {
+        let cap: Option<i64> = self
+            .lock()
+            .query_row(
+                "SELECT max_connections FROM host_flags WHERE host = ?1",
+                [host],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)?;
+        cap.map(|c| {
+            u32::try_from(c).map_err(|_| CoreError {
+                kind: ErrorKind::Unknown,
+                detail: format!("connection limit {c} of {host} is damaged"),
+            })
+        })
+        .transpose()
+    }
+
+    pub fn set_host_cap(&self, host: &str, cap: u32) -> Result<(), CoreError> {
+        self.lock()
+            .execute(
+                "INSERT INTO host_flags (host, max_connections, updated_at) \
+                 VALUES (?1, ?2, ?3) ON CONFLICT(host) DO UPDATE SET \
+                 max_connections = excluded.max_connections, updated_at = excluded.updated_at",
+                params![host, cap, now_secs()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    fn setting(&self, key: &str) -> Result<Option<String>, CoreError> {
+        self.lock()
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(db_err)
+    }
+
+    fn put_setting(&self, key: &str, value: &str) -> Result<(), CoreError> {
+        self.lock()
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+}
+
+fn mirrors_json(mirrors: &[String]) -> Result<String, CoreError> {
+    serde_json::to_string(mirrors).map_err(|e| CoreError {
+        kind: ErrorKind::Unknown,
+        detail: e.to_string(),
+    })
 }
 
 /// Encodes a segment as `(start, end, done)` column values; an end of
@@ -515,6 +685,7 @@ fn encode(seg: &Segment) -> Result<(i64, Option<i64>, i64), CoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{SpeedLimit, WhenDone};
 
     fn open_temp() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
@@ -528,6 +699,10 @@ mod tests {
             dest_dir: PathBuf::from(dest),
             file_name: name.to_string(),
             connections: 8,
+            mirrors: Vec::new(),
+            checksum: None,
+            referer: None,
+            queue_pos: 0,
         }
     }
 
@@ -556,6 +731,10 @@ mod tests {
                 last_modified: None,
                 connections: 8,
                 error: None,
+                mirrors: Vec::new(),
+                checksum: None,
+                referer: None,
+                queue_pos: id.0,
             }
         );
 
@@ -771,7 +950,183 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn v1_database_migrates_to_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taurus.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+            for name in ["a", "b"] {
+                conn.execute(
+                    "INSERT INTO jobs (url, dest_dir, file_name, state, connections, \
+                     created_at, updated_at) VALUES (?1, '/d', ?1, 'paused', 4, 1, 1)",
+                    [name],
+                )
+                .unwrap();
+            }
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('other', 'kept')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        let jobs = store.list_jobs().unwrap();
+        assert_eq!(jobs.len(), 2);
+        for job in &jobs {
+            assert_eq!(job.mirrors, Vec::<String>::new());
+            assert_eq!(job.queue_pos, job.id.0);
+            assert_eq!((job.checksum.clone(), job.referer.clone()), (None, None));
+            assert_eq!(job.state, JobState::Paused);
+        }
+        {
+            let conn = store.conn.lock().unwrap();
+            let version: i64 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(version, 2);
+            let other: String = conn
+                .query_row("SELECT value FROM settings WHERE key = 'other'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(other, "kept");
+        }
+        assert_eq!(store.host_cap("h").unwrap(), None);
+        // Reopening a migrated database is a no-op.
+        drop(store);
+        assert_eq!(Store::open(&path).unwrap().list_jobs().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn read_only_open_refuses_a_v1_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taurus.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+        }
+        let err = Store::open_read_only(&path).err().unwrap();
+        assert_eq!(err.kind, ErrorKind::Unknown);
+        assert!(err.detail.contains("older"), "{}", err.detail);
+        // Nothing was migrated behind the reader's back.
+        let conn = Connection::open(&path).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn settings_roundtrip() {
+        let (_dir, store) = open_temp();
+        assert_eq!(store.load_settings().unwrap(), Settings::default());
+
+        let s = Settings {
+            max_active: 7,
+            speed: SpeedLimit::Custom { bytes_per_sec: 42 },
+            when_done: WhenDone::Shutdown,
+            auto_checksum: false,
+            keep_awake: false,
+        };
+        store.save_settings(&s).unwrap();
+        assert_eq!(store.load_settings().unwrap(), s);
+        let s2 = Settings { max_active: 1, ..s };
+        store.save_settings(&s2).unwrap();
+        assert_eq!(store.load_settings().unwrap(), s2);
+
+        assert_eq!(store.measured_peak().unwrap(), None);
+        store.save_measured_peak(40_000_000, 1_700_000_000).unwrap();
+        assert_eq!(
+            store.measured_peak().unwrap(),
+            Some((40_000_000, 1_700_000_000))
+        );
+        store.save_measured_peak(5, 6).unwrap();
+        assert_eq!(store.measured_peak().unwrap(), Some((5, 6)));
+    }
+
+    #[test]
+    fn malformed_settings_are_an_error_not_a_reset() {
+        let (_dir, store) = open_temp();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('settings', 'not json')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('measured_peak', 'garbage')",
+                [],
+            )
+            .unwrap();
+        }
+        assert_eq!(store.load_settings().unwrap_err().kind, ErrorKind::Unknown);
+        assert_eq!(store.measured_peak().unwrap_err().kind, ErrorKind::Unknown);
+    }
+
+    #[test]
+    fn host_cap_roundtrip() {
+        let (_dir, store) = open_temp();
+        assert_eq!(store.host_cap("example.test").unwrap(), None);
+        store.set_host_cap("example.test", 2).unwrap();
+        store.set_host_cap("other.test:8080", 5).unwrap();
+        assert_eq!(store.host_cap("example.test").unwrap(), Some(2));
+        store.set_host_cap("example.test", 1).unwrap();
+        assert_eq!(store.host_cap("example.test").unwrap(), Some(1));
+        assert_eq!(store.host_cap("other.test:8080").unwrap(), Some(5));
+    }
+
+    #[test]
+    fn waiting_state_roundtrip() {
+        let (_dir, store) = open_temp();
+        let id = store.insert_job(&new_job("a", "/d")).unwrap();
+        let mut job = store.get_job(id).unwrap().unwrap();
+        job.state = JobState::Waiting;
+        store.update_job(&job).unwrap();
+        assert_eq!(store.get_job(id).unwrap().unwrap().state, JobState::Waiting);
+        let conn = store.conn.lock().unwrap();
+        let raw: String = conn
+            .query_row("SELECT state FROM jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(raw, "waiting");
+    }
+
+    #[test]
+    fn job_extras_roundtrip() {
+        let (_dir, store) = open_temp();
+        let id = store
+            .insert_job(&NewJob {
+                mirrors: vec!["http://m1.test/a".into(), "http://m2.test/a".into()],
+                checksum: Some("sha256:abcd".into()),
+                referer: Some("http://page.test/".into()),
+                queue_pos: 50,
+                ..new_job("a", "/d")
+            })
+            .unwrap();
+        let mut job = store.get_job(id).unwrap().unwrap();
+        assert_eq!(job.mirrors, ["http://m1.test/a", "http://m2.test/a"]);
+        assert_eq!(job.checksum.as_deref(), Some("sha256:abcd"));
+        assert_eq!(job.referer.as_deref(), Some("http://page.test/"));
+        assert_eq!(job.queue_pos, 50);
+
+        job.mirrors = vec!["http://m3.test/a".into()];
+        job.checksum = None;
+        job.referer = None;
+        job.queue_pos = 9;
+        store.update_job(&job).unwrap();
+        assert_eq!(store.get_job(id).unwrap().unwrap(), job);
+
+        // An explicit position of 0 means "append": it defaults to the new id.
+        let b = store.insert_job(&new_job("b", "/d")).unwrap();
+        assert_eq!(store.get_job(b).unwrap().unwrap().queue_pos, b.0);
     }
 
     #[test]

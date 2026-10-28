@@ -200,7 +200,9 @@ fn exit_code(state: JobState) -> ExitCode {
     match state {
         JobState::Completed => ExitCode::SUCCESS,
         JobState::Paused => ExitCode::from(2),
-        JobState::Failed | JobState::Queued | JobState::Downloading => ExitCode::FAILURE,
+        JobState::Failed | JobState::Queued | JobState::Waiting | JobState::Downloading => {
+            ExitCode::FAILURE
+        }
     }
 }
 

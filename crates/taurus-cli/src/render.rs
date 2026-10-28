@@ -63,7 +63,9 @@ pub fn outcome_line(view: &JobView) -> String {
             Some((kind, detail)) => format!("Failed: {kind:?}: {detail}"),
             None => "Failed".to_string(),
         },
-        JobState::Queued | JobState::Downloading => format!("{:?}", view.state),
+        JobState::Queued | JobState::Waiting | JobState::Downloading => {
+            format!("{:?}", view.state)
+        }
     }
 }
 

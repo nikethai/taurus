@@ -24,6 +24,7 @@ pub enum ErrorKind {
     ToolMissing,
     ToolFailed,
     SiteNotSupported,
+    ChecksumMismatch,
     Unknown,
 }
 
@@ -55,6 +56,7 @@ impl ErrorKind {
             Self::ToolMissing => "tool_missing",
             Self::ToolFailed => "tool_failed",
             Self::SiteNotSupported => "site_not_supported",
+            Self::ChecksumMismatch => "checksum_mismatch",
             Self::Unknown => "unknown",
         }
     }
@@ -79,6 +81,7 @@ impl ErrorKind {
             "tool_missing" => Self::ToolMissing,
             "tool_failed" => Self::ToolFailed,
             "site_not_supported" => Self::SiteNotSupported,
+            "checksum_mismatch" => Self::ChecksumMismatch,
             _ => Self::Unknown,
         }
     }
@@ -129,10 +132,21 @@ pub fn classify_io(e: &std::io::Error) -> ErrorKind {
 /// Delay before retry number `attempt` (0-based): 500 ms doubling per attempt,
 /// capped at 30 s, with +-20% jitter; the result never exceeds 30 s.
 pub fn backoff_delay(attempt: u32) -> Duration {
+    backoff_delay_with(
+        attempt,
+        Duration::from_millis(BACKOFF_BASE_MS),
+        Duration::from_millis(BACKOFF_CAP_MS),
+    )
+}
+
+/// Like [`backoff_delay`] with a chosen `base` and `cap`.
+pub fn backoff_delay_with(attempt: u32, base: Duration, cap: Duration) -> Duration {
     let factor = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
-    let base_ms = BACKOFF_BASE_MS.saturating_mul(factor).min(BACKOFF_CAP_MS);
-    let jittered_ms = base_ms * fastrand::u64(80..=120) / 100;
-    Duration::from_millis(jittered_ms.min(BACKOFF_CAP_MS))
+    let cap_ms = u64::try_from(cap.as_millis()).unwrap_or(u64::MAX);
+    let base_ms = u64::try_from(base.as_millis()).unwrap_or(u64::MAX);
+    let step_ms = base_ms.saturating_mul(factor).min(cap_ms);
+    let jittered_ms = step_ms.saturating_mul(fastrand::u64(80..=120)) / 100;
+    Duration::from_millis(jittered_ms.min(cap_ms))
 }
 
 #[cfg(test)]
@@ -141,7 +155,7 @@ mod tests {
     use std::io;
     use std::time::Duration;
 
-    const ALL: [ErrorKind; 17] = [
+    const ALL: [ErrorKind; 18] = [
         ErrorKind::ConnectionLost,
         ErrorKind::Timeout,
         ErrorKind::LinkExpired,
@@ -158,6 +172,7 @@ mod tests {
         ErrorKind::ToolMissing,
         ErrorKind::ToolFailed,
         ErrorKind::SiteNotSupported,
+        ErrorKind::ChecksumMismatch,
         ErrorKind::Unknown,
     ];
 
@@ -213,6 +228,26 @@ mod tests {
             ErrorKind::FileTooLargeForDisk.as_str(),
             "file_too_large_for_disk"
         );
+    }
+
+    #[test]
+    fn checksum_mismatch_kind() {
+        let kind = ErrorKind::ChecksumMismatch;
+        assert_eq!(kind.as_str(), "checksum_mismatch");
+        assert_eq!(ErrorKind::from_str("checksum_mismatch"), kind);
+        assert!(!kind.is_transient());
+    }
+
+    #[test]
+    fn backoff_with_respects_base_and_cap() {
+        let base = Duration::from_millis(10);
+        let cap = Duration::from_millis(50);
+        for _ in 0..200 {
+            let d0 = backoff_delay_with(0, base, cap);
+            assert!((Duration::from_millis(8)..=Duration::from_millis(12)).contains(&d0));
+            assert!(backoff_delay_with(10, base, cap) <= cap);
+            assert!(backoff_delay_with(u32::MAX, base, cap) <= cap);
+        }
     }
 
     #[test]

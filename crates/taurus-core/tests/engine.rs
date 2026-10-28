@@ -328,6 +328,10 @@ async fn open_turns_interrupted_jobs_into_paused() {
                     dest_dir: fx.dest.clone(),
                     file_name: "x.bin".into(),
                     connections: 4,
+                    mirrors: Vec::new(),
+                    checksum: None,
+                    referer: None,
+                    queue_pos: 0,
                 })
                 .unwrap();
             let mut job = store.get_job(id).unwrap().unwrap();

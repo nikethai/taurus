@@ -141,8 +141,12 @@ impl Engine {
         let store = Store::open(&config.data_dir.join(DB_FILE))?;
         let mut views = HashMap::new();
         for mut job in store.list_jobs()? {
-            // Nothing is running yet, and M1 has no queue to start Queued jobs.
-            if matches!(job.state, JobState::Downloading | JobState::Queued) {
+            // Nothing is running yet, and there is no queue to start Queued or
+            // Waiting jobs.
+            if matches!(
+                job.state,
+                JobState::Downloading | JobState::Queued | JobState::Waiting
+            ) {
                 job.state = JobState::Paused;
                 store.update_job(&job)?;
             }
@@ -387,6 +391,10 @@ impl Actor {
             dest_dir: req.dest_dir.clone(),
             file_name: file_name.clone(),
             connections,
+            mirrors: Vec::new(),
+            checksum: None,
+            referer: None,
+            queue_pos: 0,
         })?;
         let mut job = JobRecord {
             id,
@@ -401,6 +409,10 @@ impl Actor {
             last_modified: None,
             connections,
             error: None,
+            mirrors: Vec::new(),
+            checksum: None,
+            referer: None,
+            queue_pos: id.0,
         };
         apply_probe(&mut job, probe);
         if let Err(e) = self.store.update_job(&job) {
