@@ -961,6 +961,147 @@ async fn expiring_redirect_target_still_completes() {
     assert_eq!(fx.server.requests("/dl"), 9);
 }
 
+fn confirm_form(to: &str, token: &str) -> String {
+    format!(r#"<form action="{to}"><input type="hidden" name="confirm" value="{token}"></form>"#)
+}
+
+/// An AkiraBox-style host: `/page` hands out a link to `/f1`, which expires
+/// (410) after the first 2 MiB of the download. Once the job is added,
+/// `then` changes the host. Returns the job once it settled.
+async fn expiring_link_job(fx: &Fixture, engine: &Engine, then: impl FnOnce()) -> JobId {
+    let page = fx
+        .server
+        .serve_page("/page", 200, &[], &confirm_form("/f1", "t"));
+    let mut spec = FileSpec::new(8 * MIB);
+    // The probe, then one stream that breaks at 2 MiB; its retry finds the
+    // link expired.
+    spec.drop_once_after = Some(2 * MIB);
+    spec.fail_after = Some(fail_after(2, 410));
+    fx.server.serve("/f1", spec);
+    let id = engine
+        .add(AddRequest {
+            connections: Some(1),
+            ..fx.request(&page)
+        })
+        .await
+        .unwrap();
+    then();
+    wait(engine, id).await;
+    id
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expired_link_is_resolved_again_once() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let spec = FileSpec::new(8 * MIB);
+    let id = expiring_link_job(&fx, &engine, || {
+        fx.server
+            .serve_page("/page", 200, &[], &confirm_form("/f2", "u"));
+        fx.server.serve("/f2", spec.clone());
+    })
+    .await;
+    let v = view(&engine, id);
+    assert_eq!(v.state, JobState::Completed, "{:?}", v.error);
+    assert_file(&fx.dest.join(&v.file_name), &spec);
+    assert!(v.url.ends_with("/f2?confirm=u"), "{}", v.url);
+    assert_eq!(fx.stored(id).url, v.url);
+    assert_eq!(v.error, None);
+    // Went on from where the expired link stopped.
+    assert!(fx.server.bytes_served("/f2") < spec.size as u64);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expired_link_resolving_to_a_bot_check_fails_with_it() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let id = expiring_link_job(&fx, &engine, || {
+        let challenge = [("cf-mitigated", "challenge")];
+        fx.server
+            .serve_page("/page", 403, &challenge, "<html>checking</html>");
+    })
+    .await;
+    let v = view(&engine, id);
+    assert_eq!(v.state, JobState::Failed);
+    assert_eq!(v.error.map(|e| e.0), Some(ErrorKind::BlockedByBotCheck));
+    assert_eq!(
+        fx.stored(id).error.map(|e| e.0),
+        Some(ErrorKind::BlockedByBotCheck)
+    );
+    assert_eq!(fx.server.requests("/page"), 1, "resolved more than once");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn link_expiring_again_without_progress_fails() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let id = expiring_link_job(&fx, &engine, || {
+        fx.server
+            .serve_page("/page", 200, &[], &confirm_form("/f2", "u"));
+        // Answers the probe, then refuses every segment.
+        let mut spec = FileSpec::new(8 * MIB);
+        spec.fail_after = Some(fail_after(1, 410));
+        fx.server.serve("/f2", spec);
+    })
+    .await;
+    let v = view(&engine, id);
+    assert_eq!(v.state, JobState::Failed);
+    assert_eq!(v.error.map(|e| e.0), Some(ErrorKind::LinkExpired));
+    assert_eq!(fx.server.requests("/page"), 1, "resolved more than once");
+    assert!(fx.server.requests("/f2") >= 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pause_stops_resolving_an_expired_link_again() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let page = fx
+        .server
+        .serve_page("/page", 200, &[], &confirm_form("/f1", "t"));
+    let mut spec = FileSpec::new(8 * MIB);
+    spec.fail_after = Some(fail_after(1, 410));
+    fx.server.serve("/f1", spec);
+    let id = engine.add(fx.request(&page)).await.unwrap();
+    // A page that takes seconds to arrive.
+    let mut slow = FileSpec::new(64 * 1024);
+    slow.content_type = Some("text/html".into());
+    slow.bytes_per_sec = Some(16 * 1024);
+    fx.server.serve("/page", slow);
+    let deadline = Instant::now() + TIMEOUT;
+    while fx.server.requests("/page") == 0 {
+        assert!(Instant::now() < deadline, "the link was not resolved again");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let started = Instant::now();
+    engine.pause(id).await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "pause waited for the page"
+    );
+    assert_eq!(wait(&engine, id).await, JobState::Paused);
+    assert_eq!(fx.stored(id).state, JobState::Paused);
+    engine.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn folder_disappears_mid_download() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let url = fx.server.serve(PATH, throttled(4 * MIB));
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(view(&engine, id).state, JobState::Downloading);
+
+    fs::remove_dir_all(&fx.dest).unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Failed);
+    let (kind, detail) = view(&engine, id).error.expect("an error is recorded");
+    assert_eq!(kind, ErrorKind::FolderUnavailable, "{detail}");
+    assert_eq!(fx.stored(id).state, JobState::Failed);
+    engine.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn referer_is_sent() {
     let fx = Fixture::new().await;

@@ -227,6 +227,12 @@ enum JobMsg {
     WhenDoneFired(WhenDone),
     /// A `WhenDoneHold` was taken or dropped.
     HoldChanged,
+    /// The job's link as added was resolved again after its link expired;
+    /// `None` if that was stopped (pause, removal, shutdown).
+    Resolved {
+        id: JobId,
+        probe: Option<Result<Box<Probe>, CoreError>>,
+    },
 }
 
 impl Engine {
@@ -301,6 +307,7 @@ impl Engine {
             waiters: HashMap::new(),
             retries: HashMap::new(),
             retry_counts: HashMap::new(),
+            resolved_again: HashMap::new(),
             next_retry_seq: 0,
             busy: false,
             job_ended: false,
@@ -599,6 +606,10 @@ struct Actor {
     retries: HashMap<JobId, Retry>,
     /// Waits in a row without progress, per job: the next wait doubles.
     retry_counts: HashMap<JobId, u32>,
+    /// Jobs whose link was resolved again after it expired, with their
+    /// durable progress then: once more only after progress past it, or
+    /// after the user resumes the job.
+    resolved_again: HashMap<JobId, u64>,
     next_retry_seq: u64,
     /// Whether a job was Downloading, Queued or Waiting at the last change.
     busy: bool,
@@ -814,12 +825,23 @@ impl Actor {
     }
 
     fn resume(&mut self, id: JobId, probe: &Probe) -> Result<(), CoreError> {
-        let mut job = self.store.get_job(id)?.ok_or_else(no_such_job)?;
+        let job = self.store.get_job(id)?.ok_or_else(no_such_job)?;
         if self.running.contains_key(&id)
             || !matches!(job.state, JobState::Paused | JobState::Failed)
         {
             return Ok(());
         }
+        self.resolved_again.remove(&id);
+        self.requeue_resolved(job, probe)
+    }
+
+    /// Queues the job to continue from the link `probe` resolved: from
+    /// zero if the file changed on the server (noted as the job's error) or
+    /// cannot be resumed. If the rest no longer fits on the disk, the job is
+    /// Failed with that error, which is also returned (with no
+    /// `after_change`); so is any error saving the job.
+    fn requeue_resolved(&mut self, mut job: JobRecord, probe: &Probe) -> Result<(), CoreError> {
+        let id = job.id;
         // The link that served the file now: a confirm form may hand out a
         // fresh one.
         job.url = probe.requested_url.to_string();
@@ -883,6 +905,7 @@ impl Actor {
         }
         self.cancel_retry(id);
         self.retry_counts.remove(&id);
+        self.resolved_again.remove(&id);
         let removed = self.delete(id, delete_files);
         self.after_change();
         removed
@@ -1169,6 +1192,7 @@ impl Actor {
             JobMsg::Finished { id, outcome } => self.on_finished(id, outcome),
             JobMsg::RetryDue { id, seq } => self.on_retry_due(id, seq),
             JobMsg::WhenDoneFired(action) => self.on_when_done_fired(action),
+            JobMsg::Resolved { id, probe } => self.on_resolved(id, probe),
             JobMsg::HoldChanged => {
                 if self.holds.load(Ordering::SeqCst) > 0 {
                     self.when_done.cancel();
@@ -1196,16 +1220,25 @@ impl Actor {
 
     /// Refreshes the view from the store (finishing may have renamed the
     /// file) and announces it. A job that failed with an error that may pass
-    /// (`is_transient`) waits to be retried instead, keeping the error.
+    /// (`is_transient`) waits to be retried instead, keeping the error; one
+    /// whose link expired may have it resolved again (`resolve_again`).
     fn on_finished(&mut self, id: JobId, outcome: JobOutcome) {
         let run = self.running.remove(&id);
         let mut view = load_view(&self.store, id).unwrap_or_else(|e| {
             tracing::warn!(job = id.0, "could not reload the finished job: {e}");
             read(&self.views).get(&id).cloned()
         });
+        if let JobOutcome::Failed(e) = &outcome
+            && e.kind == ErrorKind::LinkExpired
+            && let Some(view) = &view
+            && self.resolve_again(id, view.downloaded)
+        {
+            return;
+        }
         let state = match outcome {
             JobOutcome::Completed(_) => {
                 self.retry_counts.remove(&id);
+                self.resolved_again.remove(&id);
                 self.job_ended = true;
                 JobState::Completed
             }
@@ -1240,6 +1273,114 @@ impl Actor {
             write(&self.views).insert(id, view.clone());
             self.emit(Event::JobUpdated(view));
         }
+        self.after_change();
+    }
+
+    /// A link that expired is resolved again from the link as added (spec
+    /// 6.3), once until the job makes progress past this point or the user
+    /// resumes it, so a link that keeps expiring fails. Runs like a
+    /// download: the job stays Downloading, and pausing, removing or
+    /// shutting down stops it. False if the job fails instead.
+    fn resolve_again(&mut self, id: JobId, downloaded: u64) -> bool {
+        if self.stopping
+            || !self.autostart
+            || self
+                .resolved_again
+                .get(&id)
+                .is_some_and(|&at| downloaded <= at)
+        {
+            return false;
+        }
+        let job = match self.store.get_job(id) {
+            Ok(Some(job)) => job,
+            Ok(None) => return false,
+            Err(e) => {
+                tracing::warn!(
+                    job = id.0,
+                    "could not read the job to resolve it again: {e}"
+                );
+                return false;
+            }
+        };
+        self.resolved_again.insert(id, downloaded);
+        tracing::info!(
+            job = id.0,
+            "the link expired; resolving the link as added again"
+        );
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        let client = self.client.clone();
+        let tx = self.job_tx.clone();
+        tokio::spawn(async move {
+            let url = fixed_url(&job.source_url);
+            let probe = tokio::select! {
+                _ = stop.cancelled() => None,
+                probe = resolve(&client, &url, job.referer.as_deref()) => {
+                    Some(probe.map(Box::new))
+                }
+            };
+            let _ = tx.send(JobMsg::Resolved { id, probe });
+        });
+        self.running.insert(
+            id,
+            Run {
+                cancel,
+                downloaded_at_start: downloaded,
+            },
+        );
+        true
+    }
+
+    /// Queues the job whose link was resolved again, or fails it with the
+    /// error of that resolve (or of queuing it).
+    fn on_resolved(&mut self, id: JobId, probe: Option<Result<Box<Probe>, CoreError>>) {
+        self.running.remove(&id);
+        let job = match self.store.get_job(id) {
+            Ok(Some(job)) => job,
+            Ok(None) => return self.after_change(),
+            Err(e) => return self.fail(id, e),
+        };
+        let queued = match probe {
+            // Stopped: it keeps the expired link's error, as a paused run would.
+            None => {
+                if let Err(e) = self.store.set_state(id, JobState::Paused) {
+                    tracing::warn!(job = id.0, "could not record the pause: {e}");
+                }
+                self.set_view_state(id, JobState::Paused);
+                return self.after_change();
+            }
+            Some(Ok(probe)) => self.requeue_resolved(job, &probe),
+            Some(Err(e)) => Err(e),
+        };
+        if let Err(e) = queued {
+            self.fail(id, e);
+        }
+    }
+
+    /// Records the job as Failed with `e` and announces it.
+    fn fail(&mut self, id: JobId, e: CoreError) {
+        let error = Some((e.kind, e.detail));
+        match self.store.get_job(id) {
+            Ok(Some(mut job)) => {
+                job.state = JobState::Failed;
+                job.error = error.clone();
+                if let Err(e) = self.store.update_job(&job) {
+                    tracing::warn!(job = id.0, "could not record the failure: {e}");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(job = id.0, "could not record the failure: {e}"),
+        }
+        let view = write(&self.views).get_mut(&id).map(|view| {
+            view.state = JobState::Failed;
+            view.speed_bps = 0;
+            view.error = error;
+            view.clone()
+        });
+        if let Some(view) = view {
+            self.emit(Event::JobUpdated(view));
+        }
+        self.job_ended = true;
         self.after_change();
     }
 
