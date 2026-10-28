@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use taurus_core::errors::ErrorKind;
 use taurus_core::http::{JobContext, JobOutcome, build_client, probe, resolve, run_job};
+use taurus_core::limit::Limiter;
 use taurus_core::store::{JobId, JobState, NewJob, Store};
+use taurus_core::timing::Timing;
 use taurus_testkit::{FailAfter, FileSpec, TestServer, content, sha256_hex};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -65,6 +67,8 @@ impl Fixture {
             store: self.store.clone(),
             cancel,
             progress,
+            limiter: Limiter::new(None),
+            timing: Timing::default(),
         };
         tokio::time::timeout(Duration::from_secs(30), run_job(ctx))
             .await

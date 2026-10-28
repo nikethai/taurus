@@ -18,14 +18,16 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinSet};
 use tokio_util::sync::CancellationToken;
 
-use crate::errors::{CoreError, ErrorKind, MAX_SEGMENT_ATTEMPTS, backoff_delay, classify_io};
+use crate::errors::{CoreError, ErrorKind, backoff_delay_with, classify_io};
 use crate::filename::{PARTIAL_EXT, unique_path};
 use crate::http::client::{bot_check_error, request_error, status_error};
 use crate::http::probe::parse_content_range;
+use crate::limit::Limiter;
 use crate::page;
 use crate::plan::{self, Segment};
 use crate::progress::ProgressMeter;
 use crate::store::{JobId, JobRecord, JobState, Store};
+use crate::timing::Timing;
 
 /// A worker syncs and reports progress after this long or this many bytes.
 const SYNC_INTERVAL: Duration = Duration::from_secs(1);
@@ -41,6 +43,9 @@ pub struct JobContext {
     pub cancel: CancellationToken,
     /// `(job, downloaded, total, speed in bytes/s)`, at most 4 per second.
     pub progress: mpsc::UnboundedSender<(JobId, u64, Option<u64>, u64)>,
+    /// Shared with every other job: the user's speed limit.
+    pub limiter: Limiter,
+    pub timing: Timing,
 }
 
 #[derive(Debug)]
@@ -476,6 +481,8 @@ impl Round<'_> {
             total: self.job.total,
             stop: self.stop.clone(),
             tx: self.tx.clone(),
+            limiter: self.ctx.limiter.clone(),
+            timing: self.ctx.timing.clone(),
         };
         self.workers.spawn(async move { (idx, worker.run().await) });
     }
@@ -520,6 +527,8 @@ struct Worker {
     total: Option<u64>,
     stop: CancellationToken,
     tx: mpsc::UnboundedSender<Durable>,
+    limiter: Limiter,
+    timing: Timing,
 }
 
 impl Worker {
@@ -552,13 +561,18 @@ impl Worker {
                 (_, Err(e)) => e,
             };
             let attempt = attempts.failed_at(self.written);
-            if !e.kind.is_transient() || attempt >= MAX_SEGMENT_ATTEMPTS {
+            if !e.kind.is_transient() || attempt >= self.timing.max_segment_attempts {
                 return WorkerEnd::Failed(e);
             }
             tracing::debug!(segment = self.idx, attempt, "retrying: {e}");
+            let delay = backoff_delay_with(
+                attempt - 1,
+                self.timing.backoff_base,
+                self.timing.backoff_cap,
+            );
             tokio::select! {
                 _ = self.stop.cancelled() => return WorkerEnd::Cancelled,
-                _ = tokio::time::sleep(backoff_delay(attempt - 1)) => {}
+                _ = tokio::time::sleep(delay) => {}
             }
             if !self.resumable
                 && let Err(e) = self.restart(&file).await
@@ -591,6 +605,11 @@ impl Worker {
                 chunk = response.chunk() => chunk.map_err(request_error)?,
             };
             let Some(chunk) = chunk else { break };
+            // Not reading meanwhile is what slows the server down.
+            tokio::select! {
+                _ = self.stop.cancelled() => return Ok(WorkerEnd::Cancelled),
+                () = self.limiter.acquire(chunk.len() as u64) => {}
+            }
             let take = self.reserve(chunk.len() as u64);
             if let Err(e) = file
                 .write_at(self.written, chunk.slice(..take as usize))
@@ -881,6 +900,8 @@ mod tests {
             store,
             cancel: CancellationToken::new(),
             progress,
+            limiter: Limiter::new(None),
+            timing: Timing::default(),
         };
         let (tx, _rx) = mpsc::unbounded_channel();
         let tapa = dir.path().join("x.bin.tapa");
@@ -911,10 +932,9 @@ mod tests {
         // Unranged restarts re-download from 0: getting back to the same
         // byte is not progress, so the attempts run out.
         let mut attempts = Attempts::new(0);
-        let counts: Vec<u32> = (0..MAX_SEGMENT_ATTEMPTS)
-            .map(|_| attempts.failed_at(5000))
-            .collect();
-        assert_eq!(counts, (1..=MAX_SEGMENT_ATTEMPTS).collect::<Vec<_>>());
+        let max = Timing::default().max_segment_attempts;
+        let counts: Vec<u32> = (0..max).map(|_| attempts.failed_at(5000)).collect();
+        assert_eq!(counts, (1..=max).collect::<Vec<_>>());
         assert_eq!(attempts.failed_at(6000), 1);
     }
 }

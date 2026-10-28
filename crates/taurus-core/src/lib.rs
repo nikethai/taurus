@@ -3,6 +3,7 @@ pub mod errors;
 pub mod filename;
 pub mod fixups;
 pub mod http;
+pub mod limit;
 pub mod page;
 pub mod plan;
 pub mod progress;

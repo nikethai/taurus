@@ -1,8 +1,5 @@
 use std::time::Duration;
 
-/// Max attempts for a single segment before the job fails.
-pub const MAX_SEGMENT_ATTEMPTS: u32 = 8;
-
 const BACKOFF_BASE_MS: u64 = 500;
 const BACKOFF_CAP_MS: u64 = 30_000;
 

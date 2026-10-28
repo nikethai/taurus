@@ -1,10 +1,13 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use taurus_core::store::{NewJob, Store};
-use taurus_core::{AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, JobView};
+use taurus_core::{
+    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, JobView, Settings,
+    SpeedLimit,
+};
 use taurus_testkit::{FileSpec, TestServer, content, sha256_hex};
 use tokio::sync::broadcast;
 
@@ -490,4 +493,167 @@ async fn add_web_page_fails_and_records_nothing() {
     let err = engine.add(fx.request(&page)).await.unwrap_err();
     assert_eq!(err.kind, ErrorKind::SiteNotSupported);
     assert!(engine.snapshot().is_empty());
+}
+
+fn with_speed(speed: SpeedLimit) -> Settings {
+    Settings {
+        speed,
+        ..Settings::default()
+    }
+}
+
+/// The measured peak saved in the closed engine's database.
+fn stored_peak(fx: &Fixture) -> Option<(u64, i64)> {
+    let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
+    store.measured_peak().unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settings_are_saved_and_announced() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    assert_eq!(engine.settings(), Settings::default());
+    let mut events = engine.subscribe();
+    let settings = Settings {
+        max_active: 5,
+        speed: SpeedLimit::Gentle,
+        ..Settings::default()
+    };
+
+    engine.set_settings(settings.clone()).await.unwrap();
+    assert_eq!(engine.settings(), settings);
+    match next_event(&mut events).await {
+        Event::SettingsChanged(s) => assert_eq!(s, settings),
+        other => panic!("expected SettingsChanged, got {other:?}"),
+    }
+    engine.shutdown().await.unwrap();
+
+    let engine = fx.engine().await;
+    assert_eq!(engine.settings(), settings);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn custom_limit_slows_download() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let custom = SpeedLimit::Custom {
+        bytes_per_sec: 2 * MIB as u64,
+    };
+    engine.set_settings(with_speed(custom)).await.unwrap();
+    let spec = FileSpec::new(6 * MIB);
+    let url = fx.server.serve(PATH, spec.clone());
+
+    let start = Instant::now();
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    let elapsed = start.elapsed();
+    assert!(elapsed >= Duration::from_millis(2500), "took {elapsed:?}");
+    assert_file(&fx.dest.join("x.bin"), &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn limit_change_applies_to_running_job() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let custom = SpeedLimit::Custom {
+        bytes_per_sec: MIB as u64,
+    };
+    engine.set_settings(with_speed(custom)).await.unwrap();
+    let spec = FileSpec::new(8 * MIB);
+    let url = fx.server.serve(PATH, spec.clone());
+
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(view(&engine, id).state, JobState::Downloading);
+    let switched = Instant::now();
+    engine
+        .set_settings(with_speed(SpeedLimit::Fastest))
+        .await
+        .unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    let elapsed = switched.elapsed();
+    assert!(elapsed < Duration::from_secs(4), "took {elapsed:?}");
+    assert_file(&fx.dest.join("x.bin"), &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_peak_is_replaced_by_a_lower_measurement() {
+    let fx = Fixture::new().await;
+    fs::create_dir_all(fx.data_dir()).unwrap();
+    // Measured long ago, on a far faster line.
+    let stale = (1_000_000_000_000, 0);
+    Store::open(&fx.data_dir().join("taurus.db"))
+        .unwrap()
+        .save_measured_peak(stale.0, stale.1)
+        .unwrap();
+    let engine = fx.engine().await;
+    let url = fx.server.serve(PATH, throttled(8 * MIB));
+
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    engine.shutdown().await.unwrap();
+
+    let (bps, at) = stored_peak(&fx).expect("a peak is stored");
+    // The path is capped at 4 MiB/s.
+    assert!((MIB as u64..8 * MIB as u64).contains(&bps), "peak {bps}");
+    assert!(at > stale.1, "measured at {at}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fresh_peak_is_kept_when_not_beaten() {
+    let fx = Fixture::new().await;
+    fs::create_dir_all(fx.data_dir()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let fresh = (1_000_000_000_000, now - 3600);
+    Store::open(&fx.data_dir().join("taurus.db"))
+        .unwrap()
+        .save_measured_peak(fresh.0, fresh.1)
+        .unwrap();
+    let engine = fx.engine().await;
+    let url = fx.server.serve(PATH, throttled(8 * MIB));
+
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    engine.shutdown().await.unwrap();
+    assert_eq!(stored_peak(&fx), Some(fresh));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peak_is_not_measured_under_a_limit() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    // Above the server's 4 MiB/s, so the limit never slows this download.
+    let custom = SpeedLimit::Custom {
+        bytes_per_sec: 64 * MIB as u64,
+    };
+    engine.set_settings(with_speed(custom)).await.unwrap();
+    let url = fx.server.serve(PATH, throttled(8 * MIB));
+
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    engine.shutdown().await.unwrap();
+    assert_eq!(stored_peak(&fx), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pause_is_not_held_up_by_a_slow_limit() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    // 1 KiB/s: a worker waits about a minute for the bucket per 64 KiB.
+    let crawl = SpeedLimit::Custom {
+        bytes_per_sec: 1024,
+    };
+    engine.set_settings(with_speed(crawl)).await.unwrap();
+    let url = fx.server.serve(PATH, FileSpec::new(6 * MIB));
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let start = Instant::now();
+    engine.pause(id).await.unwrap();
+    let elapsed = start.elapsed();
+    assert!(elapsed < Duration::from_secs(5), "pause took {elapsed:?}");
+    assert_eq!(view(&engine, id).state, JobState::Paused);
 }

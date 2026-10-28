@@ -244,6 +244,8 @@ impl Printer {
             Event::JobAdded(view) | Event::JobUpdated(view) => view.id,
             Event::Progress { id, .. } => *id,
             Event::JobRemoved(id) => *id,
+            // Not about any one job.
+            Event::SettingsChanged(_) => return Ok(()),
         };
         if job != id {
             return Ok(());

@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -16,8 +17,11 @@ use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::filename::{PARTIAL_EXT, sanitize, unique_path};
 use crate::fixups;
 use crate::http::{JobContext, JobOutcome, Probe, build_client, resolve, run_job};
+use crate::limit::{Limiter, PeakTracker};
 use crate::plan::DEFAULT_CONNECTIONS;
+use crate::settings::{Settings, SpeedLimit};
 use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
+use crate::timing::Timing;
 
 const COMMAND_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 1024;
@@ -26,6 +30,9 @@ const LOCK_FILE: &str = "taurus.lock";
 /// Start of the detail of the error `Engine::open` returns when another
 /// engine holds the data dir.
 const IN_USE: &str = "another taurus instance is using";
+/// A measured peak older than this is replaced by the next measurement, even
+/// a lower one.
+const PEAK_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
 
 pub struct EngineConfig {
     /// Holds the database, `taurus.db`, and the lock file, `taurus.lock`.
@@ -68,6 +75,7 @@ pub enum Event {
         speed_bps: u64,
     },
     JobRemoved(JobId),
+    SettingsChanged(Settings),
 }
 
 type Views = Arc<RwLock<HashMap<JobId, JobView>>>;
@@ -78,6 +86,8 @@ pub struct Engine {
     commands: mpsc::Sender<Command>,
     events: broadcast::Sender<Event>,
     views: Views,
+    /// The actor's settings, copied for `settings`.
+    settings: Arc<RwLock<Settings>>,
     client: reqwest::Client,
 }
 
@@ -107,6 +117,10 @@ enum Command {
         id: JobId,
         reply: oneshot::Sender<JobState>,
     },
+    SetSettings {
+        settings: Settings,
+        reply: Reply<()>,
+    },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
@@ -127,8 +141,9 @@ enum JobMsg {
 }
 
 impl Engine {
-    /// Opens the database in `config.data_dir` and restores its jobs. Jobs
-    /// recorded as Downloading (interrupted) or Queued become Paused.
+    /// Opens the database in `config.data_dir`, restores its jobs and applies
+    /// the saved settings. Jobs recorded as Downloading (interrupted) or
+    /// Queued become Paused.
     ///
     /// The engine holds `data_dir` exclusively until it shuts down or its
     /// last handle is dropped. While another engine (in any process) holds
@@ -140,6 +155,12 @@ impl Engine {
             .map_err(io_error)?;
         let lock = lock_data_dir(&config.data_dir)?;
         let store = Store::open(&config.data_dir.join(DB_FILE))?;
+        let settings = store.load_settings()?;
+        // Only a measurement: an unreadable one is measured again.
+        let measured_peak = store.measured_peak().unwrap_or_else(|e| {
+            tracing::warn!("ignoring the saved peak speed: {e}");
+            None
+        });
         let mut views = HashMap::new();
         for mut job in store.list_jobs()? {
             // Nothing is running yet, and there is no queue to start Queued or
@@ -156,6 +177,9 @@ impl Engine {
         }
 
         let views = Arc::new(RwLock::new(views));
+        let shared_settings = Arc::new(RwLock::new(settings.clone()));
+        let limiter = Limiter::new(speed_limit(&settings, measured_peak));
+        let peak = PeakTracker::with_max(fresh_peak(measured_peak, unix_now()).unwrap_or(0));
         let (commands, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let (job_tx, job_rx) = mpsc::unbounded_channel();
@@ -170,12 +194,19 @@ impl Engine {
             waiters: HashMap::new(),
             job_tx,
             job_rx,
+            settings,
+            shared_settings: shared_settings.clone(),
+            limiter,
+            measured_peak,
+            peak,
+            transferred: 0,
         };
         tokio::spawn(actor.run(commands_rx));
         Ok(Engine {
             commands,
             events,
             views,
+            settings: shared_settings,
             client,
         })
     }
@@ -270,6 +301,18 @@ impl Engine {
         self.events.subscribe()
     }
 
+    /// The current settings.
+    pub fn settings(&self) -> Settings {
+        read(&self.settings).clone()
+    }
+
+    /// Saves the settings and applies them at once, also to running jobs,
+    /// then emits `SettingsChanged`. Nothing changes if saving fails.
+    pub async fn set_settings(&self, settings: Settings) -> Result<(), CoreError> {
+        self.call(|reply| Command::SetSettings { settings, reply })
+            .await?
+    }
+
     /// Resolves once the job is Completed, Paused or Failed (at once if it
     /// already is). An unknown job resolves to Failed immediately.
     pub async fn wait(&self, id: JobId) -> JobState {
@@ -327,6 +370,15 @@ struct Actor {
     waiters: HashMap<JobId, Vec<oneshot::Sender<JobState>>>,
     job_tx: mpsc::UnboundedSender<JobMsg>,
     job_rx: mpsc::UnboundedReceiver<JobMsg>,
+    settings: Settings,
+    shared_settings: Arc<RwLock<Settings>>,
+    /// Shared by every job's workers.
+    limiter: Limiter,
+    /// The saved peak speed (bytes/s) and when it was measured (unix secs).
+    measured_peak: Option<(u64, i64)>,
+    peak: PeakTracker,
+    /// Bytes downloaded by all jobs since the engine opened.
+    transferred: u64,
 }
 
 impl Actor {
@@ -376,6 +428,9 @@ impl Actor {
                 let _ = reply.send(self.remove(id, delete_files).await);
             }
             Command::Wait { id, reply } => self.wait(id, reply),
+            Command::SetSettings { settings, reply } => {
+                let _ = reply.send(self.set_settings(settings));
+            }
             Command::Shutdown { reply } => return Some(reply),
         }
         None
@@ -501,6 +556,16 @@ impl Actor {
         let _ = reply.send(state.unwrap_or(JobState::Failed));
     }
 
+    fn set_settings(&mut self, settings: Settings) -> Result<(), CoreError> {
+        self.store.save_settings(&settings)?;
+        self.limiter
+            .set_rate(speed_limit(&settings, self.measured_peak));
+        *write(&self.shared_settings) = settings.clone();
+        self.settings = settings.clone();
+        self.emit(Event::SettingsChanged(settings));
+        Ok(())
+    }
+
     async fn pause_all(&mut self) {
         let ids: Vec<JobId> = self.running.keys().copied().collect();
         for cancel in self.running.values() {
@@ -529,6 +594,8 @@ impl Actor {
             store: self.store.clone(),
             cancel: cancel.clone(),
             progress,
+            limiter: self.limiter.clone(),
+            timing: Timing::default(),
         };
         let tx = self.job_tx.clone();
         tokio::spawn(async move {
@@ -565,10 +632,14 @@ impl Actor {
                 total,
                 speed_bps,
             } => {
-                if let Some(view) = write(&self.views).get_mut(&id) {
-                    view.downloaded = downloaded;
+                let before = write(&self.views).get_mut(&id).map(|view| {
                     view.total = total;
                     view.speed_bps = speed_bps;
+                    std::mem::replace(&mut view.downloaded, downloaded)
+                });
+                if let Some(before) = before {
+                    // A drop (a restarted stream) downloaded nothing.
+                    self.measure(downloaded.saturating_sub(before));
                 }
                 self.emit(Event::Progress {
                     id,
@@ -610,10 +681,48 @@ impl Actor {
         }
     }
 
+    /// Counts newly downloaded bytes and, while unlimited, saves a new peak.
+    /// The tracker starts from the saved peak when that is fresh, so every
+    /// peak it reports beats the saved one or replaces a stale one.
+    fn measure(&mut self, new_bytes: u64) {
+        self.transferred = self.transferred.saturating_add(new_bytes);
+        if self.settings.speed != SpeedLimit::Fastest {
+            return;
+        }
+        let Some(bps) = self.peak.record(Instant::now(), self.transferred) else {
+            return;
+        };
+        let at = unix_now();
+        match self.store.save_measured_peak(bps, at) {
+            Ok(()) => self.measured_peak = Some((bps, at)),
+            Err(e) => tracing::warn!("could not save the peak speed: {e}"),
+        }
+    }
+
     fn emit(&self, event: Event) {
         // No subscribers is fine.
         let _ = self.events.send(event);
     }
+}
+
+/// The limiter rate for `settings`: presets are shares of the saved peak.
+fn speed_limit(settings: &Settings, measured_peak: Option<(u64, i64)>) -> Option<u64> {
+    settings
+        .speed
+        .bytes_per_sec(measured_peak.map(|(bps, _)| bps))
+}
+
+/// The saved peak, unless it is older than 7 days.
+fn fresh_peak(measured_peak: Option<(u64, i64)>, now: i64) -> Option<u64> {
+    measured_peak
+        .filter(|&(_, at)| now.saturating_sub(at) <= PEAK_MAX_AGE_SECS)
+        .map(|(bps, _)| bps)
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// Copies what the probe learned into the record.
@@ -710,13 +819,13 @@ fn remove_if_exists(path: &Path) -> Result<(), CoreError> {
     }
 }
 
-fn read(views: &Views) -> RwLockReadGuard<'_, HashMap<JobId, JobView>> {
-    // Nothing panics while holding the lock, so a poisoned map is still whole.
-    views.read().unwrap_or_else(|p| p.into_inner())
+fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    // Nothing panics while holding the lock, so a poisoned value is still whole.
+    lock.read().unwrap_or_else(|p| p.into_inner())
 }
 
-fn write(views: &Views) -> RwLockWriteGuard<'_, HashMap<JobId, JobView>> {
-    views.write().unwrap_or_else(|p| p.into_inner())
+fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|p| p.into_inner())
 }
 
 fn io_error(e: std::io::Error) -> CoreError {
@@ -764,5 +873,20 @@ fn stopped() -> CoreError {
     CoreError {
         kind: ErrorKind::Unknown,
         detail: "engine stopped".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_peak_older_than_seven_days_is_not_fresh() {
+        let now = 1_700_000_000;
+        let week = 7 * 24 * 60 * 60;
+        assert_eq!(fresh_peak(None, now), None);
+        assert_eq!(fresh_peak(Some((5, now - 3600)), now), Some(5));
+        assert_eq!(fresh_peak(Some((5, now - week)), now), Some(5));
+        assert_eq!(fresh_peak(Some((5, now - week - 1)), now), None);
     }
 }
