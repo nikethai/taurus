@@ -1910,6 +1910,7 @@ name = "taurus-core"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "dunce",
  "fastrand",
  "fs4",
  "hex",

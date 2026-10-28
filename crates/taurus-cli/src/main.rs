@@ -78,16 +78,12 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<ExitCode> {
     let data_dir = data_dir(cli.data_dir)?;
-    let engine = match Engine::open(EngineConfig {
-        data_dir: data_dir.clone(),
-    })
-    .await
-    {
+    let engine = match Engine::open(EngineConfig::new(data_dir.clone())).await {
         Ok(engine) => engine,
         // Another process runs a download here: show what it has stored.
         Err(e) if e.is_instance_locked() && matches!(cli.command, Command::List) => {
             print_list(
-                &Engine::read_snapshot(&EngineConfig { data_dir })?,
+                &Engine::read_snapshot(&EngineConfig::new(data_dir))?,
                 cli.json,
             )?;
             return Ok(ExitCode::SUCCESS);
@@ -246,7 +242,7 @@ impl Printer {
             Event::Progress { id, .. } => *id,
             Event::JobRemoved(id) => *id,
             // Not about any one job.
-            Event::SettingsChanged(_) => return Ok(()),
+            Event::SettingsChanged(_) | Event::QueueIdle => return Ok(()),
         };
         if job != id {
             return Ok(());

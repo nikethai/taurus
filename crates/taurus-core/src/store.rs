@@ -448,6 +448,42 @@ impl Store {
         Ok(())
     }
 
+    /// Sets only the job's state, so no other field can be overwritten from
+    /// a stale copy. Updating a job that no longer exists is a no-op.
+    pub fn set_state(&self, id: JobId, state: JobState) -> Result<(), CoreError> {
+        self.lock()
+            .execute(
+                "UPDATE jobs SET state = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id.0, state.as_str(), now_secs()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Puts the job back in the queue (Queued) and clears its error.
+    pub fn requeue(&self, id: JobId) -> Result<(), CoreError> {
+        self.lock()
+            .execute(
+                "UPDATE jobs SET state = ?2, error_kind = NULL, error_detail = NULL, \
+                 updated_at = ?3 WHERE id = ?1",
+                params![id.0, JobState::Queued.as_str(), now_secs()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// The Queued jobs in queue order (`queue_pos`, then id).
+    pub fn queued_jobs(&self) -> Result<Vec<JobId>, CoreError> {
+        let conn = self.lock();
+        let mut stmt = conn
+            .prepare("SELECT id FROM jobs WHERE state = ?1 ORDER BY queue_pos, id")
+            .map_err(db_err)?;
+        stmt.query_map([JobState::Queued.as_str()], |row| Ok(JobId(row.get(0)?)))
+            .map_err(db_err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db_err)
+    }
+
     /// Deletes the job; its segments go with it (`ON DELETE CASCADE`).
     pub fn delete_job(&self, id: JobId) -> Result<(), CoreError> {
         self.lock()
@@ -1097,6 +1133,39 @@ mod tests {
             .query_row("SELECT state FROM jobs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(raw, "waiting");
+    }
+
+    #[test]
+    fn state_updates_touch_only_state_and_error() {
+        let (_dir, store) = open_temp();
+        let late = store
+            .insert_job(&NewJob {
+                queue_pos: 100,
+                ..new_job("late", "/d")
+            })
+            .unwrap();
+        let a = store.insert_job(&new_job("a", "/d")).unwrap();
+        let b = store.insert_job(&new_job("b", "/d")).unwrap();
+        assert_eq!(store.queued_jobs().unwrap(), [a, b, late]);
+
+        let mut job = store.get_job(a).unwrap().unwrap();
+        job.error = Some((ErrorKind::RateLimited, "503".into()));
+        job.total = Some(42);
+        store.update_job(&job).unwrap();
+        store.set_state(a, JobState::Waiting).unwrap();
+        job.state = JobState::Waiting;
+        assert_eq!(store.get_job(a).unwrap().unwrap(), job);
+        assert_eq!(store.queued_jobs().unwrap(), [b, late]);
+
+        store.requeue(a).unwrap();
+        job.state = JobState::Queued;
+        job.error = None;
+        assert_eq!(store.get_job(a).unwrap().unwrap(), job);
+        assert_eq!(store.queued_jobs().unwrap(), [a, b, late]);
+        // A job that is gone is not an error.
+        store.delete_job(b).unwrap();
+        store.set_state(b, JobState::Paused).unwrap();
+        store.requeue(b).unwrap();
     }
 
     #[test]

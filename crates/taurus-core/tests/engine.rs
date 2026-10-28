@@ -38,11 +38,9 @@ impl Fixture {
     }
 
     async fn engine(&self) -> Engine {
-        Engine::open(EngineConfig {
-            data_dir: self.data_dir(),
-        })
-        .await
-        .unwrap()
+        Engine::open(EngineConfig::new(self.data_dir()))
+            .await
+            .unwrap()
     }
 
     fn request(&self, url: &str) -> AddRequest {
@@ -131,7 +129,7 @@ async fn add_downloads_and_emits_events() {
             assert_eq!(v.id, id);
             assert_eq!(v.file_name, "x.bin");
             assert_eq!(v.total, Some(spec.size as u64));
-            assert_eq!(v.state, JobState::Downloading);
+            assert_eq!(v.state, JobState::Queued);
         }
         other => panic!("expected JobAdded, got {other:?}"),
     }
@@ -332,7 +330,7 @@ async fn open_turns_interrupted_jobs_into_paused() {
     fs::create_dir_all(fx.data_dir()).unwrap();
     {
         let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
-        for state in [JobState::Downloading, JobState::Queued] {
+        for state in [JobState::Downloading, JobState::Paused] {
             let id = store
                 .insert_job(&NewJob {
                     url: "http://127.0.0.1:9/x.bin".into(),
@@ -417,9 +415,7 @@ async fn second_engine_on_same_data_dir_is_refused() {
     let id = engine.add(fx.request(&url)).await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let config = EngineConfig {
-        data_dir: fx.data_dir(),
-    };
+    let config = EngineConfig::new(fx.data_dir());
     let err = match Engine::open(config).await {
         Ok(_) => panic!("a second engine opened the same data dir"),
         Err(e) => e,
@@ -435,9 +431,7 @@ async fn second_engine_on_same_data_dir_is_refused() {
     );
 
     // The running job is untouched and still readable from beside it.
-    let config = EngineConfig {
-        data_dir: fx.data_dir(),
-    };
+    let config = EngineConfig::new(fx.data_dir());
     let stored = Engine::read_snapshot(&config).unwrap();
     assert_eq!(stored.len(), 1);
     assert_eq!((stored[0].id, stored[0].state), (id, JobState::Downloading));
@@ -455,9 +449,7 @@ async fn second_engine_on_same_data_dir_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn read_snapshot_without_database_is_empty() {
     let fx = Fixture::new().await;
-    let config = EngineConfig {
-        data_dir: fx.data_dir(),
-    };
+    let config = EngineConfig::new(fx.data_dir());
     assert!(Engine::read_snapshot(&config).unwrap().is_empty());
     assert!(!fx.data_dir().exists());
 

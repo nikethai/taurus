@@ -8,9 +8,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::checksum;
@@ -21,7 +22,7 @@ use crate::http::probe::validator_change;
 use crate::http::{JobContext, JobOutcome, Probe, build_client, resolve, run_job};
 use crate::limit::{Limiter, PeakTracker};
 use crate::plan::DEFAULT_CONNECTIONS;
-use crate::settings::{Settings, SpeedLimit};
+use crate::settings::{PowerMode, Settings, SpeedLimit};
 use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
 use crate::system::check_fits;
 use crate::timing::Timing;
@@ -41,6 +42,21 @@ pub struct EngineConfig {
     /// Holds the database, `taurus.db`, and the lock file, `taurus.lock`.
     /// Created if missing.
     pub data_dir: PathBuf,
+    /// Retry and countdown delays.
+    pub timing: Timing,
+    /// Whether when-done actions that touch the OS really run.
+    pub power: PowerMode,
+}
+
+impl EngineConfig {
+    /// Default timing; when-done actions run for real.
+    pub fn new(data_dir: impl Into<PathBuf>) -> EngineConfig {
+        EngineConfig {
+            data_dir: data_dir.into(),
+            timing: Timing::default(),
+            power: PowerMode::Execute,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -87,6 +103,9 @@ pub enum Event {
     },
     JobRemoved(JobId),
     SettingsChanged(Settings),
+    /// Nothing is Downloading, Queued or Waiting any more. Sent once each
+    /// time the last such job leaves those states.
+    QueueIdle,
 }
 
 type Views = Arc<RwLock<HashMap<JobId, JobView>>>;
@@ -119,6 +138,10 @@ enum Command {
         probe: Probe,
         reply: Reply<()>,
     },
+    StartNow {
+        id: JobId,
+        reply: Reply<()>,
+    },
     Get {
         id: JobId,
         reply: Reply<JobRecord>,
@@ -141,7 +164,8 @@ enum Command {
     },
 }
 
-/// Sent by a job's task. All of a run's progress precedes its `Finished`.
+/// Sent by a job's task (all of a run's progress precedes its `Finished`),
+/// or by a Waiting job's retry timer.
 enum JobMsg {
     Progress {
         id: JobId,
@@ -153,12 +177,18 @@ enum JobMsg {
         id: JobId,
         outcome: JobOutcome,
     },
+    /// Timer `seq` of the job ran out.
+    RetryDue {
+        id: JobId,
+        seq: u64,
+    },
 }
 
 impl Engine {
-    /// Opens the database in `config.data_dir`, restores its jobs and applies
-    /// the saved settings. Jobs recorded as Downloading (interrupted) or
-    /// Queued become Paused.
+    /// Opens the database in `config.data_dir`, restores its jobs, applies
+    /// the saved settings and starts the queue. Jobs recorded as Downloading
+    /// (interrupted) become Paused; Waiting jobs are queued again at once,
+    /// with Queued ones.
     ///
     /// The engine holds `data_dir` exclusively until it shuts down or its
     /// last handle is dropped. While another engine (in any process) holds
@@ -178,14 +208,19 @@ impl Engine {
         });
         let mut views = HashMap::new();
         for mut job in store.list_jobs()? {
-            // Nothing is running yet, and there is no queue to start Queued or
-            // Waiting jobs.
-            if matches!(
-                job.state,
-                JobState::Downloading | JobState::Queued | JobState::Waiting
-            ) {
-                job.state = JobState::Paused;
-                store.update_job(&job)?;
+            match job.state {
+                // Nothing is running yet.
+                JobState::Downloading => {
+                    job.state = JobState::Paused;
+                    store.update_job(&job)?;
+                }
+                // The connection may well be back by now.
+                JobState::Waiting => {
+                    store.requeue(job.id)?;
+                    job.state = JobState::Queued;
+                    job.error = None;
+                }
+                _ => {}
             }
             let downloaded = downloaded(&store, job.id)?;
             views.insert(job.id, view_of(&job, downloaded));
@@ -199,7 +234,7 @@ impl Engine {
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let (job_tx, job_rx) = mpsc::unbounded_channel();
         let client = build_client();
-        let actor = Actor {
+        let mut actor = Actor {
             _lock: lock,
             store,
             client: client.clone(),
@@ -207,8 +242,14 @@ impl Engine {
             events: events.clone(),
             running: HashMap::new(),
             waiters: HashMap::new(),
+            retries: HashMap::new(),
+            retry_counts: HashMap::new(),
+            next_retry_seq: 0,
+            busy: false,
+            stopping: false,
             job_tx,
             job_rx,
+            timing: config.timing.clone(),
             settings,
             shared_settings: shared_settings.clone(),
             limiter,
@@ -216,6 +257,7 @@ impl Engine {
             peak,
             transferred: 0,
         };
+        actor.after_change();
         tokio::spawn(actor.run(commands_rx));
         Ok(Engine {
             commands,
@@ -243,8 +285,10 @@ impl Engine {
 
     /// Resolves the URL (following a confirm page; failing on any other web
     /// page or bot check), keeps the mirrors that serve the same file,
-    /// reserves a file name that no other file or job in `dest_dir` uses, and
-    /// starts downloading. A missing `dest_dir` fails with
+    /// reserves a file name that no other file or job in `dest_dir` uses
+    /// (ignoring case), and queues the job; it starts once fewer than
+    /// `max_active` jobs download. The job records `dest_dir` canonicalized
+    /// (symlinks and `.` resolved). A missing `dest_dir` fails with
     /// `FolderUnavailable`, a file that does not fit on its disk with
     /// `DiskFull` or `FileTooLargeForDisk`, a checksum that is not a SHA-256
     /// with `Unknown`; nothing is recorded when `add` fails.
@@ -259,6 +303,12 @@ impl Engine {
                 detail: format!("folder {} is not available", req.dest_dir.display()),
             });
         }
+        // One spelling per folder, so names reserved by jobs that have no
+        // partial file yet are found whichever way the folder was written.
+        req.dest_dir = dunce::canonicalize(&req.dest_dir).map_err(|e| CoreError {
+            kind: ErrorKind::FolderUnavailable,
+            detail: format!("folder {} is not available: {e}", req.dest_dir.display()),
+        })?;
         if req
             .checksum
             .as_deref()
@@ -280,7 +330,8 @@ impl Engine {
     }
 
     /// Stops the job and returns once its progress is saved and its state is
-    /// Paused. Pausing a job that is not running does nothing.
+    /// Paused. A Queued or Waiting job (whose retry is cancelled) becomes
+    /// Paused too; pausing any other job does nothing.
     pub async fn pause(&self, id: JobId) -> Result<(), CoreError> {
         self.call(|reply| Command::Pause { id, reply }).await?
     }
@@ -290,14 +341,15 @@ impl Engine {
     /// one). If the file changed on the
     /// server (ETag, else Last-Modified, or size) or the download cannot be
     /// resumed, it restarts from zero; a change is noted as the job's error
-    /// (`FileChangedOnServer`) while it downloads. Resuming a running or
-    /// completed job does nothing. A failed probe is returned and leaves the
-    /// job as it was. If the rest of the file does not fit on its disk, the
-    /// job is recorded as Failed with that error, which is also returned.
+    /// (`FileChangedOnServer`) while it downloads. The job is queued, like a
+    /// new one. Resuming a Queued, Waiting, running or completed job does
+    /// nothing. A failed probe is returned and leaves the job as it was. If
+    /// the rest of the file does not fit on its disk, the job is recorded as
+    /// Failed with that error, which is also returned.
     pub async fn resume(&self, id: JobId) -> Result<(), CoreError> {
         self.check_running()?;
         let job = self.call(|reply| Command::Get { id, reply }).await??;
-        if matches!(job.state, JobState::Downloading | JobState::Completed) {
+        if !matches!(job.state, JobState::Paused | JobState::Failed) {
             return Ok(());
         }
         // Mirrors are not checked again: one that fails is dropped while
@@ -305,6 +357,13 @@ impl Engine {
         let probe = resolve(&self.client, &job.url, job.referer.as_deref()).await?;
         self.call(|reply| Command::Resume { id, probe, reply })
             .await?
+    }
+
+    /// Starts a Queued or Waiting job at once, even when `max_active` jobs
+    /// already download; it counts toward them while it runs. Any other job
+    /// is left as it is.
+    pub async fn start_now(&self, id: JobId) -> Result<(), CoreError> {
+        self.call(|reply| Command::StartNow { id, reply }).await?
     }
 
     /// Stops the job if it runs and forgets it. With `delete_files`, also
@@ -337,14 +396,18 @@ impl Engine {
     }
 
     /// Saves the settings and applies them at once, also to running jobs,
-    /// then emits `SettingsChanged`. Nothing changes if saving fails.
+    /// then emits `SettingsChanged`. A higher `max_active` starts more
+    /// Queued jobs; a lower one lets running jobs finish. Nothing changes if
+    /// saving fails.
     pub async fn set_settings(&self, settings: Settings) -> Result<(), CoreError> {
         self.call(|reply| Command::SetSettings { settings, reply })
             .await?
     }
 
     /// Resolves once the job is Completed, Paused or Failed (at once if it
-    /// already is). An unknown job resolves to Failed immediately.
+    /// already is); a Queued or Waiting job is waited for until it has run.
+    /// An unknown job resolves to Failed immediately. If the engine stops
+    /// first, resolves to the job's last state.
     pub async fn wait(&self, id: JobId) -> JobState {
         match self.call(|reply| Command::Wait { id, reply }).await {
             Ok(state) => state,
@@ -394,12 +457,22 @@ struct Actor {
     client: reqwest::Client,
     views: Views,
     events: broadcast::Sender<Event>,
-    /// Cancel tokens of the jobs whose download task is running.
-    running: HashMap<JobId, CancellationToken>,
-    /// `wait` callers of running jobs.
+    /// The jobs whose download task is running.
+    running: HashMap<JobId, Run>,
+    /// `wait` callers of jobs that are not Completed, Paused or Failed yet.
     waiters: HashMap<JobId, Vec<oneshot::Sender<JobState>>>,
+    /// Retry timers of Waiting jobs.
+    retries: HashMap<JobId, Retry>,
+    /// Waits in a row without progress, per job: the next wait doubles.
+    retry_counts: HashMap<JobId, u32>,
+    next_retry_seq: u64,
+    /// Whether a job was Downloading, Queued or Waiting at the last change.
+    busy: bool,
+    /// Shutting down: start nothing more.
+    stopping: bool,
     job_tx: mpsc::UnboundedSender<JobMsg>,
     job_rx: mpsc::UnboundedReceiver<JobMsg>,
+    timing: Timing,
     settings: Settings,
     shared_settings: Arc<RwLock<Settings>>,
     /// Shared by every job's workers.
@@ -409,6 +482,18 @@ struct Actor {
     peak: PeakTracker,
     /// Bytes downloaded by all jobs since the engine opened.
     transferred: u64,
+}
+
+struct Run {
+    cancel: CancellationToken,
+    /// Durable progress when the run started.
+    downloaded_at_start: u64,
+}
+
+struct Retry {
+    /// Tells this timer's `RetryDue` from an older, cancelled one's.
+    seq: u64,
+    timer: AbortHandle,
 }
 
 impl Actor {
@@ -429,6 +514,11 @@ impl Actor {
         };
         // New calls fail from here on; queued ones are dropped with `commands`.
         commands.close();
+        // Queued and Waiting jobs stay so, for the next open to start.
+        self.stopping = true;
+        for (_, retry) in self.retries.drain() {
+            retry.timer.abort();
+        }
         self.pause_all().await;
         // Closes the database before anyone hears that the engine stopped.
         drop(self);
@@ -449,6 +539,9 @@ impl Actor {
             }
             Command::Resume { id, probe, reply } => {
                 let _ = reply.send(self.resume(id, &probe));
+            }
+            Command::StartNow { id, reply } => {
+                let _ = reply.send(self.start_now(id));
             }
             Command::Get { id, reply } => {
                 let _ = reply.send(
@@ -504,7 +597,7 @@ impl Actor {
             final_url: None,
             dest_dir: req.dest_dir,
             file_name,
-            state: JobState::Downloading,
+            state: JobState::Queued,
             total: None,
             resumable: false,
             etag: None,
@@ -526,7 +619,7 @@ impl Actor {
         let view = view_of(&job, 0);
         write(&self.views).insert(id, view.clone());
         self.emit(Event::JobAdded(view));
-        self.start(id);
+        self.after_change();
         Ok(id)
     }
 
@@ -534,16 +627,32 @@ impl Actor {
         if !read(&self.views).contains_key(&id) {
             return Err(no_such_job());
         }
-        if let Some(cancel) = self.running.get(&id) {
-            cancel.cancel();
+        if let Some(run) = self.running.get(&id) {
+            run.cancel.cancel();
             self.settle(&[id]).await;
         }
-        Ok(())
+        // Not running, or it failed (and now waits) as it stopped.
+        let result = if matches!(
+            self.state_of(id),
+            Some(JobState::Queued | JobState::Waiting)
+        ) {
+            self.cancel_retry(id);
+            self.store
+                .set_state(id, JobState::Paused)
+                .map(|()| self.set_view_state(id, JobState::Paused))
+        } else {
+            Ok(())
+        };
+        self.retry_counts.remove(&id);
+        self.after_change();
+        result
     }
 
     fn resume(&mut self, id: JobId, probe: &Probe) -> Result<(), CoreError> {
         let mut job = self.store.get_job(id)?.ok_or_else(no_such_job)?;
-        if self.running.contains_key(&id) || job.state == JobState::Completed {
+        if self.running.contains_key(&id)
+            || !matches!(job.state, JobState::Paused | JobState::Failed)
+        {
             return Ok(());
         }
         // The link that served the file now: a confirm form may hand out a
@@ -561,7 +670,7 @@ impl Actor {
             tracing::info!(job = id.0, "restarting from zero: {what}");
         }
         job.error = change.map(|what| (ErrorKind::FileChangedOnServer, what));
-        job.state = JobState::Downloading;
+        job.state = JobState::Queued;
         let done = downloaded(&self.store, id)?;
         let fits = match job.total {
             Some(total) => check_fits(&job.dest_dir, total.saturating_sub(done), Some(total)),
@@ -576,7 +685,26 @@ impl Actor {
         write(&self.views).insert(id, view.clone());
         self.emit(Event::JobUpdated(view));
         fits?;
+        self.retry_counts.remove(&id);
+        self.after_change();
+        Ok(())
+    }
+
+    fn start_now(&mut self, id: JobId) -> Result<(), CoreError> {
+        let state = self.state_of(id).ok_or_else(no_such_job)?;
+        if self.running.contains_key(&id) {
+            return Ok(());
+        }
+        match state {
+            JobState::Queued => {}
+            JobState::Waiting => {
+                self.cancel_retry(id);
+                self.requeue(id)?;
+            }
+            _ => return Ok(()),
+        }
         self.start(id);
+        self.after_change();
         Ok(())
     }
 
@@ -584,10 +712,18 @@ impl Actor {
         if !read(&self.views).contains_key(&id) {
             return Err(no_such_job());
         }
-        if let Some(cancel) = self.running.get(&id) {
-            cancel.cancel();
+        if let Some(run) = self.running.get(&id) {
+            run.cancel.cancel();
             self.settle(&[id]).await;
         }
+        self.cancel_retry(id);
+        self.retry_counts.remove(&id);
+        let removed = self.delete(id, delete_files);
+        self.after_change();
+        removed
+    }
+
+    fn delete(&mut self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
         if delete_files && let Some(job) = self.store.get_job(id)? {
             delete_job_files(&self.store, &job)?;
         }
@@ -598,12 +734,12 @@ impl Actor {
     }
 
     fn wait(&mut self, id: JobId, reply: oneshot::Sender<JobState>) {
-        if self.running.contains_key(&id) {
-            self.waiters.entry(id).or_default().push(reply);
-            return;
+        match self.state_of(id) {
+            Some(state) if !is_final(state) => self.waiters.entry(id).or_default().push(reply),
+            state => {
+                let _ = reply.send(state.unwrap_or(JobState::Failed));
+            }
         }
-        let state = read(&self.views).get(&id).map(|v| v.state);
-        let _ = reply.send(state.unwrap_or(JobState::Failed));
     }
 
     fn set_settings(&mut self, settings: Settings) -> Result<(), CoreError> {
@@ -613,15 +749,139 @@ impl Actor {
         *write(&self.shared_settings) = settings.clone();
         self.settings = settings.clone();
         self.emit(Event::SettingsChanged(settings));
+        self.after_change();
         Ok(())
     }
 
     async fn pause_all(&mut self) {
         let ids: Vec<JobId> = self.running.keys().copied().collect();
-        for cancel in self.running.values() {
-            cancel.cancel();
+        for run in self.running.values() {
+            run.cancel.cancel();
         }
         self.settle(&ids).await;
+    }
+
+    /// Runs after every change of a job's state or of the settings: starts
+    /// Queued jobs in queue order while fewer than `max_active` download,
+    /// announces `QueueIdle` when the last busy job leaves, then answers the
+    /// waiters of jobs that are done (after their events).
+    fn after_change(&mut self) {
+        if !self.stopping {
+            self.schedule();
+            let busy = read(&self.views).values().any(|v| {
+                matches!(
+                    v.state,
+                    JobState::Downloading | JobState::Queued | JobState::Waiting
+                )
+            });
+            if self.busy && !busy {
+                self.emit(Event::QueueIdle);
+            }
+            self.busy = busy;
+        }
+        let views = read(&self.views);
+        self.waiters.retain(|id, waiters| {
+            let state = match views.get(id) {
+                Some(view) if !is_final(view.state) => return true,
+                Some(view) => view.state,
+                // Removed.
+                None => JobState::Failed,
+            };
+            for waiter in waiters.drain(..) {
+                let _ = waiter.send(state);
+            }
+            false
+        });
+    }
+
+    fn schedule(&mut self) {
+        let max_active = usize::try_from(self.settings.max_active).unwrap_or(usize::MAX);
+        if self.running.len() >= max_active {
+            return;
+        }
+        let queued = match self.store.queued_jobs() {
+            Ok(queued) => queued,
+            Err(e) => {
+                tracing::warn!("could not read the queue: {e}");
+                return;
+            }
+        };
+        for id in queued {
+            if self.running.len() >= max_active {
+                break;
+            }
+            if !self.running.contains_key(&id) && self.state_of(id) == Some(JobState::Queued) {
+                self.start(id);
+            }
+        }
+    }
+
+    /// Retries the Waiting job after `waiting_retry_first`, doubling per wait
+    /// in a row in which it made no progress, up to `waiting_retry_cap`.
+    fn retry_later(&mut self, id: JobId, progressed: bool) {
+        let count = self.retry_counts.entry(id).or_insert(0);
+        if progressed {
+            *count = 0;
+        }
+        let delay = retry_delay(&self.timing, *count);
+        *count = count.saturating_add(1);
+        self.next_retry_seq += 1;
+        let seq = self.next_retry_seq;
+        let tx = self.job_tx.clone();
+        let timer = tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(JobMsg::RetryDue { id, seq });
+        })
+        .abort_handle();
+        if let Some(old) = self.retries.insert(id, Retry { seq, timer }) {
+            old.timer.abort();
+        }
+    }
+
+    fn on_retry_due(&mut self, id: JobId, seq: u64) {
+        // A cancelled timer may have fired before it was aborted.
+        if self.retries.get(&id).is_none_or(|r| r.seq != seq) {
+            return;
+        }
+        self.retries.remove(&id);
+        if self.state_of(id) == Some(JobState::Waiting) {
+            if let Err(e) = self.requeue(id) {
+                tracing::warn!(job = id.0, "could not queue the waiting job: {e}");
+            }
+            self.after_change();
+        }
+    }
+
+    fn cancel_retry(&mut self, id: JobId) {
+        if let Some(retry) = self.retries.remove(&id) {
+            retry.timer.abort();
+        }
+    }
+
+    /// Queues the job again, clearing its error.
+    fn requeue(&mut self, id: JobId) -> Result<(), CoreError> {
+        self.store.requeue(id)?;
+        if let Some(view) = write(&self.views).get_mut(&id) {
+            view.error = None;
+        }
+        self.set_view_state(id, JobState::Queued);
+        Ok(())
+    }
+
+    fn state_of(&self, id: JobId) -> Option<JobState> {
+        read(&self.views).get(&id).map(|v| v.state)
+    }
+
+    /// Sets the state in the job's view and announces it.
+    fn set_view_state(&self, id: JobId, state: JobState) {
+        let view = write(&self.views).get_mut(&id).map(|view| {
+            view.state = state;
+            view.speed_bps = 0;
+            view.clone()
+        });
+        if let Some(view) = view {
+            self.emit(Event::JobUpdated(view));
+        }
     }
 
     /// Handles job messages until none of `ids` is running.
@@ -634,8 +894,13 @@ impl Actor {
         }
     }
 
-    /// Spawns the job's download task.
+    /// Spawns the job's download task; the job is Downloading from here on.
     fn start(&mut self, id: JobId) {
+        if let Err(e) = self.store.set_state(id, JobState::Downloading) {
+            // The run records its own state as it starts.
+            tracing::warn!(job = id.0, "could not record the start: {e}");
+        }
+        let downloaded_at_start = read(&self.views).get(&id).map_or(0, |v| v.downloaded);
         let cancel = CancellationToken::new();
         let (progress, mut progress_rx) = mpsc::unbounded_channel();
         let ctx = JobContext {
@@ -645,7 +910,7 @@ impl Actor {
             cancel: cancel.clone(),
             progress,
             limiter: self.limiter.clone(),
-            timing: Timing::default(),
+            timing: self.timing.clone(),
             auto_checksum: self.settings.auto_checksum,
         };
         let tx = self.job_tx.clone();
@@ -672,7 +937,14 @@ impl Actor {
             });
             let _ = tx.send(JobMsg::Finished { id, outcome });
         });
-        self.running.insert(id, cancel);
+        self.running.insert(
+            id,
+            Run {
+                cancel,
+                downloaded_at_start,
+            },
+        );
+        self.set_view_state(id, JobState::Downloading);
     }
 
     fn on_job_msg(&mut self, msg: JobMsg) {
@@ -700,36 +972,55 @@ impl Actor {
                 });
             }
             JobMsg::Finished { id, outcome } => self.on_finished(id, outcome),
+            JobMsg::RetryDue { id, seq } => self.on_retry_due(id, seq),
         }
     }
 
     /// Refreshes the view from the store (finishing may have renamed the
-    /// file), announces it and answers the job's waiters.
+    /// file) and announces it. A job that failed with an error that may pass
+    /// (`is_transient`) waits to be retried instead, keeping the error.
     fn on_finished(&mut self, id: JobId, outcome: JobOutcome) {
-        self.running.remove(&id);
+        let run = self.running.remove(&id);
         let mut view = load_view(&self.store, id).unwrap_or_else(|e| {
             tracing::warn!(job = id.0, "could not reload the finished job: {e}");
             read(&self.views).get(&id).cloned()
         });
         let state = match outcome {
-            JobOutcome::Completed(_) => JobState::Completed,
+            JobOutcome::Completed(_) => {
+                self.retry_counts.remove(&id);
+                JobState::Completed
+            }
             JobOutcome::Paused => JobState::Paused,
             JobOutcome::Failed(e) => {
+                let state = if e.kind.is_transient() {
+                    JobState::Waiting
+                } else {
+                    JobState::Failed
+                };
                 if let Some(view) = &mut view {
                     view.error = Some((e.kind, e.detail));
                 }
-                JobState::Failed
+                state
             }
         };
         if let Some(mut view) = view {
+            if state == JobState::Waiting {
+                if let Err(e) = self.store.set_state(id, JobState::Waiting) {
+                    tracing::warn!(job = id.0, "could not record the wait: {e}");
+                }
+                // On shutdown it stays Waiting, for the next open to queue.
+                if !self.stopping {
+                    let progressed =
+                        run.is_some_and(|run| view.downloaded > run.downloaded_at_start);
+                    self.retry_later(id, progressed);
+                }
+            }
             view.state = state;
             view.speed_bps = 0;
             write(&self.views).insert(id, view.clone());
             self.emit(Event::JobUpdated(view));
         }
-        for waiter in self.waiters.remove(&id).unwrap_or_default() {
-            let _ = waiter.send(state);
-        }
+        self.after_change();
     }
 
     /// Counts newly downloaded bytes and, while unlimited, saves a new peak.
@@ -754,6 +1045,24 @@ impl Actor {
         // No subscribers is fine.
         let _ = self.events.send(event);
     }
+}
+
+/// Whether a job in `state` is done until someone acts on it: nothing will
+/// run it on its own.
+fn is_final(state: JobState) -> bool {
+    matches!(
+        state,
+        JobState::Completed | JobState::Paused | JobState::Failed
+    )
+}
+
+/// Delay before a Waiting job's retry after `count` earlier waits in a row:
+/// `waiting_retry_first` doubled `count` times, at most `waiting_retry_cap`.
+fn retry_delay(timing: &Timing, count: u32) -> Duration {
+    timing
+        .waiting_retry_first
+        .saturating_mul(2u32.saturating_pow(count))
+        .min(timing.waiting_retry_cap)
 }
 
 /// The limiter rate for `settings`: presets are shares of the saved peak.
@@ -967,6 +1276,16 @@ fn stopped() -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_delay_doubles_up_to_the_cap() {
+        let timing = Timing::default();
+        let delays: Vec<u64> = [0, 1, 2, 3, 4, 5, 40]
+            .into_iter()
+            .map(|count| retry_delay(&timing, count).as_secs())
+            .collect();
+        assert_eq!(delays, [60, 120, 240, 480, 600, 600, 600]);
+    }
 
     #[test]
     fn a_peak_older_than_seven_days_is_not_fresh() {
