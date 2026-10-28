@@ -61,6 +61,7 @@ impl Fixture {
         job.total = Some(spec.size as u64);
         job.resumable = spec.ranges;
         job.etag = spec.etag.clone();
+        job.last_modified = spec.last_modified.clone();
         self.store.update_job(&job).unwrap();
         id
     }
@@ -733,6 +734,63 @@ async fn etag_change_mid_download_fails_without_stitching() {
     assert!(done <= MIB && done <= on_disk.len(), "recorded {done}");
     assert!(on_disk[..done] == content(&spec)[..done]);
     assert!(fx.server.requests(PATH) >= 2);
+}
+
+const MODIFIED: &str = "Tue, 01 Jan 2030 00:00:00 GMT";
+
+/// A 4 MiB download over one connection that drops after 1 MiB; once 1 MiB
+/// is served the server switches to `then`, which the resumed request gets.
+async fn run_switching_to(fx: &Fixture, spec: &FileSpec, then: &FileSpec) -> JobOutcome {
+    let id = fx.add(spec, 1);
+    let server = &fx.server;
+    let switch = async {
+        while server.bytes_served(PATH) < MIB as u64 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        server.replace(PATH, then.clone());
+    };
+    let (outcome, ()) = tokio::join!(fx.run(id, CancellationToken::new()), switch);
+    outcome
+}
+
+fn tagged(etag: &str, last_modified: Option<&str>) -> FileSpec {
+    let mut spec = FileSpec::new(4 * MIB);
+    spec.etag = Some(etag.into());
+    spec.last_modified = last_modified.map(str::to_owned);
+    spec.drop_once_after = Some(MIB);
+    spec
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn per_backend_etag_with_same_last_modified_completes() {
+    let fx = Fixture::new().await;
+    // A load-balanced origin: another backend, same bytes, its own ETag.
+    let spec = tagged("\"5f2a:12\"", Some(MODIFIED));
+    let other_backend = tagged("\"5f2a:13\"", Some(MODIFIED));
+    let outcome = run_switching_to(&fx, &spec, &other_backend).await;
+    assert_completed(outcome, &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn weak_form_of_the_same_etag_completes() {
+    let fx = Fixture::new().await;
+    let spec = tagged("\"x\"", None);
+    let outcome = run_switching_to(&fx, &spec, &tagged("W/\"x\"", None)).await;
+    assert_completed(outcome, &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn other_etag_with_other_or_missing_last_modified_fails() {
+    for then in [Some("Wed, 02 Jan 2030 00:00:00 GMT"), None] {
+        let fx = Fixture::new().await;
+        let spec = tagged("\"v1\"", Some(MODIFIED));
+        let mut changed = tagged("\"v2\"", then);
+        changed.seed = 2;
+        match run_switching_to(&fx, &spec, &changed).await {
+            JobOutcome::Failed(e) => assert_eq!(e.kind, ErrorKind::FileChangedOnServer, "{then:?}"),
+            other => panic!("expected Failed with {then:?}, got {other:?}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

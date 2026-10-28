@@ -785,6 +785,37 @@ async fn mismatched_mirror_dropped_at_add() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mirror_validators_follow_the_segment_rule_at_add() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let mut spec = FileSpec::new(4 * MIB);
+    spec.etag = Some("\"5f2a:12\"".into());
+    spec.last_modified = Some("Tue, 01 Jan 2030 00:00:00 GMT".into());
+    let url = fx.server.serve(PATH, spec.clone());
+    let mirror = TestServer::start().await;
+    // No ETag on the mirror: Last-Modified decides.
+    let mut older = spec.clone();
+    older.etag = None;
+    older.last_modified = Some("Mon, 31 Dec 2029 00:00:00 GMT".into());
+    // Another backend's ETag for the same bytes, same Last-Modified.
+    let mut backend = spec.clone();
+    backend.etag = Some("\"5f2a:13\"".into());
+    let kept = mirror.serve("/backend.bin", backend);
+    let mirrors = vec![mirror.serve("/older.bin", older), kept.clone()];
+
+    let id = engine
+        .add(AddRequest {
+            mirrors,
+            ..fx.request(&url)
+        })
+        .await
+        .unwrap();
+    assert_eq!(fx.stored(id).mirrors, [kept]);
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("x.bin"), &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn expiring_redirect_target_still_completes() {
     let fx = Fixture::new().await;
     let engine = fx.engine().await;

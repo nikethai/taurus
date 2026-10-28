@@ -76,7 +76,8 @@ pub struct AddRequest {
     /// Defaults to `DEFAULT_CONNECTIONS`.
     pub connections: Option<u32>,
     /// Other URLs serving the same file. Each is checked at `add`; one that
-    /// fails to resolve or serves another size (or ETag) is dropped.
+    /// fails to resolve, serves another size or another version (by its
+    /// validators) is dropped.
     pub mirrors: Vec<String>,
     /// The file's expected checksum, stored with the job.
     pub checksum: Option<String>,
@@ -378,7 +379,7 @@ impl Engine {
     /// Re-resolves the job's URL (with its Referer) and continues it from
     /// the link that serves the file now (a confirm form may hand out a fresh
     /// one). If the file changed on the
-    /// server (ETag, else Last-Modified, or size) or the download cannot be
+    /// server (validators or size) or the download cannot be
     /// resumed, it restarts from zero; a change is noted as the job's error
     /// (`FileChangedOnServer`) while it downloads. The job is queued, like a
     /// new one. Resuming a Queued, Waiting, running or completed job does
@@ -1189,7 +1190,8 @@ fn fixed_url(url: &str) -> String {
 
 /// The mirrors that serve the primary's file, each as the link to request
 /// (a confirm form's, if one was followed). A mirror that fails to resolve,
-/// serves another size, or has another ETag (when both have one) is dropped.
+/// serves another size, or whose validators say it serves another version
+/// (the rule segment responses follow) is dropped.
 async fn vet_mirrors(
     client: &reqwest::Client,
     primary: &Probe,
@@ -1205,19 +1207,26 @@ async fn vet_mirrors(
                 describe_size(probe.size),
                 describe_size(primary.size)
             ),
-            Ok(Probe {
-                etag: Some(etag), ..
-            }) if primary.etag.as_ref().is_some_and(|p| *p != etag) => {
-                format!("ETag {etag} differs from the primary's")
-            }
-            Ok(probe) => {
-                kept.push(probe.requested_url.to_string());
-                continue;
-            }
+            Ok(probe) => match mirror_change(primary, &probe) {
+                Some(change) => change,
+                None => {
+                    kept.push(probe.requested_url.to_string());
+                    continue;
+                }
+            },
         };
         tracing::info!(mirror = loggable(mirror), "dropping the mirror: {why}");
     }
     kept
+}
+
+/// How the mirror's validators differ from the primary's, as for a 206.
+fn mirror_change(primary: &Probe, mirror: &Probe) -> Option<String> {
+    validator_change(
+        (primary.etag.as_deref(), primary.last_modified.as_deref()),
+        (mirror.etag.as_deref(), mirror.last_modified.as_deref()),
+    )
+    .map(|what| format!("{what} (primary to mirror)"))
 }
 
 /// Copies what the probe learned into the record.
@@ -1230,7 +1239,7 @@ fn apply_probe(job: &mut JobRecord, probe: &Probe) {
 }
 
 /// What says the file on the server is no longer the one partly downloaded:
-/// the ETag, else (no ETag on both sides) Last-Modified, or the size.
+/// the validators (see `validator_change`), or the size.
 fn change_on_server(job: &JobRecord, probe: &Probe) -> Option<String> {
     let validator = validator_change(
         (job.etag.as_deref(), job.last_modified.as_deref()),

@@ -197,21 +197,31 @@ fn header(headers: &HeaderMap, name: HeaderName) -> Option<String> {
 }
 
 /// How the validators of a response say it is not the file the job was
-/// started on: by ETag when both sides have one, else by Last-Modified when
-/// both have one. `None` when they match or cannot tell.
+/// started on: by ETag when both sides have one (a weak `W/` prefix
+/// ignored), else by Last-Modified when both have one. ETags that differ
+/// while both sides carry the same Last-Modified are taken as the same file:
+/// load-balanced origins tag identical bytes per backend (IIS change
+/// numbers, Apache inodes). The size is the caller's to compare. `None`
+/// when they match or cannot tell.
 pub(crate) fn validator_change(
     (old_etag, old_modified): (Option<&str>, Option<&str>),
     (new_etag, new_modified): (Option<&str>, Option<&str>),
 ) -> Option<String> {
+    let same_modified =
+        matches!((old_modified, new_modified), (Some(old), Some(new)) if old == new);
     match ((old_etag, new_etag), (old_modified, new_modified)) {
-        ((Some(old), Some(new)), _) => {
-            (old != new).then(|| format!("ETag changed from {old} to {new}"))
-        }
+        ((Some(old), Some(new)), _) => (strong(old) != strong(new) && !same_modified)
+            .then(|| format!("ETag changed from {old} to {new}")),
         (_, (Some(old), Some(new))) if old != new => {
             Some(format!("Last-Modified changed from {old} to {new}"))
         }
         _ => None,
     }
+}
+
+/// The ETag without its weak-validator prefix.
+fn strong(etag: &str) -> &str {
+    etag.strip_prefix("W/").unwrap_or(etag)
 }
 
 /// A parsed `Content-Range: bytes <first>-<last>/<total>` (either side may be `*`).
@@ -247,10 +257,14 @@ mod tests {
     fn validators_compare_etag_first_then_last_modified() {
         let (v1, v2) = (Some("\"v1\""), Some("\"v2\""));
         let (monday, tuesday) = (Some("Mon"), Some("Tue"));
+        // Differing ETags with differing or missing Last-Modified: changed.
         assert_eq!(
-            validator_change((v1, monday), (v2, monday)).as_deref(),
+            validator_change((v1, monday), (v2, tuesday)).as_deref(),
             Some("ETag changed from \"v1\" to \"v2\"")
         );
+        assert!(validator_change((v1, monday), (v2, None)).is_some());
+        assert!(validator_change((v1, None), (v2, monday)).is_some());
+        assert!(validator_change((v1, None), (v2, None)).is_some());
         // Matching ETags win over a differing Last-Modified.
         assert_eq!(validator_change((v1, monday), (v1, tuesday)), None);
         // Without an ETag on both sides, Last-Modified decides.
@@ -260,6 +274,26 @@ mod tests {
         );
         assert_eq!(validator_change((None, monday), (None, monday)), None);
         assert_eq!(validator_change((None, None), (v2, tuesday)), None);
+    }
+
+    #[test]
+    fn per_backend_etags_with_one_last_modified_are_one_file() {
+        let modified = Some("Tue, 01 Jan 2030 00:00:00 GMT");
+        assert_eq!(
+            validator_change(
+                (Some("\"5f2a:12\""), modified),
+                (Some("\"5f2a:13\""), modified)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_weak_etag_matches_its_strong_form() {
+        let (weak, strong) = (Some("W/\"x\""), Some("\"x\""));
+        assert_eq!(validator_change((weak, None), (strong, None)), None);
+        assert_eq!(validator_change((strong, None), (weak, None)), None);
+        assert!(validator_change((Some("W/\"x\""), None), (Some("W/\"y\""), None)).is_some());
     }
 
     #[test]
