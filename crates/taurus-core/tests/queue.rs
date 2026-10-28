@@ -820,6 +820,91 @@ async fn paused_jobs_do_not_block_when_done() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idling_by_pause_or_remove_runs_no_when_done() {
+    for action in [WhenDone::Sleep, WhenDone::Notify] {
+        let fx = Fixture::new().await;
+        let countdown = Timing::fast_for_tests().when_done_countdown;
+        let engine = fx.engine_with(countdown, when_done(action)).await;
+        let mut events = engine.subscribe();
+        let spec = throttled(4 * MIB, 4 * MIB);
+        let paused = fx.add(&engine, "a.bin", &spec).await;
+        engine.pause(paused).await.unwrap();
+        let removed = fx.add(&engine, "b.bin", &spec).await;
+        engine.remove(removed, true).await.unwrap();
+        tokio::time::sleep(countdown * 3).await;
+        let seen = when_done_events(&drain(&mut events));
+        assert!(
+            seen.iter().all(|e| matches!(e, Event::QueueIdle)),
+            "{action:?}: {seen:?}"
+        );
+        assert_eq!(queue_idles(&seen), 2, "{action:?}: {seen:?}");
+
+        // A job that finishes still runs it.
+        engine.resume(paused).await.unwrap();
+        events_until(&mut events, |e| match action {
+            WhenDone::Sleep => is_countdown(e),
+            _ => is_fired(e),
+        })
+        .await;
+        engine.shutdown().await.unwrap();
+    }
+}
+
+/// The settings the engine announced last among `events`.
+fn last_settings(events: &[Event]) -> Option<Settings> {
+    events.iter().rev().find_map(|e| match e {
+        Event::SettingsChanged(s) => Some(s.clone()),
+        _ => None,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sleep_and_shutdown_fire_once() {
+    for action in [WhenDone::Sleep, WhenDone::Shutdown] {
+        let fx = Fixture::new().await;
+        let countdown = Timing::fast_for_tests().when_done_countdown;
+        let engine = fx.engine_with(countdown, when_done(action)).await;
+        let mut events = engine.subscribe();
+        fx.add(&engine, "a.bin", &FileSpec::new(MIB)).await;
+        events_until(&mut events, is_fired).await;
+        // Even when the engine stops right after firing.
+        engine.shutdown().await.unwrap();
+        let after = drain(&mut events);
+        assert_eq!(
+            last_settings(&after).map(|s| s.when_done),
+            Some(WhenDone::Nothing),
+            "{action:?}: {after:?}"
+        );
+        assert_eq!(engine.settings().when_done, WhenDone::Nothing);
+        let reopened = fx.engine().await;
+        assert_eq!(
+            reopened.settings().when_done,
+            WhenDone::Nothing,
+            "{action:?}"
+        );
+        reopened.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn notify_and_quit_stay_set() {
+    for action in [WhenDone::Notify, WhenDone::Quit] {
+        let fx = Fixture::new().await;
+        let engine = fx
+            .engine_with(Duration::from_secs(30), when_done(action))
+            .await;
+        let mut events = engine.subscribe();
+        fx.add(&engine, "a.bin", &FileSpec::new(MIB)).await;
+        events_until(&mut events, is_fired).await;
+        engine.shutdown().await.unwrap();
+        assert_eq!(last_settings(&drain(&mut events)), None);
+        let reopened = fx.engine().await;
+        assert_eq!(reopened.settings().when_done, action);
+        reopened.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn keep_awake_follows_downloads() {
     let fx = Fixture::new().await;
     let engine = fx.engine().await;

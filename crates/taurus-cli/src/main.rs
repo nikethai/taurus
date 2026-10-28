@@ -90,7 +90,8 @@ enum ConfigAction {
     /// Print every setting, or one, as `key = value`
     Get { key: Option<String> },
     /// Change a setting: max_active <N> | speed fastest|balanced|gentle|<N>KB/s|<N>MB/s |
-    /// when_done nothing|notify|sleep|shutdown|quit | auto_checksum on|off | keep_awake on|off
+    /// when_done nothing|notify|sleep|shutdown|quit (sleep and shutdown run once, then reset
+    /// to nothing) | auto_checksum on|off | keep_awake on|off
     Set { key: String, value: String },
 }
 

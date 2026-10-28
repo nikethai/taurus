@@ -47,7 +47,7 @@ taurus remove 1 --delete-files
 | --- | --- | --- |
 | `max_active` | how many downloads run at once, at least 1 | `3` |
 | `speed` | `fastest` (no limit), `balanced` (60 % of the fastest speed measured), `gentle` (25 %), or a fixed limit such as `500KB/s` or `5MB/s` (KB = 1000 bytes, MB = 1000000 bytes) | `fastest` |
-| `when_done` | what to do once the queue is done: `nothing`, `notify` (prints `All downloads finished.`), `sleep` or `shutdown` (after a 60 second countdown), `quit` | `nothing` |
+| `when_done` | what to do once the queue is done (a download finishing empties it; pausing or removing the last one does not count): `nothing`, `notify` (prints `All downloads finished.`), `sleep` or `shutdown` (after a 60 second countdown; one-shot: once it runs, `when_done` goes back to `nothing`), `quit` | `nothing` |
 | `auto_checksum` | `on` or `off`: verify a download against a `SHA256SUMS` file the host publishes beside it | `on` |
 | `keep_awake` | `on` or `off`: keep the computer from sleeping while a download runs | `on` |
 

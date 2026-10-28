@@ -117,7 +117,9 @@ pub enum Event {
     JobRemoved(JobId),
     SettingsChanged(Settings),
     /// Nothing is Downloading, Queued or Waiting any more. Sent once each
-    /// time the last such job leaves those states.
+    /// time the last such job leaves those states. The when-done action
+    /// follows only when a job finishing (Completed or Failed) made the
+    /// queue idle, not a pause or a removal.
     QueueIdle,
     /// A Sleep or Shutdown runs in `seconds_left` (rounded up). Sent as the
     /// countdown starts and then every second.
@@ -129,7 +131,9 @@ pub enum Event {
     WhenDoneCancelled,
     /// The when-done action is due: front ends carry out Notify and Quit
     /// (`command` is `None`); for Sleep and Shutdown, `command` is the
-    /// command line that ran (or would have, in `PowerMode::DryRun`).
+    /// command line that ran (or would have, in `PowerMode::DryRun`). Sleep
+    /// and Shutdown are one-shot: `when_done` is then set back to Nothing
+    /// (saved, and announced with `SettingsChanged`).
     WhenDoneFired {
         action: WhenDone,
         command: Option<String>,
@@ -215,6 +219,8 @@ enum JobMsg {
         id: JobId,
         seq: u64,
     },
+    /// A Sleep or Shutdown fired.
+    WhenDoneFired(WhenDone),
 }
 
 impl Engine {
@@ -271,6 +277,12 @@ impl Engine {
         let (commands, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let (job_tx, job_rx) = mpsc::unbounded_channel();
+        let on_fired = {
+            let job_tx: mpsc::UnboundedSender<JobMsg> = job_tx.clone();
+            Arc::new(move |action| {
+                let _ = job_tx.send(JobMsg::WhenDoneFired(action));
+            })
+        };
         let client = build_client();
         let mut actor = Actor {
             _lock: lock,
@@ -284,12 +296,14 @@ impl Engine {
             retry_counts: HashMap::new(),
             next_retry_seq: 0,
             busy: false,
+            job_ended: false,
             stopping: false,
             autostart: config.autostart,
             when_done: WhenDoneRunner::new(
                 events.clone(),
                 config.power,
                 config.timing.when_done_countdown,
+                on_fired,
             ),
             awake: AwakeGuard::new(),
             keeping_awake: keeping_awake.clone(),
@@ -533,6 +547,9 @@ struct Actor {
     next_retry_seq: u64,
     /// Whether a job was Downloading, Queued or Waiting at the last change.
     busy: bool,
+    /// A run ended Completed or Failed since the last change: only that
+    /// makes an idle queue run the when-done action.
+    job_ended: bool,
     /// Shutting down: start nothing more.
     stopping: bool,
     /// Whether jobs start and retry on their own; else only `start_now`.
@@ -589,6 +606,11 @@ impl Actor {
         self.stopping = true;
         for (_, retry) in self.retries.drain() {
             retry.timer.abort();
+        }
+        // Includes a when-done that fired just before: whoever heard of it
+        // may be what stopped the engine, and it must still be turned off.
+        while let Ok(msg) = self.job_rx.try_recv() {
+            self.on_job_msg(msg);
         }
         self.pause_all().await;
         // Closes the database before anyone hears that the engine stopped.
@@ -857,8 +879,9 @@ impl Actor {
 
     /// Runs after every change of a job's state or of the settings: starts
     /// Queued jobs in queue order while fewer than `max_active` download,
-    /// announces `QueueIdle` when the last busy job leaves and runs the
-    /// when-done action (only with `autostart`), keeps the computer awake
+    /// announces `QueueIdle` when the last busy job leaves and, if a job
+    /// ending made it leave, runs the when-done action (only with
+    /// `autostart`), keeps the computer awake
     /// while a job downloads, then answers the waiters of jobs that are done
     /// (after their events).
     fn after_change(&mut self) {
@@ -872,12 +895,13 @@ impl Actor {
             });
             if self.busy && !busy {
                 self.emit(Event::QueueIdle);
-                if self.autostart {
+                if self.autostart && self.job_ended {
                     self.when_done.queue_idle(self.settings.when_done);
                 }
             }
             self.busy = busy;
         }
+        self.job_ended = false;
         let downloading = read(&self.views)
             .values()
             .any(|v| v.state == JobState::Downloading);
@@ -1081,6 +1105,22 @@ impl Actor {
             }
             JobMsg::Finished { id, outcome } => self.on_finished(id, outcome),
             JobMsg::RetryDue { id, seq } => self.on_retry_due(id, seq),
+            JobMsg::WhenDoneFired(action) => self.on_when_done_fired(action),
+        }
+    }
+
+    /// Sleep and Shutdown are one-shot: once one fires, `when_done` goes
+    /// back to Nothing, unless the user has already changed it.
+    fn on_when_done_fired(&mut self, action: WhenDone) {
+        if self.settings.when_done != action {
+            return;
+        }
+        let settings = Settings {
+            when_done: WhenDone::Nothing,
+            ..self.settings.clone()
+        };
+        if let Err(e) = self.set_settings(settings) {
+            tracing::warn!("could not turn off the when-done action: {e}");
         }
     }
 
@@ -1096,6 +1136,7 @@ impl Actor {
         let state = match outcome {
             JobOutcome::Completed(_) => {
                 self.retry_counts.remove(&id);
+                self.job_ended = true;
                 JobState::Completed
             }
             JobOutcome::Paused => JobState::Paused,
@@ -1103,6 +1144,7 @@ impl Actor {
                 let state = if e.kind.is_transient() {
                     JobState::Waiting
                 } else {
+                    self.job_ended = true;
                     JobState::Failed
                 };
                 if let Some(view) = &mut view {

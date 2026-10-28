@@ -1,6 +1,7 @@
 //! The when-done action, run once the queue has nothing left to run: front
 //! ends carry out Notify and Quit at once; Sleep and Shutdown run their OS
-//! command after a countdown that new work or the user can cancel.
+//! command after a countdown that new work or the user can cancel, and are
+//! then reported to the engine, which turns them off (they are one-shot).
 
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -13,11 +14,15 @@ use crate::engine::Event;
 use crate::settings::{PowerMode, WhenDone};
 use crate::system::command_for;
 
+/// Called with a Sleep or Shutdown as it fires, before it is announced.
+pub(crate) type OnFired = Arc<dyn Fn(WhenDone) + Send + Sync>;
+
 /// Runs the when-done action; owned by the engine's actor.
 pub(crate) struct WhenDoneRunner {
     events: broadcast::Sender<Event>,
     power: PowerMode,
     countdown: Duration,
+    on_fired: OnFired,
     running: Option<Countdown>,
 }
 
@@ -34,11 +39,13 @@ impl WhenDoneRunner {
         events: broadcast::Sender<Event>,
         power: PowerMode,
         countdown: Duration,
+        on_fired: OnFired,
     ) -> WhenDoneRunner {
         WhenDoneRunner {
             events,
             power,
             countdown,
+            on_fired,
             running: None,
         }
     }
@@ -88,6 +95,7 @@ impl WhenDoneRunner {
             live.clone(),
             self.events.clone(),
             self.power,
+            self.on_fired.clone(),
         ))
         .abort_handle();
         self.running = Some(Countdown { live, task });
@@ -105,7 +113,8 @@ impl Drop for WhenDoneRunner {
 }
 
 /// Ticks at each whole second left after the first `seconds`, then runs
-/// `action`'s command (only in `PowerMode::Execute`) and announces it.
+/// `action`'s command (only in `PowerMode::Execute`) and announces it,
+/// telling `on_fired` first.
 async fn count_down(
     action: WhenDone,
     deadline: Instant,
@@ -113,6 +122,7 @@ async fn count_down(
     live: Arc<Mutex<bool>>,
     events: broadcast::Sender<Event>,
     power: PowerMode,
+    on_fired: OnFired,
 ) {
     for left in (1..seconds).rev() {
         tokio::time::sleep_until(deadline - Duration::from_secs(left)).await;
@@ -132,6 +142,9 @@ async fn count_down(
         if !std::mem::replace(&mut *still_live, false) {
             return;
         }
+        // Before the announcement, so whoever hears it (and then, say, stops
+        // the engine) is too late to beat it.
+        on_fired(action);
         let _ = events.send(Event::WhenDoneFired {
             action,
             command: command.as_ref().map(command_line),

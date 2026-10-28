@@ -397,4 +397,11 @@ async fn when_done_dry_run_prints_command() {
             "stdout: {stdout}"
         );
     }
+    // Sleep is one-shot.
+    let get = fx.run(&["config", "get", "when_done"]).await;
+    assert_exit(&get, 0);
+    assert_eq!(
+        String::from_utf8_lossy(&get.stdout),
+        "when_done = nothing\n"
+    );
 }
