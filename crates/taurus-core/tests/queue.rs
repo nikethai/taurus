@@ -739,6 +739,81 @@ async fn adding_during_countdown_cancels() {
     assert!(!drain(&mut events).iter().any(is_fired));
 }
 
+/// A web page that takes about 2 s to arrive: `add` fails on it, late.
+fn slow_page() -> FileSpec {
+    let mut spec = FileSpec::new(40 * 1024);
+    spec.content_type = Some("text/html".into());
+    spec.bytes_per_sec = Some(16 * 1024);
+    spec
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adding_cancels_the_countdown_before_probing() {
+    let fx = Fixture::new().await;
+    let countdown = Duration::from_secs(1);
+    let engine = fx
+        .engine_with(countdown, when_done(WhenDone::Shutdown))
+        .await;
+    let mut events = engine.subscribe();
+    fx.add(&engine, "a.bin", &FileSpec::new(MIB)).await;
+    events_until(&mut events, is_countdown).await;
+
+    // Resolving takes longer than the countdown has left.
+    let url = fx.server.serve("/slow", slow_page());
+    let adding = {
+        let engine = engine.clone();
+        let request = fx.request(&url);
+        tokio::spawn(async move { engine.add(request).await })
+    };
+    let seen = events_until(&mut events, |e| {
+        matches!(e, Event::WhenDoneCancelled) || is_fired(e)
+    })
+    .await;
+    assert!(
+        matches!(seen.last(), Some(Event::WhenDoneCancelled)),
+        "{seen:?}"
+    );
+    assert!(
+        !adding.is_finished(),
+        "cancelled only once the add was done"
+    );
+    assert!(adding.await.unwrap().is_err());
+    tokio::time::sleep(countdown * 2).await;
+    let seen = drain(&mut events);
+    assert!(
+        !seen.iter().any(|e| is_fired(e) || is_countdown(e)),
+        "{seen:?}"
+    );
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_hold_defers_when_done_for_a_batch() {
+    for action in [WhenDone::Notify, WhenDone::Sleep] {
+        let fx = Fixture::new().await;
+        let countdown = Timing::fast_for_tests().when_done_countdown;
+        let engine = fx.engine_with(countdown, when_done(action)).await;
+        let mut events = engine.subscribe();
+        let hold = engine.hold_when_done();
+        let id = fx.add(&engine, "a.bin", &FileSpec::new(MIB)).await;
+        assert_eq!(wait(&engine, id).await, JobState::Completed);
+        // The rest of the batch still resolves.
+        let url = fx.server.serve("/slow", slow_page());
+        assert!(engine.add(fx.request(&url)).await.is_err());
+        let seen = when_done_events(&drain(&mut events));
+        assert_eq!(seen.len(), 1, "{action:?}: {seen:?}");
+        assert!(matches!(seen[0], Event::QueueIdle));
+
+        drop(hold);
+        events_until(&mut events, |e| match action {
+            WhenDone::Sleep => is_countdown(e),
+            _ => is_fired(e),
+        })
+        .await;
+        engine.shutdown().await.unwrap();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancel_when_done_stops_countdown() {
     let fx = Fixture::new().await;

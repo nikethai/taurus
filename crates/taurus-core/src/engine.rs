@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -28,7 +28,7 @@ use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
 use crate::system::marks::loggable;
 use crate::system::{AwakeGuard, check_fits};
 use crate::timing::Timing;
-use crate::when_done::WhenDoneRunner;
+use crate::when_done::{EngineLink, WhenDoneRunner};
 
 const COMMAND_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 1024;
@@ -153,6 +153,10 @@ pub struct Engine {
     /// The actor's keep-awake wish, copied for `keeping_awake`.
     keeping_awake: Arc<AtomicBool>,
     client: reqwest::Client,
+    /// Live `WhenDoneHold`s, shared with the actor.
+    holds: Arc<AtomicUsize>,
+    /// Tells the actor that `holds` changed.
+    hold_tx: mpsc::UnboundedSender<JobMsg>,
 }
 
 type Reply<T> = oneshot::Sender<Result<T, CoreError>>;
@@ -221,6 +225,8 @@ enum JobMsg {
     },
     /// A Sleep or Shutdown fired.
     WhenDoneFired(WhenDone),
+    /// A `WhenDoneHold` was taken or dropped.
+    HoldChanged,
 }
 
 impl Engine {
@@ -277,6 +283,7 @@ impl Engine {
         let (commands, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let (job_tx, job_rx) = mpsc::unbounded_channel();
+        let holds = Arc::new(AtomicUsize::new(0));
         let on_fired = {
             let job_tx: mpsc::UnboundedSender<JobMsg> = job_tx.clone();
             Arc::new(move |action| {
@@ -297,17 +304,22 @@ impl Engine {
             next_retry_seq: 0,
             busy: false,
             job_ended: false,
+            idle_pending: false,
+            holds: holds.clone(),
             stopping: false,
             autostart: config.autostart,
             when_done: WhenDoneRunner::new(
                 events.clone(),
                 config.power,
                 config.timing.when_done_countdown,
-                on_fired,
+                EngineLink {
+                    on_fired,
+                    holds: holds.clone(),
+                },
             ),
             awake: AwakeGuard::new(),
             keeping_awake: keeping_awake.clone(),
-            job_tx,
+            job_tx: job_tx.clone(),
             job_rx,
             timing: config.timing.clone(),
             settings,
@@ -326,6 +338,8 @@ impl Engine {
             settings: shared_settings,
             keeping_awake,
             client,
+            holds,
+            hold_tx: job_tx,
         })
     }
 
@@ -355,6 +369,8 @@ impl Engine {
     /// with `Unknown`; nothing is recorded when `add` fails.
     pub async fn add(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         self.check_running()?;
+        // Resolving may take minutes: the machine must not sleep meanwhile.
+        let _hold = self.hold_when_done();
         let is_dir = tokio::fs::metadata(&req.dest_dir)
             .await
             .is_ok_and(|m| m.is_dir());
@@ -409,6 +425,7 @@ impl Engine {
     /// Failed with that error, which is also returned.
     pub async fn resume(&self, id: JobId) -> Result<(), CoreError> {
         self.check_running()?;
+        let _hold = self.hold_when_done();
         let job = self.call(|reply| Command::Get { id, reply }).await??;
         if !matches!(job.state, JobState::Paused | JobState::Failed) {
             return Ok(());
@@ -429,6 +446,7 @@ impl Engine {
     /// already download; it counts toward them while it runs. Any other job
     /// is left as it is.
     pub async fn start_now(&self, id: JobId) -> Result<(), CoreError> {
+        let _hold = self.hold_when_done();
         self.call(|reply| Command::StartNow { id, reply }).await?
     }
 
@@ -471,10 +489,22 @@ impl Engine {
     }
 
     /// Stops the when-done countdown, if one runs, and emits
-    /// `WhenDoneCancelled`. Adding, resuming or starting a job, or changing
-    /// `when_done`, stops it too.
+    /// `WhenDoneCancelled`. Adding, resuming or starting a job (from the
+    /// moment it is called), a `WhenDoneHold`, or changing `when_done`
+    /// stops it too.
     pub async fn cancel_when_done(&self) -> Result<(), CoreError> {
         self.call(|reply| Command::CancelWhenDone { reply }).await?
+    }
+
+    /// Holds off the when-done action until the returned guard (and every
+    /// other hold) is dropped: taking it stops a running countdown, and
+    /// while held no countdown starts and no action fires. A queue that went
+    /// idle meanwhile because a job finished runs the action once the last
+    /// hold is dropped; a stopped countdown does not start again. For front
+    /// ends that add several jobs in a row; `add`, `resume` and `start_now`
+    /// each hold it while they run.
+    pub fn hold_when_done(&self) -> WhenDoneHold {
+        WhenDoneHold::new(&self.holds, &self.hold_tx)
     }
 
     /// Whether the engine asks the OS to keep the computer awake: while a
@@ -529,6 +559,31 @@ impl Engine {
     }
 }
 
+/// Holds off the when-done action while alive; see `Engine::hold_when_done`.
+pub struct WhenDoneHold {
+    holds: Arc<AtomicUsize>,
+    tx: mpsc::UnboundedSender<JobMsg>,
+}
+
+impl WhenDoneHold {
+    fn new(holds: &Arc<AtomicUsize>, tx: &mpsc::UnboundedSender<JobMsg>) -> WhenDoneHold {
+        holds.fetch_add(1, Ordering::SeqCst);
+        // A stopped engine has nothing to hold off.
+        let _ = tx.send(JobMsg::HoldChanged);
+        WhenDoneHold {
+            holds: holds.clone(),
+            tx: tx.clone(),
+        }
+    }
+}
+
+impl Drop for WhenDoneHold {
+    fn drop(&mut self) {
+        self.holds.fetch_sub(1, Ordering::SeqCst);
+        let _ = self.tx.send(JobMsg::HoldChanged);
+    }
+}
+
 struct Actor {
     /// Holds the data dir; released when the actor stops.
     _lock: std::fs::File,
@@ -550,6 +605,10 @@ struct Actor {
     /// A run ended Completed or Failed since the last change: only that
     /// makes an idle queue run the when-done action.
     job_ended: bool,
+    /// The queue went idle for the when-done action while it was held.
+    idle_pending: bool,
+    /// Live `WhenDoneHold`s.
+    holds: Arc<AtomicUsize>,
     /// Shutting down: start nothing more.
     stopping: bool,
     /// Whether jobs start and retry on their own; else only `start_now`.
@@ -877,11 +936,11 @@ impl Actor {
         self.settle(&ids).await;
     }
 
-    /// Runs after every change of a job's state or of the settings: starts
-    /// Queued jobs in queue order while fewer than `max_active` download,
-    /// announces `QueueIdle` when the last busy job leaves and, if a job
-    /// ending made it leave, runs the when-done action (only with
-    /// `autostart`), keeps the computer awake
+    /// Runs after every change of a job's state, of the settings or of the
+    /// holds: starts Queued jobs in queue order while fewer than
+    /// `max_active` download, announces `QueueIdle` when the last busy job
+    /// leaves and, if a job ending made it leave, runs the when-done action
+    /// once nothing holds it (only with `autostart`), keeps the computer awake
     /// while a job downloads, then answers the waiters of jobs that are done
     /// (after their events).
     fn after_change(&mut self) {
@@ -895,11 +954,15 @@ impl Actor {
             });
             if self.busy && !busy {
                 self.emit(Event::QueueIdle);
-                if self.autostart && self.job_ended {
-                    self.when_done.queue_idle(self.settings.when_done);
-                }
+                self.idle_pending |= self.autostart && self.job_ended;
             }
             self.busy = busy;
+            // Busy again: the next idle queue decides.
+            self.idle_pending &= !busy;
+            if self.idle_pending && self.holds.load(Ordering::SeqCst) == 0 {
+                self.idle_pending = false;
+                self.when_done.queue_idle(self.settings.when_done);
+            }
         }
         self.job_ended = false;
         let downloading = read(&self.views)
@@ -1106,6 +1169,13 @@ impl Actor {
             JobMsg::Finished { id, outcome } => self.on_finished(id, outcome),
             JobMsg::RetryDue { id, seq } => self.on_retry_due(id, seq),
             JobMsg::WhenDoneFired(action) => self.on_when_done_fired(action),
+            JobMsg::HoldChanged => {
+                if self.holds.load(Ordering::SeqCst) > 0 {
+                    self.when_done.cancel();
+                } else {
+                    self.after_change();
+                }
+            }
         }
     }
 

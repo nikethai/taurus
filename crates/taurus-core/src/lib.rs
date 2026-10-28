@@ -14,7 +14,7 @@ pub mod system;
 pub mod timing;
 mod when_done;
 
-pub use engine::{AddRequest, Engine, EngineConfig, Event, JobView};
+pub use engine::{AddRequest, Engine, EngineConfig, Event, JobView, WhenDoneHold};
 pub use errors::{CoreError, ErrorKind};
 pub use settings::{PowerMode, Settings, SpeedLimit, WhenDone};
 pub use store::{JobId, JobState};

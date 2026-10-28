@@ -205,7 +205,9 @@ impl<'a> Runner<'a> {
             }
             Event::QueueIdle => {
                 self.idle_due = false;
-                // The engine runs the action right after announcing idle.
+                // Only jobs finishing idle the runner's queue, so the engine
+                // runs the action right after announcing idle, or once the
+                // enqueue step's hold is dropped.
                 self.when_done_due = self.engine.settings().when_done != WhenDone::Nothing;
             }
             Event::WhenDoneCancelled => self.when_done_due = false,

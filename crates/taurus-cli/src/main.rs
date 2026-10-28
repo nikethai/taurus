@@ -232,6 +232,9 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
             })?;
             let runner = Runner::new(engine, options);
             let enqueue = async {
+                // A job may finish while a later URL still resolves: no
+                // when-done action before the whole batch is queued.
+                let hold = engine.hold_when_done();
                 let mut enqueued = Enqueued::default();
                 for url in urls {
                     let req = AddRequest {
@@ -251,6 +254,7 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
                         }
                     }
                 }
+                drop(hold);
                 enqueued
             };
             runner.run(enqueue).await
@@ -258,6 +262,7 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
         Command::Resume { ids } => {
             let runner = Runner::new(engine, options);
             let enqueue = async {
+                let hold = engine.hold_when_done();
                 let mut enqueued = Enqueued::default();
                 for id in ids.into_iter().map(JobId) {
                     match engine.resume(id).await {
@@ -268,6 +273,7 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
                         }
                     }
                 }
+                drop(hold);
                 enqueued
             };
             runner.run(enqueue).await
