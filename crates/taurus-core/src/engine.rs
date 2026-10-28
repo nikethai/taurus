@@ -215,7 +215,8 @@ enum JobMsg {
 
 impl Engine {
     /// Opens the database in `config.data_dir`, restores its jobs, applies
-    /// the saved settings and starts the queue. Jobs recorded as Downloading
+    /// the saved settings (as much of them as reads; see
+    /// `Store::load_settings_lenient`) and starts the queue. Jobs recorded as Downloading
     /// (interrupted) become Paused; Waiting jobs are queued again at once,
     /// with Queued ones. Without `config.autostart`, Queued and Waiting jobs
     /// are left as stored.
@@ -230,7 +231,9 @@ impl Engine {
             .map_err(io_error)?;
         let lock = lock_data_dir(&config.data_dir)?;
         let store = Store::open(&config.data_dir.join(DB_FILE))?;
-        let settings = store.load_settings()?;
+        // Unreadable settings must not keep the user out, not even from
+        // fixing them.
+        let settings = store.load_settings_lenient()?;
         // Only a measurement: an unreadable one is measured again.
         let measured_peak = store.measured_peak().unwrap_or_else(|e| {
             tracing::warn!("ignoring the saved peak speed: {e}");

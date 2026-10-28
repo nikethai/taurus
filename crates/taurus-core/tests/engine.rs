@@ -508,6 +508,66 @@ fn stored_peak(fx: &Fixture) -> Option<(u64, i64)> {
     store.measured_peak().unwrap()
 }
 
+/// Opens an engine over a database whose saved settings are `raw`; returns
+/// its settings and what it backed up as `settings.unreadable`.
+async fn open_with_raw_settings(raw: &str) -> (Settings, Option<String>) {
+    let fx = Fixture::new().await;
+    fs::create_dir_all(fx.data_dir()).unwrap();
+    let db = fx.data_dir().join("taurus.db");
+    drop(Store::open(&db).unwrap());
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute(
+            "INSERT INTO settings (key, value) VALUES ('settings', ?1)",
+            [raw],
+        )
+        .unwrap();
+    let engine = fx.engine().await;
+    let settings = engine.settings();
+    engine.shutdown().await.unwrap();
+    let backup = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'settings.unreadable'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    (settings, backup)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unreadable_settings_keep_what_is_readable() {
+    // Saved by a newer version that knows another when-done action.
+    let raw = r#"{"max_active":5,"when_done":"Hibernate","keep_awake":false}"#;
+    let (settings, backup) = open_with_raw_settings(raw).await;
+    assert_eq!(
+        settings,
+        Settings {
+            max_active: 5,
+            keep_awake: false,
+            ..Settings::default()
+        }
+    );
+    assert_eq!(backup.as_deref(), Some(raw));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn garbage_settings_fall_back_to_defaults() {
+    for raw in ["not json", "[1, 2]"] {
+        let (settings, backup) = open_with_raw_settings(raw).await;
+        assert_eq!(settings, Settings::default(), "{raw}");
+        assert_eq!(backup.as_deref(), Some(raw));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn saved_max_active_zero_loads_as_one() {
+    let (settings, backup) = open_with_raw_settings(r#"{"max_active":0}"#).await;
+    assert_eq!(settings.max_active, 1);
+    assert_eq!(backup, None);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn settings_are_saved_and_announced() {
     let fx = Fixture::new().await;

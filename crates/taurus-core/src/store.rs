@@ -110,6 +110,8 @@ CREATE TABLE host_flags (
 const HOST_CAP_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
 
 const SETTINGS_KEY: &str = "settings";
+/// Where `load_settings_lenient` keeps saved settings it could not read.
+const UNREADABLE_SETTINGS_KEY: &str = "settings.unreadable";
 const MEASURED_PEAK_KEY: &str = "measured_peak";
 
 const JOB_COLUMNS: &str = "id, url, final_url, dest_dir, file_name, state, total, resumable, \
@@ -620,6 +622,27 @@ impl Store {
         }
     }
 
+    /// The saved settings, never failing on their content: unreadable ones
+    /// are logged and copied to `settings.unreadable` (replacing an older
+    /// copy), then each readable field is kept and the rest defaulted
+    /// (everything, if the value is not a JSON object). `max_active` is at
+    /// least 1. Only a database error is returned.
+    pub fn load_settings_lenient(&self) -> Result<Settings, CoreError> {
+        let Some(raw) = self.setting(SETTINGS_KEY)? else {
+            return Ok(Settings::default());
+        };
+        let mut settings = match serde_json::from_str(&raw) {
+            Ok(settings) => settings,
+            Err(e) => {
+                tracing::warn!("saved settings are unreadable ({e}); keeping what can be read");
+                self.put_setting(UNREADABLE_SETTINGS_KEY, &raw)?;
+                readable_fields(&raw)
+            }
+        };
+        settings.max_active = settings.max_active.max(1);
+        Ok(settings)
+    }
+
     pub fn save_settings(&self, s: &Settings) -> Result<(), CoreError> {
         let json = serde_json::to_string(s).map_err(|e| CoreError {
             kind: ErrorKind::Unknown,
@@ -707,6 +730,29 @@ impl Store {
             .map_err(db_err)?;
         Ok(())
     }
+}
+
+/// The defaults, with each field of the JSON object `raw` that reads on its
+/// own put in place of its default.
+fn readable_fields(raw: &str) -> Settings {
+    let Ok(serde_json::Value::Object(saved)) = serde_json::from_str(raw) else {
+        return Settings::default();
+    };
+    let Ok(serde_json::Value::Object(mut fields)) = serde_json::to_value(Settings::default())
+    else {
+        return Settings::default();
+    };
+    for (key, value) in saved {
+        if !fields.contains_key(&key) {
+            continue;
+        }
+        let mut tried = fields.clone();
+        tried.insert(key.clone(), value.clone());
+        if serde_json::from_value::<Settings>(serde_json::Value::Object(tried)).is_ok() {
+            fields.insert(key, value);
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(fields)).unwrap_or_default()
 }
 
 fn mirrors_json(mirrors: &[String]) -> Result<String, CoreError> {
