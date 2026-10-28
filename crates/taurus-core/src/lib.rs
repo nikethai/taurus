@@ -12,6 +12,7 @@ pub mod settings;
 pub mod store;
 pub mod system;
 pub mod timing;
+mod when_done;
 
 pub use engine::{AddRequest, Engine, EngineConfig, Event, JobView};
 pub use errors::{CoreError, ErrorKind};

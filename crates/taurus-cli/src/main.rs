@@ -242,7 +242,11 @@ impl Printer {
             Event::Progress { id, .. } => *id,
             Event::JobRemoved(id) => *id,
             // Not about any one job.
-            Event::SettingsChanged(_) | Event::QueueIdle => return Ok(()),
+            Event::SettingsChanged(_)
+            | Event::QueueIdle
+            | Event::WhenDoneCountdown { .. }
+            | Event::WhenDoneCancelled
+            | Event::WhenDoneFired { .. } => return Ok(()),
         };
         if job != id {
             return Ok(());

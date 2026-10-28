@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -22,10 +23,11 @@ use crate::http::probe::validator_change;
 use crate::http::{JobContext, JobOutcome, Probe, build_client, resolve, run_job};
 use crate::limit::{Limiter, PeakTracker};
 use crate::plan::DEFAULT_CONNECTIONS;
-use crate::settings::{PowerMode, Settings, SpeedLimit};
+use crate::settings::{PowerMode, Settings, SpeedLimit, WhenDone};
 use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
-use crate::system::check_fits;
+use crate::system::{AwakeGuard, check_fits};
 use crate::timing::Timing;
+use crate::when_done::WhenDoneRunner;
 
 const COMMAND_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 1024;
@@ -111,6 +113,21 @@ pub enum Event {
     /// Nothing is Downloading, Queued or Waiting any more. Sent once each
     /// time the last such job leaves those states.
     QueueIdle,
+    /// A Sleep or Shutdown runs in `seconds_left` (rounded up). Sent as the
+    /// countdown starts and then every second.
+    WhenDoneCountdown {
+        action: WhenDone,
+        seconds_left: u64,
+    },
+    /// The countdown stopped before it ran out.
+    WhenDoneCancelled,
+    /// The when-done action is due: front ends carry out Notify and Quit
+    /// (`command` is `None`); for Sleep and Shutdown, `command` is the
+    /// command line that ran (or would have, in `PowerMode::DryRun`).
+    WhenDoneFired {
+        action: WhenDone,
+        command: Option<String>,
+    },
 }
 
 type Views = Arc<RwLock<HashMap<JobId, JobView>>>;
@@ -123,6 +140,8 @@ pub struct Engine {
     views: Views,
     /// The actor's settings, copied for `settings`.
     settings: Arc<RwLock<Settings>>,
+    /// The actor's keep-awake wish, copied for `keeping_awake`.
+    keeping_awake: Arc<AtomicBool>,
     client: reqwest::Client,
 }
 
@@ -162,6 +181,9 @@ enum Command {
     },
     SetSettings {
         settings: Settings,
+        reply: Reply<()>,
+    },
+    CancelWhenDone {
         reply: Reply<()>,
     },
     Shutdown {
@@ -234,6 +256,7 @@ impl Engine {
 
         let views = Arc::new(RwLock::new(views));
         let shared_settings = Arc::new(RwLock::new(settings.clone()));
+        let keeping_awake = Arc::new(AtomicBool::new(false));
         let limiter = Limiter::new(speed_limit(&settings, measured_peak));
         let peak = PeakTracker::with_max(fresh_peak(measured_peak, unix_now()).unwrap_or(0));
         let (commands, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
@@ -254,6 +277,13 @@ impl Engine {
             busy: false,
             stopping: false,
             autostart: config.autostart,
+            when_done: WhenDoneRunner::new(
+                events.clone(),
+                config.power,
+                config.timing.when_done_countdown,
+            ),
+            awake: AwakeGuard::new(),
+            keeping_awake: keeping_awake.clone(),
             job_tx,
             job_rx,
             timing: config.timing.clone(),
@@ -271,6 +301,7 @@ impl Engine {
             events,
             views,
             settings: shared_settings,
+            keeping_awake,
             client,
         })
     }
@@ -411,6 +442,19 @@ impl Engine {
             .await?
     }
 
+    /// Stops the when-done countdown, if one runs, and emits
+    /// `WhenDoneCancelled`. Adding, resuming or starting a job, or changing
+    /// `when_done`, stops it too.
+    pub async fn cancel_when_done(&self) -> Result<(), CoreError> {
+        self.call(|reply| Command::CancelWhenDone { reply }).await?
+    }
+
+    /// Whether the engine asks the OS to keep the computer awake: while a
+    /// job downloads and `keep_awake` is on. The OS may not comply.
+    pub fn keeping_awake(&self) -> bool {
+        self.keeping_awake.load(Ordering::Relaxed)
+    }
+
     /// Resolves once the job is Completed, Paused or Failed (at once if it
     /// already is); a Queued or Waiting job is waited for until it has run.
     /// An unknown job resolves to Failed immediately. If the engine stops
@@ -479,6 +523,9 @@ struct Actor {
     stopping: bool,
     /// Whether jobs start and retry on their own; else only `start_now`.
     autostart: bool,
+    when_done: WhenDoneRunner,
+    awake: AwakeGuard,
+    keeping_awake: Arc<AtomicBool>,
     job_tx: mpsc::UnboundedSender<JobMsg>,
     job_rx: mpsc::UnboundedReceiver<JobMsg>,
     timing: Timing,
@@ -523,6 +570,7 @@ impl Actor {
         };
         // New calls fail from here on; queued ones are dropped with `commands`.
         commands.close();
+        self.when_done.cancel();
         // Queued and Waiting jobs stay so, for the next open to start.
         self.stopping = true;
         for (_, retry) in self.retries.drain() {
@@ -539,6 +587,13 @@ impl Actor {
 
     /// Runs one command; returns the reply of a `Shutdown`.
     async fn handle(&mut self, command: Command) -> Option<oneshot::Sender<()>> {
+        // New work stops the when-done countdown.
+        if matches!(
+            command,
+            Command::Add { .. } | Command::Resume { .. } | Command::StartNow { .. }
+        ) {
+            self.when_done.cancel();
+        }
         match command {
             Command::Add { req, probe, reply } => {
                 let _ = reply.send(self.add(req, &probe));
@@ -569,6 +624,10 @@ impl Actor {
             Command::Wait { id, reply } => self.wait(id, reply),
             Command::SetSettings { settings, reply } => {
                 let _ = reply.send(self.set_settings(settings));
+            }
+            Command::CancelWhenDone { reply } => {
+                self.when_done.cancel();
+                let _ = reply.send(Ok(()));
             }
             Command::Shutdown { reply } => return Some(reply),
         }
@@ -760,6 +819,9 @@ impl Actor {
             });
         }
         self.store.save_settings(&settings)?;
+        if settings.when_done != self.settings.when_done {
+            self.when_done.cancel();
+        }
         self.limiter
             .set_rate(speed_limit(&settings, self.measured_peak));
         *write(&self.shared_settings) = settings.clone();
@@ -779,8 +841,10 @@ impl Actor {
 
     /// Runs after every change of a job's state or of the settings: starts
     /// Queued jobs in queue order while fewer than `max_active` download,
-    /// announces `QueueIdle` when the last busy job leaves, then answers the
-    /// waiters of jobs that are done (after their events).
+    /// announces `QueueIdle` when the last busy job leaves and runs the
+    /// when-done action (only with `autostart`), keeps the computer awake
+    /// while a job downloads, then answers the waiters of jobs that are done
+    /// (after their events).
     fn after_change(&mut self) {
         if !self.stopping {
             self.schedule();
@@ -792,9 +856,18 @@ impl Actor {
             });
             if self.busy && !busy {
                 self.emit(Event::QueueIdle);
+                if self.autostart {
+                    self.when_done.queue_idle(self.settings.when_done);
+                }
             }
             self.busy = busy;
         }
+        let downloading = read(&self.views)
+            .values()
+            .any(|v| v.state == JobState::Downloading);
+        self.awake.set(self.settings.keep_awake && downloading);
+        self.keeping_awake
+            .store(self.awake.is_requested(), Ordering::Relaxed);
         let views = read(&self.views);
         self.waiters.retain(|id, waiters| {
             let state = match views.get(id) {

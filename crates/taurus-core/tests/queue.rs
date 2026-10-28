@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use taurus_core::store::{NewJob, Store};
+use taurus_core::system::command_for;
 use taurus_core::{
-    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, JobView, Settings,
-    SpeedLimit, Timing,
+    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, JobView, PowerMode,
+    Settings, SpeedLimit, Timing, WhenDone,
 };
 use taurus_testkit::{FileSpec, TestServer, content, sha256_hex};
 use tokio::sync::broadcast;
@@ -36,9 +37,11 @@ impl Fixture {
         self.tmp.path().join("data")
     }
 
+    /// Fast timing; sleep and shutdown never run for real.
     fn config(&self) -> EngineConfig {
         let mut config = EngineConfig::new(self.data_dir());
         config.timing = Timing::fast_for_tests();
+        config.power = PowerMode::DryRun;
         config
     }
 
@@ -56,6 +59,15 @@ impl Fixture {
             })
             .await
             .unwrap();
+        engine
+    }
+
+    /// An engine whose when-done countdown lasts `countdown`, with `settings`.
+    async fn engine_with(&self, countdown: Duration, settings: Settings) -> Engine {
+        let mut config = self.config();
+        config.timing.when_done_countdown = countdown;
+        let engine = Engine::open(config).await.unwrap();
+        engine.set_settings(settings).await.unwrap();
         engine
     }
 
@@ -577,4 +589,273 @@ async fn queued_names_differing_only_in_case_are_kept_apart() {
     assert_eq!(view(&engine, a).file_name, "A.bin");
     assert_eq!(view(&engine, b).file_name, "a (1).bin");
     engine.shutdown().await.unwrap();
+}
+
+fn when_done(action: WhenDone) -> Settings {
+    Settings {
+        when_done: action,
+        ..Settings::default()
+    }
+}
+
+/// `QueueIdle` and the when-done events, in order.
+fn when_done_events(events: &[Event]) -> Vec<Event> {
+    events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::QueueIdle
+                    | Event::WhenDoneCountdown { .. }
+                    | Event::WhenDoneCancelled
+                    | Event::WhenDoneFired { .. }
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+fn is_fired(event: &Event) -> bool {
+    matches!(event, Event::WhenDoneFired { .. })
+}
+
+fn is_countdown(event: &Event) -> bool {
+    matches!(event, Event::WhenDoneCountdown { .. })
+}
+
+fn cancellations(events: &[Event]) -> usize {
+    events
+        .iter()
+        .filter(|e| matches!(e, Event::WhenDoneCancelled))
+        .count()
+}
+
+/// The command line `action` runs on this OS.
+fn command_line(action: WhenDone) -> Option<String> {
+    command_for(action).map(|(program, args)| [vec![program], args].concat().join(" "))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sleep_fires_after_countdown() {
+    let fx = Fixture::new().await;
+    let countdown = Timing::fast_for_tests().when_done_countdown;
+    let engine = fx.engine_with(countdown, when_done(WhenDone::Sleep)).await;
+    let mut events = engine.subscribe();
+    let started = Instant::now();
+    let id = fx.add(&engine, "a.bin", &FileSpec::new(MIB)).await;
+
+    let seen = when_done_events(&events_until(&mut events, is_fired).await);
+    assert!(
+        started.elapsed() >= countdown,
+        "fired before the countdown ran out"
+    );
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    let (first, rest) = seen.split_first().unwrap();
+    let (last, middle) = rest.split_last().unwrap();
+    assert!(matches!(first, Event::QueueIdle), "{seen:?}");
+    assert!(!middle.is_empty(), "no countdown event: {seen:?}");
+    assert!(
+        middle.iter().all(|e| matches!(
+            e,
+            Event::WhenDoneCountdown {
+                action: WhenDone::Sleep,
+                ..
+            }
+        )),
+        "{seen:?}"
+    );
+    assert!(matches!(
+        middle[0],
+        Event::WhenDoneCountdown {
+            seconds_left: 1,
+            ..
+        }
+    ));
+    let Event::WhenDoneFired { action, command } = last else {
+        unreachable!()
+    };
+    assert_eq!(*action, WhenDone::Sleep);
+    assert_eq!(*command, command_line(WhenDone::Sleep));
+    #[cfg(target_os = "linux")]
+    assert_eq!(command.as_deref(), Some("systemctl suspend"));
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn notify_fires_immediately() {
+    let fx = Fixture::new().await;
+    let engine = fx
+        .engine_with(Duration::from_secs(30), when_done(WhenDone::Notify))
+        .await;
+    let mut events = engine.subscribe();
+    let id = fx.add(&engine, "a.bin", &FileSpec::new(MIB)).await;
+
+    let seen = when_done_events(&events_until(&mut events, is_fired).await);
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(matches!(seen[0], Event::QueueIdle));
+    assert!(matches!(
+        seen[1],
+        Event::WhenDoneFired {
+            action: WhenDone::Notify,
+            command: None
+        }
+    ));
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adding_during_countdown_cancels() {
+    let fx = Fixture::new().await;
+    let engine = fx
+        .engine_with(Duration::from_secs(30), when_done(WhenDone::Shutdown))
+        .await;
+    let mut events = engine.subscribe();
+    let first = fx.add(&engine, "a.bin", &FileSpec::new(MIB)).await;
+    let mut seen = events_until(&mut events, is_countdown).await;
+    assert_eq!(wait(&engine, first).await, JobState::Completed);
+
+    let second = fx.add(&engine, "b.bin", &FileSpec::new(MIB)).await;
+    seen.extend(events_until(&mut events, |e| matches!(e, Event::WhenDoneCancelled)).await);
+    assert_eq!(wait(&engine, second).await, JobState::Completed);
+    // The queue is idle again: a new countdown starts.
+    seen.extend(events_until(&mut events, is_countdown).await);
+    let seen = when_done_events(&seen);
+    assert!(
+        matches!(
+            seen.as_slice(),
+            [
+                Event::QueueIdle,
+                Event::WhenDoneCountdown { .. },
+                Event::WhenDoneCancelled,
+                Event::QueueIdle,
+                Event::WhenDoneCountdown { .. },
+            ]
+        ),
+        "{seen:?}"
+    );
+    engine.shutdown().await.unwrap();
+    assert!(!drain(&mut events).iter().any(is_fired));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_when_done_stops_countdown() {
+    let fx = Fixture::new().await;
+    let countdown = Duration::from_secs(1);
+    let engine = fx.engine_with(countdown, when_done(WhenDone::Sleep)).await;
+    let mut events = engine.subscribe();
+    fx.add(&engine, "a.bin", &FileSpec::new(MIB)).await;
+    events_until(&mut events, is_countdown).await;
+
+    engine.cancel_when_done().await.unwrap();
+    // Cancelling when nothing counts down announces nothing.
+    engine.cancel_when_done().await.unwrap();
+    tokio::time::sleep(countdown * 2).await;
+    let seen = drain(&mut events);
+    assert_eq!(cancellations(&seen), 1, "{seen:?}");
+    assert!(!seen.iter().any(is_fired), "{seen:?}");
+    engine.shutdown().await.unwrap();
+    assert!(engine.cancel_when_done().await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn changing_when_done_cancels_countdown() {
+    let fx = Fixture::new().await;
+    let countdown = Duration::from_secs(1);
+    let engine = fx.engine_with(countdown, when_done(WhenDone::Sleep)).await;
+    let mut events = engine.subscribe();
+    fx.add(&engine, "a.bin", &FileSpec::new(MIB)).await;
+    events_until(&mut events, is_countdown).await;
+
+    // Another setting leaves the countdown running.
+    engine
+        .set_settings(Settings {
+            max_active: 2,
+            ..when_done(WhenDone::Sleep)
+        })
+        .await
+        .unwrap();
+    assert_eq!(cancellations(&drain(&mut events)), 0);
+    engine
+        .set_settings(when_done(WhenDone::Shutdown))
+        .await
+        .unwrap();
+    tokio::time::sleep(countdown * 2).await;
+    let seen = drain(&mut events);
+    assert_eq!(cancellations(&seen), 1, "{seen:?}");
+    assert!(!seen.iter().any(is_fired), "{seen:?}");
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paused_jobs_do_not_block_when_done() {
+    let fx = Fixture::new().await;
+    let countdown = Timing::fast_for_tests().when_done_countdown;
+    let engine = fx.engine_with(countdown, when_done(WhenDone::Sleep)).await;
+    let mut events = engine.subscribe();
+    let slow = fx
+        .add(&engine, "slow.bin", &throttled(20 * MIB, 4 * MIB))
+        .await;
+    let mut gone = FileSpec::new(MIB);
+    gone.fail_first = vec![0, 410, 410, 410, 410];
+    let failed = fx.add(&engine, "gone.bin", &gone).await;
+    let done = fx
+        .add(&engine, "ok.bin", &throttled(2 * MIB, 4 * MIB))
+        .await;
+    engine.pause(slow).await.unwrap();
+
+    let seen = events_until(&mut events, is_fired).await;
+    assert_eq!(view(&engine, slow).state, JobState::Paused);
+    assert_eq!(view(&engine, failed).state, JobState::Failed);
+    assert_eq!(view(&engine, done).state, JobState::Completed);
+    assert!(matches!(
+        seen.last(),
+        Some(Event::WhenDoneFired {
+            action: WhenDone::Sleep,
+            ..
+        })
+    ));
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keep_awake_follows_downloads() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    assert!(!engine.keeping_awake());
+    let id = fx.add(&engine, "a.bin", &throttled(4 * MIB, 4 * MIB)).await;
+    assert_eq!(view(&engine, id).state, JobState::Downloading);
+    assert!(engine.keeping_awake());
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert!(!engine.keeping_awake());
+
+    let no_keep_awake = Settings {
+        keep_awake: false,
+        ..Settings::default()
+    };
+    engine.set_settings(no_keep_awake.clone()).await.unwrap();
+    let id = fx.add(&engine, "b.bin", &throttled(4 * MIB, 4 * MIB)).await;
+    let sampler = {
+        let engine = engine.clone();
+        tokio::spawn(async move {
+            let mut ever = false;
+            while view(&engine, id).state == JobState::Downloading {
+                ever |= engine.keeping_awake();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            ever
+        })
+    };
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert!(!sampler.await.unwrap(), "kept awake with keep_awake off");
+    assert!(!engine.keeping_awake());
+
+    // Turning it on while a job downloads keeps the computer awake at once.
+    let id = fx.add(&engine, "c.bin", &throttled(4 * MIB, 4 * MIB)).await;
+    assert!(!engine.keeping_awake());
+    engine.set_settings(Settings::default()).await.unwrap();
+    assert_eq!(view(&engine, id).state, JobState::Downloading);
+    assert!(engine.keeping_awake());
+    engine.shutdown().await.unwrap();
+    assert!(!engine.keeping_awake());
 }

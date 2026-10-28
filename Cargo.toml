@@ -37,6 +37,7 @@ xattr = "1.6"
 libc = "0.2"
 windows-sys = "0.61"
 dunce = "1"
+keepawake = "0.6"
 
 # Tests only
 axum = "0.8"
