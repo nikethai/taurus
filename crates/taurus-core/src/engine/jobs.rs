@@ -13,11 +13,11 @@ use crate::http::probe::validator_change;
 use crate::http::{JobOutcome, Probe, resolve};
 use crate::plan::DEFAULT_CONNECTIONS;
 use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
-use crate::system::check_fits;
 use crate::system::marks::loggable;
+use crate::system::{SpaceSource, check_fits, same_volume};
 
 use super::actor::{Actor, JobMsg, Run};
-use super::{AddRequest, Event, JobView, io_error, no_such_job, read, write};
+use super::{AddRequest, Event, JobView, Views, io_error, no_such_job, read, write};
 
 impl Actor {
     pub(super) fn add(&mut self, req: AddRequest, probe: &Probe) -> Result<JobId, CoreError> {
@@ -140,7 +140,14 @@ impl Actor {
         job.state = JobState::Queued;
         let done = downloaded(&self.store, id)?;
         let fits = match job.total {
-            Some(total) => check_fits(&job.dest_dir, total.saturating_sub(done), Some(total)),
+            Some(total) => check_space(
+                &self.views,
+                self.space,
+                &job.dest_dir,
+                total.saturating_sub(done),
+                Some(total),
+                Some(id),
+            ),
             None => Ok(()),
         };
         if let Err(e) = &fits {
@@ -336,7 +343,13 @@ impl Actor {
     }
 
     /// Records the job as Failed with `e` and announces it.
-    fn fail(&mut self, id: JobId, e: CoreError) {
+    pub(super) fn fail(&mut self, id: JobId, e: CoreError) {
+        self.record_failure(id, e);
+        self.after_change();
+    }
+
+    /// `fail` without the `after_change`, for use within it.
+    pub(super) fn record_failure(&mut self, id: JobId, e: CoreError) {
         let error = Some((e.kind, e.detail));
         match self.store.get_job(id) {
             Ok(Some(mut job)) => {
@@ -359,8 +372,30 @@ impl Actor {
             self.emit(Event::JobUpdated(view));
         }
         self.job_ended = true;
-        self.after_change();
     }
+}
+
+/// The pre-flight check: `remaining` more bytes of a `total`-byte file
+/// must fit in `dir` beside what every Downloading job on the same disk
+/// (other than `except`) still has to download.
+pub(super) fn check_space(
+    views: &Views,
+    space: SpaceSource,
+    dir: &Path,
+    remaining: u64,
+    total: Option<u64>,
+    except: Option<JobId>,
+) -> Result<(), CoreError> {
+    let running: Vec<(PathBuf, u64)> = read(views)
+        .values()
+        .filter(|v| v.state == JobState::Downloading && Some(v.id) != except)
+        .filter_map(|v| Some((v.dest_dir.clone(), v.total?.saturating_sub(v.downloaded))))
+        .collect();
+    let reserved = running
+        .iter()
+        .filter(|(other, _)| same_volume(other, dir))
+        .fold(0u64, |sum, (_, left)| sum.saturating_add(*left));
+    check_fits(space, dir, reserved, remaining, total)
 }
 
 /// The URL after the host's link fixups; an unparseable URL as is, for

@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use taurus_core::store::{NewJob, Store};
 use taurus_core::system::command_for;
+use taurus_core::system::space::SPACE_MARGIN;
 use taurus_core::{
     AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, JobView, PowerMode,
     Settings, SpeedLimit, Timing, WhenDone,
@@ -554,6 +555,86 @@ async fn an_interrupted_job_restarts_before_later_queued_ones() {
         let got = fs::read(fx.dest.join(name)).unwrap();
         assert_eq!(sha256_hex(&got), sha256_hex(&content(&spec)));
     }
+    engine.shutdown().await.unwrap();
+}
+
+const BIG: usize = 2 * MIB;
+const SMALL: usize = MIB / 2;
+
+/// Free space for three big files and a small one, whatever the real disk has.
+fn room_for_three_and_a_small(_dir: &std::path::Path) -> std::io::Result<u64> {
+    Ok(3 * BIG as u64 + SMALL as u64 + SPACE_MARGIN)
+}
+
+fn no_room(_dir: &std::path::Path) -> std::io::Result<u64> {
+    Ok(0)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_job_that_no_longer_fits_fails_as_it_would_start() {
+    let fx = Fixture::new().await;
+    fx.engine_with_max(5).await.shutdown().await.unwrap();
+    // Each fits on its own; together they do not.
+    let big = FileSpec::new(BIG);
+    let small = FileSpec::new(SMALL);
+    let mut ids = seed_jobs(
+        &fx,
+        &big,
+        &[
+            ("a.bin", JobState::Queued),
+            ("b.bin", JobState::Queued),
+            ("c.bin", JobState::Queued),
+            ("d.bin", JobState::Queued),
+        ],
+    );
+    ids.extend(seed_jobs(&fx, &small, &[("e.bin", JobState::Queued)]));
+    let mut config = fx.config();
+    config.available_space = room_for_three_and_a_small;
+    let engine = Engine::open(config).await.unwrap();
+
+    // d needs what a, b and c still download; e, after it, still fits.
+    let d = view(&engine, ids[3]);
+    assert_eq!(d.state, JobState::Failed);
+    let (kind, detail) = d.error.unwrap();
+    assert_eq!(kind, ErrorKind::DiskFull);
+    assert!(detail.contains(&(3 * BIG).to_string()), "{detail}");
+    for (i, id) in ids.iter().enumerate().filter(|&(i, _)| i != 3) {
+        assert_eq!(wait(&engine, *id).await, JobState::Completed, "job {i}");
+    }
+    assert_eq!(wait(&engine, ids[3]).await, JobState::Failed);
+    assert_eq!(fx.server.requests("/d.bin"), 0);
+    engine.shutdown().await.unwrap();
+
+    let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
+    let stored = store.get_job(ids[3]).unwrap().unwrap();
+    assert_eq!(stored.state, JobState::Failed);
+    assert_eq!(
+        stored.error.map(|(kind, _)| kind),
+        Some(ErrorKind::DiskFull)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn start_now_checks_free_space() {
+    let fx = Fixture::new().await;
+    let ids = seed_jobs(&fx, &FileSpec::new(MIB), &[("a.bin", JobState::Queued)]);
+    let mut config = fx.config();
+    config.autostart = false;
+    config.available_space = no_room;
+    let engine = Engine::open(config).await.unwrap();
+    let mut events = engine.subscribe();
+
+    let err = engine.start_now(ids[0]).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::DiskFull);
+    let v = view(&engine, ids[0]);
+    assert_eq!(v.state, JobState::Failed);
+    assert_eq!(v.error.map(|(kind, _)| kind), Some(ErrorKind::DiskFull));
+    assert!(
+        drain(&mut events)
+            .iter()
+            .any(|e| is_update(e, ids[0], JobState::Failed))
+    );
+    assert_eq!(fx.server.requests("/a.bin"), 0);
     engine.shutdown().await.unwrap();
 }
 

@@ -14,6 +14,7 @@ use crate::store::{JobId, JobState};
 use crate::timing::Timing;
 
 use super::actor::{Actor, JobMsg, Retry, Run, is_final};
+use super::jobs::{check_space, downloaded};
 use super::{Event, no_such_job, read, write};
 
 impl Actor {
@@ -22,13 +23,16 @@ impl Actor {
         if self.running.contains_key(&id) {
             return Ok(());
         }
-        match state {
-            JobState::Queued => {}
-            JobState::Waiting => {
-                self.cancel_retry(id);
-                self.requeue(id)?;
-            }
-            _ => return Ok(()),
+        if !matches!(state, JobState::Queued | JobState::Waiting) {
+            return Ok(());
+        }
+        self.cancel_retry(id);
+        if let Err(e) = self.fits_to_start(id) {
+            self.fail(id, e.clone());
+            return Err(e);
+        }
+        if state == JobState::Waiting {
+            self.requeue(id)?;
         }
         self.start(id);
         self.after_change();
@@ -37,11 +41,12 @@ impl Actor {
 
     /// Runs after every change of a job's state, of the settings or of the
     /// holds: starts Queued jobs in queue order while fewer than
-    /// `max_active` download, announces `QueueIdle` when the last busy job
-    /// leaves and, if a job ending made it leave, runs the when-done action
-    /// once nothing holds it (only with `autostart`), keeps the computer awake
-    /// while a job downloads, then answers the waiters of jobs that are done
-    /// (after their events).
+    /// `max_active` download (failing, instead, one whose rest no longer
+    /// fits on its disk beside the running jobs' rest), announces
+    /// `QueueIdle` when the last busy job leaves and, if a job ending made
+    /// it leave, runs the when-done action once nothing holds it (only with
+    /// `autostart`), keeps the computer awake while a job downloads, then
+    /// answers the waiters of jobs that are done (after their events).
     pub(super) fn after_change(&mut self) {
         if !self.stopping {
             self.schedule();
@@ -105,8 +110,42 @@ impl Actor {
                 break;
             }
             if !self.running.contains_key(&id) && self.state_of(id) == Some(JobState::Queued) {
-                self.start(id);
+                match self.fits_to_start(id) {
+                    Ok(()) => self.start(id),
+                    // Not transient: it waits for the user to free space and
+                    // resume it. A smaller job further on may still fit.
+                    Err(e) => self.record_failure(id, e),
+                }
             }
+        }
+    }
+
+    /// The pre-flight check again, as the job is about to start: the rest of
+    /// it must fit beside what the running jobs on its disk still download.
+    /// A job whose size is unknown, or that cannot be read, is let through.
+    fn fits_to_start(&self, id: JobId) -> Result<(), CoreError> {
+        let read_job = self
+            .store
+            .get_job(id)
+            .and_then(|job| Ok((job, downloaded(&self.store, id)?)));
+        let (job, done) = match read_job {
+            Ok((Some(job), done)) => (job, done),
+            Ok((None, _)) => return Ok(()),
+            Err(e) => {
+                tracing::warn!(job = id.0, "could not read the job to check its space: {e}");
+                return Ok(());
+            }
+        };
+        match job.total {
+            Some(total) => check_space(
+                &self.views,
+                self.space,
+                &job.dest_dir,
+                total.saturating_sub(done),
+                Some(total),
+                Some(id),
+            ),
+            None => Ok(()),
         }
     }
 

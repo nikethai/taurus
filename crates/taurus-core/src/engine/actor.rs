@@ -14,7 +14,7 @@ use crate::http::{JobOutcome, Probe};
 use crate::limit::{Limiter, PeakTracker};
 use crate::settings::{Settings, WhenDone};
 use crate::store::{JobId, JobRecord, JobState, Store};
-use crate::system::AwakeGuard;
+use crate::system::{AwakeGuard, SpaceSource};
 use crate::timing::Timing;
 use crate::when_done::WhenDoneRunner;
 
@@ -129,6 +129,8 @@ pub(super) struct Actor {
     pub(super) stopping: bool,
     /// Whether jobs start and retry on their own; else only `start_now`.
     pub(super) autostart: bool,
+    /// Where free space is read from.
+    pub(super) space: SpaceSource,
     pub(super) when_done: WhenDoneRunner,
     pub(super) awake: AwakeGuard,
     pub(super) keeping_awake: Arc<AtomicBool>,

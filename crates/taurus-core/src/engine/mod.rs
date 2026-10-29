@@ -23,12 +23,12 @@ use crate::http::{build_client, resolve};
 use crate::limit::{Limiter, PeakTracker};
 use crate::settings::{PowerMode, Settings, WhenDone};
 use crate::store::{JobId, JobState, Store};
-use crate::system::{AwakeGuard, check_fits};
+use crate::system::{AwakeGuard, SpaceSource, available_space};
 use crate::timing::Timing;
 use crate::when_done::{EngineLink, WhenDoneRunner};
 
 use actor::{Actor, Command, JobMsg};
-use jobs::{downloaded, fixed_url, vet_mirrors, view_of};
+use jobs::{check_space, downloaded, fixed_url, vet_mirrors, view_of};
 use settings::{fresh_peak, speed_limit, unix_now};
 
 const COMMAND_CAPACITY: usize = 64;
@@ -52,6 +52,10 @@ pub struct EngineConfig {
     /// on open: for short-lived front ends that only look at or edit the
     /// jobs.
     pub autostart: bool,
+    /// Test-only: where free space is read from, so tests need not fill a
+    /// disk. Not for front ends.
+    #[doc(hidden)]
+    pub available_space: SpaceSource,
 }
 
 impl EngineConfig {
@@ -62,6 +66,7 @@ impl EngineConfig {
             timing: Timing::default(),
             power: PowerMode::Execute,
             autostart: true,
+            available_space,
         }
     }
 }
@@ -156,6 +161,7 @@ pub struct Engine {
     holds: Arc<AtomicUsize>,
     /// Tells the actor that `holds` changed.
     hold_tx: mpsc::UnboundedSender<JobMsg>,
+    space: SpaceSource,
 }
 
 impl Engine {
@@ -239,6 +245,7 @@ impl Engine {
             holds: holds.clone(),
             stopping: false,
             autostart: config.autostart,
+            space: config.available_space,
             when_done: WhenDoneRunner::new(
                 events.clone(),
                 config.power,
@@ -271,6 +278,7 @@ impl Engine {
             client,
             holds,
             hold_tx: job_tx,
+            space: config.available_space,
         })
     }
 
@@ -295,8 +303,9 @@ impl Engine {
     /// (ignoring case), and queues the job; it starts once fewer than
     /// `max_active` jobs download. The job records `dest_dir` canonicalized
     /// (symlinks and `.` resolved). A missing `dest_dir` fails with
-    /// `FolderUnavailable`, a file that does not fit on its disk with
-    /// `DiskFull` or `FileTooLargeForDisk`, a checksum that is not a SHA-256
+    /// `FolderUnavailable`, a file that does not fit on its disk (beside
+    /// what the running jobs on that disk still download) with `DiskFull`
+    /// or `FileTooLargeForDisk`, a checksum that is not a SHA-256
     /// with `Unknown`; nothing is recorded when `add` fails.
     pub async fn add(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         self.check_running()?;
@@ -330,7 +339,14 @@ impl Engine {
         let referer = req.referer.clone();
         let probe = resolve(&self.client, &fixed_url(&req.url), referer.as_deref()).await?;
         if let Some(size) = probe.size {
-            check_fits(&req.dest_dir, size, Some(size))?;
+            check_space(
+                &self.views,
+                self.space,
+                &req.dest_dir,
+                size,
+                Some(size),
+                None,
+            )?;
         }
         req.mirrors = vet_mirrors(&self.client, &probe, &req.mirrors, referer.as_deref()).await;
         self.call(|reply| Command::Add { req, probe, reply })
@@ -375,7 +391,9 @@ impl Engine {
 
     /// Starts a Queued or Waiting job at once, even when `max_active` jobs
     /// already download; it counts toward them while it runs. Any other job
-    /// is left as it is.
+    /// is left as it is. If the rest of the file does not fit on its disk
+    /// beside what the running jobs there still download, the job is
+    /// recorded as Failed with that error, which is also returned.
     pub async fn start_now(&self, id: JobId) -> Result<(), CoreError> {
         let _hold = self.hold_when_done();
         self.call(|reply| Command::StartNow { id, reply }).await?
