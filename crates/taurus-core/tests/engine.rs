@@ -325,6 +325,7 @@ async fn shutdown_requeues_running_jobs_and_stops_engine() {
     let v = view(&engine, id);
     assert_eq!(v.state, JobState::Downloading);
     assert!(v.downloaded > 0, "{v:?}");
+    engine.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -480,6 +481,7 @@ async fn second_engine_on_same_data_dir_is_refused() {
     let stored = Engine::read_snapshot(&config).unwrap();
     assert_eq!(stored[0].state, JobState::Downloading);
     assert!(stored[0].downloaded > 0, "{stored:?}");
+    engine.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

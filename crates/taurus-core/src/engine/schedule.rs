@@ -122,7 +122,8 @@ impl Actor {
 
     /// The pre-flight check again, as the job is about to start: the rest of
     /// it must fit beside what the running jobs on its disk still download.
-    /// A job whose size is unknown, or that cannot be read, is let through.
+    /// A job whose size is unknown, that has nothing left to download (only
+    /// the check and the rename), or that cannot be read, is let through.
     fn fits_to_start(&self, id: JobId) -> Result<(), CoreError> {
         let read_job = self
             .store
@@ -137,7 +138,7 @@ impl Actor {
             }
         };
         match job.total {
-            Some(total) => check_space(
+            Some(total) if total > done => check_space(
                 &self.views,
                 self.space,
                 &job.dest_dir,
@@ -145,7 +146,7 @@ impl Actor {
                 Some(total),
                 Some(id),
             ),
-            None => Ok(()),
+            _ => Ok(()),
         }
     }
 

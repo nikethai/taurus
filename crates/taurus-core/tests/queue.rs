@@ -639,6 +639,33 @@ async fn start_now_checks_free_space() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_job_with_nothing_left_to_download_starts_without_free_space() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(MIB);
+    // Stopped while hashing: every byte is down, only the check and the
+    // rename are left.
+    let ids = seed_jobs(&fx, &spec, &[("a.bin", JobState::Queued)]);
+    fs::write(fx.dest.join("a.bin.tapa"), content(&spec)).unwrap();
+    let whole = taurus_core::plan::Segment {
+        start: 0,
+        end: spec.size as u64,
+        done: spec.size as u64,
+    };
+    Store::open(&fx.data_dir().join("taurus.db"))
+        .unwrap()
+        .replace_segments(ids[0], &[whole])
+        .unwrap();
+    let mut config = fx.config();
+    config.available_space = no_room;
+    let engine = Engine::open(config).await.unwrap();
+
+    assert_eq!(wait(&engine, ids[0]).await, JobState::Completed);
+    let got = fs::read(fx.dest.join("a.bin")).unwrap();
+    assert_eq!(sha256_hex(&got), sha256_hex(&content(&spec)));
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_active_zero_is_rejected() {
     let fx = Fixture::new().await;
     let engine = fx.engine_with_max(2).await;

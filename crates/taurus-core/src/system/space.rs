@@ -22,7 +22,7 @@ pub fn available_space(dir: &Path) -> std::io::Result<u64> {
 
 /// Whether the two folders are on the same disk (volume). When that cannot
 /// be told, only the same folder (compared canonicalized) counts.
-pub fn same_volume(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_volume(a: &Path, b: &Path) -> bool {
     match (volume_of(a), volume_of(b)) {
         (Some(a), Some(b)) => a == b,
         _ => canonical(a) == canonical(b),

@@ -10,6 +10,5 @@ pub mod space;
 pub use awake::AwakeGuard;
 pub use marks::mark_downloaded;
 pub use power::command_for;
-pub use space::{
-    FsKind, SpaceSource, available_space, check_fits, check_fits_with, fs_kind, same_volume,
-};
+pub(crate) use space::same_volume;
+pub use space::{FsKind, SpaceSource, available_space, check_fits, check_fits_with, fs_kind};
