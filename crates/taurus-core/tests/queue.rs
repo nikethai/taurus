@@ -668,20 +668,42 @@ async fn a_job_with_nothing_left_to_download_starts_without_free_space() {
 /// Turns the seeded job into one a crash interrupted halfway through
 /// `spec`: Downloading, with `spec`'s validators and its first half on disk.
 fn interrupt_halfway(fx: &Fixture, id: JobId, name: &str, spec: &FileSpec) {
+    interrupt_at(fx, id, name, spec, spec.size as u64 / 2);
+}
+
+/// Turns the seeded job into one a crash interrupted with the first `done`
+/// bytes of `spec` on disk: Downloading, with `spec`'s validators.
+fn interrupt_at(fx: &Fixture, id: JobId, name: &str, spec: &FileSpec, done: u64) {
     let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
     let mut job = store.get_job(id).unwrap().unwrap();
     job.state = JobState::Downloading;
     job.etag = spec.etag.clone();
     store.update_job(&job).unwrap();
-    let half = spec.size as u64 / 2;
     let data = content(spec);
-    fs::write(fx.dest.join(format!("{name}.tapa")), &data[..half as usize]).unwrap();
+    fs::write(fx.dest.join(format!("{name}.tapa")), &data[..done as usize]).unwrap();
     let whole = taurus_core::plan::Segment {
         start: 0,
         end: spec.size as u64,
-        done: half,
+        done,
     };
     store.replace_segments(id, &[whole]).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_job_interrupted_while_hashing_goes_on_without_free_space() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(MIB);
+    let ids = seed_jobs(&fx, &spec, &[("a.bin", JobState::Queued)]);
+    // Every byte was down: only the check and the rename were left.
+    interrupt_at(&fx, ids[0], "a.bin", &spec, spec.size as u64);
+    let mut config = fx.config();
+    config.available_space = no_room;
+    let engine = Engine::open(config).await.unwrap();
+
+    assert_eq!(wait(&engine, ids[0]).await, JobState::Completed);
+    let got = fs::read(fx.dest.join("a.bin")).unwrap();
+    assert_eq!(sha256_hex(&got), sha256_hex(&content(&spec)));
+    engine.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -180,109 +180,10 @@ impl Engine {
     /// it, `open` fails without writing anything and the error's
     /// `is_instance_locked` is true; `read_snapshot` still works.
     pub async fn open(config: EngineConfig) -> Result<Engine, CoreError> {
-        tokio::fs::create_dir_all(&config.data_dir)
-            .await
-            .map_err(io_error)?;
-        let lock = lock_data_dir(&config.data_dir)?;
-        let store = Store::open(&config.data_dir.join(DB_FILE))?;
-        // Unreadable settings must not keep the user out, not even from
-        // fixing them.
-        let settings = store.load_settings_lenient()?;
-        // Only a measurement: an unreadable one is measured again.
-        let measured_peak = store.measured_peak().unwrap_or_else(|e| {
-            tracing::warn!("ignoring the saved peak speed: {e}");
-            None
-        });
-        let mut views = HashMap::new();
-        for mut job in store.list_jobs()? {
-            match job.state {
-                // Interrupted, not paused: it runs again, in its place, once
-                // checked against the server.
-                JobState::Downloading => {
-                    store.requeue_interrupted(job.id)?;
-                    job.state = JobState::Queued;
-                }
-                // The connection may well be back by now.
-                JobState::Waiting if config.autostart => {
-                    store.requeue(job.id)?;
-                    job.state = JobState::Queued;
-                    job.error = None;
-                }
-                _ => {}
-            }
-            let downloaded = downloaded(&store, job.id)?;
-            views.insert(job.id, view_of(&job, downloaded));
-        }
-
-        let views = Arc::new(RwLock::new(views));
-        let shared_settings = Arc::new(RwLock::new(settings.clone()));
-        let keeping_awake = Arc::new(AtomicBool::new(false));
-        let limiter = Limiter::new(speed_limit(&settings, measured_peak));
-        let peak = PeakTracker::with_max(fresh_peak(measured_peak, unix_now()).unwrap_or(0));
-        let (commands, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
-        let (events, _) = broadcast::channel(EVENT_CAPACITY);
-        let (job_tx, job_rx) = mpsc::unbounded_channel();
-        let holds = Arc::new(AtomicUsize::new(0));
-        let on_fired = {
-            let job_tx: mpsc::UnboundedSender<JobMsg> = job_tx.clone();
-            Arc::new(move |action| {
-                let _ = job_tx.send(JobMsg::WhenDoneFired(action));
-            })
-        };
-        let client = build_client();
-        let mut actor = Actor {
-            _lock: lock,
-            store,
-            client: client.clone(),
-            views: views.clone(),
-            events: events.clone(),
-            running: HashMap::new(),
-            waiters: HashMap::new(),
-            retries: HashMap::new(),
-            retry_counts: HashMap::new(),
-            resolved_again: HashMap::new(),
-            next_retry_seq: 0,
-            busy: false,
-            job_ended: false,
-            idle_pending: false,
-            holds: holds.clone(),
-            stopping: false,
-            autostart: config.autostart,
-            space: config.available_space,
-            when_done: WhenDoneRunner::new(
-                events.clone(),
-                config.power,
-                config.timing.when_done_countdown,
-                EngineLink {
-                    on_fired,
-                    holds: holds.clone(),
-                },
-            ),
-            awake: AwakeGuard::new(),
-            keeping_awake: keeping_awake.clone(),
-            job_tx: job_tx.clone(),
-            job_rx,
-            timing: config.timing.clone(),
-            settings,
-            shared_settings: shared_settings.clone(),
-            limiter,
-            measured_peak,
-            peak,
-            transferred: 0,
-        };
+        let (engine, mut actor, commands) = assemble(config).await?;
         actor.after_change();
-        tokio::spawn(actor.run(commands_rx));
-        Ok(Engine {
-            commands,
-            events,
-            views,
-            settings: shared_settings,
-            keeping_awake,
-            client,
-            holds,
-            hold_tx: job_tx,
-            space: config.available_space,
-        })
+        tokio::spawn(actor.run(commands));
+        Ok(engine)
     }
 
     /// Every stored job, ordered by id, read without opening an engine or
@@ -511,6 +412,114 @@ impl Engine {
             .map_err(|_| stopped())?;
         response.await.map_err(|_| stopped())
     }
+}
+
+/// Everything `Engine::open` does but starting the actor.
+async fn assemble(
+    config: EngineConfig,
+) -> Result<(Engine, Actor, mpsc::Receiver<Command>), CoreError> {
+    tokio::fs::create_dir_all(&config.data_dir)
+        .await
+        .map_err(io_error)?;
+    let lock = lock_data_dir(&config.data_dir)?;
+    let store = Store::open(&config.data_dir.join(DB_FILE))?;
+    // Unreadable settings must not keep the user out, not even from
+    // fixing them.
+    let settings = store.load_settings_lenient()?;
+    // Only a measurement: an unreadable one is measured again.
+    let measured_peak = store.measured_peak().unwrap_or_else(|e| {
+        tracing::warn!("ignoring the saved peak speed: {e}");
+        None
+    });
+    let mut views = HashMap::new();
+    for mut job in store.list_jobs()? {
+        match job.state {
+            // Interrupted, not paused: it runs again, in its place, once
+            // checked against the server.
+            JobState::Downloading => {
+                store.requeue_interrupted(job.id)?;
+                job.state = JobState::Queued;
+            }
+            // The connection may well be back by now.
+            JobState::Waiting if config.autostart => {
+                store.requeue(job.id)?;
+                job.state = JobState::Queued;
+                job.error = None;
+            }
+            _ => {}
+        }
+        let downloaded = downloaded(&store, job.id)?;
+        views.insert(job.id, view_of(&job, downloaded));
+    }
+
+    let views = Arc::new(RwLock::new(views));
+    let shared_settings = Arc::new(RwLock::new(settings.clone()));
+    let keeping_awake = Arc::new(AtomicBool::new(false));
+    let limiter = Limiter::new(speed_limit(&settings, measured_peak));
+    let peak = PeakTracker::with_max(fresh_peak(measured_peak, unix_now()).unwrap_or(0));
+    let (commands, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
+    let (events, _) = broadcast::channel(EVENT_CAPACITY);
+    let (job_tx, job_rx) = mpsc::unbounded_channel();
+    let holds = Arc::new(AtomicUsize::new(0));
+    let on_fired = {
+        let job_tx: mpsc::UnboundedSender<JobMsg> = job_tx.clone();
+        Arc::new(move |action| {
+            let _ = job_tx.send(JobMsg::WhenDoneFired(action));
+        })
+    };
+    let client = build_client();
+    let actor = Actor {
+        _lock: lock,
+        store,
+        client: client.clone(),
+        views: views.clone(),
+        events: events.clone(),
+        running: HashMap::new(),
+        waiters: HashMap::new(),
+        retries: HashMap::new(),
+        retry_counts: HashMap::new(),
+        resolved_again: HashMap::new(),
+        next_retry_seq: 0,
+        busy: false,
+        job_ended: false,
+        idle_pending: false,
+        holds: holds.clone(),
+        stopping: false,
+        autostart: config.autostart,
+        space: config.available_space,
+        when_done: WhenDoneRunner::new(
+            events.clone(),
+            config.power,
+            config.timing.when_done_countdown,
+            EngineLink {
+                on_fired,
+                holds: holds.clone(),
+            },
+        ),
+        awake: AwakeGuard::new(),
+        keeping_awake: keeping_awake.clone(),
+        job_tx: job_tx.clone(),
+        job_rx,
+        timing: config.timing.clone(),
+        settings,
+        shared_settings: shared_settings.clone(),
+        limiter,
+        measured_peak,
+        peak,
+        transferred: 0,
+    };
+    let engine = Engine {
+        commands,
+        events,
+        views,
+        settings: shared_settings,
+        keeping_awake,
+        client,
+        holds,
+        hold_tx: job_tx,
+        space: config.available_space,
+    };
+    Ok((engine, actor, commands_rx))
 }
 
 /// Holds off the when-done action while alive; see `Engine::hold_when_done`.

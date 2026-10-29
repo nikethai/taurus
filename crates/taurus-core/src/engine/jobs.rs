@@ -199,11 +199,14 @@ impl Actor {
     /// whose link expired may have it resolved again (`resolve_again`).
     pub(super) fn on_finished(&mut self, id: JobId, outcome: JobOutcome) {
         let run = self.running.remove(&id);
+        // Pause, remove or shutdown is waiting for this run to end.
+        let told_to_stop = run.as_ref().is_some_and(|run| run.cancel.is_cancelled());
         let mut view = load_view(&self.store, id).unwrap_or_else(|e| {
             tracing::warn!(job = id.0, "could not reload the finished job: {e}");
             read(&self.views).get(&id).cloned()
         });
         if let JobOutcome::Failed(e) = &outcome
+            && !told_to_stop
             && e.kind == ErrorKind::LinkExpired
             && let Some(view) = &view
             && self.resolve_again(id, view.downloaded)
@@ -326,7 +329,14 @@ impl Actor {
     /// was interrupted goes on at once, in the slot it held; if the check
     /// failed with an error that may pass, it waits to be retried instead.
     pub(super) fn on_resolved(&mut self, id: JobId, probe: Option<Result<Box<Probe>, CoreError>>) {
-        self.running.remove(&id);
+        // A resolve that pause, remove or shutdown stopped is stopped, even if
+        // its answer came first: queuing (or starting) the job now would undo
+        // the stop, and keep the stop waiting for a whole new run.
+        let told_to_stop = self
+            .running
+            .remove(&id)
+            .is_some_and(|run| run.cancel.is_cancelled());
+        let probe = if told_to_stop { None } else { probe };
         let job = match self.store.get_job(id) {
             Ok(Some(job)) => job,
             Ok(None) => return self.after_change(),
@@ -416,7 +426,8 @@ impl Actor {
 
 /// The pre-flight check: `remaining` more bytes of a `total`-byte file
 /// must fit in `dir` beside what every Downloading job on the same disk
-/// (other than `except`) still has to download.
+/// (other than `except`) still has to download. Nothing left to download
+/// (a job stopped while its file was checked) needs no space.
 pub(super) fn check_space(
     views: &Views,
     space: SpaceSource,
@@ -425,6 +436,9 @@ pub(super) fn check_space(
     total: Option<u64>,
     except: Option<JobId>,
 ) -> Result<(), CoreError> {
+    if remaining == 0 {
+        return Ok(());
+    }
     let running: Vec<(PathBuf, u64)> = read(views)
         .values()
         .filter(|v| v.state == JobState::Downloading && Some(v.id) != except)
@@ -574,5 +588,109 @@ fn remove_if_exists(path: &Path) -> Result<(), CoreError> {
     match std::fs::remove_file(path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io_error(e)),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::{Engine, EngineConfig, assemble};
+
+    /// An actor (not running) over one job stored as `state`, with its run
+    /// in flight and already told to stop, as `pause` leaves it while it
+    /// waits for the run's last message.
+    async fn actor_stopping_a_run(dir: &Path, state: JobState) -> (Engine, Actor, JobId) {
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let store = Store::open(&data.join("taurus.db")).unwrap();
+        let id = store
+            .insert_job(&NewJob {
+                url: "http://127.0.0.1:9/x.bin".into(),
+                source_url: "http://127.0.0.1:9/x.bin".into(),
+                dest_dir: dir.to_path_buf(),
+                file_name: "x.bin".into(),
+                connections: 1,
+                mirrors: Vec::new(),
+                checksum: None,
+                referer: None,
+                queue_pos: 0,
+            })
+            .unwrap();
+        store.set_state(id, state).unwrap();
+        drop(store);
+        let (engine, mut actor, _commands) = assemble(EngineConfig::new(data)).await.unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        actor.running.insert(
+            id,
+            Run {
+                cancel,
+                downloaded_at_start: 0,
+            },
+        );
+        actor.set_view_state(id, JobState::Downloading);
+        (engine, actor, id)
+    }
+
+    fn probe() -> Probe {
+        let url = url::Url::parse("http://127.0.0.1:9/x.bin").unwrap();
+        Probe {
+            requested_url: url.clone(),
+            final_url: url,
+            size: Some(1000),
+            ranges: true,
+            file_name: "x.bin".into(),
+            etag: None,
+            last_modified: None,
+            content_type: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_check_answering_as_it_is_stopped_does_not_start_the_job() {
+        // Downloading on open: an interrupted job, checked before it restarts.
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut actor, id) =
+            actor_stopping_a_run(dir.path(), JobState::Downloading).await;
+        assert!(actor.store.needs_revalidation(id).unwrap());
+
+        actor.on_resolved(id, Some(Ok(Box::new(probe()))));
+
+        assert!(!actor.running.contains_key(&id));
+        assert_eq!(actor.state_of(id), Some(JobState::Paused));
+        assert_eq!(
+            actor.store.get_job(id).unwrap().unwrap().state,
+            JobState::Paused
+        );
+        // Not checked after all: `resume` checks it.
+        assert!(actor.store.needs_revalidation(id).unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_resolve_again_answering_as_it_is_stopped_does_not_start_the_job() {
+        // Queued on open: a job whose expired link was being resolved again.
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut actor, id) = actor_stopping_a_run(dir.path(), JobState::Queued).await;
+        assert!(!actor.store.needs_revalidation(id).unwrap());
+
+        actor.on_resolved(id, Some(Ok(Box::new(probe()))));
+
+        assert!(!actor.running.contains_key(&id));
+        assert_eq!(actor.state_of(id), Some(JobState::Paused));
+    }
+
+    #[tokio::test]
+    async fn a_link_expiring_as_its_run_is_stopped_is_not_resolved_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut actor, id) = actor_stopping_a_run(dir.path(), JobState::Queued).await;
+
+        let expired = CoreError {
+            kind: ErrorKind::LinkExpired,
+            detail: "HTTP 410".into(),
+        };
+        actor.on_finished(id, JobOutcome::Failed(expired));
+
+        assert!(!actor.running.contains_key(&id));
+        assert_eq!(actor.state_of(id), Some(JobState::Failed));
     }
 }
