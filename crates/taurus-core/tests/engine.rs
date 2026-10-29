@@ -1000,9 +1000,30 @@ fn confirm_form(to: &str, token: &str) -> String {
     format!(r#"<form action="{to}"><input type="hidden" name="confirm" value="{token}"></form>"#)
 }
 
+/// Adds `req` while another download holds the only slot, so the job stays
+/// Queued; runs `then`, and only then lets the job start (by pausing the
+/// other one). Whatever `then` changes on the host is in place before the
+/// job's first request, however slow the test task is.
+async fn add_held(fx: &Fixture, engine: &Engine, req: AddRequest, then: impl FnOnce()) -> JobId {
+    let one = Settings {
+        max_active: 1,
+        ..Settings::default()
+    };
+    engine.set_settings(one).await.unwrap();
+    let blocker_url = fx.server.serve("/blocker.bin", throttled(64 * MIB));
+    let blocker = engine.add(fx.request(&blocker_url)).await.unwrap();
+    assert_eq!(view(engine, blocker).state, JobState::Downloading);
+    let id = engine.add(req).await.unwrap();
+    assert_eq!(view(engine, id).state, JobState::Queued);
+    then();
+    engine.pause(blocker).await.unwrap();
+    id
+}
+
 /// An AkiraBox-style host: `/page` hands out a link to `/f1`, which expires
-/// (410) after the first 2 MiB of the download. Once the job is added,
-/// `then` changes the host. Returns the job once it settled.
+/// (410) after the first 2 MiB of the download. Once the job is added (and
+/// before it starts), `then` changes the host. Returns the job once it
+/// settled.
 async fn expiring_link_job(fx: &Fixture, engine: &Engine, then: impl FnOnce()) -> JobId {
     let page = fx
         .server
@@ -1013,14 +1034,11 @@ async fn expiring_link_job(fx: &Fixture, engine: &Engine, then: impl FnOnce()) -
     spec.drop_once_after = Some(2 * MIB);
     spec.fail_after = Some(fail_after(2, 410));
     fx.server.serve("/f1", spec);
-    let id = engine
-        .add(AddRequest {
-            connections: Some(1),
-            ..fx.request(&page)
-        })
-        .await
-        .unwrap();
-    then();
+    let req = AddRequest {
+        connections: Some(1),
+        ..fx.request(&page)
+    };
+    let id = add_held(fx, engine, req, then).await;
     wait(engine, id).await;
     id
 }
@@ -1096,17 +1114,23 @@ async fn pause_stops_resolving_an_expired_link_again() {
     let mut spec = FileSpec::new(8 * MIB);
     spec.fail_after = Some(fail_after(1, 410));
     fx.server.serve("/f1", spec);
-    let id = engine.add(fx.request(&page)).await.unwrap();
-    // A page that takes seconds to arrive.
-    let mut slow = FileSpec::new(64 * 1024);
-    slow.content_type = Some("text/html".into());
-    slow.bytes_per_sec = Some(16 * 1024);
-    fx.server.serve("/page", slow);
+    let id = add_held(&fx, &engine, fx.request(&page), || {
+        // A page that takes seconds to arrive.
+        let mut slow = FileSpec::new(64 * 1024);
+        slow.content_type = Some("text/html".into());
+        slow.bytes_per_sec = Some(16 * 1024);
+        fx.server.serve("/page", slow);
+    })
+    .await;
+    // The job's first segment request finds the link expired, which resolves
+    // the link as added again: a 1-byte probe of the page, then the slow
+    // read of the whole page.
     let deadline = Instant::now() + TIMEOUT;
-    while fx.server.requests("/page") == 0 {
+    while fx.server.requests("/page") < 2 {
         assert!(Instant::now() < deadline, "the link was not resolved again");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    let f1_requests = fx.server.requests("/f1");
 
     let started = Instant::now();
     engine.pause(id).await.unwrap();
@@ -1117,6 +1141,9 @@ async fn pause_stops_resolving_an_expired_link_again() {
     assert_eq!(wait(&engine, id).await, JobState::Paused);
     assert_eq!(fx.stored(id).state, JobState::Paused);
     engine.shutdown().await.unwrap();
+    // Nothing went on from the page.
+    assert_eq!(fx.server.requests("/page"), 2);
+    assert_eq!(fx.server.requests("/f1"), f1_requests);
 }
 
 #[cfg(unix)]
