@@ -3,7 +3,8 @@
 pub mod client;
 pub mod download;
 pub mod probe;
+mod sources;
 
 pub use client::build_client;
-pub use download::{JobContext, JobOutcome, run_job};
-pub use probe::{Probe, probe};
+pub use download::{JobContext, JobOutcome, host_key, run_job};
+pub use probe::{Probe, probe, resolve};

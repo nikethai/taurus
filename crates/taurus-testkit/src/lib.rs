@@ -1,7 +1,7 @@
 //! Test support for Taurus: a local HTTP server with scriptable behavior.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -10,7 +10,7 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::header::{
     ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG,
-    HeaderMap, HeaderValue, LAST_MODIFIED, RANGE,
+    HeaderMap, HeaderName, HeaderValue, LAST_MODIFIED, LOCATION, RANGE,
 };
 use axum::http::{Response, StatusCode};
 use axum::routing::get;
@@ -21,6 +21,20 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 const CHUNK: usize = 16 * 1024;
+const HTML: &str = "text/html; charset=utf-8";
+const BLOCKED_BODY: &str = "<html><body>blocked</body></html>";
+
+/// Every request after the first `after_requests` answers `status` with a small
+/// HTML body, like a host that starts blocking or challenging a client.
+///
+/// The response carries `content-type: text/html; charset=utf-8` unless `headers`
+/// names `content-type` itself; other `headers` are added on top.
+#[derive(Clone, Debug)]
+pub struct FailAfter {
+    pub after_requests: usize,
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+}
 
 /// Scripted behavior of one served path.
 #[derive(Clone, Debug)]
@@ -42,8 +56,16 @@ pub struct FileSpec {
     /// The first response whose byte window contains this absolute offset
     /// aborts the connection after sending the bytes before it.
     pub drop_once_after: Option<usize>,
-    /// Request number k (1-based) answers `fail_first[k - 1]` while k <= len.
+    /// Request number k (1-based) answers `fail_first[k - 1]` while k <= len;
+    /// a `0` entry serves that request normally.
     pub fail_first: Vec<u16>,
+    /// A request arriving while this many bodies are already in flight answers
+    /// `over_limit_status` with an empty body.
+    pub max_concurrent: Option<usize>,
+    pub over_limit_status: u16,
+    pub fail_after: Option<FailAfter>,
+    /// Added to every successful response.
+    pub extra_headers: Vec<(String, String)>,
 }
 
 impl FileSpec {
@@ -60,6 +82,10 @@ impl FileSpec {
             bytes_per_sec: None,
             drop_once_after: None,
             fail_first: Vec::new(),
+            max_concurrent: None,
+            over_limit_status: 429,
+            fail_after: None,
+            extra_headers: Vec::new(),
         }
     }
 }
@@ -86,14 +112,59 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// One served path: a request counter and header capture shared by every kind.
 struct Entry {
+    requests: usize,
+    last_headers: Vec<(String, String)>,
+    kind: Kind,
+}
+
+enum Kind {
+    File(Box<FileEntry>),
+    Page(Page),
+    /// `location` values, cycled by request number.
+    Redirect(Vec<String>),
+}
+
+struct FileEntry {
     spec: FileSpec,
     data: Bytes,
-    requests: usize,
     served: Arc<AtomicU64>,
     drop_spent: bool,
     /// Earliest release time of the next chunk; shared by every response.
     pacer: Arc<Mutex<Instant>>,
+    flight: Arc<Flight>,
+    rejections: usize,
+}
+
+struct Page {
+    status: u16,
+    headers: Vec<(String, String)>,
+    html: String,
+}
+
+/// Bodies currently being sent for a path, and the most seen at once.
+#[derive(Default)]
+struct Flight {
+    current: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+/// Counts one body in flight; released when the body stream is dropped.
+struct FlightGuard(Arc<Flight>);
+
+impl FlightGuard {
+    fn enter(flight: &Arc<Flight>) -> Self {
+        let now = flight.current.fetch_add(1, Ordering::SeqCst) + 1;
+        flight.peak.fetch_max(now, Ordering::SeqCst);
+        Self(flight.clone())
+    }
+}
+
+impl Drop for FlightGuard {
+    fn drop(&mut self) {
+        self.0.current.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 type Shared = Arc<Mutex<HashMap<String, Entry>>>;
@@ -110,6 +181,17 @@ fn normalize(path: &str) -> String {
     }
 }
 
+/// Inserts each pair, so a later pair (or an existing header) of the same name is replaced.
+fn apply_headers(map: &mut HeaderMap, pairs: &[(String, String)]) {
+    for (name, value) in pairs {
+        map.insert(
+            HeaderName::from_bytes(name.as_bytes())
+                .expect("testkit header name is not a valid HTTP header name"),
+            HeaderValue::from_str(value).expect("testkit header value is not a valid HTTP header"),
+        );
+    }
+}
+
 fn check_headers(spec: &FileSpec) {
     for value in [
         &spec.etag,
@@ -122,6 +204,22 @@ fn check_headers(spec: &FileSpec) {
     {
         HeaderValue::from_str(value).expect("FileSpec header value is not a valid HTTP header");
     }
+    apply_headers(&mut HeaderMap::new(), &spec.extra_headers);
+    if let Some(fail) = &spec.fail_after {
+        apply_headers(&mut HeaderMap::new(), &fail.headers);
+        StatusCode::from_u16(fail.status).expect("fail_after status is not valid");
+    }
+    StatusCode::from_u16(spec.over_limit_status).expect("over_limit_status is not valid");
+    for &status in spec.fail_first.iter().filter(|&&s| s != 0) {
+        StatusCode::from_u16(status).expect("fail_first status is not valid");
+    }
+}
+
+fn owned_pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|&(n, v)| (n.to_owned(), v.to_owned()))
+        .collect()
 }
 
 /// A local HTTP server serving scripted files from `127.0.0.1`.
@@ -151,32 +249,84 @@ impl TestServer {
         }
     }
 
-    /// Registers `spec` at `path` and returns the full URL.
-    pub fn serve(&self, path: &str, spec: FileSpec) -> String {
-        check_headers(&spec);
+    /// Registers `kind` at `path` with fresh counters and returns the full URL.
+    fn register(&self, path: &str, kind: Kind) -> String {
         let path = normalize(path);
         let entry = Entry {
-            data: Bytes::from(content(&spec)),
-            spec,
             requests: 0,
-            served: Arc::new(AtomicU64::new(0)),
-            drop_spent: false,
-            pacer: Arc::new(Mutex::new(Instant::now())),
+            last_headers: Vec::new(),
+            kind,
         };
         lock(&self.shared).insert(path.clone(), entry);
         format!("{}{path}", self.base)
     }
 
-    /// Swaps the spec at `path`, keeping its request and served-byte counters.
+    /// Registers `spec` at `path` and returns the full URL.
+    pub fn serve(&self, path: &str, spec: FileSpec) -> String {
+        check_headers(&spec);
+        self.register(
+            path,
+            Kind::File(Box::new(FileEntry {
+                data: Bytes::from(content(&spec)),
+                spec,
+                served: Arc::new(AtomicU64::new(0)),
+                drop_spent: false,
+                pacer: Arc::new(Mutex::new(Instant::now())),
+                flight: Arc::default(),
+                rejections: 0,
+            })),
+        )
+    }
+
+    /// Registers a fixed answer at `path` and returns the full URL: `status`, then
+    /// `headers`, then `html`, with `content-type: text/html; charset=utf-8` unless
+    /// `headers` names `content-type`. Range is ignored.
+    pub fn serve_page(
+        &self,
+        path: &str,
+        status: u16,
+        headers: &[(&str, &str)],
+        html: &str,
+    ) -> String {
+        let headers = owned_pairs(headers);
+        apply_headers(&mut HeaderMap::new(), &headers);
+        StatusCode::from_u16(status).expect("serve_page status is not valid");
+        self.register(
+            path,
+            Kind::Page(Page {
+                status,
+                headers,
+                html: html.to_owned(),
+            }),
+        )
+    }
+
+    /// Registers `path` answering 302 with `location: targets[n % targets.len()]` on
+    /// its n-th request (0-based). Targets are sent exactly as given, e.g. "/s1".
+    pub fn redirect_cycle(&self, path: &str, targets: &[&str]) -> String {
+        assert!(!targets.is_empty(), "redirect_cycle needs a target");
+        for target in targets {
+            HeaderValue::from_str(target).expect("redirect target is not a valid HTTP header");
+        }
+        self.register(
+            path,
+            Kind::Redirect(targets.iter().map(|&t| t.to_owned()).collect()),
+        )
+    }
+
+    /// Swaps the spec at `path`, keeping its counters.
     pub fn replace(&self, path: &str, spec: FileSpec) {
         check_headers(&spec);
         let mut map = lock(&self.shared);
         let entry = map
             .get_mut(&normalize(path))
             .expect("replace: path was never served");
-        entry.data = Bytes::from(content(&spec));
-        entry.spec = spec;
-        entry.drop_spent = false;
+        let Kind::File(file) = &mut entry.kind else {
+            panic!("replace: path is not a file");
+        };
+        file.data = Bytes::from(content(&spec));
+        file.spec = spec;
+        file.drop_spent = false;
     }
 
     /// Requests received for `path`, including failed ones.
@@ -188,9 +338,33 @@ impl TestServer {
 
     /// Body bytes actually yielded to clients for `path`.
     pub fn bytes_served(&self, path: &str) -> u64 {
+        self.with_file(path, 0, |f| f.served.load(Ordering::Relaxed))
+    }
+
+    /// The most bodies in flight at once for `path`; a body counts until its
+    /// stream completes, aborts or is dropped.
+    pub fn peak_concurrency(&self, path: &str) -> usize {
+        self.with_file(path, 0, |f| f.flight.peak.load(Ordering::SeqCst))
+    }
+
+    /// Requests for `path` refused with `over_limit_status` by `max_concurrent`.
+    pub fn over_limit_rejections(&self, path: &str) -> usize {
+        self.with_file(path, 0, |f| f.rejections)
+    }
+
+    /// Headers of the most recent request to `path` (file, page or redirect),
+    /// names lower-cased, in request order; empty before any request.
+    pub fn last_request_headers(&self, path: &str) -> Vec<(String, String)> {
         lock(&self.shared)
             .get(&normalize(path))
-            .map_or(0, |e| e.served.load(Ordering::Relaxed))
+            .map_or_else(Vec::new, |e| e.last_headers.clone())
+    }
+
+    fn with_file<T>(&self, path: &str, default: T, f: impl FnOnce(&FileEntry) -> T) -> T {
+        match lock(&self.shared).get(&normalize(path)).map(|e| &e.kind) {
+            Some(Kind::File(file)) => f(file),
+            _ => default,
+        }
     }
 }
 
@@ -235,6 +409,17 @@ fn empty(status: StatusCode) -> Response<Body> {
     resp
 }
 
+/// A whole HTML answer: `headers` are applied over the default content type.
+fn html_response(status: u16, headers: &[(String, String)], html: &str) -> Response<Body> {
+    let mut resp = Response::new(Body::from(html.to_owned()));
+    *resp.status_mut() = StatusCode::from_u16(status).expect("validated on registration");
+    let h = resp.headers_mut();
+    h.insert(CONTENT_TYPE, HeaderValue::from_static(HTML));
+    apply_headers(h, headers);
+    h.insert(CONTENT_LENGTH, HeaderValue::from(html.len()));
+    resp
+}
+
 async fn handle(
     State(shared): State<Shared>,
     Path(path): Path<String>,
@@ -245,13 +430,54 @@ async fn handle(
         return empty(StatusCode::NOT_FOUND);
     };
     entry.requests += 1;
+    let number = entry.requests;
+    entry.last_headers = headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect();
+    match &mut entry.kind {
+        Kind::File(file) => file_response(file, number, &headers),
+        Kind::Page(page) => html_response(page.status, &page.headers, &page.html),
+        Kind::Redirect(targets) => {
+            let mut resp = empty(StatusCode::FOUND);
+            let target = &targets[(number - 1) % targets.len()];
+            resp.headers_mut().insert(
+                LOCATION,
+                HeaderValue::from_str(target).expect("validated on registration"),
+            );
+            resp
+        }
+    }
+}
+
+/// Request `number` (1-based) for a file: `fail_first`, `fail_after`,
+/// `max_concurrent`, then the normal response.
+fn file_response(entry: &mut FileEntry, number: usize, headers: &HeaderMap) -> Response<Body> {
     let spec = &entry.spec;
-    if let Some(&status) = spec.fail_first.get(entry.requests - 1) {
-        return empty(StatusCode::from_u16(status).expect("fail_first status is not valid"));
+    if let Some(&status) = spec.fail_first.get(number - 1)
+        && status != 0
+    {
+        return empty(StatusCode::from_u16(status).expect("validated on serve"));
+    }
+    if let Some(fail) = &spec.fail_after
+        && number > fail.after_requests
+    {
+        return html_response(fail.status, &fail.headers, BLOCKED_BODY);
+    }
+    if let Some(max) = spec.max_concurrent
+        && entry.flight.current.load(Ordering::SeqCst) >= max
+    {
+        entry.rejections += 1;
+        return empty(StatusCode::from_u16(spec.over_limit_status).expect("validated on serve"));
     }
 
     let size = spec.size;
-    let (status, start, end) = match parse_range(spec, &headers) {
+    let (status, start, end) = match parse_range(spec, headers) {
         RangeReq::Whole => (StatusCode::OK, 0, size),
         RangeReq::From { start, .. } if start >= size => {
             let mut resp = empty(StatusCode::RANGE_NOT_SATISFIABLE);
@@ -286,6 +512,7 @@ async fn handle(
         pacer: entry.pacer.clone(),
         served: entry.served.clone(),
         aborted: false,
+        _guard: FlightGuard::enter(&entry.flight),
     })));
     *resp.status_mut() = status;
     let h = resp.headers_mut();
@@ -317,6 +544,7 @@ async fn handle(
             );
         }
     }
+    apply_headers(h, &spec.extra_headers);
     resp
 }
 
@@ -329,6 +557,8 @@ struct Pacing {
     pacer: Arc<Mutex<Instant>>,
     served: Arc<AtomicU64>,
     aborted: bool,
+    /// Held for the life of the stream, so the slot frees when the body is dropped.
+    _guard: FlightGuard,
 }
 
 fn body_stream(state: Pacing) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
@@ -619,6 +849,225 @@ mod tests {
         assert!(sizes.iter().all(|&n| n == 64 * 1024));
         // 16 chunks at 512 KiB/s: the last is released at 15 * 31.25 ms = 0.469 s.
         assert!(start.elapsed() >= Duration::from_millis(400));
+    }
+
+    fn no_redirects() -> reqwest::Client {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn max_concurrent_rejects_extra() {
+        let server = TestServer::start().await;
+        let mut spec = FileSpec::new(64 * 1024);
+        spec.bytes_per_sec = Some(16 * 1024);
+        spec.max_concurrent = Some(1);
+        let url = server.serve("/f.bin", spec);
+        // Headers arrive with the first chunk; the rest of the body stays in flight.
+        let first = get(&url, None).await;
+        assert_eq!(first.status(), 200);
+        let second = get(&url, None).await;
+        assert_eq!(second.status(), 429);
+        assert!(second.bytes().await.unwrap().is_empty());
+        assert_eq!(server.over_limit_rejections("/f.bin"), 1);
+        assert_eq!(server.peak_concurrency("/f.bin"), 1);
+        assert_eq!(server.requests("/f.bin"), 2);
+    }
+
+    #[tokio::test]
+    async fn over_limit_status_is_configurable() {
+        let server = TestServer::start().await;
+        let mut spec = FileSpec::new(64 * 1024);
+        spec.bytes_per_sec = Some(16 * 1024);
+        spec.max_concurrent = Some(1);
+        spec.over_limit_status = 403;
+        let url = server.serve("/f.bin", spec);
+        let _first = get(&url, None).await;
+        assert_eq!(get(&url, None).await.status(), 403);
+    }
+
+    #[tokio::test]
+    async fn finished_responses_release_their_slot() {
+        let server = TestServer::start().await;
+        let mut spec = FileSpec::new(1000);
+        spec.max_concurrent = Some(1);
+        let url = server.serve("/f.bin", spec);
+        for _ in 0..5 {
+            let resp = get(&url, None).await;
+            assert_eq!(resp.status(), 200);
+            assert_eq!(resp.bytes().await.unwrap().len(), 1000);
+        }
+        assert_eq!(server.over_limit_rejections("/f.bin"), 0);
+        assert_eq!(server.peak_concurrency("/f.bin"), 1);
+    }
+
+    #[tokio::test]
+    async fn peak_concurrency_tracks_simultaneous_bodies() {
+        let server = TestServer::start().await;
+        let mut spec = FileSpec::new(64 * 1024);
+        spec.bytes_per_sec = Some(256 * 1024);
+        let url = server.serve("/f.bin", spec);
+        let fetches = (0..3).map(|_| {
+            let url = url.clone();
+            async move { get(&url, None).await.bytes().await.unwrap().len() }
+        });
+        futures_util::future::join_all(fetches).await;
+        assert_eq!(server.peak_concurrency("/f.bin"), 3);
+        assert_eq!(server.peak_concurrency("/unknown"), 0);
+    }
+
+    #[tokio::test]
+    async fn fail_after_switches_status_and_headers() {
+        let server = TestServer::start().await;
+        let mut spec = FileSpec::new(1000);
+        spec.fail_after = Some(FailAfter {
+            after_requests: 2,
+            status: 403,
+            headers: vec![("cf-mitigated".into(), "challenge".into())],
+        });
+        let url = server.serve("/f.bin", spec);
+        assert_eq!(get(&url, None).await.status(), 200);
+        assert_eq!(get(&url, None).await.status(), 200);
+        let resp = get(&url, None).await;
+        assert_eq!(resp.status(), 403);
+        assert_eq!(header(&resp, "cf-mitigated"), "challenge");
+        assert_eq!(header(&resp, "content-type"), "text/html; charset=utf-8");
+        let body = resp.bytes().await.unwrap();
+        assert_eq!(&body[..], b"<html><body>blocked</body></html>");
+        assert_eq!(server.requests("/f.bin"), 3);
+    }
+
+    #[tokio::test]
+    async fn fail_after_header_replaces_default_content_type() {
+        let server = TestServer::start().await;
+        let mut spec = FileSpec::new(1000);
+        spec.fail_after = Some(FailAfter {
+            after_requests: 0,
+            status: 200,
+            headers: vec![("content-type".into(), "text/plain".into())],
+        });
+        let url = server.serve("/f.bin", spec);
+        let resp = get(&url, None).await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(header(&resp, "content-type"), "text/plain");
+        assert_eq!(header(&resp, "content-length"), "33");
+    }
+
+    #[tokio::test]
+    async fn fail_first_zero_serves_normally() {
+        let server = TestServer::start().await;
+        let mut spec = FileSpec::new(1000);
+        spec.fail_first = vec![0, 503, 503];
+        let url = server.serve("/f.bin", spec);
+        assert_eq!(get(&url, None).await.status(), 200);
+        assert_eq!(get(&url, None).await.status(), 503);
+        assert_eq!(get(&url, None).await.status(), 503);
+        assert_eq!(get(&url, None).await.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn fail_first_runs_before_fail_after() {
+        let server = TestServer::start().await;
+        let mut spec = FileSpec::new(1000);
+        spec.fail_first = vec![503];
+        spec.fail_after = Some(FailAfter {
+            after_requests: 0,
+            status: 403,
+            headers: Vec::new(),
+        });
+        let url = server.serve("/f.bin", spec);
+        assert_eq!(get(&url, None).await.status(), 503);
+        assert_eq!(get(&url, None).await.status(), 403);
+    }
+
+    #[tokio::test]
+    async fn extra_headers_added_to_successful_responses() {
+        let server = TestServer::start().await;
+        let mut spec = FileSpec::new(10);
+        spec.extra_headers = vec![("x-served-by".into(), "testkit".into())];
+        let url = server.serve("/f.bin", spec);
+        let resp = get(&url, Some("bytes=0-0")).await;
+        assert_eq!(resp.status(), 206);
+        assert_eq!(header(&resp, "x-served-by"), "testkit");
+    }
+
+    #[tokio::test]
+    async fn serve_page_returns_html() {
+        let server = TestServer::start().await;
+        let url = server.serve_page(
+            "/login",
+            511,
+            &[("x-portal", "yes")],
+            "<html>sign in</html>",
+        );
+        assert!(url.ends_with("/login"));
+        // Range is ignored; the page is always answered whole.
+        let resp = get(&url, Some("bytes=0-0")).await;
+        assert_eq!(resp.status(), 511);
+        assert_eq!(header(&resp, "content-type"), "text/html; charset=utf-8");
+        assert_eq!(header(&resp, "x-portal"), "yes");
+        assert_eq!(resp.text().await.unwrap(), "<html>sign in</html>");
+        assert_eq!(server.requests("/login"), 1);
+    }
+
+    #[tokio::test]
+    async fn serve_page_headers_can_override_content_type() {
+        let server = TestServer::start().await;
+        let url = server.serve_page("/p", 200, &[("content-type", "text/plain")], "hi");
+        let resp = get(&url, None).await;
+        assert_eq!(header(&resp, "content-type"), "text/plain");
+    }
+
+    #[tokio::test]
+    async fn redirect_cycle_rotates() {
+        let server = TestServer::start().await;
+        let url = server.redirect_cycle("/r", &["/s1", "/s2"]);
+        let client = no_redirects();
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let resp = client.get(&url).send().await.unwrap();
+            assert_eq!(resp.status(), 302);
+            seen.push(header(&resp, "location"));
+        }
+        assert_eq!(seen, ["/s1", "/s2", "/s1"]);
+        assert_eq!(server.requests("/r"), 3);
+    }
+
+    #[tokio::test]
+    async fn redirect_cycle_is_followed_by_clients() {
+        let server = TestServer::start().await;
+        let spec = FileSpec::new(100);
+        server.serve("/s1", spec.clone());
+        let url = server.redirect_cycle("/r", &["/s1"]);
+        let resp = get(&url, None).await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.bytes().await.unwrap()[..], content(&spec)[..]);
+    }
+
+    #[tokio::test]
+    async fn records_request_headers() {
+        let server = TestServer::start().await;
+        let file = server.serve("/f.bin", FileSpec::new(10));
+        let page = server.serve_page("/p", 200, &[], "x");
+        let redirect = server.redirect_cycle("/r", &["/p"]);
+        assert!(server.last_request_headers("/f.bin").is_empty());
+        let client = no_redirects();
+        for url in [&file, &page, &redirect] {
+            client
+                .get(url)
+                .header("Referer", "https://a.example/")
+                .send()
+                .await
+                .unwrap();
+        }
+        for path in ["/f.bin", "/p", "/r"] {
+            let headers = server.last_request_headers(path);
+            assert!(headers.contains(&("referer".to_owned(), "https://a.example/".to_owned())));
+            assert!(headers.iter().any(|(n, _)| n == "host"));
+        }
+        assert!(server.last_request_headers("/unknown").is_empty());
     }
 
     #[test]

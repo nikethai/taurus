@@ -1,8 +1,9 @@
 //! Human-readable text for the terminal: pure functions, no I/O.
 
 use std::fmt::Write;
+use std::time::Duration;
 
-use taurus_core::{JobState, JobView};
+use taurus_core::{JobId, JobState, JobView, WhenDone};
 
 const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
 
@@ -63,7 +64,71 @@ pub fn outcome_line(view: &JobView) -> String {
             Some((kind, detail)) => format!("Failed: {kind:?}: {detail}"),
             None => "Failed".to_string(),
         },
-        JobState::Queued | JobState::Downloading => format!("{:?}", view.state),
+        // Left so by Ctrl-C: the next queue run starts it.
+        JobState::Queued | JobState::Waiting => {
+            format!("{:?} (continue with: taurus run)", view.state)
+        }
+        JobState::Downloading => format!("{:?}", view.state),
+    }
+}
+
+/// One running job in the progress block: `#3 x.bin  62.0%  ...`.
+pub fn job_line(id: JobId, name: &str, status: &str) -> String {
+    format!("#{} {name}  {status}", id.0)
+}
+
+/// The status of a job that waits for the network to come back.
+pub fn waiting_line(retry_in: Duration) -> String {
+    format!("waiting for connection (retry in {})", rough(retry_in))
+}
+
+/// Whole seconds (rounded up) below a minute, else whole minutes (rounded).
+pub fn rough(d: Duration) -> String {
+    let secs = d.as_secs() + u64::from(d.subsec_nanos() > 0);
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m", (secs + 30) / 60)
+    }
+}
+
+/// Shown while a Sleep or Shutdown counts down.
+pub fn countdown_line(action: WhenDone, seconds_left: u64) -> String {
+    format!(
+        "{} in {seconds_left}s (Ctrl-C cancels)",
+        when_done_name(action)
+    )
+}
+
+pub fn cancelled_line(action: WhenDone) -> String {
+    format!("{} cancelled.", when_done_name(action))
+}
+
+/// The line for a Sleep or Shutdown that has come due: its command, which
+/// only would have run in a dry run; `None` for the other actions.
+pub fn fired_line(action: WhenDone, command: Option<&str>, dry_run: bool) -> Option<String> {
+    if !matches!(action, WhenDone::Sleep | WhenDone::Shutdown) {
+        return None;
+    }
+    Some(match (command, dry_run) {
+        (Some(command), true) => format!("would run: {command}"),
+        (Some(command), false) => format!("running: {command}"),
+        (None, _) => format!("{} is not supported here", when_done_name(action)),
+    })
+}
+
+/// Printed when the queue is done and when-done is Notify.
+pub const ALL_FINISHED: &str = "All downloads finished.";
+/// Printed after Ctrl-C when some download of the run is not done.
+pub const STOPPED: &str = "Stopped. Unfinished downloads continue with: taurus run";
+
+fn when_done_name(action: WhenDone) -> &'static str {
+    match action {
+        WhenDone::Sleep => "Sleep",
+        WhenDone::Shutdown => "Shutdown",
+        WhenDone::Nothing => "Nothing",
+        WhenDone::Notify => "Notify",
+        WhenDone::Quit => "Quit",
     }
 }
 
@@ -98,7 +163,7 @@ pub fn job_table(views: &[JobView]) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use taurus_core::{ErrorKind, JobId, JobState};
+    use taurus_core::ErrorKind;
 
     use super::*;
 
@@ -108,6 +173,7 @@ mod tests {
         JobView {
             id: JobId(7),
             url: "http://example.test/x.bin".to_string(),
+            source_url: "http://example.test/x.bin".to_string(),
             file_name: "x.bin".to_string(),
             dest_dir: PathBuf::from("out"),
             state,
@@ -174,6 +240,57 @@ mod tests {
         let mut failed = view(JobState::Failed);
         failed.error = Some((ErrorKind::LinkExpired, "HTTP 404".to_string()));
         assert_eq!(outcome_line(&failed), "Failed: LinkExpired: HTTP 404");
+        assert_eq!(
+            outcome_line(&view(JobState::Queued)),
+            "Queued (continue with: taurus run)"
+        );
+    }
+
+    #[test]
+    fn job_and_waiting_lines() {
+        assert_eq!(
+            job_line(JobId(3), "x.bin", "1.0 KiB  0.0 MB/s"),
+            "#3 x.bin  1.0 KiB  0.0 MB/s"
+        );
+        assert_eq!(
+            waiting_line(Duration::from_secs(60)),
+            "waiting for connection (retry in 1m)"
+        );
+    }
+
+    #[test]
+    fn rough_durations() {
+        let rough_ms = |ms| rough(Duration::from_millis(ms));
+        assert_eq!(rough_ms(0), "0s");
+        assert_eq!(rough_ms(300), "1s");
+        assert_eq!(rough_ms(59_000), "59s");
+        assert_eq!(rough_ms(59_001), "1m");
+        assert_eq!(rough_ms(89_000), "1m");
+        assert_eq!(rough_ms(90_000), "2m");
+        assert_eq!(rough_ms(600_000), "10m");
+    }
+
+    #[test]
+    fn when_done_lines() {
+        assert_eq!(
+            countdown_line(WhenDone::Sleep, 60),
+            "Sleep in 60s (Ctrl-C cancels)"
+        );
+        assert_eq!(cancelled_line(WhenDone::Shutdown), "Shutdown cancelled.");
+        assert_eq!(
+            fired_line(WhenDone::Sleep, Some("systemctl suspend"), true).as_deref(),
+            Some("would run: systemctl suspend")
+        );
+        assert_eq!(
+            fired_line(WhenDone::Shutdown, Some("shutdown /s /t 0"), false).as_deref(),
+            Some("running: shutdown /s /t 0")
+        );
+        assert_eq!(
+            fired_line(WhenDone::Sleep, None, true).as_deref(),
+            Some("Sleep is not supported here")
+        );
+        assert_eq!(fired_line(WhenDone::Notify, None, false), None);
+        assert_eq!(fired_line(WhenDone::Quit, None, false), None);
     }
 
     #[test]

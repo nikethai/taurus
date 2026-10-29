@@ -212,11 +212,13 @@ fn floor_boundary(s: &str, max: usize) -> usize {
 
 /// First free `dir/<name>` (then `name (1).ext`, `name (2).ext`, ...). A
 /// candidate is taken if the file or its `.tapa` partial exists, or it is in
-/// `reserved`. Every candidate is cut (stem only, extension kept) so that
-/// `<candidate>.tapa` stays within 255 bytes.
+/// `reserved`, ignoring case (macOS and Windows folders do). Every candidate
+/// is cut (stem only, extension kept) so that `<candidate>.tapa` stays within
+/// 255 bytes.
 pub fn unique_path(dir: &Path, name: &str, reserved: &HashSet<String>) -> PathBuf {
+    let reserved: HashSet<String> = reserved.iter().map(|n| n.to_lowercase()).collect();
     let taken = |candidate: &str| {
-        reserved.contains(candidate)
+        reserved.contains(&candidate.to_lowercase())
             || dir.join(candidate).symlink_metadata().is_ok()
             || dir
                 .join(format!("{candidate}.{PARTIAL_EXT}"))
@@ -403,6 +405,15 @@ mod tests {
 
         fs::write(d.join("b.tar.gz.tapa"), b"").unwrap();
         assert_eq!(unique_path(d, "b.tar.gz", &none), d.join("b.tar (1).gz"));
+    }
+
+    #[test]
+    fn unique_path_reserved_names_ignore_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let reserved: HashSet<String> = ["A.bin".to_string(), "Ä.BIN".to_string()].into();
+        assert_eq!(unique_path(d, "a.bin", &reserved), d.join("a (1).bin"));
+        assert_eq!(unique_path(d, "ä.bin", &reserved), d.join("ä (1).bin"));
     }
 
     #[test]
