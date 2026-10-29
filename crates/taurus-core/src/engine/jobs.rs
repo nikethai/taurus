@@ -112,14 +112,17 @@ impl Actor {
             return Ok(());
         }
         self.resolved_again.remove(&id);
-        self.requeue_resolved(job, probe)
+        self.requeue_resolved(job, probe)?;
+        self.after_change();
+        Ok(())
     }
 
     /// Queues the job to continue from the link `probe` resolved: from
     /// zero if the file changed on the server (noted as the job's error) or
-    /// cannot be resumed. If the rest no longer fits on the disk, the job is
-    /// Failed with that error, which is also returned (with no
-    /// `after_change`); so is any error saving the job.
+    /// cannot be resumed. The job counts as checked against the server (see
+    /// `Store::requeue_interrupted`). If the rest no longer fits on the disk,
+    /// the job is Failed with that error, which is also returned; so is any
+    /// error saving the job. The caller runs `after_change`.
     fn requeue_resolved(&mut self, mut job: JobRecord, probe: &Probe) -> Result<(), CoreError> {
         let id = job.id;
         // The link that served the file now: a confirm form may hand out a
@@ -155,12 +158,12 @@ impl Actor {
             job.error = Some((e.kind, e.detail.clone()));
         }
         self.store.update_job(&job)?;
+        self.store.clear_revalidation(id)?;
         let view = view_of(&job, done);
         write(&self.views).insert(id, view.clone());
         self.emit(Event::JobUpdated(view));
         fits?;
         self.retry_counts.remove(&id);
-        self.after_change();
         Ok(())
     }
 
@@ -216,7 +219,7 @@ impl Actor {
             }
             // Interrupted by the shutdown, not paused by the user.
             JobOutcome::Paused if self.stopping => {
-                if let Err(e) = self.store.set_state(id, JobState::Queued) {
+                if let Err(e) = self.store.requeue_interrupted(id) {
                     tracing::warn!(job = id.0, "could not record the interruption: {e}");
                 }
                 JobState::Queued
@@ -286,6 +289,15 @@ impl Actor {
             job = id.0,
             "the link expired; resolving the link as added again"
         );
+        self.spawn_resolve(job, downloaded);
+        true
+    }
+
+    /// Resolves the job's link as added again in a task of its own, which
+    /// sends `Resolved`. The job counts as running meanwhile, so pausing,
+    /// removing or shutting down stops it.
+    pub(super) fn spawn_resolve(&mut self, job: JobRecord, downloaded: u64) {
+        let id = job.id;
         let cancel = CancellationToken::new();
         let stop = cancel.clone();
         let client = self.client.clone();
@@ -307,11 +319,12 @@ impl Actor {
                 downloaded_at_start: downloaded,
             },
         );
-        true
     }
 
     /// Queues the job whose link was resolved again, or fails it with the
-    /// error of that resolve (or of queuing it).
+    /// error of that resolve (or of queuing it). A job checked because it
+    /// was interrupted goes on at once, in the slot it held; if the check
+    /// failed with an error that may pass, it waits to be retried instead.
     pub(super) fn on_resolved(&mut self, id: JobId, probe: Option<Result<Box<Probe>, CoreError>>) {
         self.running.remove(&id);
         let job = match self.store.get_job(id) {
@@ -319,16 +332,20 @@ impl Actor {
             Ok(None) => return self.after_change(),
             Err(e) => return self.fail(id, e),
         };
+        let revalidating = self.store.needs_revalidation(id).unwrap_or_else(|e| {
+            tracing::warn!(job = id.0, "could not read whether the job is checked: {e}");
+            false
+        });
         let queued = match probe {
             // Stopped: it keeps the expired link's error, as a stopped run
-            // would; a shutdown leaves it Queued, to run again.
+            // would; a shutdown leaves it Queued, to be checked and run again.
             None => {
-                let state = if self.stopping {
-                    JobState::Queued
+                let (state, stored) = if self.stopping {
+                    (JobState::Queued, self.store.requeue_interrupted(id))
                 } else {
-                    JobState::Paused
+                    (JobState::Paused, self.store.set_state(id, JobState::Paused))
                 };
-                if let Err(e) = self.store.set_state(id, state) {
+                if let Err(e) = stored {
                     tracing::warn!(job = id.0, "could not record the stop: {e}");
                 }
                 self.set_view_state(id, state);
@@ -337,9 +354,26 @@ impl Actor {
             Some(Ok(probe)) => self.requeue_resolved(job, &probe),
             Some(Err(e)) => Err(e),
         };
-        if let Err(e) = queued {
-            self.fail(id, e);
+        match queued {
+            Ok(()) => {
+                if revalidating && !self.stopping && self.state_of(id) == Some(JobState::Queued) {
+                    self.start(id);
+                }
+                self.after_change();
+            }
+            Err(e) if revalidating && e.kind.is_transient() => self.wait_to_retry(id, e),
+            Err(e) => self.fail(id, e),
         }
+    }
+
+    /// Records the job as Waiting with `e` and retries it later (only with
+    /// `autostart`), as a run that failed with `e` would be.
+    fn wait_to_retry(&mut self, id: JobId, e: CoreError) {
+        self.record_error(id, JobState::Waiting, e);
+        if !self.stopping && self.autostart {
+            self.retry_later(id, false);
+        }
+        self.after_change();
     }
 
     /// Records the job as Failed with `e` and announces it.
@@ -350,20 +384,26 @@ impl Actor {
 
     /// `fail` without the `after_change`, for use within it.
     pub(super) fn record_failure(&mut self, id: JobId, e: CoreError) {
+        self.record_error(id, JobState::Failed, e);
+        self.job_ended = true;
+    }
+
+    /// Records the job in `state` with `e` as its error and announces it.
+    fn record_error(&mut self, id: JobId, state: JobState, e: CoreError) {
         let error = Some((e.kind, e.detail));
         match self.store.get_job(id) {
             Ok(Some(mut job)) => {
-                job.state = JobState::Failed;
+                job.state = state;
                 job.error = error.clone();
                 if let Err(e) = self.store.update_job(&job) {
-                    tracing::warn!(job = id.0, "could not record the failure: {e}");
+                    tracing::warn!(job = id.0, "could not record the error: {e}");
                 }
             }
             Ok(None) => {}
-            Err(e) => tracing::warn!(job = id.0, "could not record the failure: {e}"),
+            Err(e) => tracing::warn!(job = id.0, "could not record the error: {e}"),
         }
         let view = write(&self.views).get_mut(&id).map(|view| {
-            view.state = JobState::Failed;
+            view.state = state;
             view.speed_bps = 0;
             view.error = error;
             view.clone()
@@ -371,7 +411,6 @@ impl Actor {
         if let Some(view) = view {
             self.emit(Event::JobUpdated(view));
         }
-        self.job_ended = true;
     }
 }
 

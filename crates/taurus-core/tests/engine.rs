@@ -360,6 +360,38 @@ async fn interrupted_job_continues_after_reopen_without_resume() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interrupted_job_restarts_from_zero_when_the_file_changed() {
+    let fx = Fixture::new().await;
+    let mut spec = throttled(20 * MIB);
+    spec.etag = Some("\"v1\"".into());
+    let url = fx.server.serve(PATH, spec.clone());
+    let id = {
+        let engine = fx.engine().await;
+        let id = engine.add(fx.request(&url)).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        engine.shutdown().await.unwrap();
+        id
+    };
+    assert_eq!(fx.stored(id).state, JobState::Queued);
+
+    // Same size, other content.
+    let mut changed = unthrottled(&spec);
+    changed.seed = 2;
+    changed.etag = Some("\"v2\"".into());
+    fx.server.replace(PATH, changed.clone());
+    let engine = fx.engine().await;
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("x.bin"), &changed);
+    let v = view(&engine, id);
+    assert_eq!(
+        v.error.map(|(kind, _)| kind),
+        Some(ErrorKind::FileChangedOnServer)
+    );
+    assert_eq!(fx.stored(id).etag.as_deref(), Some("\"v2\""));
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn open_turns_interrupted_jobs_into_queued() {
     let fx = Fixture::new().await;
     // A process killed mid-download leaves its job recorded as Downloading.

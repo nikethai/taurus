@@ -63,7 +63,7 @@ pub struct NewJob {
     pub queue_pos: i64,
 }
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE jobs (
@@ -118,6 +118,12 @@ const HOST_CAP_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
 const MIGRATE_V2_TO_V3: &str = "
 ALTER TABLE jobs ADD COLUMN source_url TEXT;
 UPDATE jobs SET source_url = url;
+";
+
+/// Applied on top of v3: jobs to check against the server before they run
+/// again, because a crash, kill or shutdown interrupted them.
+const MIGRATE_V3_TO_V4: &str = "
+ALTER TABLE jobs ADD COLUMN revalidate INTEGER NOT NULL DEFAULT 0;
 ";
 
 const SETTINGS_KEY: &str = "settings";
@@ -272,9 +278,16 @@ fn init(path: &Path) -> rusqlite::Result<Connection> {
     }
     // Each upgrade is one transaction; a failure leaves the old version intact.
     let steps = match version {
-        0 => [SCHEMA_V1, MIGRATE_V1_TO_V2, MIGRATE_V2_TO_V3].concat(),
-        1 => [MIGRATE_V1_TO_V2, MIGRATE_V2_TO_V3].concat(),
-        2 => MIGRATE_V2_TO_V3.to_owned(),
+        0 => [
+            SCHEMA_V1,
+            MIGRATE_V1_TO_V2,
+            MIGRATE_V2_TO_V3,
+            MIGRATE_V3_TO_V4,
+        ]
+        .concat(),
+        1 => [MIGRATE_V1_TO_V2, MIGRATE_V2_TO_V3, MIGRATE_V3_TO_V4].concat(),
+        2 => [MIGRATE_V2_TO_V3, MIGRATE_V3_TO_V4].concat(),
+        3 => MIGRATE_V3_TO_V4.to_owned(),
         _ => return Ok(conn),
     };
     conn.execute_batch(&format!(
@@ -488,6 +501,39 @@ impl Store {
                  updated_at = ?3 WHERE id = ?1",
                 params![id.0, JobState::Queued.as_str(), now_secs()],
             )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Puts an interrupted job back in the queue (Queued), marked to be
+    /// checked against the server before it runs again. Its error, place in
+    /// the queue and progress are kept.
+    pub fn requeue_interrupted(&self, id: JobId) -> Result<(), CoreError> {
+        self.lock()
+            .execute(
+                "UPDATE jobs SET state = ?2, revalidate = 1, updated_at = ?3 WHERE id = ?1",
+                params![id.0, JobState::Queued.as_str(), now_secs()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Whether the job must be checked against the server before it runs
+    /// (see `requeue_interrupted`). False for a job that does not exist.
+    pub fn needs_revalidation(&self, id: JobId) -> Result<bool, CoreError> {
+        self.lock()
+            .query_row("SELECT revalidate FROM jobs WHERE id = ?1", [id.0], |r| {
+                r.get::<_, bool>(0)
+            })
+            .optional()
+            .map(|mark| mark.unwrap_or(false))
+            .map_err(db_err)
+    }
+
+    /// The job was checked against the server: it runs as it is now.
+    pub fn clear_revalidation(&self, id: JobId) -> Result<(), CoreError> {
+        self.lock()
+            .execute("UPDATE jobs SET revalidate = 0 WHERE id = ?1", [id.0])
             .map_err(db_err)?;
         Ok(())
     }
@@ -1062,11 +1108,11 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[test]
-    fn v1_database_migrates_to_v3() {
+    fn v1_database_migrates_to_v4() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("taurus.db");
         {
@@ -1097,13 +1143,14 @@ mod tests {
             assert_eq!(job.queue_pos, job.id.0);
             assert_eq!((job.checksum.clone(), job.referer.clone()), (None, None));
             assert_eq!(job.state, JobState::Paused);
+            assert!(!store.needs_revalidation(job.id).unwrap());
         }
         {
             let conn = store.conn.lock().unwrap();
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 3);
+            assert_eq!(version, 4);
             let other: String = conn
                 .query_row("SELECT value FROM settings WHERE key = 'other'", [], |r| {
                     r.get(0)
@@ -1118,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_database_migrates_to_v3() {
+    fn v2_database_migrates_to_v4() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("taurus.db");
         {
@@ -1150,9 +1197,64 @@ mod tests {
             .lock()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         drop(store);
         assert_eq!(Store::open(&path).unwrap().list_jobs().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn v3_database_migrates_to_v4() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taurus.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(MIGRATE_V1_TO_V2).unwrap();
+            conn.execute_batch(MIGRATE_V2_TO_V3).unwrap();
+            conn.pragma_update(None, "user_version", 3).unwrap();
+            conn.execute(
+                "INSERT INTO jobs (url, source_url, dest_dir, file_name, state, connections, \
+                 created_at, updated_at) VALUES ('u', 'u', '/d', 'x', 'queued', 4, 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        let jobs = store.list_jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert!(!store.needs_revalidation(jobs[0].id).unwrap());
+        let version: i64 = store
+            .lock()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+    }
+
+    #[test]
+    fn interrupted_jobs_are_marked_until_cleared() {
+        let (_dir, store) = open_temp();
+        let id = store.insert_job(&new_job("a", "/d")).unwrap();
+        let mut job = store.get_job(id).unwrap().unwrap();
+        job.state = JobState::Downloading;
+        job.error = Some((ErrorKind::FileChangedOnServer, "noted".into()));
+        job.queue_pos = 9;
+        store.update_job(&job).unwrap();
+        assert!(!store.needs_revalidation(id).unwrap());
+
+        store.requeue_interrupted(id).unwrap();
+        let requeued = store.get_job(id).unwrap().unwrap();
+        assert_eq!(requeued.state, JobState::Queued);
+        assert_eq!(requeued.error, job.error);
+        assert_eq!(requeued.queue_pos, 9);
+        assert!(store.needs_revalidation(id).unwrap());
+        // A whole-record update leaves the mark alone.
+        store.update_job(&requeued).unwrap();
+        assert!(store.needs_revalidation(id).unwrap());
+
+        store.clear_revalidation(id).unwrap();
+        assert!(!store.needs_revalidation(id).unwrap());
+        assert!(!store.needs_revalidation(JobId(999)).unwrap());
     }
 
     #[test]

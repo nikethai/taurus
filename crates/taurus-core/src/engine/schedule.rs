@@ -34,7 +34,7 @@ impl Actor {
         if state == JobState::Waiting {
             self.requeue(id)?;
         }
-        self.start(id);
+        self.launch(id);
         self.after_change();
         Ok(())
     }
@@ -111,7 +111,7 @@ impl Actor {
             }
             if !self.running.contains_key(&id) && self.state_of(id) == Some(JobState::Queued) {
                 match self.fits_to_start(id) {
-                    Ok(()) => self.start(id),
+                    Ok(()) => self.launch(id),
                     // Not transient: it waits for the user to free space and
                     // resume it. A smaller job further on may still fit.
                     Err(e) => self.record_failure(id, e),
@@ -202,8 +202,38 @@ impl Actor {
         Ok(())
     }
 
+    /// Starts the job; one that was interrupted (`Store::requeue_interrupted`)
+    /// first has its link as added resolved again and checked like `resume`
+    /// does, and starts once that is done (`on_resolved`). The job is
+    /// Downloading, and holds its slot, from here on.
+    fn launch(&mut self, id: JobId) {
+        let interrupted = self.store.needs_revalidation(id).and_then(|marked| {
+            if marked {
+                self.store.get_job(id)
+            } else {
+                Ok(None)
+            }
+        });
+        match interrupted {
+            Ok(Some(job)) => {
+                if let Err(e) = self.store.set_state(id, JobState::Downloading) {
+                    tracing::warn!(job = id.0, "could not record the start: {e}");
+                }
+                let downloaded = read(&self.views).get(&id).map_or(0, |v| v.downloaded);
+                tracing::info!(job = id.0, "checking the interrupted job's link again");
+                self.spawn_resolve(job, downloaded);
+                self.set_view_state(id, JobState::Downloading);
+            }
+            Ok(None) => self.start(id),
+            Err(e) => {
+                tracing::warn!(job = id.0, "could not read whether the job is checked: {e}");
+                self.start(id);
+            }
+        }
+    }
+
     /// Spawns the job's download task; the job is Downloading from here on.
-    fn start(&mut self, id: JobId) {
+    pub(super) fn start(&mut self, id: JobId) {
         if let Err(e) = self.store.set_state(id, JobState::Downloading) {
             // The run records its own state as it starts.
             tracing::warn!(job = id.0, "could not record the start: {e}");

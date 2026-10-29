@@ -169,7 +169,9 @@ impl Engine {
     /// the saved settings (as much of them as reads; see
     /// `Store::load_settings_lenient`) and starts the queue. Jobs recorded as Downloading
     /// (interrupted by a crash, kill or reboot) become Queued, keeping their
-    /// place in the queue and their progress; Waiting jobs are queued again
+    /// place in the queue and their progress; before such a job runs again
+    /// its link is resolved again and checked like `resume` does (restarting
+    /// from zero if the file changed). Waiting jobs are queued again
     /// at once, with Queued ones. Without `config.autostart`, nothing starts
     /// and Waiting jobs are left as stored.
     ///
@@ -194,9 +196,10 @@ impl Engine {
         let mut views = HashMap::new();
         for mut job in store.list_jobs()? {
             match job.state {
-                // Interrupted, not paused: it runs again, in its place.
+                // Interrupted, not paused: it runs again, in its place, once
+                // checked against the server.
                 JobState::Downloading => {
-                    store.set_state(job.id, JobState::Queued)?;
+                    store.requeue_interrupted(job.id)?;
                     job.state = JobState::Queued;
                 }
                 // The connection may well be back by now.
@@ -474,7 +477,8 @@ impl Engine {
     }
 
     /// Stops every running job (saving its progress) and records it as
-    /// Queued, not Paused, so the next open starts it again; closes the
+    /// Queued, not Paused, so the next open starts it again (checked against
+    /// the server first, as after a crash); closes the
     /// database and stops the engine. Later calls on any clone fail with
     /// "engine stopped"; calling `shutdown` again does nothing.
     pub async fn shutdown(&self) -> Result<(), CoreError> {

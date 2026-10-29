@@ -665,6 +665,76 @@ async fn a_job_with_nothing_left_to_download_starts_without_free_space() {
     engine.shutdown().await.unwrap();
 }
 
+/// Turns the seeded job into one a crash interrupted halfway through
+/// `spec`: Downloading, with `spec`'s validators and its first half on disk.
+fn interrupt_halfway(fx: &Fixture, id: JobId, name: &str, spec: &FileSpec) {
+    let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
+    let mut job = store.get_job(id).unwrap().unwrap();
+    job.state = JobState::Downloading;
+    job.etag = spec.etag.clone();
+    store.update_job(&job).unwrap();
+    let half = spec.size as u64 / 2;
+    let data = content(spec);
+    fs::write(fx.dest.join(format!("{name}.tapa")), &data[..half as usize]).unwrap();
+    let whole = taurus_core::plan::Segment {
+        start: 0,
+        end: spec.size as u64,
+        done: half,
+    };
+    store.replace_segments(id, &[whole]).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_job_interrupted_by_a_crash_restarts_from_zero_if_the_file_changed() {
+    let fx = Fixture::new().await;
+    let mut old = FileSpec::new(2 * MIB);
+    old.etag = Some("\"v1\"".into());
+    let ids = seed_jobs(&fx, &old, &[("a.bin", JobState::Queued)]);
+    interrupt_halfway(&fx, ids[0], "a.bin", &old);
+    let mut changed = old.clone();
+    changed.seed = 2;
+    changed.etag = Some("\"v2\"".into());
+    fx.server.replace("/a.bin", changed.clone());
+
+    let engine = fx.engine().await;
+    assert_eq!(wait(&engine, ids[0]).await, JobState::Completed);
+    let got = fs::read(fx.dest.join("a.bin")).unwrap();
+    assert_eq!(sha256_hex(&got), sha256_hex(&content(&changed)));
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interrupted_job_whose_check_fails_for_now_waits() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(2 * MIB);
+    // The check before the restart is refused once.
+    spec.fail_first = vec![503];
+    let ids = seed_jobs(&fx, &spec, &[("a.bin", JobState::Queued)]);
+    interrupt_halfway(&fx, ids[0], "a.bin", &spec);
+    let mut config = fx.config();
+    config.autostart = false;
+    let engine = Engine::open(config).await.unwrap();
+    let mut events = engine.subscribe();
+
+    engine.start_now(ids[0]).await.unwrap();
+    let seen = events_until(&mut events, |e| {
+        is_update(e, ids[0], JobState::Waiting) || is_update(e, ids[0], JobState::Completed)
+    })
+    .await;
+    assert!(is_update(seen.last().unwrap(), ids[0], JobState::Waiting));
+    let v = view(&engine, ids[0]);
+    assert_eq!(v.error.map(|(kind, _)| kind), Some(ErrorKind::RateLimited));
+    assert_eq!(fx.server.requests("/a.bin"), 1);
+
+    // Still checked first when started again; then it goes on from its half.
+    engine.start_now(ids[0]).await.unwrap();
+    assert_eq!(wait(&engine, ids[0]).await, JobState::Completed);
+    let got = fs::read(fx.dest.join("a.bin")).unwrap();
+    assert_eq!(sha256_hex(&got), sha256_hex(&content(&spec)));
+    assert!(fx.server.bytes_served("/a.bin") < spec.size as u64);
+    engine.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_active_zero_is_rejected() {
     let fx = Fixture::new().await;
