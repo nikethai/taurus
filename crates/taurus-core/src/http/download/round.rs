@@ -4,7 +4,7 @@
 
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -17,6 +17,7 @@ use crate::plan::{self, Segment};
 use crate::progress::ProgressMeter;
 use crate::store::JobRecord;
 
+use super::window::{Report, Window, lock};
 use super::worker::{Worker, WorkerEnd, WorkerExit};
 use super::{JobContext, error};
 
@@ -105,15 +106,6 @@ pub(super) async fn run_round(
     }
 }
 
-/// The byte window a worker may still write: `[pos, end)`. The worker
-/// reserves bytes (advances `pos`) under the lock before writing them; work
-/// stealing lowers `end` under the same lock and only to a split above `pos`.
-/// So no byte is written by two workers and a worker never writes past `end`.
-pub(super) struct Window {
-    pub(super) pos: u64,
-    pub(super) end: u64,
-}
-
 struct Slot {
     /// Durable progress and the current end.
     seg: Segment,
@@ -145,13 +137,6 @@ impl Slot {
             done: w.pos - self.seg.start,
         }
     }
-}
-
-pub(super) enum Report {
-    /// Segment `idx` is durable up to `done`.
-    Durable { idx: usize, done: u64 },
-    /// A worker started reading a 206 response.
-    Opened,
 }
 
 struct Round<'a> {
@@ -383,11 +368,6 @@ impl Round<'_> {
                 .send((self.job.id, downloaded, self.job.total, speed));
         }
     }
-}
-
-pub(super) fn lock(window: &Mutex<Window>) -> MutexGuard<'_, Window> {
-    // A worker panic cannot leave the two integers inconsistent.
-    window.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 #[cfg(test)]

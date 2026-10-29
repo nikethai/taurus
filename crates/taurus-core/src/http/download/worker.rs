@@ -20,7 +20,7 @@ use crate::page;
 use crate::timing::Timing;
 
 use super::part_file::PartFile;
-use super::round::{Report, Window, lock};
+use super::window::{Report, Window, lock};
 use super::{error, io_error};
 
 /// A worker syncs and reports progress after this long or this many bytes.

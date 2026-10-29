@@ -24,6 +24,7 @@
 mod finalize;
 mod part_file;
 mod round;
+mod window;
 mod worker;
 
 use std::path::{Path, PathBuf};
