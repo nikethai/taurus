@@ -207,6 +207,13 @@ impl Actor {
                 self.job_ended = true;
                 JobState::Completed
             }
+            // Interrupted by the shutdown, not paused by the user.
+            JobOutcome::Paused if self.stopping => {
+                if let Err(e) = self.store.set_state(id, JobState::Queued) {
+                    tracing::warn!(job = id.0, "could not record the interruption: {e}");
+                }
+                JobState::Queued
+            }
             JobOutcome::Paused => JobState::Paused,
             JobOutcome::Failed(e) => {
                 let state = if e.kind.is_transient() {
@@ -306,12 +313,18 @@ impl Actor {
             Err(e) => return self.fail(id, e),
         };
         let queued = match probe {
-            // Stopped: it keeps the expired link's error, as a paused run would.
+            // Stopped: it keeps the expired link's error, as a stopped run
+            // would; a shutdown leaves it Queued, to run again.
             None => {
-                if let Err(e) = self.store.set_state(id, JobState::Paused) {
-                    tracing::warn!(job = id.0, "could not record the pause: {e}");
+                let state = if self.stopping {
+                    JobState::Queued
+                } else {
+                    JobState::Paused
+                };
+                if let Err(e) = self.store.set_state(id, state) {
+                    tracing::warn!(job = id.0, "could not record the stop: {e}");
                 }
-                self.set_view_state(id, JobState::Paused);
+                self.set_view_state(id, state);
                 return self.after_change();
             }
             Some(Ok(probe)) => self.requeue_resolved(job, &probe),

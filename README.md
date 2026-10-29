@@ -4,7 +4,7 @@ Hyades (codename Taurus) is an open-source, cross-platform desktop download mana
 
 ## Usage
 
-The command-line client, `taurus`, drives the Hyades (codename Taurus) engine. It is a queue runner: `add`, `resume`, `run` and `start-now` queue their downloads, then run the whole queue in the foreground until nothing is queued, waiting or downloading (and until a `when_done` countdown fires or is cancelled). At most `max_active` downloads run at once; a download whose connection drops waits and retries on its own (after 1 minute, doubling up to 10 minutes). Ctrl-C pauses the running downloads and leaves queued ones queued; during a `when_done` countdown it cancels the countdown instead. Exit codes: 0 every download of the run completed, 1 a download failed or an error, 2 paused.
+The command-line client, `taurus`, drives the Hyades (codename Taurus) engine. It is a queue runner: `add`, `resume`, `run` and `start-now` queue their downloads, then run the whole queue in the foreground until nothing is queued, waiting or downloading (and until a `when_done` countdown fires or is cancelled). At most `max_active` downloads run at once; a download whose connection drops waits and retries on its own (after 1 minute, doubling up to 10 minutes). Ctrl-C stops the running downloads, keeping their progress, and leaves them queued with the rest; `taurus run` (or any other queue command) continues them. During a `when_done` countdown Ctrl-C cancels the countdown instead. Downloads interrupted by a crash, a kill or a reboot come back queued the same way and continue with the next queue run; `taurus list` shows them as Queued. Exit codes: 0 every download of the run completed, 1 a download failed or an error, 2 stopped by Ctrl-C or a download was paused.
 
 ```sh
 # Download into a folder (default: your Downloads folder), with up to 8 connections
@@ -21,10 +21,11 @@ taurus add https://example.com/file.iso --mirror https://mirror.example.org/file
 # Send a Referer with every request (some hosts require the page that links the file)
 taurus add https://cdn.example.com/video.mp4 --referer https://example.com/watch
 
-# Continue downloads 1 and 3 after a pause, crash or reboot
+# Continue paused or failed downloads 1 and 3
 taurus resume 1 3
 
-# Run whatever is queued or waiting
+# Run whatever is queued or waiting, including downloads stopped by Ctrl-C,
+# a crash or a reboot
 taurus run
 
 # Start download 4 now, even if max_active downloads are already running

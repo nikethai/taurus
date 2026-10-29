@@ -506,6 +506,58 @@ async fn without_autostart_only_start_now_runs_jobs() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn without_autostart_an_interrupted_job_reopens_queued() {
+    let fx = Fixture::new().await;
+    let ids = seed_jobs(
+        &fx,
+        &FileSpec::new(MIB),
+        &[("a.bin", JobState::Downloading)],
+    );
+    let mut config = fx.config();
+    config.autostart = false;
+    let engine = Engine::open(config).await.unwrap();
+
+    assert_eq!(view(&engine, ids[0]).state, JobState::Queued);
+    tokio::time::sleep(Timing::fast_for_tests().waiting_retry_cap * 2).await;
+    assert_eq!(view(&engine, ids[0]).state, JobState::Queued);
+    assert_eq!(fx.server.requests("/a.bin"), 0);
+    engine.shutdown().await.unwrap();
+
+    let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
+    assert_eq!(
+        store.get_job(ids[0]).unwrap().unwrap().state,
+        JobState::Queued
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interrupted_job_restarts_before_later_queued_ones() {
+    let fx = Fixture::new().await;
+    fx.engine_with_max(1).await.shutdown().await.unwrap();
+    // About 1 s each.
+    let spec = throttled(2 * MIB, 2 * MIB);
+    let ids = seed_jobs(
+        &fx,
+        &spec,
+        &[
+            ("a.bin", JobState::Downloading),
+            ("b.bin", JobState::Queued),
+        ],
+    );
+
+    let engine = fx.engine().await;
+    assert_eq!(view(&engine, ids[0]).state, JobState::Downloading);
+    assert_eq!(view(&engine, ids[1]).state, JobState::Queued);
+    assert_eq!(wait(&engine, ids[0]).await, JobState::Completed);
+    assert_eq!(wait(&engine, ids[1]).await, JobState::Completed);
+    for name in ["a.bin", "b.bin"] {
+        let got = fs::read(fx.dest.join(name)).unwrap();
+        assert_eq!(sha256_hex(&got), sha256_hex(&content(&spec)));
+    }
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn max_active_zero_is_rejected() {
     let fx = Fixture::new().await;
     let engine = fx.engine_with_max(2).await;

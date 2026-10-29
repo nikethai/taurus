@@ -47,9 +47,10 @@ pub struct EngineConfig {
     pub timing: Timing,
     /// Whether when-done actions that touch the OS really run.
     pub power: PowerMode,
-    /// Whether the queue runs on its own. Without it, no job starts, is
-    /// retried or is restored to the queue unless `start_now` starts it:
-    /// for short-lived front ends that only look at or edit the jobs.
+    /// Whether the queue runs on its own. Without it, no job starts or is
+    /// retried unless `start_now` starts it, and Waiting jobs stay Waiting
+    /// on open: for short-lived front ends that only look at or edit the
+    /// jobs.
     pub autostart: bool,
 }
 
@@ -161,9 +162,10 @@ impl Engine {
     /// Opens the database in `config.data_dir`, restores its jobs, applies
     /// the saved settings (as much of them as reads; see
     /// `Store::load_settings_lenient`) and starts the queue. Jobs recorded as Downloading
-    /// (interrupted) become Paused; Waiting jobs are queued again at once,
-    /// with Queued ones. Without `config.autostart`, Queued and Waiting jobs
-    /// are left as stored.
+    /// (interrupted by a crash, kill or reboot) become Queued, keeping their
+    /// place in the queue and their progress; Waiting jobs are queued again
+    /// at once, with Queued ones. Without `config.autostart`, nothing starts
+    /// and Waiting jobs are left as stored.
     ///
     /// The engine holds `data_dir` exclusively until it shuts down or its
     /// last handle is dropped. While another engine (in any process) holds
@@ -186,10 +188,10 @@ impl Engine {
         let mut views = HashMap::new();
         for mut job in store.list_jobs()? {
             match job.state {
-                // Nothing is running yet.
+                // Interrupted, not paused: it runs again, in its place.
                 JobState::Downloading => {
-                    job.state = JobState::Paused;
-                    store.update_job(&job)?;
+                    store.set_state(job.id, JobState::Queued)?;
+                    job.state = JobState::Queued;
                 }
                 // The connection may well be back by now.
                 JobState::Waiting if config.autostart => {
@@ -453,9 +455,10 @@ impl Engine {
         }
     }
 
-    /// Pauses every running job (saving its progress), closes the database
-    /// and stops the engine. Later calls on any clone fail with "engine
-    /// stopped"; calling `shutdown` again does nothing.
+    /// Stops every running job (saving its progress) and records it as
+    /// Queued, not Paused, so the next open starts it again; closes the
+    /// database and stops the engine. Later calls on any clone fail with
+    /// "engine stopped"; calling `shutdown` again does nothing.
     pub async fn shutdown(&self) -> Result<(), CoreError> {
         // An error here means the engine has already stopped.
         let _ = self.call(|reply| Command::Shutdown { reply }).await;

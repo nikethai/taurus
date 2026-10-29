@@ -187,7 +187,8 @@ impl Actor {
         while let Ok(msg) = self.job_rx.try_recv() {
             self.on_job_msg(msg);
         }
-        self.pause_all().await;
+        // Running jobs end Queued too: see `on_finished`.
+        self.stop_all().await;
         // Closes the database before anyone hears that the engine stopped.
         drop(self);
         drop(commands);
@@ -254,7 +255,7 @@ impl Actor {
         }
     }
 
-    async fn pause_all(&mut self) {
+    async fn stop_all(&mut self) {
         let ids: Vec<JobId> = self.running.keys().copied().collect();
         for run in self.running.values() {
             run.cancel.cancel();

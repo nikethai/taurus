@@ -119,6 +119,8 @@ pub fn fired_line(action: WhenDone, command: Option<&str>, dry_run: bool) -> Opt
 
 /// Printed when the queue is done and when-done is Notify.
 pub const ALL_FINISHED: &str = "All downloads finished.";
+/// Printed after Ctrl-C when some download of the run is not done.
+pub const STOPPED: &str = "Stopped. Unfinished downloads continue with: taurus run";
 
 fn when_done_name(action: WhenDone) -> &'static str {
     match action {

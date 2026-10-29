@@ -34,7 +34,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Queue downloads, then run the queue in the foreground until it is idle; Ctrl-C pauses
+    /// Queue downloads, then run the queue in the foreground until it is idle; Ctrl-C stops (taurus run continues)
     Add {
         #[arg(value_name = "URL", required_unless_present = "file")]
         urls: Vec<String>,
@@ -60,12 +60,12 @@ enum Command {
         #[arg(long, value_name = "URL")]
         referer: Option<String>,
     },
-    /// Continue paused or failed downloads, then run the queue until it is idle; Ctrl-C pauses
+    /// Continue paused or failed downloads, then run the queue until it is idle; Ctrl-C stops (taurus run continues)
     Resume {
         #[arg(value_name = "ID", required = true)]
         ids: Vec<i64>,
     },
-    /// Run the queued and waiting downloads until the queue is idle; Ctrl-C pauses
+    /// Run the queued and waiting downloads until the queue is idle; Ctrl-C stops (taurus run continues)
     Run,
     /// Start a queued or waiting download at once, even past max_active, then run the queue
     StartNow { id: i64 },
@@ -149,7 +149,7 @@ fn parse() -> std::result::Result<Cli, ExitCode> {
     Ok(cli)
 }
 
-/// Prints a clap error; usage errors exit 1, since 2 means "paused".
+/// Prints a clap error; usage errors exit 1, since 2 means "stopped".
 fn usage_error(e: &clap::Error) -> ExitCode {
     let _ = e.print();
     if e.use_stderr() {

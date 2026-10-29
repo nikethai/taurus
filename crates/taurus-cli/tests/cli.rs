@@ -156,7 +156,7 @@ async fn kill_then_resume() {
     let list = fx.run(&["--json", "list"]).await;
     assert_exit(&list, 0);
     let jobs: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
-    assert_eq!(jobs[0]["state"], "Paused");
+    assert_eq!(jobs[0]["state"], "Queued");
     let durable = jobs[0]["downloaded"].as_u64().unwrap();
     assert!(durable > 0, "no progress was saved before the kill");
 
@@ -173,6 +173,71 @@ async fn kill_then_resume() {
         "resume served {resumed} bytes for a {} byte file ({durable} saved)",
         spec.size
     );
+    assert!(
+        served < 2 * spec.size as u64,
+        "served {served} bytes for a {} byte file",
+        spec.size
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_c_stops_and_run_continues() {
+    tokio::time::timeout(TIMEOUT, ctrl_c_then_run())
+        .await
+        .expect("Ctrl-C and run did not finish in 60 s");
+}
+
+#[cfg(unix)]
+async fn ctrl_c_then_run() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(32 * MIB);
+    spec.bytes_per_sec = Some(8 * MIB as u64);
+    let url = fx.server.serve(PATH, spec.clone());
+
+    let mut child = fx
+        .taurus()
+        .args(["add", &url, "--dir", fx.out.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn taurus");
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let first = lines
+        .next_line()
+        .await
+        .unwrap()
+        .expect("taurus ended before showing progress");
+    assert!(first.starts_with("#1 x.bin"), "{first}");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let pid = child.id().unwrap().to_string();
+    let sent = std::process::Command::new("kill")
+        .args(["-INT", &pid])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    let mut rest = Vec::new();
+    while let Some(line) = lines.next_line().await.unwrap() {
+        rest.push(line);
+    }
+    let status = child.wait().await.unwrap();
+
+    assert_eq!(status.code(), Some(2), "{rest:?}");
+    assert!(
+        rest.iter()
+            .any(|l| l == "Stopped. Unfinished downloads continue with: taurus run"),
+        "{rest:?}"
+    );
+    assert!(!rest.iter().any(|l| l.contains("Paused")), "{rest:?}");
+    let list = fx.run(&["--json", "list"]).await;
+    let jobs: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(jobs[0]["state"], "Queued");
+    assert!(jobs[0]["downloaded"].as_u64().unwrap() > 0);
+
+    let output = fx.run(&["run"]).await;
+
+    assert_exit(&output, 0);
+    assert_same_bytes(&fx.file(), &spec);
+    let served = fx.server.bytes_served(PATH);
     assert!(
         served < 2 * spec.size as u64,
         "served {served} bytes for a {} byte file",

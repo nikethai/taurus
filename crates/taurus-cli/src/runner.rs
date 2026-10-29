@@ -1,6 +1,7 @@
 //! The queue runner behind `add`, `resume`, `run` and `start-now`: enqueues,
 //! then follows the engine's events until the queue is idle and the
-//! when-done action has fired or been cancelled. Ctrl-C pauses.
+//! when-done action has fired or been cancelled. Ctrl-C stops the engine;
+//! its unfinished downloads stay queued for the next run.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
@@ -84,7 +85,8 @@ impl<'a> Runner<'a> {
     }
 
     /// Runs `enqueue`, then follows the queue until it is idle. Exit code:
-    /// 2 after Ctrl-C (running jobs are paused, queued ones stay queued);
+    /// 2 after Ctrl-C (running jobs are stopped and queued again, queued
+    /// ones stay queued);
     /// 1 if something could not be enqueued or a touched job Failed; 0 when
     /// every touched job Completed.
     pub async fn run(mut self, enqueue: impl Future<Output = Enqueued>) -> Result<ExitCode> {
@@ -138,7 +140,7 @@ impl<'a> Runner<'a> {
         if interrupted {
             self.engine.shutdown().await?;
         }
-        // The jobs that the shutdown paused.
+        // The jobs that the shutdown stopped.
         self.drain()?;
         self.finish(interrupted, failed)
     }
@@ -244,8 +246,17 @@ impl<'a> Runner<'a> {
             .into_iter()
             .filter(|v| self.touched.contains(&v.id))
             .collect();
+        let mut unfinished = false;
         for view in &views {
+            // Left queued by Ctrl-C: one line says how to go on.
+            if interrupted && is_busy(view.state) {
+                unfinished = true;
+                continue;
+            }
             self.out.outcome(view)?;
+        }
+        if unfinished {
+            self.out.line(render::STOPPED)?;
         }
         if self.notify && !interrupted {
             self.out.line(render::ALL_FINISHED)?;

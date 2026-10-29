@@ -299,7 +299,7 @@ async fn remove_with_files_deletes_partial() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn shutdown_pauses_running_jobs_and_stops_engine() {
+async fn shutdown_requeues_running_jobs_and_stops_engine() {
     let fx = Fixture::new().await;
     let engine = fx.engine().await;
     let url = fx.server.serve(PATH, throttled(20 * MIB));
@@ -307,8 +307,8 @@ async fn shutdown_pauses_running_jobs_and_stops_engine() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     engine.shutdown().await.unwrap();
-    assert_eq!(view(&engine, id).state, JobState::Paused);
-    assert_eq!(wait(&engine, id).await, JobState::Paused);
+    assert_eq!(view(&engine, id).state, JobState::Queued);
+    assert_eq!(wait(&engine, id).await, JobState::Queued);
     let err = engine.resume(id).await.unwrap_err();
     assert_eq!(
         (err.kind, err.detail.as_str()),
@@ -317,14 +317,49 @@ async fn shutdown_pauses_running_jobs_and_stops_engine() {
     assert!(engine.add(fx.request(&url)).await.is_err());
     drop(engine);
 
+    let stored = Engine::read_snapshot(&EngineConfig::new(fx.data_dir())).unwrap();
+    assert_eq!(stored[0].state, JobState::Queued);
+    assert!(stored[0].downloaded > 0, "{stored:?}");
+    // The reopened engine starts it again on its own.
     let engine = fx.engine().await;
     let v = view(&engine, id);
-    assert_eq!(v.state, JobState::Paused);
+    assert_eq!(v.state, JobState::Downloading);
     assert!(v.downloaded > 0, "{v:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn open_turns_interrupted_jobs_into_paused() {
+async fn interrupted_job_continues_after_reopen_without_resume() {
+    let fx = Fixture::new().await;
+    let spec = throttled(20 * MIB);
+    let url = fx.server.serve(PATH, spec.clone());
+    let id = {
+        let engine = fx.engine().await;
+        let id = engine.add(fx.request(&url)).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        engine.shutdown().await.unwrap();
+        id
+    };
+    let stored = fx.stored(id);
+    assert_eq!(stored.state, JobState::Queued);
+    let saved = Engine::read_snapshot(&EngineConfig::new(fx.data_dir())).unwrap()[0].downloaded;
+    assert!(saved > 0 && saved < spec.size as u64, "{saved}");
+
+    fx.server.replace(PATH, unthrottled(&spec));
+    let engine = fx.engine().await;
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("x.bin"), &spec);
+    // Continued with ranges, not downloaded again from zero.
+    let served = fx.server.bytes_served(PATH);
+    assert!(
+        served < 2 * spec.size as u64,
+        "served {served} bytes for a {} byte file",
+        spec.size
+    );
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn open_turns_interrupted_jobs_into_queued() {
     let fx = Fixture::new().await;
     // A process killed mid-download leaves its job recorded as Downloading.
     fs::create_dir_all(fx.data_dir()).unwrap();
@@ -350,18 +385,17 @@ async fn open_turns_interrupted_jobs_into_paused() {
         }
     }
 
-    let engine = fx.engine().await;
-    let snapshot = engine.snapshot();
-    assert_eq!(snapshot.len(), 2);
-    assert!(
-        snapshot.iter().all(|v| v.state == JobState::Paused),
-        "{snapshot:?}"
-    );
+    // With autostart the queued job would start at once.
+    let mut config = EngineConfig::new(fx.data_dir());
+    config.autostart = false;
+    let engine = Engine::open(config).await.unwrap();
+    let states: Vec<JobState> = engine.snapshot().iter().map(|v| v.state).collect();
+    assert_eq!(states, vec![JobState::Queued, JobState::Paused]);
     engine.shutdown().await.unwrap();
 
     let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
     let states: Vec<JobState> = store.list_jobs().unwrap().iter().map(|j| j.state).collect();
-    assert_eq!(states, vec![JobState::Paused, JobState::Paused]);
+    assert_eq!(states, vec![JobState::Queued, JobState::Paused]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -441,9 +475,10 @@ async fn second_engine_on_same_data_dir_is_refused() {
     // Shutting down releases the data dir.
     engine.shutdown().await.unwrap();
     let engine = fx.engine().await;
-    assert_eq!(view(&engine, id).state, JobState::Paused);
+    // Interrupted, so started again.
+    assert_eq!(view(&engine, id).state, JobState::Downloading);
     let stored = Engine::read_snapshot(&config).unwrap();
-    assert_eq!(stored[0].state, JobState::Paused);
+    assert_eq!(stored[0].state, JobState::Downloading);
     assert!(stored[0].downloaded > 0, "{stored:?}");
 }
 
