@@ -7,14 +7,19 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use i_slint_backend_testing::{AccessibleRole, ElementHandle};
+use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
 use slint::platform::WindowEvent;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
-use taurus_core::{AddRequest, Engine, EngineConfig, ErrorKind, JobState, SpeedLimit, ThemeChoice};
+use taurus_core::torrent::hub::TorrentTestNet;
+use taurus_core::{
+    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobState, PowerMode, Settings, SpeedLimit,
+    ThemeChoice, Timing, WhenDone,
+};
 use taurus_desktop::app::App;
 use taurus_desktop::shell_text::simple_message;
 use taurus_desktop::{AppWindow, Messages, RowVm, Screen, Theme};
-use taurus_testkit::{FileSpec, TestServer};
+use taurus_testkit::{FailAfter, FileSpec, TestServer, TorrentSeeder};
+use tokio::sync::broadcast::error::TryRecvError;
 
 #[test]
 fn ui_smoke() {
@@ -30,8 +35,12 @@ fn ui_smoke() {
     settings_change_is_saved_and_shown(&ui, &ctx);
     quick_setting_changes_end_on_the_last(&ui, &ctx);
     close_hides_to_tray_and_keeps_downloading(&ctx);
+    failed_row_explains_and_retries(&ui, &ctx);
+    duplicate_link_is_flagged(&ui, &ctx);
+    waiting_row_counts_down();
+    torrent_row_shows_sharing();
+    countdown_cancel();
     quit_shuts_down_engine_cleanly(&ui, &ctx);
-    // later tasks append their checks here
 }
 
 fn window_title(ui: &AppWindow) {
@@ -151,22 +160,35 @@ struct Ctx {
     engine: Engine,
 }
 
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
 impl Ctx {
     fn start(ui: &AppWindow) -> Ctx {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap();
+        Ctx::start_with(ui, runtime(), |_, _| {})
+    }
+
+    /// Like `start`, on `rt`, with the engine's config and first settings
+    /// adjusted by `configure`.
+    fn start_with(
+        ui: &AppWindow,
+        rt: tokio::runtime::Runtime,
+        configure: impl FnOnce(&mut EngineConfig, &mut Settings),
+    ) -> Ctx {
         let tmp = tempfile::tempdir().unwrap();
         let server = rt.block_on(TestServer::start());
-        let engine = rt
-            .block_on(Engine::open(EngineConfig::new(tmp.path().join("data"))))
-            .unwrap();
+        let mut config = EngineConfig::new(tmp.path().join("data"));
         let out = tmp.path().join("out");
         std::fs::create_dir_all(&out).unwrap();
-        let mut settings = engine.settings();
+        let mut settings = Settings::default();
         settings.ui.folder = Some(out);
+        configure(&mut config, &mut settings);
+        let engine = rt.block_on(Engine::open(config)).unwrap();
         rt.block_on(engine.set_settings(settings)).unwrap();
         let app = App::start(ui, engine.clone(), rt.handle().clone(), false);
         Ctx {
@@ -176,6 +198,18 @@ impl Ctx {
             app,
             engine,
         }
+    }
+
+    /// Stops the app and the engine (for a `Ctx` of one check).
+    fn shutdown(self, what: &str) {
+        drop(self.app);
+        self.rt
+            .block_on(self.engine.shutdown())
+            .unwrap_or_else(|e| panic!("{what}: engine shutdown: {e}"));
+    }
+
+    fn out(&self) -> PathBuf {
+        self.tmp.path().join("out")
     }
 
     fn data_dir(&self) -> PathBuf {
@@ -190,8 +224,13 @@ impl Ctx {
 }
 
 /// Drives Slint timers until `done` holds; panics with `what` after 30 s.
-fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+fn wait_until(what: &str, done: impl FnMut() -> bool) {
+    wait_for(Duration::from_secs(30), what, done);
+}
+
+/// Drives Slint timers until `done` holds; panics with `what` after `limit`.
+fn wait_for(limit: Duration, what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + limit;
     loop {
         slint::platform::update_timers_and_animations();
         if done() {
@@ -423,4 +462,293 @@ fn quit_shuts_down_engine_cleanly(ui: &AppWindow, ctx: &Ctx) {
             .unwrap_or_else(|e| panic!("{WHAT}: data dir still held after quit: {e}"));
         engine.shutdown().await.unwrap();
     });
+}
+
+/// Texts of the elements whose accessible role is text and whose label
+/// contains `needle`.
+fn texts_containing(ui: &AppWindow, needle: &str) -> Vec<String> {
+    ElementQuery::from_root(ui)
+        .match_descendants()
+        .match_accessible_role(AccessibleRole::Text)
+        .find_all()
+        .into_iter()
+        .filter_map(|e| e.accessible_label())
+        .filter(|label| label.contains(needle))
+        .map(|label| label.to_string())
+        .collect()
+}
+
+/// The one button labelled `label`.
+fn only_button(ui: &AppWindow, label: &str, what: &str) -> ElementHandle {
+    let mut buttons: Vec<ElementHandle> = labelled(ui, label)
+        .into_iter()
+        .filter(|e| e.accessible_role() == Some(AccessibleRole::Button))
+        .collect();
+    assert_eq!(
+        buttons.len(),
+        1,
+        "{what}: expected one {label:?} button, found {}",
+        buttons.len()
+    );
+    buttons.remove(0)
+}
+
+/// Drives Slint timers for `time` (to see that nothing changes).
+fn settle(time: Duration) {
+    let end = Instant::now() + time;
+    while Instant::now() < end {
+        slint::platform::update_timers_and_animations();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A download whose link stops working shows why in plain words, and its
+/// "Try again" button (pressed through the UI) downloads it once the link
+/// works again.
+fn failed_row_explains_and_retries(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "failed_row_explains_and_retries";
+    const SIZE: usize = 1024 * 1024;
+    let mut spec = FileSpec::new(SIZE);
+    // The probe at add succeeds; the download then gets 404.
+    spec.fail_after = Some(FailAfter {
+        after_requests: 1,
+        status: 404,
+        headers: vec![],
+    });
+    let url = ctx.server.serve("expired.bin", spec);
+    ui.set_tab(0);
+    ui.set_screen(Screen::Downloads);
+    let request = AddRequest {
+        url,
+        dest_dir: ctx.out(),
+        ..Default::default()
+    };
+    ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    wait_until(&format!("{WHAT}: expired.bin failed"), || {
+        ui.get_downloading_rows()
+            .iter()
+            .any(|r| r.name == "expired.bin" && r.state == "failed")
+    });
+    let row = ui
+        .get_downloading_rows()
+        .iter()
+        .find(|r| r.name == "expired.bin")
+        .unwrap();
+    assert_eq!(row.error_kind.as_str(), "link_expired", "{WHAT}: {row:?}");
+    let reason = labelled(ui, "This link stopped working. It may have expired.");
+    assert!(
+        reason.iter().any(|e| e.size().width > 0.0),
+        "{WHAT}: the row does not say why"
+    );
+
+    ctx.server.replace("expired.bin", FileSpec::new(SIZE));
+    only_button(ui, "Try again", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: expired.bin finished"), || {
+        ui.get_finished_rows()
+            .iter()
+            .any(|r| r.name == "expired.bin" && r.state == "done")
+    });
+    let file = ctx.out().join("expired.bin");
+    assert_eq!(
+        std::fs::metadata(&file).map(|m| m.len()).ok(),
+        Some(SIZE as u64),
+        "{WHAT}: {} not saved in full",
+        file.display()
+    );
+}
+
+/// A link already in the list is flagged on the Add screen and cannot be
+/// added twice.
+fn duplicate_link_is_flagged(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "duplicate_link_is_flagged";
+    let url = ctx.server.serve("dup.bin", FileSpec::new(64 * 1024));
+    add_link(ui, &url, "dup.bin", WHAT);
+    let listed = || {
+        ui.get_downloading_rows()
+            .iter()
+            .chain(ui.get_finished_rows().iter())
+            .any(|r| r.name == "dup.bin")
+    };
+    wait_until(&format!("{WHAT}: dup.bin listed"), listed);
+    let jobs = || {
+        ctx.engine
+            .snapshot()
+            .iter()
+            .filter(|v| v.url == url)
+            .count()
+    };
+    assert_eq!(jobs(), 1, "{WHAT}: first add");
+
+    ui.invoke_link_entered(url.as_str().into());
+    assert_eq!(ui.get_screen(), Screen::Add, "{WHAT}: not on Add");
+    let add = ui.get_add();
+    assert!(add.duplicate, "{WHAT}: not flagged: {add:?}");
+    assert_eq!(add.name.as_str(), "dup.bin", "{WHAT}: {add:?}");
+    // Confirming anyway adds nothing.
+    ui.invoke_add_confirmed();
+    assert_eq!(ui.get_screen(), Screen::Add, "{WHAT}: left Add");
+    assert_eq!(jobs(), 1, "{WHAT}: a second job was added");
+    only_button(ui, "Cancel", WHAT).invoke_accessible_default_action();
+    assert_ne!(ui.get_screen(), Screen::Add, "{WHAT}: Cancel");
+    ui.set_screen(Screen::Downloads);
+}
+
+/// The seconds in "... Trying again in 29 s." texts.
+fn retry_seconds_shown(ui: &AppWindow) -> Vec<u32> {
+    texts_containing(ui, "Trying again in")
+        .iter()
+        .filter_map(|t| {
+            let rest = t.rsplit("Trying again in ").next()?;
+            rest.strip_suffix(" s.")?.parse().ok()
+        })
+        .collect()
+}
+
+/// A download the server keeps refusing with 503 waits, and its row counts
+/// down to the next attempt.
+fn waiting_row_counts_down() {
+    const WHAT: &str = "waiting_row_counts_down";
+    let ui = AppWindow::new().unwrap();
+    // Fast segment retries, then a long wait before the next attempt, so
+    // the row stays Waiting while the clock moves.
+    let ctx = Ctx::start_with(&ui, runtime(), |config, _| {
+        config.timing = Timing {
+            waiting_retry_first: Duration::from_secs(30),
+            waiting_retry_cap: Duration::from_secs(30),
+            ..Timing::fast_for_tests()
+        };
+    });
+    let mut spec = FileSpec::new(1024 * 1024);
+    // The probe at add succeeds; every request after it gets 503.
+    spec.fail_first = [vec![0], vec![503; 1000]].concat();
+    let url = ctx.server.serve("busy.bin", spec);
+    let request = AddRequest {
+        url,
+        dest_dir: ctx.out(),
+        ..Default::default()
+    };
+    ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    ui.set_tab(0);
+    ui.set_screen(Screen::Downloads);
+    let mut first = 0;
+    wait_until(&format!("{WHAT}: \"Trying again in\" shown"), || {
+        let shown = retry_seconds_shown(&ui);
+        first = shown.first().copied().unwrap_or(0);
+        first > 1
+    });
+    wait_until(&format!("{WHAT}: counts down from {first} s"), || {
+        retry_seconds_shown(&ui).iter().any(|&s| s < first)
+    });
+    let row = ui.get_downloading_rows().row_data(0).unwrap();
+    assert_eq!(
+        (row.name.as_str(), row.state.as_str()),
+        ("busy.bin", "waiting"),
+        "{WHAT}: {row:?}"
+    );
+    ctx.shutdown(WHAT);
+}
+
+/// A torrent added through the Add screen keeps sharing once downloaded
+/// (no ratio limit), and its row says so.
+fn torrent_row_shows_sharing() {
+    const WHAT: &str = "torrent_row_shows_sharing";
+    let rt = runtime();
+    let data = taurus_testkit::content(&FileSpec::new(256 * 1024));
+    let seeder = rt.block_on(TorrentSeeder::start(
+        "share.bin",
+        &[("share.bin", data)],
+        None,
+    ));
+    let peer = seeder.addr;
+    let ui = AppWindow::new().unwrap();
+    let ctx = Ctx::start_with(&ui, rt, |config, settings| {
+        config.torrent_test = Some(TorrentTestNet {
+            initial_peers: vec![peer],
+            restore_in_place: false,
+        });
+        settings.torrent.stop_ratio = None;
+    });
+    ui.invoke_link_entered(seeder.magnet.as_str().into());
+    assert_eq!(ui.get_screen(), Screen::Add, "{WHAT}: not on Add");
+    // Torrent metadata comes from a real local peer: slow CI gets time.
+    wait_for(
+        Duration::from_secs(60),
+        &format!("{WHAT}: Add screen shows the torrent"),
+        || {
+            let add = ui.get_add();
+            !add.loading && add.is_torrent
+        },
+    );
+    let add = ui.get_add();
+    assert_eq!(add.error_kind.as_str(), "", "{WHAT}: {add:?}");
+    ui.invoke_add_confirmed();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Downloads,
+        "{WHAT}: not on Downloads"
+    );
+    wait_for(Duration::from_secs(60), &format!("{WHAT}: sharing"), || {
+        !texts_containing(&ui, "Sharing · ratio ").is_empty()
+    });
+    let row = ui.get_downloading_rows().row_data(0).unwrap();
+    assert_eq!(
+        (row.kind.as_str(), row.state.as_str()),
+        ("magnet", "seeding"),
+        "{WHAT}: {row:?}"
+    );
+    ctx.shutdown(WHAT);
+    drop(seeder);
+}
+
+/// With "when done: sleep", finishing the downloads shows the countdown;
+/// its Cancel hides it and the engine cancels the action.
+fn countdown_cancel() {
+    const WHAT: &str = "countdown_cancel";
+    let ui = AppWindow::new().unwrap();
+    // A long countdown, so it is still running when Cancel is pressed.
+    let ctx = Ctx::start_with(&ui, runtime(), |config, _| {
+        config.power = PowerMode::DryRun;
+        config.timing = Timing {
+            when_done_countdown: Duration::from_secs(60),
+            ..Timing::fast_for_tests()
+        };
+    });
+    let mut events = ctx.engine.subscribe();
+    ui.invoke_setting_changed("when-done".into(), "sleep".into());
+    assert_eq!(
+        ui.get_settings().when_done.as_str(),
+        "sleep",
+        "{WHAT}: echo"
+    );
+    wait_until(&format!("{WHAT}: sleep saved"), || {
+        ctx.engine.settings().when_done == WhenDone::Sleep
+    });
+    let url = ctx.server.serve("last.bin", FileSpec::new(64 * 1024));
+    add_link(&ui, &url, "last.bin", WHAT);
+    wait_until(&format!("{WHAT}: countdown shown"), || {
+        let countdown = ui.get_countdown();
+        countdown.visible && countdown.action == "sleep" && countdown.seconds > 0
+    });
+    assert_eq!(ui.get_finished_rows().row_count(), 1, "{WHAT}: last.bin");
+
+    only_button(&ui, "Cancel", WHAT).invoke_accessible_default_action();
+    assert!(!ui.get_countdown().visible, "{WHAT}: still shown");
+    let mut cancelled = false;
+    wait_until(&format!("{WHAT}: WhenDoneCancelled"), || {
+        loop {
+            match events.try_recv() {
+                Ok(Event::WhenDoneCancelled) => cancelled = true,
+                Ok(Event::WhenDoneFired { action, .. }) => {
+                    panic!("{WHAT}: {action:?} fired")
+                }
+                Ok(_) | Err(TryRecvError::Lagged(_)) => {}
+                Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+            }
+        }
+        cancelled
+    });
+    // Later flushes (countdown ticks sent before the cancel) end hidden.
+    settle(Duration::from_millis(500));
+    assert!(!ui.get_countdown().visible, "{WHAT}: shown again");
+    ctx.shutdown(WHAT);
 }

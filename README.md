@@ -99,3 +99,17 @@ Global options go before the command:
 - `--json` prints every event as one JSON line on stdout; `list --json` prints one JSON array and `config get --json` one JSON object.
 - `--data-dir <PATH>` sets where the job database lives. Without it, `TAURUS_DATA_DIR` is used, else the OS data directory.
 - `--dry-run-power` prints the sleep or shutdown command of `when_done` (`would run: ...`) instead of running it.
+
+## Desktop app (alpha)
+
+Hyades also has a desktop app with a simple window: paste a link, see what it is, download it. It handles web downloads and torrents (magnet and `.torrent` links) on Windows, macOS and Linux.
+
+```sh
+cargo run -p taurus-desktop
+```
+
+- **Data.** The app keeps its downloads list and settings in the same folder as the command-line client: `TAURUS_DATA_DIR` if set, else `~/.local/share/taurus` on Linux (`$XDG_DATA_HOME/taurus` when that is set), `~/Library/Application Support/dev.nikethai.taurus` on macOS and `%APPDATA%\nikethai\taurus\data` on Windows. Only one of them can use the folder at a time.
+- **Tray.** Closing the window hides it to the tray and downloads go on; choose Quit in the tray menu to stop. On Linux the tray needs a StatusNotifier host (KDE Plasma has one; GNOME needs the AppIndicator extension). Without a tray, closing the window quits.
+- **One window.** Launching the app again (for example `taurus-desktop <link>`) brings the open window forward and hands it the links.
+
+Known alpha limitations: dragging links or files in from other apps does not work yet (the UI toolkit does not support it), and the colours and icons are provisional.
