@@ -365,11 +365,14 @@ fn delete_files_of(dest: &Path, output: &Path, info: &TorrentInfo) -> Result<(),
     Ok(())
 }
 
-/// A torrent has no progress stored: a view from the store shows it fully
-/// downloaded once Seeding or Completed (else the durable `downloaded`).
+/// A torrent's view from the store shows it fully downloaded once it
+/// finished (it shares, or did); else the durable `downloaded`, which its
+/// runner saves as it goes.
 pub(super) fn stored_downloaded(job: &JobRecord, downloaded: u64) -> u64 {
-    match (job.kind, job.state, job.total) {
-        (JobKind::Torrent, JobState::Seeding | JobState::Completed, Some(total)) => total,
+    let finished = matches!(job.state, JobState::Seeding | JobState::Completed)
+        || job.seed_started_at.is_some();
+    match (job.kind, job.total) {
+        (JobKind::Torrent, Some(total)) if finished => total,
         _ => downloaded,
     }
 }

@@ -952,7 +952,7 @@ async fn runner_cancel_pauses() {
     );
     let id = rig.store.insert_job(&new).unwrap();
     // Uploaded in earlier runs.
-    rig.store.commit_torrent_progress(id, 1_000).unwrap();
+    rig.store.commit_torrent_progress(id, 0, 1_000).unwrap();
     let (ctx, mut rx, cancel) = context(&rig, id, policy(None, None), available_space);
     let runner = tokio::spawn(run(ctx));
 
@@ -1986,4 +1986,53 @@ async fn remove_with_files_deletes_empty_placeholders() {
 /// Every file under `dir` with its size, by its `/`-joined path inside it.
 fn sizes(dir: &Path) -> BTreeMap<String, usize> {
     tree(dir).into_iter().map(|(k, v)| (k, v.len())).collect()
+}
+
+// Progress across restarts.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paused_torrent_keeps_its_progress_across_restart() {
+    // About six seconds at 64 KiB/s.
+    let (seeder, a, b) = slow_seeder((300 * 1024, 60 * 1024)).await;
+    let total = (a.len() + b.len()) as u64;
+    let rs = Restarts::new(vec![seeder.addr]);
+    let engine = rs.open(true, policy(Some(0.0), None)).await;
+    let mut events = engine.subscribe();
+    let id = engine.add(rs.request(&seeder.magnet)).await.unwrap();
+    events_until(&mut events, |e| {
+        progress_of(e, id).is_some_and(|d| d >= 64 * 1024)
+    })
+    .await;
+    engine.pause(id).await.unwrap();
+    let paused = engine.snapshot().into_iter().find(|v| v.id == id).unwrap();
+    assert!(paused.downloaded < total, "finished before the pause");
+    engine.shutdown().await.unwrap();
+    drop(engine);
+
+    let engine = rs.open(false, policy(Some(0.0), None)).await;
+    let view = engine.snapshot().into_iter().find(|v| v.id == id).unwrap();
+    assert_eq!(view.state, JobState::Paused);
+    assert_eq!(view.total, Some(total));
+    assert_eq!(view.downloaded, paused.downloaded);
+    assert!(view.downloaded >= 64 * 1024);
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interrupted_seeding_torrent_shows_it_is_downloaded() {
+    let (seeder, a, b) = seeder().await;
+    let total = (a.len() + b.len()) as u64;
+    let rs = Restarts::new(vec![seeder.addr]);
+    let engine = rs.open(true, policy(None, None)).await;
+    let mut events = engine.subscribe();
+    let id = engine.add(rs.request(&seeder.magnet)).await.unwrap();
+    events_until(&mut events, |e| updated_to(e, id, JobState::Seeding)).await;
+    engine.shutdown().await.unwrap();
+    drop(engine);
+
+    let engine = rs.open(false, policy(None, None)).await;
+    let view = engine.snapshot().into_iter().find(|v| v.id == id).unwrap();
+    assert_eq!(view.state, JobState::Queued);
+    assert_eq!((view.downloaded, view.total), (total, Some(total)));
+    engine.shutdown().await.unwrap();
 }

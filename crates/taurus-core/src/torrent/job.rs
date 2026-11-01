@@ -29,13 +29,14 @@ use super::{TorrentFile, TorrentInfo};
 use crate::engine::{JobMsg, TorrentView};
 use crate::errors::{CoreError, ErrorKind};
 use crate::http::JobOutcome;
+use crate::plan::Segment;
 use crate::settings::TorrentSettings;
 use crate::store::{JobId, JobRecord, JobState, Store};
 use crate::system::{SpaceSource, check_fits, mark_downloaded};
 use crate::timing::Timing;
 
-/// How often the uploaded bytes are saved while the torrent runs; they are
-/// also saved whenever the run ends.
+/// How often the progress (downloaded and uploaded bytes) is saved while the
+/// torrent runs; it is also saved whenever the run ends.
 const COMMIT_EVERY: Duration = Duration::from_secs(5);
 
 /// Bytes other downloads to the disk holding a folder still have to write.
@@ -115,9 +116,13 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
     let stopped = handle.live().is_none();
     drop(handle);
 
+    let mut downloaded = stored_progress(ctx, job, total)?;
     let mut uploads = Uploads::new(job.uploaded);
     let end = match start(ctx, &info, stopped).await {
-        Ok(()) => watch(ctx, job, &info, &output, total, &mut uploads).await,
+        Ok(()) => {
+            let counts = (&mut downloaded, &mut uploads);
+            watch(ctx, job, &info, &output, total, counts).await
+        }
         Err(e) => Err(e),
     };
     // Whatever ended the run, sharing stops with it. A torrent that is done
@@ -136,7 +141,9 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
     if let Err(e) = stopped {
         tracing::warn!(job = job.id.0, "could not stop the torrent: {e}");
     }
-    let committed = ctx.store.commit_torrent_progress(job.id, uploads.total());
+    let committed = ctx
+        .store
+        .commit_torrent_progress(job.id, downloaded, uploads.total());
     let end = end?;
     committed?;
     match end {
@@ -147,6 +154,31 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
         }
         End::Cancelled => paused(ctx, job),
     }
+}
+
+/// The selected bytes downloaded, as stored. The job's progress is stored
+/// as one segment `[0, total)`, made here if it has none (or another): all
+/// done once the download finished, else nothing until the torrent says.
+fn stored_progress(ctx: &TorrentJobContext, job: &JobRecord, total: u64) -> Result<u64, CoreError> {
+    let segments = ctx.store.load_segments(job.id)?;
+    if let [segment] = segments.as_slice()
+        && segment.start == 0
+        && segment.end == total
+    {
+        return Ok(segment.done.min(total));
+    }
+    let done = if job.seed_started_at.is_some() {
+        total
+    } else {
+        0
+    };
+    let segment = Segment {
+        start: 0,
+        end: total,
+        done,
+    };
+    ctx.store.replace_segments(job.id, &[segment])?;
+    Ok(done)
 }
 
 /// Starts the torrent if it is not running; a cancel stops the wait.
@@ -254,7 +286,9 @@ fn preflight(
 }
 
 /// Polls the torrent every `torrent_poll`, reporting its progress and saving
-/// its uploads, until the seeding policy stops it or the run is cancelled.
+/// it (the selected bytes downloaded and the bytes uploaded, kept up to date
+/// in `counts` for the caller to save last), until the seeding policy stops
+/// it or the run is cancelled.
 /// Once every selected file is downloaded, they are marked as downloaded,
 /// the seeding start is recorded and, unless the policy already says stop,
 /// the job turns Seeding.
@@ -264,8 +298,9 @@ async fn watch(
     info: &TorrentInfo,
     output: &Path,
     total: u64,
-    uploads: &mut Uploads,
+    counts: (&mut u64, &mut Uploads),
 ) -> Result<End, CoreError> {
+    let (downloaded, uploads) = counts;
     let mut tick = tokio::time::interval(ctx.timing.torrent_poll);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut committed_at = Instant::now();
@@ -296,9 +331,13 @@ async fn watch(
             return Err(error(classify_torrent_error(&e), e));
         }
         let uploaded = uploads.observe(torrent, stats.uploaded_bytes);
+        if checked(&stats) {
+            *downloaded = stats.progress_bytes;
+        }
         report(ctx, job, info, &stats, uploaded, total);
         if committed_at.elapsed() >= COMMIT_EVERY {
-            ctx.store.commit_torrent_progress(job.id, uploaded)?;
+            ctx.store
+                .commit_torrent_progress(job.id, *downloaded, uploaded)?;
             committed_at = Instant::now();
         }
         if !stats.finished {
@@ -351,10 +390,7 @@ fn report(
     total: u64,
 ) {
     let live = stats.live.as_ref();
-    if matches!(
-        stats.state,
-        TorrentStatsState::Live | TorrentStatsState::Paused
-    ) {
+    if checked(stats) {
         let _ = ctx.msgs.send(JobMsg::Progress {
             id: job.id,
             downloaded: stats.progress_bytes,
@@ -375,6 +411,15 @@ fn report(
         files_total: count(info.files.len()),
     };
     let _ = ctx.msgs.send(JobMsg::TorrentStats { id: job.id, view });
+}
+
+/// Whether librqbit has checked the torrent's files: only then do its
+/// numbers cover the selected files (and only those).
+fn checked(stats: &TorrentStats) -> bool {
+    matches!(
+        stats.state,
+        TorrentStatsState::Live | TorrentStatsState::Paused
+    )
 }
 
 /// The files the job downloads.

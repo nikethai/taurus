@@ -318,18 +318,33 @@ impl Store {
             .map_err(db_err)
     }
 
-    /// Sets only the bytes the torrent has uploaded in all, so no other
-    /// field can be overwritten from a stale copy. Updating a job that no
-    /// longer exists is a no-op.
-    pub fn commit_torrent_progress(&self, id: JobId, uploaded: u64) -> Result<(), CoreError> {
+    /// Sets only a torrent's progress, in one transaction: the selected
+    /// bytes downloaded, as the `done` of its one segment (a torrent job has
+    /// one, `[0, selected total)`, once its runner has started; before, only
+    /// the uploads are set), and the bytes uploaded in all. So no other field
+    /// can be overwritten from a stale copy. Updating a job that no longer
+    /// exists is a no-op.
+    pub fn commit_torrent_progress(
+        &self,
+        id: JobId,
+        downloaded: u64,
+        uploaded: u64,
+    ) -> Result<(), CoreError> {
+        let downloaded = to_i64(downloaded, "downloaded bytes")?;
         let uploaded = to_i64(uploaded, "uploaded bytes")?;
-        self.lock()
-            .execute(
-                "UPDATE jobs SET uploaded = ?2, updated_at = ?3 WHERE id = ?1",
-                params![id.0, uploaded, now_secs()],
-            )
-            .map_err(db_err)?;
-        Ok(())
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(db_err)?;
+        tx.execute(
+            "UPDATE segments SET done = ?2 WHERE job_id = ?1 AND idx = 0",
+            params![id.0, downloaded],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "UPDATE jobs SET uploaded = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id.0, uploaded, now_secs()],
+        )
+        .map_err(db_err)?;
+        tx.commit().map_err(db_err)
     }
 
     /// Sets only the job's state, so no other field can be overwritten from
@@ -780,7 +795,7 @@ mod tests {
         assert_eq!(store.get_job(id).unwrap().unwrap(), job);
 
         // Uploaded bytes have their own writer, beyond i64 is refused.
-        store.commit_torrent_progress(id, 5_000_000_000).unwrap();
+        store.commit_torrent_progress(id, 0, 5_000_000_000).unwrap();
         let stored = store.get_job(id).unwrap().unwrap();
         assert_eq!(stored.uploaded, 5_000_000_000);
         assert_eq!(
@@ -790,13 +805,31 @@ mod tests {
             },
             job
         );
-        assert!(store.commit_torrent_progress(id, u64::MAX).is_err());
+        assert!(store.commit_torrent_progress(id, 0, u64::MAX).is_err());
         // A stale whole-record update leaves them alone.
         store.update_job(&job).unwrap();
         assert_eq!(store.get_job(id).unwrap().unwrap().uploaded, 5_000_000_000);
         // A job that is gone is not an error.
         store.delete_job(id).unwrap();
-        store.commit_torrent_progress(id, 1).unwrap();
+        store.commit_torrent_progress(id, 1, 1).unwrap();
+    }
+
+    #[test]
+    fn torrent_progress_is_its_one_segment() {
+        let (_dir, store) = open_temp();
+        let id = store.insert_job(&torrent_job("t", "abcd")).unwrap();
+        // No segment yet: only the uploads are stored.
+        store.commit_torrent_progress(id, 10, 3).unwrap();
+        assert!(store.load_segments(id).unwrap().is_empty());
+        store.replace_segments(id, &[seg(0, 100, 0)]).unwrap();
+        store.commit_torrent_progress(id, 40, 7).unwrap();
+        assert_eq!(store.load_segments(id).unwrap(), [seg(0, 100, 40)]);
+        assert_eq!(store.get_job(id).unwrap().unwrap().uploaded, 7);
+        // Both or neither.
+        assert!(store.commit_torrent_progress(id, u64::MAX, 9).is_err());
+        assert!(store.commit_torrent_progress(id, 50, u64::MAX).is_err());
+        assert_eq!(store.load_segments(id).unwrap(), [seg(0, 100, 40)]);
+        assert_eq!(store.get_job(id).unwrap().unwrap().uploaded, 7);
     }
 
     #[test]
