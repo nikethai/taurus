@@ -39,10 +39,12 @@ libc = "0.2"
 windows-sys = "0.61"
 dunce = "1"
 keepawake = "0.6"
+librqbit = { version = "9.1", default-features = false, features = ["rust-tls"] }
 
 # Tests only
 axum = "0.8"
 tempfile = "3"
+sha1 = "0.11"
 
 # IPv4 fallback for librqbit's UDP tracker socket; see third_party/librqbit-tracker-comms/PATCH.txt.
 [patch.crates-io]

@@ -1,5 +1,9 @@
 //! Test support for Taurus: a local HTTP server with scriptable behavior.
 
+mod torrent;
+
+pub use torrent::{TorrentLeecher, TorrentSeeder, make_torrent_bytes, test_session_options};
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
