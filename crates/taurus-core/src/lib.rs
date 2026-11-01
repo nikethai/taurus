@@ -12,6 +12,7 @@ pub mod settings;
 pub mod store;
 pub mod system;
 pub mod timing;
+pub mod torrent;
 mod when_done;
 
 pub use engine::{AddRequest, Engine, EngineConfig, Event, JobView, TorrentView, WhenDoneHold};

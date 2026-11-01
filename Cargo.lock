@@ -3724,6 +3724,7 @@ dependencies = [
  "hex",
  "keepawake",
  "libc",
+ "librqbit",
  "percent-encoding",
  "reqwest",
  "rusqlite",
