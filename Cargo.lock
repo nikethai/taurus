@@ -6913,6 +6913,7 @@ dependencies = [
  "taurus-testkit",
  "tempfile",
  "tokio",
+ "url",
 ]
 
 [[package]]

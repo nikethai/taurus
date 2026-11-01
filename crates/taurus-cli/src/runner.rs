@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::io::{IsTerminal, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -15,6 +16,7 @@ use tokio::time::Instant;
 
 use crate::Result;
 use crate::render;
+use crate::stop;
 
 /// How the runner prints.
 pub struct Options {
@@ -24,6 +26,8 @@ pub struct Options {
     pub dry_run: bool,
     /// The engine's timing, to tell when a Waiting job retries.
     pub timing: Timing,
+    /// Where `taurus stop` leaves its requests.
+    pub data_dir: PathBuf,
 }
 
 /// What the enqueue step did.
@@ -36,6 +40,7 @@ pub struct Enqueued {
 
 pub struct Runner<'a> {
     engine: &'a Engine,
+    data_dir: PathBuf,
     events: broadcast::Receiver<Event>,
     /// Every job's state, as the events tell it.
     states: HashMap<JobId, JobState>,
@@ -62,12 +67,15 @@ impl<'a> Runner<'a> {
             .filter(|v| is_busy(v.state))
             .map(|v| v.id)
             .collect();
+        let data_dir = options.data_dir.clone();
+        stop::clear_stale(&data_dir);
         let mut out = Output::new(options);
         for view in &views {
             out.seed(view);
         }
         Runner {
             engine,
+            data_dir,
             events,
             idle_due: !touched.is_empty(),
             states,
@@ -94,6 +102,7 @@ impl<'a> Runner<'a> {
         tokio::pin!(ctrl_c, enqueue);
         let mut listening = true;
         let mut tick = tokio::time::interval(Duration::from_secs(1));
+        let mut stops = tokio::time::interval(Duration::from_millis(250));
         let mut interrupted = false;
         // Events are printed while enqueueing, but only judged after.
         let enqueued = loop {
@@ -135,6 +144,7 @@ impl<'a> Runner<'a> {
                     Err(_) => listening = false,
                 },
                 _ = tick.tick(), if self.out.ticks() => self.out.redraw()?,
+                _ = stops.tick() => self.stop_requested(),
             }
         }
         if interrupted {
@@ -143,6 +153,19 @@ impl<'a> Runner<'a> {
         // The jobs that the shutdown stopped.
         self.drain()?;
         self.finish(interrupted, failed)
+    }
+
+    /// Stops the recordings that `taurus stop` in another process asked for.
+    /// Each stop waits for its job to end, so it runs on its own task.
+    fn stop_requested(&self) {
+        for id in stop::take_requests(&self.data_dir) {
+            let engine = self.engine.clone();
+            tokio::spawn(async move {
+                if let Err(e) = engine.stop_recording(id).await {
+                    eprintln!("error: download {}: {e}", id.0);
+                }
+            });
+        }
     }
 
     /// Adds an enqueued job to the run.

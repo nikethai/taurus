@@ -31,7 +31,7 @@ taurus run
 # Start download 4 now, even if max_active downloads are already running
 taurus start-now 4
 
-# Show every download: id, state, kind (http or torrent), percent, size, name
+# Show every download: id, state, kind (http, torrent or media), percent, size, name
 taurus list
 
 # Forget download 1 and delete its partial or finished file
@@ -76,6 +76,47 @@ The torrent settings are changed like the others: `taurus config set torrent.rat
 
 `--name`, `--mirror` (repeatable) and `--checksum` apply to a single web download, so they need exactly one URL; `--files` needs exactly one torrent; `--dir`, `--connections` and `--referer` apply to every URL of the `add`.
 
+### Video sites
+
+`add` also takes links to video and audio sites (YouTube, Vimeo, Twitch and many more, read by [yt-dlp](https://github.com/yt-dlp/yt-dlp)), a playlist, or a live stream. The first time, Hyades downloads the tools it needs (see below), which takes a minute. `list` shows these as kind `media`; a playlist row shows `2 of 5 videos`, and a live stream shows `live 2m` while it records. A playlist is saved in a folder of its own inside `--dir`.
+
+```sh
+# The best video and sound, as one MP4
+taurus add https://www.youtube.com/watch?v=VIDEO_ID
+
+# Sound only: best audio, or a small MP3 with --quality small
+taurus add https://www.youtube.com/watch?v=VIDEO_ID --audio
+taurus add https://www.youtube.com/watch?v=VIDEO_ID --audio --quality small
+
+# At most 720p (best, 1080p or 720p; a quality the video lacks falls back to best, with a note)
+taurus add https://vimeo.com/VIDEO_ID --quality 720p
+
+# Convert the result: mp3, or smaller-mp4
+taurus add https://www.youtube.com/watch?v=VIDEO_ID --convert smaller-mp4
+
+# A playlist of more than 50 videos needs --yes
+taurus add "https://www.youtube.com/playlist?list=PLAYLIST_ID" --yes
+
+# A live stream records until it ends; stop it from another terminal and keep what was recorded
+taurus add https://www.twitch.tv/CHANNEL
+taurus stop 5
+```
+
+`taurus stop <ID>` ends a recording that another `taurus` process is running (the one that `add` or `run` started), makes the file playable and waits for it. Ctrl-C in that process also stops a recording, but leaves it queued, not finished.
+
+#### The tools
+
+Video downloads use yt-dlp, ffmpeg and Deno. Hyades downloads them itself, checks each against its published SHA-256 and keeps them in `<data dir>/tools/<tool>/<version>/`; the file `<data dir>/tools/<tool>/current` names the version in use, and the previous version is kept for a rollback. They are not installed system-wide and the ones on your `PATH` are not used. yt-dlp is checked for a newer version once a day while videos download (sites change often), ffmpeg and Deno once a week.
+
+```sh
+taurus tools                    # version, state and path of each tool (--json: a JSON array)
+taurus tools install            # download what is missing, ahead of the first video
+taurus tools update --force     # look for newer versions now
+taurus tools rollback yt-dlp    # back to the previous version (also: ffmpeg, deno)
+```
+
+Licenses: yt-dlp is released under the Unlicense, the ffmpeg builds (from [yt-dlp/FFmpeg-Builds](https://github.com/yt-dlp/FFmpeg-Builds), and [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de) on macOS) are GPL builds, and Deno is MIT. They are separate programs that Hyades starts; none is linked into it.
+
 ### Settings
 
 `taurus config get` prints every setting as `key = value`; `taurus config get <KEY>` prints one. `taurus config set <KEY> <VALUE>` changes one:
@@ -102,7 +143,7 @@ Global options go before the command:
 
 ## Desktop app (alpha)
 
-Hyades also has a desktop app with a simple window: paste a link, see what it is, download it. It handles web downloads and torrents (magnet and `.torrent` links) on Windows, macOS and Linux.
+Hyades also has a desktop app with a simple window: paste a link, see what it is, download it. It handles web downloads, torrents (magnet and `.torrent` links), and videos, audio and live streams from video sites, on Windows, macOS and Linux.
 
 ```sh
 cargo run -p taurus-desktop

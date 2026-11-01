@@ -1,21 +1,27 @@
 mod config;
+mod file_list;
 mod render;
 mod runner;
+mod stop;
+mod tools;
+mod video;
 
+use clap::{CommandFactory, Parser, Subcommand};
 use std::error::Error;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::str::FromStr;
-
-use clap::{CommandFactory, Parser, Subcommand};
+use taurus_core::tools::ToolSources;
 use taurus_core::torrent::hub::TorrentTestNet;
 use taurus_core::torrent::source::{Source, classify};
 use taurus_core::{AddRequest, Engine, EngineConfig, JobId, JobView, PowerMode, Timing};
 use tokio::sync::broadcast::error::TryRecvError;
 
+use crate::file_list::FileList;
 use crate::runner::{Enqueued, Options, Runner};
+use crate::tools::ToolsAction;
+use crate::video::VideoFlags;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -70,6 +76,8 @@ enum Command {
         /// The files of a torrent to download, by index: 0,2,5-7 (one torrent only; see torrent-files) [default: all]
         #[arg(long, value_name = "LIST")]
         files: Option<FileList>,
+        #[command(flatten)]
+        video: VideoFlags,
     },
     /// Continue paused or failed downloads, then run the queue until it is idle; Ctrl-C stops (taurus run continues)
     Resume {
@@ -80,7 +88,7 @@ enum Command {
     Run,
     /// Start a queued or waiting download at once, even past max_active, then run the queue
     StartNow { id: i64 },
-    /// Show every download: id, state, kind (http or torrent), percent, size, name
+    /// Show every download: id, state, kind (http, torrent or media), percent, size, name
     List,
     /// Forget a download, stopping it if it runs
     Remove {
@@ -93,6 +101,13 @@ enum Command {
     TorrentFiles {
         #[arg(value_name = "MAGNET|FILE.torrent|URL")]
         input: String,
+    },
+    /// Stop a live recording and keep what was recorded (it must be running in another taurus process)
+    Stop { id: i64 },
+    /// Show or install the tools that video downloads use (yt-dlp, ffmpeg, Deno)
+    Tools {
+        #[command(subcommand)]
+        action: Option<ToolsAction>,
     },
     /// Show or change the settings
     Config {
@@ -113,45 +128,6 @@ enum ConfigAction {
     /// torrent.max_active <N> | torrent.peers <N>|default | torrent.port 1024-65535|random |
     /// torrent.upnp on|off | torrent.dht on|off
     Set { key: String, value: String },
-}
-
-/// Far beyond any real torrent's file count: keeps a huge range from
-/// filling memory.
-const MAX_FILE_INDEX: usize = 1_000_000;
-
-/// File indices as `--files` takes them: `0,2,5-7`, sorted and deduplicated.
-#[derive(Clone, Debug, PartialEq)]
-struct FileList(Vec<usize>);
-
-impl FromStr for FileList {
-    type Err = String;
-
-    fn from_str(text: &str) -> std::result::Result<FileList, String> {
-        let invalid = |token: &str| format!("invalid file list item '{token}': use e.g. 0,2,5-7");
-        let mut indices = Vec::new();
-        for token in text.split(',').map(str::trim) {
-            let number = |n: &str| {
-                n.trim()
-                    .parse::<usize>()
-                    .ok()
-                    .filter(|&n| n <= MAX_FILE_INDEX)
-                    .ok_or_else(|| invalid(token))
-            };
-            match token.split_once('-') {
-                Some((first, last)) => {
-                    let (first, last) = (number(first)?, number(last)?);
-                    if first > last {
-                        return Err(invalid(token));
-                    }
-                    indices.extend(first..=last);
-                }
-                None => indices.push(number(token)?),
-            }
-        }
-        indices.sort_unstable();
-        indices.dedup();
-        Ok(FileList(indices))
-    }
 }
 
 #[tokio::main]
@@ -179,6 +155,7 @@ fn parse() -> std::result::Result<Cli, ExitCode> {
         mirrors,
         checksum,
         files,
+        video,
         ..
     } = &mut cli.command
     {
@@ -210,6 +187,10 @@ fn parse() -> std::result::Result<Cli, ExitCode> {
                 clap::error::ErrorKind::ArgumentConflict,
                 "--files can only be used with exactly one torrent (magnet link, .torrent file or link)",
             );
+            return Err(usage_error(&e));
+        }
+        if let Some(message) = video.conflict() {
+            let e = Cli::command().error(clap::error::ErrorKind::ArgumentConflict, message);
             return Err(usage_error(&e));
         }
     }
@@ -255,6 +236,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         json: cli.json,
         dry_run: cli.dry_run_power,
         timing: config.timing.clone(),
+        data_dir: data_dir.clone(),
     };
     let engine = match Engine::open(config).await {
         Ok(engine) => engine,
@@ -265,6 +247,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 cli.json,
             )?;
             return Ok(ExitCode::SUCCESS);
+        }
+        // The recording to stop runs in that other process: ask it.
+        Err(e) if e.is_instance_locked() => {
+            if let Command::Stop { id } = cli.command {
+                return stop::request(data_dir, JobId(id), cli.json).await;
+            }
+            return Err(e.into());
         }
         Err(e) => return Err(e.into()),
     };
@@ -297,6 +286,14 @@ fn engine_config(data_dir: PathBuf, dry_run_power: bool, autostart: bool) -> Eng
             restore_in_place: false,
         });
     }
+    // Test-only switch: the tool manager downloads yt-dlp, ffmpeg and Deno
+    // from the fake host at this base URL. Not for users.
+    if let Some(base) = std::env::var_os("TAURUS_TOOL_SOURCES") {
+        match url::Url::parse(&base.to_string_lossy()) {
+            Ok(base) => config.tool_sources = ToolSources::under(&base),
+            Err(e) => eprintln!("warning: ignoring TAURUS_TOOL_SOURCES: {e}"),
+        }
+    }
     config
 }
 
@@ -313,6 +310,7 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
             checksum,
             referer,
             files,
+            video,
         } => {
             let only_files = files.map(|FileList(indices)| indices);
             let dest_dir = std::path::absolute(match dir {
@@ -337,10 +335,11 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
                         only_files: only_files.clone(),
                         ..AddRequest::default()
                     };
-                    match engine.add(req).await {
+                    let torrent = is_torrent(&url);
+                    match Box::pin(video::add(engine, req, &video, torrent)).await {
                         Ok(id) => enqueued.ids.push(id),
                         Err(e) => {
-                            eprintln!("error: {url}: {e}");
+                            eprintln!("error: {url}: {}", video::error_text(&e));
                             enqueued.failed = true;
                         }
                     }
@@ -426,6 +425,8 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::Stop { id } => stop::local(engine, JobId(id)),
+        Command::Tools { action } => tools::run(engine, action, json).await,
         Command::Config { action } => configure(engine, action, json).await,
     }
 }
@@ -495,40 +496,5 @@ fn default_dest_dir() -> Result<PathBuf> {
     match directories::UserDirs::new().and_then(|u| u.download_dir().map(PathBuf::from)) {
         Some(dir) => Ok(dir),
         None => Ok(std::env::current_dir()?),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn list(text: &str) -> std::result::Result<Vec<usize>, String> {
-        text.parse::<FileList>().map(|FileList(v)| v)
-    }
-
-    #[test]
-    fn file_list_grammar() {
-        assert_eq!(list("0,2,5-7"), Ok(vec![0, 2, 5, 6, 7]));
-        assert_eq!(list(" 3 , 1 - 2 "), Ok(vec![1, 2, 3]));
-        assert_eq!(list("4,4,3-4"), Ok(vec![3, 4]));
-        assert_eq!(list("5-5"), Ok(vec![5]));
-        assert_eq!(list("1000000"), Ok(vec![1_000_000]));
-        let huge = format!("0-{}", usize::MAX);
-        for bad in [
-            "",
-            "a",
-            "7-5",
-            "1,,2",
-            "-2",
-            "2-",
-            "1-2-3",
-            "1.5",
-            ",",
-            "1000001",
-            "0-1000001",
-            &huge,
-        ] {
-            assert!(list(bad).is_err(), "{bad:?}");
-        }
     }
 }
