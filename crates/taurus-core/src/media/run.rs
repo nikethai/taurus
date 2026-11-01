@@ -195,7 +195,7 @@ impl Tracker {
             let Ok(path) = serde_json::from_str::<String>(json) else {
                 return Change::default();
             };
-            let path = self.dest_dir.join(path);
+            let path = local_path(&self.dest_dir, &path);
             if !self.files.contains(&path) {
                 self.files.push(path);
             }
@@ -249,7 +249,7 @@ impl Tracker {
             .map(whole);
         let file = text("filename").map(str::to_owned);
         if let Some(part) = text("tmpfilename") {
-            let part = self.dest_dir.join(part);
+            let part = local_path(&self.dest_dir, part);
             if self.parts.last() != Some(&part) {
                 self.parts.retain(|p| *p != part);
                 self.parts.push(part);
@@ -312,6 +312,16 @@ impl Tracker {
             _ => (self.before_entry + entry_done, None, self.speed),
         }
     }
+}
+
+/// A path yt-dlp printed (absolute, or relative to its working folder,
+/// `dest_dir`) in one spelling: no `\\?\` prefix where a plain path does,
+/// and the platform's separator throughout (yt-dlp may mix `/` into a
+/// Windows path from the output template).
+pub(crate) fn local_path(dest_dir: &Path, printed: &str) -> PathBuf {
+    dunce::simplified(&dest_dir.join(printed))
+        .components()
+        .collect()
 }
 
 fn whole(n: f64) -> u64 {

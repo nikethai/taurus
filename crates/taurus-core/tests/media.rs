@@ -402,7 +402,8 @@ impl MediaRig {
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("dl");
         std::fs::create_dir_all(&dest).unwrap();
-        let dest = dest.canonicalize().unwrap();
+        // As the engine records it: no `\\?\` prefix on Windows.
+        let dest = dunce::canonicalize(&dest).unwrap();
         let mut config = EngineConfig::new(tmp.path().join("data"));
         config.tool_sources = sources(&host);
         config.timing = Timing::fast_for_tests();
@@ -514,6 +515,18 @@ fn process_gone(pid: u32) -> bool {
     gone(pid) && gone(-pid)
 }
 
+/// Whether the paths name the same files, whatever their spelling: a
+/// `\\?\` prefix or `/` for `\` on Windows (compared by components).
+fn assert_same_paths(got: &[PathBuf], want: &[PathBuf]) {
+    let plain = |paths: &[PathBuf]| -> Vec<PathBuf> {
+        paths
+            .iter()
+            .map(|p| dunce::simplified(p).components().collect())
+            .collect()
+    };
+    assert_eq!(plain(got), plain(want));
+}
+
 fn media(view: &JobView) -> &taurus_core::MediaView {
     view.media.as_ref().expect("a media view")
 }
@@ -548,7 +561,7 @@ async fn downloads_single_video() {
     assert_eq!((view.downloaded, view.total), (1000, Some(1000)));
     assert_eq!(view.error, None);
     let m = media(&view);
-    assert_eq!(m.files, [rig.dest.join(name)]);
+    assert_same_paths(&m.files, &[rig.dest.join(name)]);
     assert_eq!((m.entries_done, m.entries_total), (1, 1));
     assert!(rig.dest.join(name).is_file());
     // The phases it went through, in order.
@@ -664,7 +677,7 @@ async fn playlist_progress_counts_entries() {
     let view = rig.view(id);
     let m = media(&view);
     assert_eq!((m.entries_done, m.entries_total), (2, 2));
-    assert_eq!(m.files, [rig.dest.join(one), rig.dest.join(two)]);
+    assert_same_paths(&m.files, &[rig.dest.join(one), rig.dest.join(two)]);
     assert_eq!(view.file_name, "Two Songs");
     assert_eq!(view.total, Some(200));
     let argv = &download_calls(link)[0].argv;
@@ -813,7 +826,7 @@ async fn stop_recording_keeps_file() {
     assert_eq!(std::fs::metadata(&file).unwrap().len(), 4096);
     assert!(!part.exists(), "the part is gone");
     assert_eq!(view.file_name, "Live Now [live1].mp4");
-    assert_eq!(media(&view).files, [file]);
+    assert_same_paths(&media(&view).files, &[file]);
     #[cfg(unix)]
     assert!(rig.dest.join("interrupted").is_file(), "not interrupted");
     let calls = download_calls(link);
@@ -881,7 +894,7 @@ async fn the_engine_answers_while_a_recording_stops() {
     let rig = MediaRig {
         host,
         engine: Engine::open(config).await.unwrap(),
-        dest: dest.canonicalize().unwrap(),
+        dest: dunce::canonicalize(&dest).unwrap(),
         tmp,
     };
     let id = recording(&rig, "https://www.twitch.tv/answers_while_stopping").await;

@@ -224,6 +224,31 @@ fn a_live_stream_waits_until_its_first_progress() {
 }
 
 #[test]
+fn printed_paths_get_one_spelling() {
+    let dest = Path::new("/dl");
+    assert_eq!(
+        local_path(dest, "L/001 - a.mp4"),
+        PathBuf::from("/dl/L/001 - a.mp4")
+    );
+    assert_eq!(
+        local_path(dest, "/else/./b.mp4"),
+        PathBuf::from("/else/b.mp4")
+    );
+    #[cfg(windows)]
+    {
+        let dest = Path::new(r"\\?\C:\dl");
+        assert_eq!(
+            local_path(dest, "L/001 - a.mp4").as_os_str(),
+            r"C:\dl\L\001 - a.mp4"
+        );
+        assert_eq!(
+            local_path(Path::new(r"C:\dl"), r"C:/dl\x.mp4").as_os_str(),
+            r"C:\dl\x.mp4"
+        );
+    }
+}
+
+#[test]
 fn remuxed_names() {
     for (part, mp4) in [
         ("/d/live.mp4.part", "/d/live.mp4"),

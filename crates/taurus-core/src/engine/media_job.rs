@@ -286,6 +286,8 @@ fn complete(ctx: &MediaJob, tracker: &Tracker) -> Result<JobOutcome, CoreError> 
 /// The job's name for a finished `file`: the file's own name, or for a
 /// playlist the folder it is in, directly inside `dest_dir`.
 fn name_of(dest_dir: &Path, file: &Path, playlist: bool) -> Option<String> {
+    // Compared by components, without a `\\?\` prefix on either side.
+    let (dest_dir, file) = (dunce::simplified(dest_dir), dunce::simplified(file));
     if playlist
         && let Ok(inside) = file.strip_prefix(dest_dir)
         && inside.components().count() > 1
