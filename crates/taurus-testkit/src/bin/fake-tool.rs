@@ -203,6 +203,8 @@ struct Scenario {
     stderr: Vec<String>,
     exit: i32,
     write_files: Vec<(String, u64)>,
+    /// Written before the first line, whatever happens later.
+    start_files: Vec<(String, u64)>,
     delay_ms_per_line: u64,
     wait_for_interrupt: bool,
     on_interrupt: Option<Box<Scenario>>,
@@ -262,7 +264,8 @@ fn scenario(value: Json, top: bool) -> Result<Scenario, String> {
             "stderr" => s.stderr = strings(value, &key)?,
             "exit" => s.exit = number(&value, &key)? as i32,
             "write_files" => s.write_files = files(value)?,
-            "delay_ms_per_line" if top => s.delay_ms_per_line = number(&value, &key)? as u64,
+            "start_files" if top => s.start_files = files(value)?,
+            "delay_ms_per_line" => s.delay_ms_per_line = number(&value, &key)? as u64,
             "wait_for_interrupt" if top => s.wait_for_interrupt = matches!(value, Json::Bool(true)),
             "on_interrupt" if top => s.on_interrupt = Some(Box::new(scenario(value, false)?)),
             "if_arg" if top => {}
@@ -313,6 +316,12 @@ fn replay(s: &Scenario) -> i32 {
     if s.on_interrupt.is_some() {
         watch_interrupt();
     }
+    for (path, size) in &s.start_files {
+        if let Err(e) = write_file(path, *size) {
+            eprintln!("fake yt-dlp: cannot write {path}: {e}");
+            return 2;
+        }
+    }
     let delay = Duration::from_millis(s.delay_ms_per_line);
     let lines = s
         .stdout
@@ -333,11 +342,15 @@ fn replay(s: &Scenario) -> i32 {
     }
     match &s.on_interrupt {
         Some(on) if interrupted_now() => {
+            // Not interruptible: a slow way out.
+            let delay = Duration::from_millis(on.delay_ms_per_line);
             for line in &on.stdout {
                 emit(false, line);
+                thread::sleep(delay);
             }
             for line in &on.stderr {
                 emit(true, line);
+                thread::sleep(delay);
             }
             finish(on)
         }

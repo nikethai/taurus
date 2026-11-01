@@ -73,7 +73,8 @@ pub(super) async fn run_captured(
 /// Reads to the end, keeping the first `cap` bytes; a read error ends it.
 async fn read_capped(reader: &mut (impl AsyncRead + Unpin), cap: usize) -> Vec<u8> {
     let mut kept = Vec::new();
-    let mut buf = [0u8; 16 * 1024];
+    // On the heap: a future holding it inline would be 16 KiB larger.
+    let mut buf = vec![0u8; 16 * 1024];
     loop {
         match reader.read(&mut buf).await {
             Ok(0) | Err(_) => return kept,

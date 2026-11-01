@@ -12,7 +12,8 @@ use tokio_util::sync::CancellationToken;
 use crate::errors::{CoreError, ErrorKind};
 use crate::http::JobOutcome;
 use crate::media::run::{
-    Ended, MediaPhase, Stop, Tracker, download_args, recorded_part, remux_part, run_process,
+    Ended, MediaPhase, Stop, Tracker, download_args, recorded_part, remux_part, remuxed_name,
+    run_process,
 };
 use crate::media::{YtDlp, classify_stderr_with, failure_detail, standard_quality};
 use crate::plan::Segment;
@@ -133,8 +134,13 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
                 let (kind, broke) = classify_stderr_with(&ended.stderr, custom_quality);
                 if broke && !retried {
                     retried = true;
-                    if update_after_break(ctx, &ended).await {
-                        continue;
+                    tokio::select! {
+                        newer = update_after_break(ctx, &ended, yt_dlp.path()) => {
+                            if newer {
+                                continue;
+                            }
+                        }
+                        () = ctx.cancel.cancelled() => return Ok(JobOutcome::Paused),
                     }
                 }
                 return Err(CoreError {
@@ -176,8 +182,10 @@ async fn get_tools(ctx: &MediaJob) -> Result<PathBuf, CoreError> {
 }
 
 /// yt-dlp's extractor for the site broke: updates yt-dlp at once. True if
-/// a newer version is now installed (worth one more run).
-async fn update_after_break(ctx: &MediaJob, ended: &Ended) -> bool {
+/// the installed yt-dlp is now another than `used`, the one that failed
+/// (worth one more run), whoever installed it: when a site breaks, every
+/// job on it breaks, and only the first one's update finds something new.
+async fn update_after_break(ctx: &MediaJob, ended: &Ended, used: &Path) -> bool {
     let id = ctx.job.id;
     tracing::info!(
         job = id.0,
@@ -185,17 +193,20 @@ async fn update_after_break(ctx: &MediaJob, ended: &Ended) -> bool {
         failure_detail(&ended.stderr)
     );
     let emit = emitter(&ctx.events);
-    match ctx.tools.update(ToolKind::YtDlp, true, &emit).await {
-        Ok(true) => true,
-        Ok(false) => {
-            tracing::info!(job = id.0, "no newer yt-dlp is published");
-            false
-        }
-        Err(e) => {
-            tracing::info!(job = id.0, "could not update yt-dlp: {e}");
-            false
-        }
+    if let Err(e) = ctx.tools.update(ToolKind::YtDlp, true, &emit).await {
+        tracing::info!(job = id.0, "could not update yt-dlp: {e}");
     }
+    let installed = ctx
+        .tools
+        .status()
+        .into_iter()
+        .find(|s| s.kind == ToolKind::YtDlp)
+        .and_then(|s| s.path);
+    let other = installed.is_some_and(|path| path != used);
+    if !other {
+        tracing::info!(job = id.0, "no newer yt-dlp is published");
+    }
+    other
 }
 
 /// The recording was stopped: keeps what yt-dlp finished, else makes its
@@ -208,12 +219,19 @@ async fn finish_recording(
 ) -> Result<JobOutcome, CoreError> {
     tracker.files.retain(|f| f.is_file());
     if tracker.files.is_empty() {
-        let part =
-            recorded_part(&ctx.job.dest_dir, &tracker.parts, started).ok_or_else(|| CoreError {
-                kind: ErrorKind::Unknown,
-                detail: "the recording was stopped before anything was recorded".to_string(),
-            })?;
-        let file = remux_part(ffmpeg, &part).await?;
+        let part = recorded_part(&ctx.job.dest_dir, tracker, started).ok_or_else(|| CoreError {
+            kind: ErrorKind::Unknown,
+            detail: "the recording was stopped before anything was recorded".to_string(),
+        })?;
+        // A long recording takes a while: pausing, removing or shutting
+        // down stops ffmpeg (dropping it kills it) and keeps the part.
+        let file = tokio::select! {
+            file = remux_part(ffmpeg, &part) => file?,
+            () = ctx.cancel.cancelled() => {
+                let _ = std::fs::remove_file(remuxed_name(&part));
+                return Ok(JobOutcome::Paused);
+            }
+        };
         tracker.files.push(file);
     }
     tracker.finish();

@@ -36,6 +36,10 @@ const CURRENT_FILE: &str = "current";
 const SKIP_FILE: &str = "rolled-back-from";
 /// How long a binary may take to answer its version command.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
+/// After an update check that failed on the network (it is not recorded as
+/// a check), unforced updates wait this long before asking again, so a
+/// tool host that cannot be reached does not slow down every media job.
+const FAILED_CHECK_BACKOFF: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum ToolKind {
@@ -159,6 +163,9 @@ pub struct ToolManager {
     checked: Mutex<HashMap<ToolKind, i64>>,
     /// An install running, or the last one failed.
     states: Mutex<HashMap<ToolKind, ToolState>>,
+    /// When an unforced update may ask again after a check that failed on
+    /// the network (this run only).
+    check_backoff: Mutex<HashMap<ToolKind, std::time::Instant>>,
     /// One install, update or rollback per tool at a time.
     locks: [tokio::sync::Mutex<()>; 3],
     version_timeout: Duration,
@@ -173,6 +180,7 @@ impl ToolManager {
             store: None,
             checked: Mutex::default(),
             states: Mutex::default(),
+            check_backoff: Mutex::default(),
             locks: Default::default(),
             version_timeout: VERSION_TIMEOUT,
         }
@@ -244,8 +252,8 @@ impl ToolManager {
     /// active one; `Ok(true)` if it did. Unless `force`, the publisher is
     /// asked at most once per 24 h for yt-dlp and once per 7 days for
     /// ffmpeg and Deno (an install counts as a check; a check that failed
-    /// on the network does not); otherwise this returns `Ok(false)` without
-    /// a request. A tool that is not installed is left alone (`Ok(false)`;
+    /// on the network does not, but holds unforced checks off for an hour);
+    /// otherwise this returns `Ok(false)` without a request. A tool that is not installed is left alone (`Ok(false)`;
     /// see `ensure`). A failed update leaves the active version in place.
     /// After a `rollback`, the version rolled back from is not installed
     /// again, forced or not, until the publisher has another one.
@@ -259,7 +267,10 @@ impl ToolManager {
         let Some((version, _)) = self.installed(kind) else {
             return Ok(false);
         };
-        if !force && !check_due(kind, self.checked_at(kind), unix_now()) {
+        let backing_off = lock(&self.check_backoff)
+            .get(&kind)
+            .is_some_and(|until| std::time::Instant::now() < *until);
+        if !force && (backing_off || !check_due(kind, self.checked_at(kind), unix_now())) {
             return Ok(false);
         }
         let changed = self
@@ -305,10 +316,21 @@ impl ToolManager {
         current: Option<&str>,
         progress: Progress<'_>,
     ) -> Result<Option<PathBuf>, CoreError> {
-        let result = self.try_install(kind, current, progress).await;
+        // Boxed: an install's future is large, and every caller of
+        // `ensure` and `update` (up to a front end's main thread, whose
+        // stack is 1 MiB on Windows) would otherwise hold it inline.
+        let result = Box::pin(self.try_install(kind, current, progress)).await;
         match &result {
-            Err(e) if e.kind.is_transient() => {}
-            _ => self.record_check(kind),
+            Err(e) if e.kind.is_transient() => {
+                if current.is_some() {
+                    let until = std::time::Instant::now() + FAILED_CHECK_BACKOFF;
+                    lock(&self.check_backoff).insert(kind, until);
+                }
+            }
+            _ => {
+                lock(&self.check_backoff).remove(&kind);
+                self.record_check(kind);
+            }
         }
         match &result {
             Ok(None) => {}

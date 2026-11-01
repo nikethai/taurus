@@ -178,6 +178,11 @@ impl YtDlp {
         Ok(YtDlp { path, global })
     }
 
+    /// The yt-dlp binary this runs.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// `yt-dlp <global flags>`, with stdin closed. The caller adds the
     /// arguments and the other stdio, and starts it with
     /// `tools::tree::TreeChild::spawn`, so that stopping it stops

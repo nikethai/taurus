@@ -647,10 +647,10 @@ async fn playlist_progress_counts_entries() {
     let (one, two) = ("Two Songs/001 - One [a].mp4", "Two Songs/002 - Two [b].mp4");
     let download = json!({
         "stdout": [
-            format!("TAURUS-ENTRY 1 2 {}", json!("One")),
+            format!("TAURUS-ENTRY 1 2 {} {}", json!("a"), json!("One")),
             progress(100, 100),
             file_line(one),
-            format!("TAURUS-ENTRY 2 2 {}", json!("Two")),
+            format!("TAURUS-ENTRY 2 2 {} {}", json!("b"), json!("Two")),
             progress(50, 100),
             file_line(two),
         ],
@@ -702,8 +702,9 @@ async fn large_playlist_needs_confirmation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pause_interrupts_and_resume_continues() {
-    // A slow download; interrupted, it leaves its partial file and exits 1,
-    // as yt-dlp does on Ctrl+C.
+    // A slow download that writes its partial file as it starts. Ctrl+C
+    // (Unix) ends it with exit 1, as yt-dlp does; on Windows the Ctrl+Break
+    // does not reach it and it is killed: either way the part stays.
     let download = json!({
         "stdout": [
             progress(100, 1000),
@@ -713,8 +714,9 @@ async fn pause_interrupts_and_resume_continues() {
             file_line("x.mp4"),
         ],
         "delay_ms_per_line": 400,
+        "start_files": [["x.mp4.part", 7]],
         "write_files": [["x.mp4", 1000]],
-        "on_interrupt": { "write_files": [["x.mp4.part", 7]], "exit": 1 },
+        "on_interrupt": { "write_files": [["interrupted", 1]], "exit": 1 },
     });
     let rig = MediaRig::new(&video_info(), download).await;
     let link = "https://www.youtube.com/watch?v=pause_and_resume";
@@ -737,6 +739,9 @@ async fn pause_interrupts_and_resume_continues() {
     // yt-dlp's partial file is left for the next run to continue.
     let part = rig.dest.join("x.mp4.part");
     assert_eq!(std::fs::metadata(&part).unwrap().len(), 7);
+    // The graceful stop reached yt-dlp (it only can on Unix).
+    #[cfg(unix)]
+    assert!(rig.dest.join("interrupted").is_file(), "not interrupted");
 
     rig.engine.resume(id).await.unwrap();
     assert_eq!(rig.wait(id).await, JobState::Completed);
@@ -749,23 +754,38 @@ async fn pause_interrupts_and_resume_continues() {
     assert!(part.is_file());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn stop_recording_keeps_file() {
-    // A live stream that records until stopped; stopped, it leaves only its
-    // partial file and never prints the finished one.
-    let live = json!({
+/// A live stream that records until stopped: it writes its partial file
+/// as it starts and never prints a finished one. Stopped, Ctrl+C (Unix)
+/// ends it with exit 1 (after `slow_exit_ms` per line of a slow way out);
+/// on Windows the Ctrl+Break does not reach it and it is killed.
+fn live_recording(report_part: bool, slow_exit_ms: u64) -> Value {
+    let part = "Live Now [live1].mp4.part";
+    let mut live = json!({
         "status": "downloading",
         "downloaded_bytes": 4096,
         "fragment_index": 3,
         "speed": 2000.0,
     });
-    let download = json!({
-        "stdout": [format!("TAURUS-PROGRESS {live}")],
+    if report_part {
+        live["tmpfilename"] = json!(part);
+    }
+    json!({
+        "stdout": [
+            format!("TAURUS-ENTRY 0 1 {} {}", json!("live1"), json!("Live Now")),
+            format!("TAURUS-PROGRESS {live}"),
+        ],
+        "start_files": [[part, 4096]],
         "wait_for_interrupt": true,
-        "on_interrupt": { "write_files": [["live.mp4.part", 4096]], "exit": 1 },
-    });
-    let rig = MediaRig::new(&fixture("live.json"), download).await;
-    let link = "https://www.twitch.tv/stop_recording_keeps_file";
+        "on_interrupt": {
+            "stdout": ["bye", "bye"],
+            "delay_ms_per_line": slow_exit_ms,
+            "write_files": [["interrupted", 1]],
+            "exit": 1,
+        },
+    })
+}
+
+async fn recording(rig: &MediaRig, link: &str) -> JobId {
     let id = rig.engine.add(rig.request(link)).await.unwrap();
     let view = rig
         .until(id, "recording", |v| {
@@ -773,6 +793,14 @@ async fn stop_recording_keeps_file() {
         })
         .await;
     assert_eq!(media(&view).phase, MediaPhase::Downloading);
+    id
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stop_recording_keeps_file() {
+    let rig = MediaRig::new(&fixture("live.json"), live_recording(true, 0)).await;
+    let link = "https://www.twitch.tv/stop_recording_keeps_file";
+    let id = recording(&rig, link).await;
 
     tokio::time::timeout(Duration::from_secs(30), rig.engine.stop_recording(id))
         .await
@@ -780,11 +808,14 @@ async fn stop_recording_keeps_file() {
         .unwrap();
     let view = rig.view(id);
     assert_eq!(view.state, JobState::Completed, "{view:?}");
-    let file = rig.dest.join("live.mp4");
+    let file = rig.dest.join("Live Now [live1].mp4");
+    let part = rig.dest.join("Live Now [live1].mp4.part");
     assert_eq!(std::fs::metadata(&file).unwrap().len(), 4096);
-    assert!(!rig.dest.join("live.mp4.part").exists(), "the part is gone");
-    assert_eq!(view.file_name, "live.mp4");
+    assert!(!part.exists(), "the part is gone");
+    assert_eq!(view.file_name, "Live Now [live1].mp4");
     assert_eq!(media(&view).files, [file]);
+    #[cfg(unix)]
+    assert!(rig.dest.join("interrupted").is_file(), "not interrupted");
     let calls = download_calls(link);
     assert_eq!(calls.len(), 1);
     let argv = &calls[0].argv;
@@ -795,11 +826,90 @@ async fn stop_recording_keeps_file() {
     #[cfg(unix)]
     assert!(process_gone(calls[0].pid));
     // The installed ffmpeg made the playable file.
-    let part = rig.dest.join("live.mp4.part");
     let remux = process_args_log().into_iter().any(|e| {
         e.tool == "ffmpeg" && has_run(&e.argv, &["-y", "-i", part.to_str().unwrap(), "-c", "copy"])
     });
     assert!(remux, "ffmpeg -y -i <part> -c copy <final>.mp4 was run");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stopped_recording_never_takes_another_jobs_file() {
+    // No partial file reported: the folder is searched, by the video's id.
+    let rig = MediaRig::new(&fixture("live.json"), live_recording(false, 0)).await;
+    let link = "https://www.twitch.tv/never_takes_another_jobs_file";
+    let id = recording(&rig, link).await;
+    // Another job's recording in the same folder, newer than this one's.
+    let decoy = rig.dest.join("Other Stream [zzz].mp4.part");
+    std::fs::write(&decoy, b"someone else's").unwrap();
+    let decoy_ts = rig.dest.join("Old Stream.ts");
+    std::fs::write(&decoy_ts, b"an old one").unwrap();
+
+    tokio::time::timeout(Duration::from_secs(30), rig.engine.stop_recording(id))
+        .await
+        .unwrap()
+        .unwrap();
+    let view = rig.view(id);
+    assert_eq!(view.state, JobState::Completed, "{view:?}");
+    assert_eq!(view.file_name, "Live Now [live1].mp4");
+    assert_eq!(std::fs::read(&decoy).unwrap(), b"someone else's");
+    assert_eq!(std::fs::read(&decoy_ts).unwrap(), b"an old one");
+    assert!(!rig.dest.join("Other Stream [zzz].mp4").exists());
+    assert!(!rig.dest.join("Old Stream.mp4").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_engine_answers_while_a_recording_stops() {
+    // yt-dlp takes about 1.5 s to stop (a 3 s grace lets it).
+    let version = unique_version();
+    let scenario = media_scenario(&fixture("live.json"), live_recording(true, 750));
+    set_ytdlp_scenario(&version, &scenario.to_string());
+    let host = FakeToolHost::start(
+        ToolRelease::new(&version),
+        ToolRelease::new("7.1"),
+        ToolRelease::new("2.5.0"),
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("dl");
+    std::fs::create_dir_all(&dest).unwrap();
+    let mut config = EngineConfig::new(tmp.path().join("data"));
+    config.tool_sources = sources(&host);
+    config.timing = Timing {
+        media_stop_grace: Duration::from_secs(3),
+        ..Timing::fast_for_tests()
+    };
+    let rig = MediaRig {
+        host,
+        engine: Engine::open(config).await.unwrap(),
+        dest: dest.canonicalize().unwrap(),
+        tmp,
+    };
+    let id = recording(&rig, "https://www.twitch.tv/answers_while_stopping").await;
+
+    let engine = rig.engine.clone();
+    let stopping = tokio::spawn(async move { engine.stop_recording(id).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Only on Unix does the interrupt reach yt-dlp and make its slow way
+    // out run; on Windows it may be killed at once.
+    #[cfg(unix)]
+    assert!(!stopping.is_finished(), "the stop took no time at all");
+    let started = std::time::Instant::now();
+    let mut settings = rig.engine.settings();
+    settings.max_active = 2;
+    rig.engine.set_settings(settings).await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(700),
+        "a command waited for the stop: {:?}",
+        started.elapsed()
+    );
+    #[cfg(unix)]
+    assert!(!stopping.is_finished(), "answered before the stop ended");
+    tokio::time::timeout(Duration::from_secs(30), stopping)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(rig.view(id).state, JobState::Completed);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -831,6 +941,48 @@ async fn extractor_break_updates_and_retries() {
     assert_eq!(download_calls(link).len(), 2, "exactly one automatic retry");
     assert_eq!(yt_dlp_version(&rig.engine), newer);
     assert_ne!(old, newer);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn jobs_breaking_together_each_retry_once() {
+    // Both runs are still going when the first one's update lands, so the
+    // second one's own forced update finds nothing newer to install.
+    let broken = json!({
+        "stdout": [progress(1, 10)],
+        "delay_ms_per_line": 1500,
+        "stderr": ["ERROR: [youtube] x: Signature extraction failed: Some exception"],
+        "exit": 1,
+    });
+    let rig = MediaRig::new(&video_info(), broken).await;
+    rig.engine.install_tools().await.unwrap();
+    let newer = unique_version();
+    // Each job writes a file of its own name: the link's last letter.
+    let fixed = json!([
+        { "if_arg": "-J", "stdout": [video_info().to_string()] },
+        { "if_arg": "https://www.youtube.com/watch?v=together_a",
+          "stdout": [file_line("a.mp4")], "write_files": [["a.mp4", 5]] },
+        { "if_arg": "https://www.youtube.com/watch?v=together_b",
+          "stdout": [file_line("b.mp4")], "write_files": [["b.mp4", 5]] },
+    ]);
+    set_ytdlp_scenario(&newer, &fixed.to_string());
+    rig.host.set_release("yt-dlp", ToolRelease::new(&newer));
+
+    let (a, b) = (
+        "https://www.youtube.com/watch?v=together_a",
+        "https://www.youtube.com/watch?v=together_b",
+    );
+    let first = rig.engine.add(rig.request(a)).await.unwrap();
+    let second = rig.engine.add(rig.request(b)).await.unwrap();
+    for (id, link) in [(first, a), (second, b)] {
+        assert_eq!(
+            rig.wait(id).await,
+            JobState::Completed,
+            "{:?}",
+            rig.view(id)
+        );
+        assert_eq!(download_calls(link).len(), 2, "{link}: exactly one retry");
+    }
+    assert_eq!(yt_dlp_version(&rig.engine), newer);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -982,4 +1134,37 @@ async fn the_daily_yt_dlp_check_runs_with_a_media_job() {
     assert_eq!(rig.wait(id).await, JobState::Completed);
     assert_eq!(checks(), before + 1);
     assert_eq!(yt_dlp_version(&rig.engine), newer);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn engine_futures_stay_small() {
+    // Front ends await these on their main thread, whose stack is 1 MiB on
+    // Windows; debug builds copy a future a few times on the way.
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(EngineConfig::new(tmp.path())).await.unwrap();
+    let id = JobId(1);
+    let limit = 16 * 1024;
+    let sizes = [
+        (
+            "add",
+            std::mem::size_of_val(&engine.add(AddRequest::default())),
+        ),
+        ("inspect", std::mem::size_of_val(&engine.inspect("x"))),
+        ("resume", std::mem::size_of_val(&engine.resume(id))),
+        (
+            "stop_recording",
+            std::mem::size_of_val(&engine.stop_recording(id)),
+        ),
+        (
+            "install_tools",
+            std::mem::size_of_val(&engine.install_tools()),
+        ),
+        (
+            "update_tools",
+            std::mem::size_of_val(&engine.update_tools(false)),
+        ),
+    ];
+    for (name, size) in sizes {
+        assert!(size < limit, "Engine::{name} is a {size}-byte future");
+    }
 }

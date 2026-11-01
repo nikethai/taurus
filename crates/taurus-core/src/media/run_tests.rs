@@ -45,7 +45,7 @@ fn video_args_in_order() {
         "--print",
         "after_move:TAURUS-FILE %(filepath)j",
         "--print",
-        "before_dl:TAURUS-ENTRY %(playlist_index|0)s %(n_entries|1)s %(title)j",
+        "before_dl:TAURUS-ENTRY %(playlist_index|0)s %(n_entries|1)s %(id)j %(title)j",
         "--",
         "https://v",
     ];
@@ -184,7 +184,8 @@ fn tracker_follows_a_video_and_its_audio() {
 #[test]
 fn tracker_counts_playlist_entries() {
     let mut t = Tracker::new(Path::new("/dl"), MediaPhase::Downloading);
-    assert!(t.apply(&format!("{ENTRY}1 4 \"One\"")).view);
+    assert!(t.apply(&format!("{ENTRY}1 4 \"id 1\" \"One\"")).view);
+    assert_eq!(t.video_id.as_deref(), Some("id 1"));
     assert_eq!((t.entries_done, t.entries_total), (0, 4));
     let c = t.apply(&progress(serde_json::json!({
         "status": "downloading", "downloaded_bytes": 50, "total_bytes": 100
@@ -195,7 +196,8 @@ fn tracker_counts_playlist_entries() {
         "status": "finished", "downloaded_bytes": 100, "total_bytes": 100
     })));
     t.apply(&format!("{FILE}\"L/001 - One.mp4\""));
-    t.apply(&format!("{ENTRY}2 4 \"Two\""));
+    t.apply(&format!("{ENTRY}2 4 \"b2\" \"Two\""));
+    assert_eq!(t.video_id.as_deref(), Some("b2"));
     assert_eq!(t.entries_done, 1);
     let c = t.apply(&progress(serde_json::json!({
         "status": "downloading", "downloaded_bytes": 30
@@ -238,23 +240,33 @@ fn the_recorded_part_is_found() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let before = SystemTime::now() - Duration::from_secs(60);
-    std::fs::write(dir.join("other.txt"), b"x").unwrap();
-    assert_eq!(recorded_part(dir, &[], before), None);
-    std::fs::write(dir.join("rec.mp4.part"), b"x").unwrap();
+    let mut t = Tracker::new(dir, MediaPhase::WaitingForStream);
+    t.apply(&format!("{ENTRY}0 1 \"abc\" \"Live\""));
+    std::fs::write(dir.join("Live [abc].mp4.part"), b"x").unwrap();
+    // Nothing recorded yet (no progress): nothing is taken.
+    assert_eq!(recorded_part(dir, &t, before), None);
+    t.apply(&progress(
+        serde_json::json!({"status": "downloading", "downloaded_bytes": 9}),
+    ));
+    // Another job's partial files in the same folder are never taken.
+    std::fs::write(dir.join("Other [zzz].mp4.part"), b"x").unwrap();
+    std::fs::write(dir.join("other.ts"), b"x").unwrap();
+    std::fs::write(dir.join("notes [abc].txt"), b"x").unwrap();
     assert_eq!(
-        recorded_part(dir, &[], before),
-        Some(dir.join("rec.mp4.part"))
+        recorded_part(dir, &t, before),
+        Some(dir.join("Live [abc].mp4.part"))
     );
-    // One the run reported wins; a reported one that is gone does not.
-    std::fs::write(dir.join("named.ts"), b"x").unwrap();
-    let reported = [dir.join("named.ts"), dir.join("gone.part")];
-    assert_eq!(
-        recorded_part(dir, &reported, before),
-        Some(dir.join("named.ts"))
-    );
+    // Without the video's id, the folder is not searched at all.
+    let mut unknown = t.clone();
+    unknown.video_id = None;
+    assert_eq!(recorded_part(dir, &unknown, before), None);
     // Parts older than the run are another run's.
     let later = SystemTime::now() + Duration::from_secs(60);
-    assert_eq!(recorded_part(dir, &[], later), None);
+    assert_eq!(recorded_part(dir, &t, later), None);
+    // One the run reported wins; a reported one that is gone does not.
+    std::fs::write(dir.join("named.ts"), b"x").unwrap();
+    t.parts = vec![dir.join("named.ts"), dir.join("gone.part")];
+    assert_eq!(recorded_part(dir, &t, later), Some(dir.join("named.ts")));
 }
 
 #[cfg(unix)]
@@ -334,6 +346,32 @@ mod process {
         assert_eq!(ended.status.and_then(|s| s.code()), Some(3));
         assert_eq!(ended.stopped, None);
         assert_eq!(ended.stderr.trim(), "ERROR: bad");
+    }
+
+    #[tokio::test]
+    async fn bad_output_lines_do_not_stop_the_reading() {
+        // Bytes that are not UTF-8, then a line far longer than kept, then
+        // more than a pipe holds after them: all of it is read.
+        let script = "printf 'a\\377\\376b\\n'; head -c 300000 /dev/zero | tr '\\0' x; echo; \
+                      i=0; while [ $i -lt 2000 ]; do echo \"line $i ................................\"; \
+                      i=$((i+1)); done; printf 'last'";
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", script])
+            .stdin(std::process::Stdio::null());
+        let never = CancellationToken::new();
+        let mut lines = Vec::new();
+        let ended = run_process(command, &never, &never, Duration::from_secs(1), |l| {
+            lines.push(l.to_owned());
+        })
+        .await
+        .unwrap();
+        assert!(ended.success());
+        assert_eq!(lines[0], "a\u{fffd}\u{fffd}b");
+        assert_eq!(lines[1].len(), MAX_LINE);
+        assert_eq!(lines[2], format!("line 0 {}", ".".repeat(32)));
+        assert_eq!(lines.len(), 2 + 2000 + 1);
+        assert_eq!(lines.last().unwrap(), "last");
     }
 
     #[tokio::test]

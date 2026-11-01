@@ -318,9 +318,11 @@ impl Engine {
             kind: ErrorKind::FolderUnavailable,
             detail: format!("folder {} is not available: {e}", req.dest_dir.display()),
         })?;
+        // Each kind of add is boxed, so this future stays small for callers
+        // on a small stack (a front end's main thread: 1 MiB on Windows).
         match classify(&req.url) {
             Ok(Source::Http(_)) => {}
-            Ok(source) => return self.add_torrent(req, source).await,
+            Ok(source) => return Box::pin(self.add_torrent(req, source)).await,
             // A bad magnet link; anything else is for `resolve` to report.
             Err(e) if e.kind == ErrorKind::SiteNotSupported => return Err(e),
             Err(_) => {}
@@ -343,13 +345,14 @@ impl Engine {
         }
         let referer = req.referer.clone();
         if fast_path_host(&req.url) {
-            return self.add_media(req).await;
+            return Box::pin(self.add_media(req)).await;
         }
-        let probe = match resolve(&self.client, &fixed_url(&req.url), referer.as_deref()).await {
+        let url = fixed_url(&req.url);
+        let probe = match Box::pin(resolve(&self.client, &url, referer.as_deref())).await {
             Ok(probe) => probe,
             // A web page; yt-dlp may read it, when asked for.
             Err(page) if page.kind == ErrorKind::SiteNotSupported && req.media.is_some() => {
-                return self.add_media(req).await;
+                return Box::pin(self.add_media(req)).await;
             }
             Err(e) => return Err(e),
         };
@@ -363,7 +366,13 @@ impl Engine {
                 None,
             )?;
         }
-        req.mirrors = vet_mirrors(&self.client, &probe, &req.mirrors, referer.as_deref()).await;
+        req.mirrors = Box::pin(vet_mirrors(
+            &self.client,
+            &probe,
+            &req.mirrors,
+            referer.as_deref(),
+        ))
+        .await;
         self.call(|reply| Command::Add { req, probe, reply })
             .await?
     }

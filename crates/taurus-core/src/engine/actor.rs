@@ -42,9 +42,10 @@ pub(super) enum Command {
         add: MediaAdd,
         reply: Reply<JobId>,
     },
+    /// Answers whether the job runs and was asked to stop.
     StopRecording {
         id: JobId,
-        reply: Reply<()>,
+        reply: Reply<bool>,
     },
     Pause {
         id: JobId,
@@ -282,7 +283,7 @@ impl Actor {
                 let _ = reply.send(self.add_media(req, add));
             }
             Command::StopRecording { id, reply } => {
-                let _ = reply.send(self.stop_recording(id).await);
+                let _ = reply.send(self.stop_recording(id));
             }
             Command::Pause { id, reply } => {
                 let _ = reply.send(self.pause(id).await);

@@ -431,6 +431,27 @@ async fn offline_install_is_transient() {
 }
 
 #[tokio::test]
+async fn a_failed_check_holds_unforced_checks_off() {
+    let f = Fixture::new().await;
+    f.ensure(ToolKind::YtDlp).await;
+    // Due again (as if the install were days ago), but the host is gone.
+    *lock(&f.manager.checked).get_mut(&ToolKind::YtDlp).unwrap() -= 2 * DAY_SECS;
+    f.host.go_offline();
+    let err = f.update(ToolKind::YtDlp, false).await.unwrap_err();
+    assert!(err.kind.is_transient());
+    // Back online: no request for an hour, unless forced.
+    f.host.go_online();
+    f.host.set_release("yt-dlp", ToolRelease::new(YT2));
+    let before = f.host.requests("");
+    assert!(!f.update(ToolKind::YtDlp, false).await.unwrap());
+    assert_eq!(f.host.requests(""), before);
+    assert!(f.update(ToolKind::YtDlp, true).await.unwrap());
+    assert_eq!(f.current(ToolKind::YtDlp), YT2);
+    // A check that worked lifts the hold.
+    assert!(lock(&f.manager.check_backoff).is_empty());
+}
+
+#[tokio::test]
 async fn a_withdrawn_build_keeps_the_installed_one() {
     let f = Fixture::new().await;
     f.ensure(ToolKind::YtDlp).await;

@@ -10,7 +10,7 @@ use std::process::ExitStatus;
 use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -31,6 +31,8 @@ const POSTPROCESS: &str = "TAURUS-PP ";
 const FILE: &str = "TAURUS-FILE ";
 const ENTRY: &str = "TAURUS-ENTRY ";
 
+/// The most of one stdout line kept; the rest of a longer line is dropped.
+const MAX_LINE: usize = 64 * 1024;
 /// The most of stderr kept: its end, where the errors are.
 const MAX_STDERR: usize = 256 * 1024;
 /// How long the output is still read after yt-dlp exits (something it
@@ -96,7 +98,7 @@ pub(crate) fn download_args(options: &MediaOptions, dest_dir: &Path, url: &str) 
         ("--print", "after_move:TAURUS-FILE %(filepath)j"),
         (
             "--print",
-            "before_dl:TAURUS-ENTRY %(playlist_index|0)s %(n_entries|1)s %(title)j",
+            "before_dl:TAURUS-ENTRY %(playlist_index|0)s %(n_entries|1)s %(id)j %(title)j",
         ),
     ] {
         args.push(flag.into());
@@ -121,6 +123,9 @@ pub(crate) struct Tracker {
     pub parts: Vec<PathBuf>,
     /// Whether any progress line came (a live stream has begun).
     pub progressed: bool,
+    /// The id of the video downloading now (yt-dlp's `%(id)s`, which the
+    /// output names carry as `[<id>]`).
+    pub video_id: Option<String>,
     /// Bytes of the entries before the current one.
     before_entry: u64,
     /// Bytes of the current entry's finished streams (video, then audio).
@@ -151,6 +156,7 @@ impl Tracker {
             files: Vec::new(),
             parts: Vec::new(),
             progressed: false,
+            video_id: None,
             before_entry: 0,
             entry_finished: 0,
             stream: None,
@@ -201,11 +207,18 @@ impl Tracker {
             };
         }
         if let Some(rest) = line.strip_prefix(ENTRY) {
-            let mut words = rest.split_whitespace();
+            let mut words = rest.splitn(3, ' ');
             let number = |w: Option<&str>| w.and_then(|w| w.parse::<u32>().ok());
             let (Some(index), Some(count)) = (number(words.next()), number(words.next())) else {
                 return Change::default();
             };
+            // Then the id and the title, each a JSON string.
+            let mut strings = serde_json::Deserializer::from_str(words.next().unwrap_or(""))
+                .into_iter::<String>();
+            self.video_id = strings
+                .next()
+                .and_then(Result::ok)
+                .filter(|id| !id.is_empty());
             self.before_entry += self.entry_finished + self.stream_done;
             self.entry_finished = 0;
             self.stream = None;
@@ -358,7 +371,8 @@ pub(crate) async fn run_process(
     let stdout = run.child.stdout.take().expect("stdout is piped");
     let stderr = run.child.stderr.take().expect("stderr is piped");
     let stderr = tokio::spawn(read_tail(stderr, MAX_STDERR));
-    let mut lines = BufReader::new(stdout).lines();
+    let mut stdout = BufReader::new(stdout);
+    let mut line = Vec::new();
     let mut out_open = true;
     let mut stopped = None;
     let mut deadline: Option<Instant> = None;
@@ -383,9 +397,10 @@ pub(crate) async fn run_process(
                 }
                 break None;
             }
-            line = lines.next_line(), if out_open => match line {
-                Ok(Some(line)) => on_line(&line),
-                _ => out_open = false,
+            read = read_line(&mut stdout, &mut line), if out_open => match read {
+                Ok(true) => on_line(&take_line(&mut line)),
+                // A read error is the end too: nothing more can come.
+                Ok(false) | Err(_) => out_open = false,
             },
             status = run.child.wait() => break Some(status),
         }
@@ -396,8 +411,8 @@ pub(crate) async fn run_process(
     })?;
     if out_open {
         let _ = tokio::time::timeout(DRAIN, async {
-            while let Ok(Some(line)) = lines.next_line().await {
-                on_line(&line);
+            while let Ok(true) = read_line(&mut stdout, &mut line).await {
+                on_line(&take_line(&mut line));
             }
         })
         .await;
@@ -411,6 +426,41 @@ pub(crate) async fn run_process(
         stopped,
         stderr,
     })
+}
+
+/// Reads the rest of a line into `line` (without the newline), keeping at
+/// most `MAX_LINE` bytes of it so a line without end cannot use up memory;
+/// false at the end of the output (a last line without newline is still
+/// handed out). Cancel-safe: what was read stays in `line`.
+async fn read_line(
+    reader: &mut (impl AsyncBufRead + Unpin),
+    line: &mut Vec<u8>,
+) -> std::io::Result<bool> {
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(!line.is_empty());
+        }
+        let newline = available.iter().position(|b| *b == b'\n');
+        let chunk = &available[..newline.unwrap_or(available.len())];
+        let room = MAX_LINE.saturating_sub(line.len()).min(chunk.len());
+        line.extend_from_slice(&chunk[..room]);
+        let consumed = newline.map_or(available.len(), |at| at + 1);
+        reader.consume(consumed);
+        if newline.is_some() {
+            return Ok(true);
+        }
+    }
+}
+
+/// The line `read_line` read, as text (bytes that are not UTF-8 replaced),
+/// leaving `line` empty for the next one.
+fn take_line(line: &mut Vec<u8>) -> String {
+    let text = String::from_utf8_lossy(line)
+        .trim_end_matches('\r')
+        .to_owned();
+    line.clear();
+    text
 }
 
 /// Sends the graceful interrupt; returns when to kill if the tree is still
@@ -428,7 +478,8 @@ fn interrupt(run: &TreeChild, grace: Duration) -> Instant {
 /// Reads to the end, keeping the last `cap` bytes or so.
 async fn read_tail(mut reader: impl AsyncRead + Unpin, cap: usize) -> Vec<u8> {
     let mut kept = Vec::new();
-    let mut buf = [0u8; 16 * 1024];
+    // On the heap: a future holding it inline would be 16 KiB larger.
+    let mut buf = vec![0u8; 16 * 1024];
     loop {
         match reader.read(&mut buf).await {
             Ok(0) | Err(_) => return kept,
@@ -442,24 +493,27 @@ async fn read_tail(mut reader: impl AsyncRead + Unpin, cap: usize) -> Vec<u8> {
     }
 }
 
-/// The partial file a stopped recording left: the newest one the run
-/// reported that still exists, else the newest `.part` or `.ts` file in
-/// `dir` changed since `since` (yt-dlp names it after the stream).
-pub(crate) fn recorded_part(
-    dir: &Path,
-    reported: &[PathBuf],
-    since: SystemTime,
-) -> Option<PathBuf> {
-    if let Some(part) = reported.iter().rev().find(|p| p.is_file()) {
+/// The partial file a stopped recording left: nothing if the run never
+/// reported progress; else the newest one it reported that still exists,
+/// else the newest `.part` or `.ts` file in `dir` changed since `since`
+/// whose name carries the video's id as `[<id>]` (yt-dlp's output name),
+/// so another job's file in the same folder is never taken.
+pub(crate) fn recorded_part(dir: &Path, tracker: &Tracker, since: SystemTime) -> Option<PathBuf> {
+    if !tracker.progressed {
+        return None;
+    }
+    if let Some(part) = tracker.parts.iter().rev().find(|p| p.is_file()) {
         return Some(part.clone());
     }
+    let tag = format!("[{}]", tracker.video_id.as_deref()?);
     let since = since.checked_sub(Duration::from_secs(2)).unwrap_or(since);
     std::fs::read_dir(dir)
         .ok()?
         .filter_map(Result::ok)
         .filter(|e| {
-            let name = e.file_name().to_string_lossy().to_ascii_lowercase();
-            name.ends_with(".part") || name.ends_with(".ts")
+            let name = e.file_name().to_string_lossy().into_owned();
+            let lower = name.to_ascii_lowercase();
+            name.contains(&tag) && (lower.ends_with(".part") || lower.ends_with(".ts"))
         })
         .filter_map(|e| {
             let meta = e.metadata().ok()?;

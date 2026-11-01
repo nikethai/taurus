@@ -130,8 +130,15 @@ impl Engine {
     /// anything was recorded, is Paused instead. A media job that is not
     /// running is left as it is; any other job is refused.
     pub async fn stop_recording(&self, id: JobId) -> Result<(), CoreError> {
-        self.call(|reply| Command::StopRecording { id, reply })
-            .await?
+        // The actor only asks the run to stop; the end is waited for here,
+        // so other commands are served meanwhile.
+        let stopping = self
+            .call(|reply| Command::StopRecording { id, reply })
+            .await??;
+        if stopping {
+            self.wait(id).await;
+        }
+        Ok(())
     }
 }
 
@@ -275,7 +282,9 @@ impl Actor {
         self.set_view_state(id, state);
     }
 
-    pub(super) async fn stop_recording(&mut self, id: JobId) -> Result<(), CoreError> {
+    /// Asks the running media job to stop as a finished recording; true if
+    /// it runs (its end is then to be waited for).
+    pub(super) fn stop_recording(&mut self, id: JobId) -> Result<bool, CoreError> {
         let kind = read(&self.views).get(&id).map(|v| v.kind);
         match kind {
             None => return Err(no_such_job()),
@@ -287,13 +296,13 @@ impl Actor {
                 });
             }
         }
-        if self.running.contains_key(&id)
-            && let Some(finish) = self.media_stops.get(&id)
-        {
-            finish.cancel();
-            self.settle(&[id]).await;
+        match self.media_stops.get(&id) {
+            Some(finish) if self.running.contains_key(&id) => {
+                finish.cancel();
+                Ok(true)
+            }
+            _ => Ok(false),
         }
-        Ok(())
     }
 
     pub(super) fn on_media_update(&mut self, id: JobId, update: MediaUpdate) {

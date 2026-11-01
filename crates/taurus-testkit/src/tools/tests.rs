@@ -117,6 +117,7 @@ fn fake_ytdlp_replays_scenario() {
         r#"{{ "stdout": ["first line", "{{\"progress\": \"50%\"}}", "café"],
              "stderr": ["ERROR: something"],
              "exit": 4,
+             "start_files": [["early.part", 5]],
              "write_files": [["sub/a.mp4", 10], [{abs}, 3]] }}"#,
         abs = json_quote(&abs.to_string_lossy())
     );
@@ -134,6 +135,7 @@ fn fake_ytdlp_replays_scenario() {
     assert_eq!(String::from_utf8_lossy(&out.stderr), "ERROR: something\n");
     assert_eq!(std::fs::metadata(work.join("sub/a.mp4")).unwrap().len(), 10);
     assert_eq!(std::fs::metadata(&abs).unwrap().len(), 3);
+    assert_eq!(std::fs::metadata(work.join("early.part")).unwrap().len(), 5);
 
     // A second run appends a second line.
     run(Command::new(&yt)

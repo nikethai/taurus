@@ -39,9 +39,11 @@
 //!   "stderr": ["ERROR: ..."],             // printed after stdout
 //!   "delay_ms_per_line": 50,              // sleep after each printed line
 //!   "wait_for_interrupt": false,          // after the lines, wait (max 120 s) for SIGINT/CTRL_BREAK
+//!   "start_files": [["x.mp4.part", 7]],  // written before the first line (kept if killed)
 //!   "write_files": [["rel/or/abs.mp4", 1024]], // written after the lines; relative to cwd; parents created
 //!   "exit": 0,
-//!   "on_interrupt": { "stdout": [], "stderr": [], "write_files": [], "exit": 1 } }
+//!   "on_interrupt": { "stdout": [], "stderr": [], "write_files": [], "exit": 1,
+//!                     "delay_ms_per_line": 0 } }   // sleeps after each of its lines, not interruptible
 //! ```
 //!
 //! With `on_interrupt`, SIGINT (Unix) or CTRL_C/CTRL_BREAK (Windows) stops the
