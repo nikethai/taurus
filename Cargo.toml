@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = ["third_party"]
 
 [workspace.package]
 edition = "2024"
@@ -42,3 +43,7 @@ keepawake = "0.6"
 # Tests only
 axum = "0.8"
 tempfile = "3"
+
+# IPv4 fallback for librqbit's UDP tracker socket; see third_party/librqbit-tracker-comms/PATCH.txt.
+[patch.crates-io]
+librqbit-tracker-comms = { path = "third_party/librqbit-tracker-comms" }
