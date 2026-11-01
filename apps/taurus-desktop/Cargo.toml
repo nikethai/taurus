@@ -12,9 +12,16 @@ build = "build.rs"
 [dependencies]
 taurus-core = { workspace = true }
 slint = { workspace = true }
+interprocess = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde_json = { workspace = true }
 
 [build-dependencies]
 slint-build = { workspace = true }
 
 [dev-dependencies]
 i-slint-backend-testing = { workspace = true }
+tempfile = { workspace = true }
