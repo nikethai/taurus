@@ -59,6 +59,10 @@ pub fn outcome_line(view: &JobView) -> String {
                 view.dest_dir.join(&view.file_name).display()
             )
         }
+        JobState::Seeding => format!(
+            "Seeding, sharing with peers: {}",
+            view.dest_dir.join(&view.file_name).display()
+        ),
         JobState::Paused => format!("Paused (continue with: taurus resume {})", view.id.0),
         JobState::Failed => match &view.error {
             Some((kind, detail)) => format!("Failed: {kind:?}: {detail}"),
@@ -163,7 +167,7 @@ pub fn job_table(views: &[JobView]) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use taurus_core::ErrorKind;
+    use taurus_core::{ErrorKind, JobKind};
 
     use super::*;
 
@@ -182,6 +186,8 @@ mod tests {
             speed_bps: 0,
             resumable: true,
             error: None,
+            kind: JobKind::Http,
+            torrent: None,
         }
     }
 
@@ -240,6 +246,10 @@ mod tests {
         let mut failed = view(JobState::Failed);
         failed.error = Some((ErrorKind::LinkExpired, "HTTP 404".to_string()));
         assert_eq!(outcome_line(&failed), "Failed: LinkExpired: HTTP 404");
+        assert_eq!(
+            outcome_line(&view(JobState::Seeding)),
+            format!("Seeding, sharing with peers: {}", path.display())
+        );
         assert_eq!(
             outcome_line(&view(JobState::Queued)),
             "Queued (continue with: taurus run)"

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use taurus_core::store::{JobRecord, NewJob, Store};
+use taurus_core::store::{JobKind, JobRecord, NewJob, Store};
 use taurus_core::{
     AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, JobView, Settings,
     SpeedLimit,
@@ -410,6 +410,10 @@ async fn open_turns_interrupted_jobs_into_queued() {
                     checksum: None,
                     referer: None,
                     queue_pos: 0,
+                    kind: JobKind::Http,
+                    info_hash: None,
+                    torrent_meta: None,
+                    only_files: None,
                 })
                 .unwrap();
             let mut job = store.get_job(id).unwrap().unwrap();

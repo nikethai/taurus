@@ -50,6 +50,7 @@ impl Actor {
     pub(super) fn after_change(&mut self) {
         if !self.stopping {
             self.schedule();
+            // Seeding is not busy: sharing must not hold up the idle queue.
             let busy = read(&self.views).values().any(|v| {
                 matches!(
                     v.state,

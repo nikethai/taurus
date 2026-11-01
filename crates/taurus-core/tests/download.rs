@@ -6,7 +6,7 @@ use taurus_core::errors::ErrorKind;
 use taurus_core::http::{JobContext, JobOutcome, build_client, host_key, probe, resolve, run_job};
 use taurus_core::limit::Limiter;
 use taurus_core::plan;
-use taurus_core::store::{JobId, JobState, NewJob, Store};
+use taurus_core::store::{JobId, JobKind, JobState, NewJob, Store};
 use taurus_core::timing::Timing;
 use taurus_testkit::{FailAfter, FileSpec, TestServer, content, sha256_hex};
 use tokio::sync::mpsc;
@@ -56,6 +56,10 @@ impl Fixture {
                 checksum: None,
                 referer: None,
                 queue_pos: 0,
+                kind: JobKind::Http,
+                info_hash: None,
+                torrent_meta: None,
+                only_files: None,
             })
             .unwrap();
         let mut job = self.store.get_job(id).unwrap().unwrap();

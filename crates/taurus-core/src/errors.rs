@@ -22,6 +22,9 @@ pub enum ErrorKind {
     ToolFailed,
     SiteNotSupported,
     ChecksumMismatch,
+    NoPeers,
+    UnsafeTorrent,
+    AlreadyAdded,
     Unknown,
 }
 
@@ -30,7 +33,7 @@ impl ErrorKind {
     pub fn is_transient(self) -> bool {
         matches!(
             self,
-            Self::ConnectionLost | Self::Timeout | Self::RateLimited
+            Self::ConnectionLost | Self::Timeout | Self::RateLimited | Self::NoPeers
         )
     }
 
@@ -54,6 +57,9 @@ impl ErrorKind {
             Self::ToolFailed => "tool_failed",
             Self::SiteNotSupported => "site_not_supported",
             Self::ChecksumMismatch => "checksum_mismatch",
+            Self::NoPeers => "no_peers",
+            Self::UnsafeTorrent => "unsafe_torrent",
+            Self::AlreadyAdded => "already_added",
             Self::Unknown => "unknown",
         }
     }
@@ -79,6 +85,9 @@ impl ErrorKind {
             "tool_failed" => Self::ToolFailed,
             "site_not_supported" => Self::SiteNotSupported,
             "checksum_mismatch" => Self::ChecksumMismatch,
+            "no_peers" => Self::NoPeers,
+            "unsafe_torrent" => Self::UnsafeTorrent,
+            "already_added" => Self::AlreadyAdded,
             _ => Self::Unknown,
         }
     }
@@ -152,7 +161,7 @@ mod tests {
     use std::io;
     use std::time::Duration;
 
-    const ALL: [ErrorKind; 18] = [
+    const ALL: [ErrorKind; 21] = [
         ErrorKind::ConnectionLost,
         ErrorKind::Timeout,
         ErrorKind::LinkExpired,
@@ -170,6 +179,9 @@ mod tests {
         ErrorKind::ToolFailed,
         ErrorKind::SiteNotSupported,
         ErrorKind::ChecksumMismatch,
+        ErrorKind::NoPeers,
+        ErrorKind::UnsafeTorrent,
+        ErrorKind::AlreadyAdded,
         ErrorKind::Unknown,
     ];
 
@@ -204,7 +216,10 @@ mod tests {
         for kind in ALL {
             let expected = matches!(
                 kind,
-                ErrorKind::ConnectionLost | ErrorKind::Timeout | ErrorKind::RateLimited
+                ErrorKind::ConnectionLost
+                    | ErrorKind::Timeout
+                    | ErrorKind::RateLimited
+                    | ErrorKind::NoPeers
             );
             assert_eq!(kind.is_transient(), expected, "{kind:?}");
         }
@@ -233,6 +248,19 @@ mod tests {
         assert_eq!(kind.as_str(), "checksum_mismatch");
         assert_eq!(ErrorKind::from_str("checksum_mismatch"), kind);
         assert!(!kind.is_transient());
+    }
+
+    #[test]
+    fn new_kinds_roundtrip_and_transience() {
+        for (kind, name, transient) in [
+            (ErrorKind::NoPeers, "no_peers", true),
+            (ErrorKind::UnsafeTorrent, "unsafe_torrent", false),
+            (ErrorKind::AlreadyAdded, "already_added", false),
+        ] {
+            assert_eq!(kind.as_str(), name);
+            assert_eq!(ErrorKind::from_str(name), kind);
+            assert_eq!(kind.is_transient(), transient, "{kind:?}");
+        }
     }
 
     #[test]

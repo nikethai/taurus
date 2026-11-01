@@ -22,7 +22,7 @@ use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::http::{build_client, resolve};
 use crate::limit::{Limiter, PeakTracker};
 use crate::settings::{PowerMode, Settings, WhenDone};
-use crate::store::{JobId, JobState, Store};
+use crate::store::{JobId, JobKind, JobState, Store};
 use crate::system::{AwakeGuard, SpaceSource, available_space};
 use crate::timing::Timing;
 use crate::when_done::{EngineLink, WhenDoneRunner};
@@ -106,6 +106,23 @@ pub struct JobView {
     pub speed_bps: u64,
     pub resumable: bool,
     pub error: Option<(ErrorKind, String)>,
+    pub kind: JobKind,
+    /// `None` for an HTTP job.
+    pub torrent: Option<TorrentView>,
+}
+
+/// What only a torrent has.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct TorrentView {
+    /// Peers connected now; 0 unless the torrent runs.
+    pub peers: u32,
+    /// Bytes uploaded in all, across restarts.
+    pub uploaded: u64,
+    pub upload_bps: u64,
+    /// Uploaded bytes over the size of the selected files.
+    pub ratio: f64,
+    pub files_selected: u32,
+    pub files_total: u32,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -367,7 +384,8 @@ impl Engine {
     }
 
     /// Resolves once the job is Completed, Paused or Failed (at once if it
-    /// already is); a Queued or Waiting job is waited for until it has run.
+    /// already is); a Queued, Waiting or Seeding job is waited for until it
+    /// has run.
     /// An unknown job resolves to Failed immediately. If the engine stops
     /// first, resolves to the job's last state.
     pub async fn wait(&self, id: JobId) -> JobState {
@@ -435,8 +453,9 @@ async fn assemble(
     for mut job in store.list_jobs()? {
         match job.state {
             // Interrupted, not paused: it runs again, in its place, once
-            // checked against the server.
-            JobState::Downloading => {
+            // checked against the server (an HTTP job; see
+            // `Store::requeue_interrupted`).
+            JobState::Downloading | JobState::Seeding => {
                 store.requeue_interrupted(job.id)?;
                 job.state = JobState::Queued;
             }

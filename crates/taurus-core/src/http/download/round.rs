@@ -392,6 +392,10 @@ mod tests {
                 checksum: None,
                 referer: None,
                 queue_pos: 0,
+                kind: crate::store::JobKind::Http,
+                info_hash: None,
+                torrent_meta: None,
+                only_files: None,
             })
             .unwrap();
         let mut job = store.get_job(id).unwrap().unwrap();

@@ -22,8 +22,34 @@ pub enum JobState {
     Downloading,
     Paused,
     Waiting,
+    /// A torrent that finished downloading and is sharing.
+    Seeding,
     Completed,
     Failed,
+}
+
+/// What a job downloads: a file over HTTP, or a torrent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum JobKind {
+    Http,
+    Torrent,
+}
+
+impl JobKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Torrent => "torrent",
+        }
+    }
+
+    fn parse(s: &str) -> Option<JobKind> {
+        Some(match s {
+            "http" => Self::Http,
+            "torrent" => Self::Torrent,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -48,6 +74,17 @@ pub struct JobRecord {
     pub checksum: Option<String>,
     pub referer: Option<String>,
     pub queue_pos: i64,
+    pub kind: JobKind,
+    /// Lowercase hex info-hash of a torrent; unique among jobs.
+    pub info_hash: Option<String>,
+    /// The torrent's metainfo (the bencoded `.torrent` file).
+    pub torrent_meta: Option<Vec<u8>>,
+    /// Indices of the torrent files to download; `None` is all of them.
+    pub only_files: Option<Vec<usize>>,
+    /// Bytes uploaded to peers, counted across restarts.
+    pub uploaded: u64,
+    /// When seeding began (unix secs).
+    pub seed_started_at: Option<i64>,
 }
 
 pub struct NewJob {
@@ -61,9 +98,13 @@ pub struct NewJob {
     pub referer: Option<String>,
     /// 0 appends the job to the queue (its position becomes its id).
     pub queue_pos: i64,
+    pub kind: JobKind,
+    pub info_hash: Option<String>,
+    pub torrent_meta: Option<Vec<u8>>,
+    pub only_files: Option<Vec<usize>>,
 }
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE jobs (
@@ -126,6 +167,17 @@ const MIGRATE_V3_TO_V4: &str = "
 ALTER TABLE jobs ADD COLUMN revalidate INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Applied on top of v4: torrent jobs. One job per info-hash.
+const MIGRATE_V4_TO_V5: &str = "
+ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'http';
+ALTER TABLE jobs ADD COLUMN info_hash TEXT;
+ALTER TABLE jobs ADD COLUMN torrent_meta BLOB;
+ALTER TABLE jobs ADD COLUMN only_files TEXT;
+ALTER TABLE jobs ADD COLUMN uploaded INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN seed_started_at INTEGER;
+CREATE UNIQUE INDEX jobs_info_hash ON jobs(info_hash) WHERE info_hash IS NOT NULL;
+";
+
 const SETTINGS_KEY: &str = "settings";
 /// Where `load_settings_lenient` keeps saved settings it could not read.
 const UNREADABLE_SETTINGS_KEY: &str = "settings.unreadable";
@@ -133,7 +185,8 @@ const MEASURED_PEAK_KEY: &str = "measured_peak";
 
 const JOB_COLUMNS: &str = "id, url, final_url, dest_dir, file_name, state, total, resumable, \
                            etag, last_modified, connections, error_kind, error_detail, \
-                           mirrors, checksum, referer, queue_pos, source_url";
+                           mirrors, checksum, referer, queue_pos, source_url, kind, info_hash, \
+                           torrent_meta, only_files, uploaded, seed_started_at";
 
 impl JobState {
     fn as_str(self) -> &'static str {
@@ -142,6 +195,7 @@ impl JobState {
             Self::Downloading => "downloading",
             Self::Paused => "paused",
             Self::Waiting => "waiting",
+            Self::Seeding => "seeding",
             Self::Completed => "completed",
             Self::Failed => "failed",
         }
@@ -153,6 +207,7 @@ impl JobState {
             "downloading" => Self::Downloading,
             "paused" => Self::Paused,
             "waiting" => Self::Waiting,
+            "seeding" => Self::Seeding,
             "completed" => Self::Completed,
             "failed" => Self::Failed,
             _ => return None,
@@ -165,6 +220,41 @@ fn db_err(e: rusqlite::Error) -> CoreError {
         kind: ErrorKind::Unknown,
         detail: e.to_string(),
     }
+}
+
+/// The error for a write that put an info-hash another job already has: the
+/// hash's unique index refused it. `conn` is the connection that wrote.
+fn duplicate_hash(conn: &Connection, e: rusqlite::Error, info_hash: Option<&str>) -> CoreError {
+    let unique = matches!(
+        &e,
+        rusqlite::Error::SqliteFailure(f, _)
+            if f.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+    );
+    let Some(hash) = info_hash.filter(|_| unique) else {
+        return db_err(e);
+    };
+    let existing: rusqlite::Result<i64> =
+        conn.query_row("SELECT id FROM jobs WHERE info_hash = ?1", [hash], |r| {
+            r.get(0)
+        });
+    match existing {
+        Ok(id) => CoreError {
+            kind: ErrorKind::AlreadyAdded,
+            detail: format!("this torrent is already added as job {id}"),
+        },
+        Err(_) => db_err(e),
+    }
+}
+
+fn only_files_json(only_files: Option<&[usize]>) -> Result<Option<String>, CoreError> {
+    only_files
+        .map(|files| {
+            serde_json::to_string(files).map_err(|e| CoreError {
+                kind: ErrorKind::Unknown,
+                detail: e.to_string(),
+            })
+        })
+        .transpose()
 }
 
 fn io_err(e: std::io::Error) -> CoreError {
@@ -230,6 +320,26 @@ fn job_from_row(row: &Row<'_>) -> rusqlite::Result<JobRecord> {
     })?;
     let url: String = row.get(1)?;
     let source_url: Option<String> = row.get(17)?;
+    let kind: String = row.get(18)?;
+    let kind = JobKind::parse(&kind).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            18,
+            rusqlite::types::Type::Text,
+            format!("unknown job kind {kind:?}").into(),
+        )
+    })?;
+    let only_files: Option<String> = row.get(21)?;
+    let only_files = only_files
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    21,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })
+        })
+        .transpose()?;
     Ok(JobRecord {
         id: JobId(row.get(0)?),
         source_url: source_url.unwrap_or_else(|| url.clone()),
@@ -248,6 +358,12 @@ fn job_from_row(row: &Row<'_>) -> rusqlite::Result<JobRecord> {
         checksum: row.get(14)?,
         referer: row.get(15)?,
         queue_pos: row.get(16)?,
+        kind,
+        info_hash: row.get(19)?,
+        torrent_meta: row.get(20)?,
+        only_files,
+        uploaded: col_u64(row, 22)?,
+        seed_started_at: row.get(23)?,
     })
 }
 
@@ -283,11 +399,19 @@ fn init(path: &Path) -> rusqlite::Result<Connection> {
             MIGRATE_V1_TO_V2,
             MIGRATE_V2_TO_V3,
             MIGRATE_V3_TO_V4,
+            MIGRATE_V4_TO_V5,
         ]
         .concat(),
-        1 => [MIGRATE_V1_TO_V2, MIGRATE_V2_TO_V3, MIGRATE_V3_TO_V4].concat(),
-        2 => [MIGRATE_V2_TO_V3, MIGRATE_V3_TO_V4].concat(),
-        3 => MIGRATE_V3_TO_V4.to_owned(),
+        1 => [
+            MIGRATE_V1_TO_V2,
+            MIGRATE_V2_TO_V3,
+            MIGRATE_V3_TO_V4,
+            MIGRATE_V4_TO_V5,
+        ]
+        .concat(),
+        2 => [MIGRATE_V2_TO_V3, MIGRATE_V3_TO_V4, MIGRATE_V4_TO_V5].concat(),
+        3 => [MIGRATE_V3_TO_V4, MIGRATE_V4_TO_V5].concat(),
+        4 => MIGRATE_V4_TO_V5.to_owned(),
         _ => return Ok(conn),
     };
     conn.execute_batch(&format!(
@@ -388,12 +512,14 @@ impl Store {
     pub fn insert_job(&self, job: &NewJob) -> Result<JobId, CoreError> {
         let now = now_secs();
         let mirrors = mirrors_json(&job.mirrors)?;
+        let only_files = only_files_json(job.only_files.as_deref())?;
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(db_err)?;
         tx.execute(
             "INSERT INTO jobs (url, dest_dir, file_name, state, resumable, connections, \
-             created_at, updated_at, mirrors, checksum, referer, queue_pos, source_url) \
-             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?6, ?7, ?8, ?9, ?10, ?11)",
+             created_at, updated_at, mirrors, checksum, referer, queue_pos, source_url, \
+             kind, info_hash, torrent_meta, only_files) \
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 job.url,
                 job.dest_dir.to_string_lossy(),
@@ -406,9 +532,13 @@ impl Store {
                 job.referer,
                 job.queue_pos,
                 job.source_url,
+                job.kind.as_str(),
+                job.info_hash,
+                job.torrent_meta,
+                only_files,
             ],
         )
-        .map_err(db_err)?;
+        .map_err(|e| duplicate_hash(&tx, e, job.info_hash.as_deref()))?;
         let id = tx.last_insert_rowid();
         if job.queue_pos == 0 {
             tx.execute("UPDATE jobs SET queue_pos = id WHERE id = ?1", [id])
@@ -440,8 +570,10 @@ impl Store {
             .map_err(db_err)
     }
 
-    /// Writes every mutable field of `job` (all but `id` and `source_url`).
-    /// Updating a job that no longer exists is a no-op.
+    /// Writes every mutable field of `job` (all but `id`, `source_url`,
+    /// `kind` and `uploaded`, which `commit_torrent_progress` owns, so a
+    /// stale copy cannot lower it). Updating a job that no longer exists is
+    /// a no-op; an info-hash another job has is `AlreadyAdded`.
     pub fn update_job(&self, job: &JobRecord) -> Result<(), CoreError> {
         let total = opt_to_i64(job.total, "total size")?;
         let (error_kind, error_detail) = match &job.error {
@@ -449,33 +581,65 @@ impl Store {
             None => (None, None),
         };
         let mirrors = mirrors_json(&job.mirrors)?;
-        self.lock()
-            .execute(
-                "UPDATE jobs SET url = ?2, final_url = ?3, dest_dir = ?4, file_name = ?5, \
+        let only_files = only_files_json(job.only_files.as_deref())?;
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE jobs SET url = ?2, final_url = ?3, dest_dir = ?4, file_name = ?5, \
                  state = ?6, total = ?7, resumable = ?8, etag = ?9, last_modified = ?10, \
                  connections = ?11, error_kind = ?12, error_detail = ?13, updated_at = ?14, \
-                 mirrors = ?15, checksum = ?16, referer = ?17, queue_pos = ?18 \
-                 WHERE id = ?1",
-                params![
-                    job.id.0,
-                    job.url,
-                    job.final_url,
-                    job.dest_dir.to_string_lossy(),
-                    job.file_name,
-                    job.state.as_str(),
-                    total,
-                    job.resumable,
-                    job.etag,
-                    job.last_modified,
-                    job.connections,
-                    error_kind,
-                    error_detail,
-                    now_secs(),
-                    mirrors,
-                    job.checksum,
-                    job.referer,
-                    job.queue_pos,
-                ],
+                 mirrors = ?15, checksum = ?16, referer = ?17, queue_pos = ?18, \
+                 info_hash = ?19, torrent_meta = ?20, only_files = ?21, \
+                 seed_started_at = ?22 WHERE id = ?1",
+            params![
+                job.id.0,
+                job.url,
+                job.final_url,
+                job.dest_dir.to_string_lossy(),
+                job.file_name,
+                job.state.as_str(),
+                total,
+                job.resumable,
+                job.etag,
+                job.last_modified,
+                job.connections,
+                error_kind,
+                error_detail,
+                now_secs(),
+                mirrors,
+                job.checksum,
+                job.referer,
+                job.queue_pos,
+                job.info_hash,
+                job.torrent_meta,
+                only_files,
+                job.seed_started_at,
+            ],
+        )
+        .map_err(|e| duplicate_hash(&conn, e, job.info_hash.as_deref()))?;
+        Ok(())
+    }
+
+    /// The job of the torrent with this info-hash (lowercase hex), if any.
+    pub fn find_by_info_hash(&self, info_hash: &str) -> Result<Option<JobId>, CoreError> {
+        self.lock()
+            .query_row(
+                "SELECT id FROM jobs WHERE info_hash = ?1",
+                [info_hash],
+                |row| Ok(JobId(row.get(0)?)),
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
+    /// Sets only the bytes the torrent has uploaded in all, so no other
+    /// field can be overwritten from a stale copy. Updating a job that no
+    /// longer exists is a no-op.
+    pub fn commit_torrent_progress(&self, id: JobId, uploaded: u64) -> Result<(), CoreError> {
+        let uploaded = to_i64(uploaded, "uploaded bytes")?;
+        self.lock()
+            .execute(
+                "UPDATE jobs SET uploaded = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id.0, uploaded, now_secs()],
             )
             .map_err(db_err)?;
         Ok(())
@@ -506,12 +670,14 @@ impl Store {
     }
 
     /// Puts an interrupted job back in the queue (Queued), marked to be
-    /// checked against the server before it runs again. Its error, place in
-    /// the queue and progress are kept.
+    /// checked against the server before it runs again (an HTTP job; a
+    /// torrent has no server to ask). Its error, place in the queue and
+    /// progress are kept.
     pub fn requeue_interrupted(&self, id: JobId) -> Result<(), CoreError> {
         self.lock()
             .execute(
-                "UPDATE jobs SET state = ?2, revalidate = 1, updated_at = ?3 WHERE id = ?1",
+                "UPDATE jobs SET state = ?2, updated_at = ?3, \
+                 revalidate = (kind = 'http') WHERE id = ?1",
                 params![id.0, JobState::Queued.as_str(), now_secs()],
             )
             .map_err(db_err)?;
@@ -803,14 +969,34 @@ fn readable_fields(raw: &str) -> Settings {
     else {
         return Settings::default();
     };
+    let reads = |fields: &serde_json::Map<String, serde_json::Value>| {
+        serde_json::from_value::<Settings>(serde_json::Value::Object(fields.clone())).is_ok()
+    };
     for (key, value) in saved {
         if !fields.contains_key(&key) {
             continue;
         }
         let mut tried = fields.clone();
         tried.insert(key.clone(), value.clone());
-        if serde_json::from_value::<Settings>(serde_json::Value::Object(tried)).is_ok() {
+        if reads(&tried) {
             fields.insert(key, value);
+        } else if let (
+            Some(serde_json::Value::Object(mut section)),
+            serde_json::Value::Object(saved),
+        ) = (fields.get(&key).cloned(), value)
+        {
+            // A section (`torrent`) keeps its readable fields too.
+            for (name, value) in saved {
+                if !section.contains_key(&name) {
+                    continue;
+                }
+                let before = section.insert(name.clone(), value);
+                tried.insert(key.clone(), serde_json::Value::Object(section.clone()));
+                if !reads(&tried) {
+                    section.extend(before.map(|v| (name, v)));
+                }
+            }
+            fields.insert(key, serde_json::Value::Object(section));
         }
     }
     serde_json::from_value(serde_json::Value::Object(fields)).unwrap_or_default()
@@ -841,7 +1027,7 @@ fn encode(seg: &Segment) -> Result<(i64, Option<i64>, i64), CoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{SpeedLimit, WhenDone};
+    use crate::settings::{SpeedLimit, TorrentSettings, WhenDone};
 
     fn open_temp() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
@@ -860,6 +1046,20 @@ mod tests {
             checksum: None,
             referer: None,
             queue_pos: 0,
+            kind: JobKind::Http,
+            info_hash: None,
+            torrent_meta: None,
+            only_files: None,
+        }
+    }
+
+    fn torrent_job(name: &str, info_hash: &str) -> NewJob {
+        NewJob {
+            kind: JobKind::Torrent,
+            info_hash: Some(info_hash.into()),
+            torrent_meta: Some(vec![0, 1, 2, 255]),
+            only_files: Some(vec![0, 2]),
+            ..new_job(name, "/d")
         }
     }
 
@@ -893,6 +1093,12 @@ mod tests {
                 checksum: None,
                 referer: None,
                 queue_pos: id.0,
+                kind: JobKind::Http,
+                info_hash: None,
+                torrent_meta: None,
+                only_files: None,
+                uploaded: 0,
+                seed_started_at: None,
             }
         );
 
@@ -1108,11 +1314,11 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
-    fn v1_database_migrates_to_v4() {
+    fn v1_database_migrates_to_v5() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("taurus.db");
         {
@@ -1150,7 +1356,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 4);
+            assert_eq!(version, 5);
             let other: String = conn
                 .query_row("SELECT value FROM settings WHERE key = 'other'", [], |r| {
                     r.get(0)
@@ -1165,7 +1371,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_database_migrates_to_v4() {
+    fn v2_database_migrates_to_v5() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("taurus.db");
         {
@@ -1197,13 +1403,13 @@ mod tests {
             .lock()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         drop(store);
         assert_eq!(Store::open(&path).unwrap().list_jobs().unwrap().len(), 1);
     }
 
     #[test]
-    fn v3_database_migrates_to_v4() {
+    fn v3_database_migrates_to_v5() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("taurus.db");
         {
@@ -1228,7 +1434,183 @@ mod tests {
             .lock()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
+    }
+
+    #[test]
+    fn v4_database_migrates_to_v5() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taurus.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(MIGRATE_V1_TO_V2).unwrap();
+            conn.execute_batch(MIGRATE_V2_TO_V3).unwrap();
+            conn.execute_batch(MIGRATE_V3_TO_V4).unwrap();
+            conn.pragma_update(None, "user_version", 4).unwrap();
+            conn.execute(
+                "INSERT INTO jobs (url, source_url, dest_dir, file_name, state, connections, \
+                 created_at, updated_at, revalidate) \
+                 VALUES ('u', 'u', '/d', 'x', 'queued', 4, 1, 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        let jobs = store.list_jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        let job = &jobs[0];
+        assert_eq!(job.kind, JobKind::Http);
+        assert_eq!(job.uploaded, 0);
+        assert_eq!(
+            (&job.info_hash, &job.torrent_meta, &job.only_files),
+            (&None, &None, &None)
+        );
+        assert_eq!(job.seed_started_at, None);
+        // What v4 recorded survives.
+        assert!(store.needs_revalidation(job.id).unwrap());
+        let version: i64 = store
+            .lock()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+        drop(store);
+        assert_eq!(Store::open(&path).unwrap().list_jobs().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn torrent_columns_roundtrip() {
+        let (_dir, store) = open_temp();
+        let id = store.insert_job(&torrent_job("t", "abcd")).unwrap();
+        let mut job = store.get_job(id).unwrap().unwrap();
+        assert_eq!(job.kind, JobKind::Torrent);
+        assert_eq!(job.info_hash.as_deref(), Some("abcd"));
+        assert_eq!(job.torrent_meta.as_deref(), Some(&[0, 1, 2, 255][..]));
+        assert_eq!(job.only_files, Some(vec![0, 2]));
+        assert_eq!((job.uploaded, job.seed_started_at), (0, None));
+
+        job.only_files = None;
+        job.torrent_meta = Some(vec![9; 3]);
+        job.seed_started_at = Some(1_700_000_000);
+        store.update_job(&job).unwrap();
+        assert_eq!(store.get_job(id).unwrap().unwrap(), job);
+
+        // Uploaded bytes have their own writer, beyond i64 is refused.
+        store.commit_torrent_progress(id, 5_000_000_000).unwrap();
+        let stored = store.get_job(id).unwrap().unwrap();
+        assert_eq!(stored.uploaded, 5_000_000_000);
+        assert_eq!(
+            JobRecord {
+                uploaded: 0,
+                ..stored.clone()
+            },
+            job
+        );
+        assert!(store.commit_torrent_progress(id, u64::MAX).is_err());
+        // A stale whole-record update leaves them alone.
+        store.update_job(&job).unwrap();
+        assert_eq!(store.get_job(id).unwrap().unwrap().uploaded, 5_000_000_000);
+        // A job that is gone is not an error.
+        store.delete_job(id).unwrap();
+        store.commit_torrent_progress(id, 1).unwrap();
+    }
+
+    #[test]
+    fn seeding_state_roundtrip() {
+        let (_dir, store) = open_temp();
+        let id = store.insert_job(&torrent_job("t", "abcd")).unwrap();
+        store.set_state(id, JobState::Seeding).unwrap();
+        assert_eq!(store.get_job(id).unwrap().unwrap().state, JobState::Seeding);
+        let mut job = store.get_job(id).unwrap().unwrap();
+        job.state = JobState::Completed;
+        store.update_job(&job).unwrap();
+        job.state = JobState::Seeding;
+        store.update_job(&job).unwrap();
+        let raw: String = store
+            .lock()
+            .query_row("SELECT state FROM jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(raw, "seeding");
+    }
+
+    #[test]
+    fn info_hash_is_unique() {
+        let (_dir, store) = open_temp();
+        let first = store.insert_job(&torrent_job("a", "abcd")).unwrap();
+        let err = store.insert_job(&torrent_job("b", "abcd")).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::AlreadyAdded);
+        assert!(err.detail.contains(&first.0.to_string()), "{}", err.detail);
+        // Nothing of the refused job was recorded.
+        assert_eq!(store.list_jobs().unwrap().len(), 1);
+
+        // Updating a job to a hash another one has is refused the same way.
+        let second = store.insert_job(&torrent_job("c", "ef01")).unwrap();
+        let mut job = store.get_job(second).unwrap().unwrap();
+        job.info_hash = Some("abcd".into());
+        let err = store.update_job(&job).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::AlreadyAdded);
+        assert!(err.detail.contains(&first.0.to_string()), "{}", err.detail);
+        assert_eq!(
+            store.get_job(second).unwrap().unwrap().info_hash.as_deref(),
+            Some("ef01")
+        );
+        // Writing a job's own hash again is fine, and HTTP jobs have none.
+        job.info_hash = Some("ef01".into());
+        store.update_job(&job).unwrap();
+        store.insert_job(&new_job("h1", "/d")).unwrap();
+        store.insert_job(&new_job("h2", "/d")).unwrap();
+    }
+
+    #[test]
+    fn find_by_info_hash() {
+        let (_dir, store) = open_temp();
+        store.insert_job(&new_job("http", "/d")).unwrap();
+        let id = store.insert_job(&torrent_job("t", "abcd")).unwrap();
+        assert_eq!(store.find_by_info_hash("abcd").unwrap(), Some(id));
+        assert_eq!(store.find_by_info_hash("ffff").unwrap(), None);
+        store.delete_job(id).unwrap();
+        assert_eq!(store.find_by_info_hash("abcd").unwrap(), None);
+    }
+
+    #[test]
+    fn only_torrents_skip_the_revalidation_mark() {
+        let (_dir, store) = open_temp();
+        let http = store.insert_job(&new_job("a", "/d")).unwrap();
+        let torrent = store.insert_job(&torrent_job("t", "abcd")).unwrap();
+        store.set_state(http, JobState::Downloading).unwrap();
+        store.set_state(torrent, JobState::Seeding).unwrap();
+        store.requeue_interrupted(http).unwrap();
+        store.requeue_interrupted(torrent).unwrap();
+        assert!(store.needs_revalidation(http).unwrap());
+        assert!(!store.needs_revalidation(torrent).unwrap());
+        assert_eq!(
+            store.get_job(torrent).unwrap().unwrap().state,
+            JobState::Queued
+        );
+    }
+
+    #[test]
+    fn lenient_settings_keep_readable_torrent_fields() {
+        let (_dir, store) = open_temp();
+        let saved = r#"{"max_active":4,"torrent":{"stop_ratio":2.5,"max_active":"many","dht":false,"bogus":1}}"#;
+        store.put_setting(SETTINGS_KEY, saved).unwrap();
+        let s = store.load_settings_lenient().unwrap();
+        assert_eq!(s.max_active, 4);
+        assert_eq!(
+            s.torrent,
+            TorrentSettings {
+                stop_ratio: Some(2.5),
+                dht: false,
+                ..TorrentSettings::default()
+            }
+        );
+        // A torrent section that is not an object falls back to the defaults.
+        store
+            .put_setting(SETTINGS_KEY, r#"{"max_active":4,"torrent":7}"#)
+            .unwrap();
+        let s = store.load_settings_lenient().unwrap();
+        assert_eq!((s.max_active, s.torrent), (4, TorrentSettings::default()));
     }
 
     #[test]
@@ -1302,6 +1684,12 @@ mod tests {
             when_done: WhenDone::Shutdown,
             auto_checksum: false,
             keep_awake: false,
+            torrent: TorrentSettings {
+                stop_ratio: None,
+                max_active: 2,
+                listen_port: Some(51413),
+                ..TorrentSettings::default()
+            },
         };
         store.save_settings(&s).unwrap();
         assert_eq!(store.load_settings().unwrap(), s);

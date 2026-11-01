@@ -336,7 +336,7 @@ impl Actor {
 }
 
 /// Whether a job in `state` is done until someone acts on it: nothing will
-/// run it on its own.
+/// run it on its own. Seeding is not final: the job is still sharing.
 pub(super) fn is_final(state: JobState) -> bool {
     matches!(
         state,

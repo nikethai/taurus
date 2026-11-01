@@ -12,7 +12,7 @@ use crate::fixups;
 use crate::http::probe::validator_change;
 use crate::http::{JobOutcome, Probe, resolve};
 use crate::plan::DEFAULT_CONNECTIONS;
-use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
+use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob, Store};
 use crate::system::marks::loggable;
 use crate::system::{SpaceSource, check_fits, same_volume};
 
@@ -45,6 +45,10 @@ impl Actor {
             checksum: req.checksum.clone(),
             referer: req.referer.clone(),
             queue_pos: 0,
+            kind: JobKind::Http,
+            info_hash: None,
+            torrent_meta: None,
+            only_files: None,
         })?;
         let mut job = JobRecord {
             id,
@@ -64,6 +68,12 @@ impl Actor {
             checksum: req.checksum,
             referer: req.referer,
             queue_pos: id.0,
+            kind: JobKind::Http,
+            info_hash: None,
+            torrent_meta: None,
+            only_files: None,
+            uploaded: 0,
+            seed_started_at: None,
         };
         apply_probe(&mut job, probe);
         if let Err(e) = self.store.update_job(&job) {
@@ -545,6 +555,8 @@ pub(super) fn view_of(job: &JobRecord, downloaded: u64) -> JobView {
         speed_bps: 0,
         resumable: job.resumable,
         error: job.error.clone(),
+        kind: job.kind,
+        torrent: None,
     }
 }
 
@@ -614,6 +626,10 @@ mod tests {
                 checksum: None,
                 referer: None,
                 queue_pos: 0,
+                kind: JobKind::Http,
+                info_hash: None,
+                torrent_meta: None,
+                only_files: None,
             })
             .unwrap();
         store.set_state(id, state).unwrap();
