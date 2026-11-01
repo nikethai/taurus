@@ -1,8 +1,6 @@
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::thread;
-use std::time::Duration;
+use std::process::{Command, Output};
 
 use super::*;
 use crate::sha256_hex;
@@ -66,6 +64,48 @@ fn fake_tool_broken_exits_3() {
     let out = run(Command::new(&yt).arg("--version"));
     assert_eq!(out.status.code(), Some(3));
     assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn fake_tool_hang_waits_until_killed() {
+    let dir = tempfile::tempdir().unwrap();
+    let version = format!("2026.7.{}", fastrand_like());
+    let mut binary = fake_tool_bytes();
+    package::append_trailer(&mut binary, &version, false, true);
+    let yt = dir
+        .path()
+        .join(format!("yt-dlp{}", std::env::consts::EXE_SUFFIX));
+    write_executable(&yt, &binary);
+    let pid_file = hang_pid_file(&version);
+    let _ = std::fs::remove_file(&pid_file);
+    let mut child = loop {
+        match Command::new(&yt).arg("--version").spawn() {
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            other => break other.unwrap(),
+        }
+    };
+    let started = std::time::Instant::now();
+    while !pid_file.exists() {
+        assert!(started.elapsed().as_secs() < 10, "no pid file");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(child.try_wait().unwrap().is_none(), "still running");
+    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    assert_eq!(pid, child.id().to_string());
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let _ = std::fs::remove_file(&pid_file);
+}
+
+/// A number unlikely to repeat across concurrent test runs.
+fn fastrand_like() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
 }
 
 #[test]
@@ -168,6 +208,11 @@ fn fake_ffmpeg_copy_mode() {
 #[cfg(unix)]
 #[test]
 fn fake_ytdlp_on_interrupt() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::thread;
+    use std::time::Duration;
+
     unsafe extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }

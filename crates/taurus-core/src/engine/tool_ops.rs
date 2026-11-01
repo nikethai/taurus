@@ -50,6 +50,7 @@ impl Engine {
     /// Makes the tool's other kept version active (see
     /// `ToolManager::rollback`) and sends its new status.
     pub async fn rollback_tool(&self, kind: ToolKind) -> Result<(), CoreError> {
+        self.check_running()?;
         self.tools.rollback(kind)?;
         if let Some(status) = self.tools_status().into_iter().find(|s| s.kind == kind) {
             let _ = self.events.send(Event::ToolStatus(status));

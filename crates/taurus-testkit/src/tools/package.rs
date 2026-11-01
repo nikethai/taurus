@@ -37,13 +37,17 @@ pub(super) const MACOS_ZIPS: [&str; 2] = ["ffmpeg.zip", "ffprobe.zip"];
 pub(super) const TRAILER_MAGIC: &[u8; 16] = b"HYADES-FAKETOOL1";
 
 /// `<binary><payload><payload len: u32 LE><TRAILER_MAGIC>`, payload
-/// `version=<version>\nbroken=<0|1>\n`.
-pub(super) fn append_trailer(binary: &mut Vec<u8>, version: &str, broken: bool) {
+/// `version=<version>\nbroken=<0|1>\nhang=<0|1>\n`.
+pub(super) fn append_trailer(binary: &mut Vec<u8>, version: &str, broken: bool, hang: bool) {
     assert!(
         !version.contains(['\n', '\r']),
         "fake tool version must be one line"
     );
-    let payload = format!("version={version}\nbroken={}\n", u8::from(broken));
+    let payload = format!(
+        "version={version}\nbroken={}\nhang={}\n",
+        u8::from(broken),
+        u8::from(hang)
+    );
     binary.extend_from_slice(payload.as_bytes());
     binary.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     binary.extend_from_slice(TRAILER_MAGIC);

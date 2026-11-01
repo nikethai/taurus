@@ -18,7 +18,7 @@ mod tests;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use url::Url;
 
@@ -30,6 +30,10 @@ use install::Install;
 
 const DAY_SECS: i64 = 24 * 60 * 60;
 const CURRENT_FILE: &str = "current";
+/// Names the version a rollback left, which updates then skip.
+const SKIP_FILE: &str = "rolled-back-from";
+/// How long a binary may take to answer its version command.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum ToolKind {
@@ -155,6 +159,7 @@ pub struct ToolManager {
     states: Mutex<HashMap<ToolKind, ToolState>>,
     /// One install, update or rollback per tool at a time.
     locks: [tokio::sync::Mutex<()>; 3],
+    version_timeout: Duration,
 }
 
 impl ToolManager {
@@ -167,7 +172,15 @@ impl ToolManager {
             checked: Mutex::default(),
             states: Mutex::default(),
             locks: Default::default(),
+            version_timeout: VERSION_TIMEOUT,
         }
+    }
+
+    /// Test-only: a shorter limit than 10 s for the version command.
+    #[cfg(test)]
+    fn with_version_timeout(mut self, timeout: Duration) -> ToolManager {
+        self.version_timeout = timeout;
+        self
     }
 
     /// Keeps the check times in `store`'s settings, so the once-a-day /
@@ -227,6 +240,8 @@ impl ToolManager {
     /// on the network does not); otherwise this returns `Ok(false)` without
     /// a request. A tool that is not installed is left alone (`Ok(false)`;
     /// see `ensure`). A failed update leaves the active version in place.
+    /// After a `rollback`, the version rolled back from is not installed
+    /// again, forced or not, until the publisher has another one.
     pub async fn update(
         &self,
         kind: ToolKind,
@@ -248,7 +263,8 @@ impl ToolManager {
 
     /// Makes the other kept version active again (the one active before the
     /// last update, or after a rollback, the one rolled back from).
-    /// `ToolMissing` if there is none.
+    /// `ToolMissing` if there is none. The version left is remembered, so
+    /// `update` does not bring it back (see there).
     pub fn rollback(&self, kind: ToolKind) -> Result<(), CoreError> {
         let Ok(_guard) = self.locks[kind.index()].try_lock() else {
             return Err(CoreError {
@@ -266,6 +282,9 @@ impl ToolManager {
             });
         };
         install::write_current(&dir, &previous).map_err(install::io_error)?;
+        if let Some(left) = current {
+            install::write_marker(&dir, SKIP_FILE, &left).map_err(install::io_error)?;
+        }
         lock(&self.states).remove(&kind);
         Ok(())
     }
@@ -313,11 +332,13 @@ impl ToolManager {
             cfg!(target_env = "musl"),
             &self.sources,
         )?;
+        let dir = self.tool_dir(kind);
         let install = Install {
             client: &self.client,
-            dir: self.tool_dir(kind),
+            dir: dir.clone(),
             assets,
             version_arg: version_arg(kind),
+            version_timeout: self.version_timeout,
         };
         let tag = match kind {
             ToolKind::YtDlp => Some(
@@ -332,14 +353,17 @@ impl ToolManager {
             ),
             ToolKind::Ffmpeg => None,
         };
-        let unchanged = match (&tag, current) {
-            (_, None) => false,
-            (Some(tag), Some(current)) => tag == current,
-            (None, Some(current)) => install.expected_version().await? == current,
-        };
-        if unchanged {
-            return Ok(None);
+        if let Some(current) = current {
+            let latest = match &tag {
+                Some(tag) => tag.clone(),
+                None => install.expected_version().await?,
+            };
+            let skipped = install::read_marker(&dir, SKIP_FILE);
+            if latest == current || skipped.as_deref() == Some(latest.as_str()) {
+                return Ok(None);
+            }
         }
+
         let before = self.status_of(kind);
         let report = |downloaded, total| {
             let state = ToolState::Installing { downloaded, total };
@@ -351,6 +375,7 @@ impl ToolManager {
         };
         report(0, None);
         let version = install.run(tag, current, &report).await?;
+        install::remove_marker(&dir, SKIP_FILE);
         Ok(Some(
             self.tool_dir(kind).join(version).join(main_binary(kind)),
         ))

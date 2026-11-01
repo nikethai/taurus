@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
-use taurus_testkit::{FakeToolHost, ToolRelease, run_retrying};
+use taurus_testkit::{FakeToolHost, ToolRelease, hang_pid_file, run_retrying};
 
 use super::*;
 use crate::errors::ErrorKind;
@@ -183,6 +183,7 @@ async fn bad_checksum_keeps_previous() {
     assert_eq!(err.kind, ErrorKind::ChecksumMismatch, "{err}");
     assert_eq!(f.current(ToolKind::YtDlp), YT1);
     assert!(!f.tool_dir(ToolKind::YtDlp).join(YT2).exists());
+    assert!(!f.tool_dir(ToolKind::YtDlp).join(".incoming").exists());
     assert_eq!(version_output(&old, "--version").trim(), YT1);
     assert_eq!(f.status_of(ToolKind::YtDlp).state, ToolState::Ready);
 
@@ -223,6 +224,7 @@ async fn broken_binary_rolls_back() {
     assert_eq!(err.kind, ErrorKind::ToolFailed, "{err}");
     assert_eq!(f.current(ToolKind::YtDlp), YT1);
     assert!(!f.tool_dir(ToolKind::YtDlp).join(YT2).exists());
+    assert!(!f.tool_dir(ToolKind::YtDlp).join(".incoming").exists());
     let last = last.into_inner().unwrap().unwrap();
     assert_eq!(last.state, ToolState::Failed(ErrorKind::ToolFailed));
     assert_eq!(last.version.as_deref(), Some(YT1));
@@ -264,6 +266,109 @@ async fn rollback_restores_previous() {
     assert!(f.tool_dir(ToolKind::YtDlp).join(YT2).exists());
     f.manager.rollback(ToolKind::YtDlp).unwrap();
     assert_eq!(f.current(ToolKind::YtDlp), YT2);
+}
+
+#[tokio::test]
+async fn rollback_is_sticky_until_a_newer_release() {
+    let f = Fixture::new().await;
+    f.ensure(ToolKind::YtDlp).await;
+    f.host.set_release("yt-dlp", ToolRelease::new(YT2));
+    assert!(f.update(ToolKind::YtDlp, true).await.unwrap());
+    f.manager.rollback(ToolKind::YtDlp).unwrap();
+    // The publisher still has the version rolled back from: kept away,
+    // even when forced, and its kept folder is left as it is.
+    let downloads = f.host.requests("yt-dlp/");
+    assert!(!f.update(ToolKind::YtDlp, true).await.unwrap());
+    assert_eq!(f.current(ToolKind::YtDlp), YT1);
+    assert_eq!(f.host.requests("yt-dlp/"), downloads, "nothing downloaded");
+    assert!(f.tool_dir(ToolKind::YtDlp).join(YT2).exists());
+    // A newer release installs, and ends the skip.
+    f.host.set_release("yt-dlp", ToolRelease::new("2026.03.01"));
+    assert!(f.update(ToolKind::YtDlp, true).await.unwrap());
+    assert_eq!(f.current(ToolKind::YtDlp), "2026.03.01");
+    assert!(
+        !f.tool_dir(ToolKind::YtDlp)
+            .join("rolled-back-from")
+            .exists()
+    );
+
+    // Likewise for ffmpeg, whose version is its archive's hash.
+    f.ensure(ToolKind::Ffmpeg).await;
+    let first = f.current(ToolKind::Ffmpeg);
+    f.host.set_release("ffmpeg", ToolRelease::new("7.2"));
+    assert!(f.update(ToolKind::Ffmpeg, true).await.unwrap());
+    f.manager.rollback(ToolKind::Ffmpeg).unwrap();
+    assert!(!f.update(ToolKind::Ffmpeg, true).await.unwrap());
+    assert_eq!(f.current(ToolKind::Ffmpeg), first);
+}
+
+#[tokio::test]
+async fn reinstall_keeps_a_working_previous_version() {
+    let f = Fixture::new().await;
+    let old = f.ensure(ToolKind::YtDlp).await;
+    f.host.set_release("yt-dlp", ToolRelease::new(YT2));
+    assert!(f.update(ToolKind::YtDlp, true).await.unwrap());
+    // The active binary disappears: ensure installs again, keeping YT1.
+    let new = f.ensure(ToolKind::YtDlp).await;
+    std::fs::remove_file(&new).unwrap();
+    assert_eq!(f.status_of(ToolKind::YtDlp).state, ToolState::Missing);
+    assert_eq!(f.ensure(ToolKind::YtDlp).await, new);
+    assert!(old.exists(), "the working previous version is kept");
+    f.manager.rollback(ToolKind::YtDlp).unwrap();
+    assert_eq!(f.current(ToolKind::YtDlp), YT1);
+
+    // An unreadable `current` keeps the working folders too.
+    std::fs::write(f.tool_dir(ToolKind::YtDlp).join("current"), "../..").unwrap();
+    f.ensure(ToolKind::YtDlp).await;
+    assert_eq!(f.current(ToolKind::YtDlp), YT2);
+    assert!(old.exists());
+}
+
+#[tokio::test]
+async fn a_hanging_binary_times_out_and_is_killed() {
+    let f = Fixture::new().await;
+    let timeout = std::time::Duration::from_millis(500);
+    let manager = manager_for(f.tmp.path(), &f.host).with_version_timeout(timeout);
+    manager.ensure(ToolKind::YtDlp, &|_| {}).await.unwrap();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    let hanging = format!("2026.9.{nanos}");
+    let pid_file = hang_pid_file(&hanging);
+    let _ = std::fs::remove_file(&pid_file);
+    f.host.set_release(
+        "yt-dlp",
+        ToolRelease {
+            hang: true,
+            ..ToolRelease::new(&hanging)
+        },
+    );
+    let started = std::time::Instant::now();
+    let err = manager
+        .update(ToolKind::YtDlp, true, &|_| {})
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::ToolFailed, "{err}");
+    assert!(err.detail.contains("did not answer"), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(f.current(ToolKind::YtDlp), YT1);
+    assert!(!f.tool_dir(ToolKind::YtDlp).join(&hanging).exists());
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let _ = std::fs::remove_file(&pid_file);
+    // Killed and reaped before `update` returned.
+    #[cfg(unix)]
+    {
+        // SAFETY: signal 0 only checks whether the process exists.
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        assert!(!alive, "pid {pid} still exists");
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
 }
 
 #[tokio::test]
@@ -412,6 +517,7 @@ async fn every_platform_layout_installs() {
             dir: f.tmp.path().join(format!("{kind:?}-{os}-{arch}-{musl}")),
             assets,
             version_arg: version_arg(kind),
+            version_timeout: std::time::Duration::from_secs(10),
         };
         let expected = install.expected_version().await.unwrap();
         let tag = (kind != ToolKind::Ffmpeg).then(|| "1.0".to_owned());

@@ -10,7 +10,8 @@
 //! 1. appends one line to the file named by `FAKE_TOOL_ARGS_LOG` (if set):
 //!    `{"tool":"yt-dlp","pid":1234,"argv":["--flat-playlist","-J","https://…"]}`
 //!    (`argv` excludes the program name; see [`read_args_log`]);
-//! 2. if broken, prints to stderr and exits 3 whatever the arguments;
+//! 2. if broken, prints to stderr and exits 3 whatever the arguments; if
+//!    hanging, writes its pid to [`hang_pid_file`] and sleeps until killed;
 //! 3. `--version` or `-version` prints the version and exits 0: yt-dlp
 //!    `<v>`; deno `deno <v> (stable, release, <arch>-<os>)` plus two lines;
 //!    ffmpeg/ffprobe `<tool> version <v> Copyright (c) 2000-2026 the FFmpeg developers`
@@ -21,7 +22,7 @@
 //!
 //! Version and broken flag come from a trailer appended to the binary
 //! ([`fake_tool_release`]): `<binary><payload><u32 LE payload length><"HYADES-FAKETOOL1">`
-//! with payload `version=<v>\nbroken=<0|1>\n`. Without a trailer the fake
+//! with payload `version=<v>\nbroken=<0|1>\nhang=<0|1>\n`. Without a trailer the fake
 //! reads `FAKE_TOOL_VERSION` (default `0.0.0`) and `FAKE_TOOL_BROKEN=1`.
 //!
 //! # yt-dlp scenarios
@@ -84,7 +85,7 @@ pub fn fake_tool_bytes() -> Vec<u8> {
 /// The fake-tool binary with a release trailer (`version` must be one line).
 pub fn fake_tool_release(version: &str, broken: bool) -> Vec<u8> {
     let mut binary = fake_tool_bytes();
-    package::append_trailer(&mut binary, version, broken);
+    package::append_trailer(&mut binary, version, broken, false);
     binary
 }
 
@@ -165,6 +166,10 @@ pub struct ToolRelease {
     pub broken: bool,
     /// The published checksums are well-formed but wrong.
     pub corrupt_checksum: bool,
+    /// The served binaries never finish (unless broken, which wins): each
+    /// call writes its pid to [`hang_pid_file`]`(version)`, then sleeps
+    /// until killed.
+    pub hang: bool,
 }
 
 impl ToolRelease {
@@ -173,6 +178,7 @@ impl ToolRelease {
             version: version.to_owned(),
             broken: false,
             corrupt_checksum: false,
+            hang: false,
         }
     }
 }
@@ -496,5 +502,14 @@ fn build(state: &mut HostState, path: &str) -> Option<Vec<u8>> {
 }
 
 fn binary(release: &ToolRelease) -> Vec<u8> {
-    fake_tool_release(&release.version, release.broken)
+    let mut binary = fake_tool_bytes();
+    package::append_trailer(&mut binary, &release.version, release.broken, release.hang);
+    binary
+}
+
+/// Where a hanging release (`ToolRelease::hang`) of `version` writes the
+/// pid of its latest call: `<temp dir>/hyades-fake-tool-hang-<version>.pid`.
+/// Use a version unique to the test.
+pub fn hang_pid_file(version: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("hyades-fake-tool-hang-{version}.pid"))
 }

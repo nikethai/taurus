@@ -36,10 +36,18 @@ fn run() -> i32 {
         return 2;
     };
     log_args(tool, &args);
-    let (version, broken) = release();
+    let (version, broken, hang) = release();
     if broken {
         eprintln!("fake {tool}: this build is broken");
         return 3;
+    }
+    if hang {
+        // Same path as the testkit's `hang_pid_file`.
+        let pid_file = env::temp_dir().join(format!("hyades-fake-tool-hang-{version}.pid"));
+        let _ = fs::write(pid_file, std::process::id().to_string());
+        loop {
+            thread::sleep(Duration::from_secs(1));
+        }
     }
     if args.iter().any(|a| a == "--version" || a == "-version") {
         print_version(tool, &version);
@@ -64,24 +72,26 @@ fn tool_name() -> Option<&'static str> {
         .find(|t| name.starts_with(t))
 }
 
-/// Version and broken flag: the trailer if present, else `FAKE_TOOL_VERSION`
-/// (default "0.0.0") and `FAKE_TOOL_BROKEN=1`.
-fn release() -> (String, bool) {
+/// Version, broken and hang flags: the trailer if present, else
+/// `FAKE_TOOL_VERSION` (default "0.0.0") and `FAKE_TOOL_BROKEN=1` (never hangs).
+fn release() -> (String, bool, bool) {
     if let Some(payload) = env::current_exe().ok().and_then(|p| read_trailer(&p)) {
         let mut version = String::from("0.0.0");
-        let mut broken = false;
+        let (mut broken, mut hang) = (false, false);
         for line in payload.lines() {
             if let Some(v) = line.strip_prefix("version=") {
                 version = v.to_owned();
             } else if let Some(b) = line.strip_prefix("broken=") {
                 broken = b == "1";
+            } else if let Some(h) = line.strip_prefix("hang=") {
+                hang = h == "1";
             }
         }
-        return (version, broken);
+        return (version, broken, hang);
     }
     let version = env::var("FAKE_TOOL_VERSION").unwrap_or_else(|_| "0.0.0".to_owned());
     let broken = env::var("FAKE_TOOL_BROKEN").is_ok_and(|v| v == "1");
-    (version, broken)
+    (version, broken, false)
 }
 
 /// `<binary><payload><payload len: u32 LE><MAGIC>` -> payload.

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use reqwest::header::ACCEPT;
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use url::Url;
 
 use crate::errors::{CoreError, ErrorKind, classify_io};
@@ -20,7 +20,6 @@ use super::CURRENT_FILE;
 use super::catalog::{Asset, ChecksumSource, Layout, parse_sidecar, parse_sums};
 
 const INCOMING: &str = ".incoming";
-const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Download progress is reported at most once per this many bytes.
 const REPORT_STEP: u64 = 512 * 1024;
 /// ffmpeg's version: this many hex digits of its archive's SHA-256.
@@ -37,6 +36,7 @@ pub(super) struct Install<'a> {
     pub dir: PathBuf,
     pub assets: Vec<Asset>,
     pub version_arg: &'static str,
+    pub version_timeout: Duration,
 }
 
 struct Downloaded {
@@ -62,8 +62,10 @@ impl Install<'_> {
     }
 
     /// Installs the assets as version `tag` (for ffmpeg, `None`: the first
-    /// asset's hash) and makes it current, keeping `previous`. Returns the
-    /// version. On failure nothing of the new version is left.
+    /// asset's hash) and makes it current, keeping `previous`, or with no
+    /// previous version (nothing usable was current), the newest other
+    /// working version. Returns the version. On failure nothing of the new
+    /// version is left.
     pub async fn run(
         &self,
         tag: Option<String>,
@@ -125,7 +127,7 @@ impl Install<'_> {
         }
         let activated = async {
             for name in &names {
-                run_version(&target.join(name), self.version_arg).await?;
+                run_version(&target.join(name), self.version_arg, self.version_timeout).await?;
             }
             write_current(&self.dir, &version).map_err(io_error)
         };
@@ -135,7 +137,10 @@ impl Install<'_> {
             }
             return Err(e);
         }
-        prune(&self.dir, &[Some(version.as_str()), previous]);
+        let previous = previous
+            .map(str::to_owned)
+            .or_else(|| other_version(&self.dir, Some(&version), names[0]));
+        prune(&self.dir, &[Some(version.as_str()), previous.as_deref()]);
         Ok(version)
     }
 }
@@ -366,8 +371,46 @@ fn network_error(e: reqwest::Error) -> CoreError {
     }
 }
 
-/// Runs `<path> <arg>`, which must exit 0 within 10 s.
-async fn run_version(path: &Path, arg: &str) -> Result<(), CoreError> {
+/// Runs `<path> <arg>`, which must exit 0 within `timeout`; a binary that
+/// takes longer is killed (and reaped) before this returns.
+async fn run_version(path: &Path, arg: &str, timeout: Duration) -> Result<(), CoreError> {
+    let mut child = spawn_version(path, arg).await?;
+    let mut stderr = child.stderr.take().expect("stderr is piped");
+    let finished = tokio::time::timeout(timeout, async {
+        let mut text = Vec::new();
+        // A read error only loses the message.
+        let (status, _) = tokio::join!(child.wait(), stderr.read_to_end(&mut text));
+        (status, text)
+    })
+    .await;
+    let (status, stderr) = match finished {
+        Err(_) => {
+            if let Err(e) = child.kill().await {
+                tracing::warn!("could not stop {}: {e}", path.display());
+            }
+            return Err(failed(format!(
+                "{} {arg} did not answer within {} s",
+                path.display(),
+                timeout.as_secs_f32()
+            )));
+        }
+        Ok((status, stderr)) => (status, stderr),
+    };
+    let status =
+        status.map_err(|e| failed(format!("could not wait for {}: {e}", path.display())))?;
+    if status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&stderr);
+    Err(failed(format!(
+        "{} {arg} failed ({status}): {}",
+        path.display(),
+        stderr.lines().next().unwrap_or("").trim()
+    )))
+}
+
+/// Starts `<path> <arg>`, retrying while exec refuses it as busy.
+async fn spawn_version(path: &Path, arg: &str) -> Result<tokio::process::Child, CoreError> {
     let mut attempt = 0;
     loop {
         let mut command = tokio::process::Command::new(path);
@@ -382,28 +425,13 @@ async fn run_version(path: &Path, arg: &str) -> Result<(), CoreError> {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        match tokio::time::timeout(VERSION_TIMEOUT, command.output()).await {
-            Err(_) => {
-                return Err(failed(format!(
-                    "{} {arg} did not answer within 10 s",
-                    path.display()
-                )));
-            }
-            Ok(Err(e)) if is_busy(&e) && attempt + 1 < BUSY_ATTEMPTS => {
+        match command.spawn() {
+            Err(e) if is_busy(&e) && attempt + 1 < BUSY_ATTEMPTS => {
                 attempt += 1;
                 tokio::time::sleep(Duration::from_millis(25) * attempt).await;
             }
-            Ok(Err(e)) => return Err(failed(format!("could not run {}: {e}", path.display()))),
-            Ok(Ok(out)) if out.status.success() => return Ok(()),
-            Ok(Ok(out)) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                return Err(failed(format!(
-                    "{} {arg} failed ({}): {}",
-                    path.display(),
-                    out.status,
-                    stderr.lines().next().unwrap_or("").trim()
-                )));
-            }
+            Err(e) => return Err(failed(format!("could not run {}: {e}", path.display()))),
+            Ok(child) => return Ok(child),
         }
     }
 }
@@ -430,9 +458,7 @@ fn is_version_name(version: &str) -> bool {
 
 /// The version `dir/current` names, if it is a plausible one.
 pub(super) fn read_current(dir: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join(CURRENT_FILE)).ok()?;
-    let version = text.trim();
-    is_version_name(version).then(|| version.to_owned())
+    read_marker(dir, CURRENT_FILE)
 }
 
 /// Atomically makes `version` current (a new file renamed over the old).
@@ -441,6 +467,26 @@ pub(super) fn write_current(dir: &Path, version: &str) -> io::Result<()> {
     let _ = std::fs::remove_file(&temp);
     std::fs::write(&temp, format!("{version}\n"))?;
     std::fs::rename(&temp, dir.join(CURRENT_FILE))
+}
+
+/// The version a marker file in `dir` names (see `SKIP_FILE`), if plausible.
+pub(super) fn read_marker(dir: &Path, name: &str) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join(name)).ok()?;
+    let version = text.trim();
+    is_version_name(version).then(|| version.to_owned())
+}
+
+pub(super) fn write_marker(dir: &Path, name: &str, version: &str) -> io::Result<()> {
+    std::fs::write(dir.join(name), format!("{version}\n"))
+}
+
+pub(super) fn remove_marker(dir: &Path, name: &str) {
+    match std::fs::remove_file(dir.join(name)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            tracing::warn!("could not remove {}: {e}", dir.join(name).display());
+        }
+        _ => {}
+    }
 }
 
 /// The newest version folder other than `current` that holds `binary`.
