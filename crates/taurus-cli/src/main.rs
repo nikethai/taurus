@@ -294,6 +294,7 @@ fn engine_config(data_dir: PathBuf, dry_run_power: bool, autostart: bool) -> Eng
                 .split(',')
                 .filter_map(|peer| peer.trim().parse::<SocketAddr>().ok())
                 .collect(),
+            restore_in_place: false,
         });
     }
     config

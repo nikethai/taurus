@@ -54,6 +54,7 @@ fn hub_with(data_dir: &Path, peers: Vec<std::net::SocketAddr>, store: Store) -> 
         &TorrentSettings::default(),
         Some(TorrentTestNet {
             initial_peers: peers,
+            restore_in_place: false,
         }),
         store,
     )
@@ -1050,6 +1051,7 @@ fn engine_config(dir: &Path, peers: Vec<SocketAddr>, space: SpaceSource) -> Engi
     config.available_space = space;
     config.torrent_test = Some(TorrentTestNet {
         initial_peers: peers,
+        restore_in_place: false,
     });
     config
 }
@@ -1823,6 +1825,8 @@ struct Restarts {
     tmp: TempDir,
     dest: PathBuf,
     peers: Vec<SocketAddr>,
+    /// Restarts the way the product does: see `TorrentTestNet`.
+    in_place: bool,
 }
 
 impl Restarts {
@@ -1830,7 +1834,12 @@ impl Restarts {
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("dest");
         fs::create_dir_all(&dest).unwrap();
-        Restarts { tmp, dest, peers }
+        Restarts {
+            tmp,
+            dest,
+            peers,
+            in_place: false,
+        }
     }
 
     /// Without `autostart`, as a front end that only looks at the jobs: the
@@ -1838,6 +1847,9 @@ impl Restarts {
     async fn open(&self, autostart: bool, torrent: TorrentSettings) -> Engine {
         let mut config = engine_config(self.tmp.path(), self.peers.clone(), available_space);
         config.autostart = autostart;
+        if let Some(test) = &mut config.torrent_test {
+            test.restore_in_place = self.in_place;
+        }
         let engine = Engine::open(config).await.unwrap();
         engine
             .set_settings(Settings {
@@ -1855,6 +1867,13 @@ impl Restarts {
             dest_dir: self.dest.clone(),
             ..AddRequest::default()
         }
+    }
+
+    /// The ids librqbit saved its torrents under.
+    fn session_ids(&self) -> Vec<String> {
+        let list: serde_json::Value = serde_json::from_str(&self.session_file()).unwrap();
+        let ids = list["torrents"].as_object().expect("a torrent list");
+        ids.keys().cloned().collect()
     }
 
     fn session_file(&self) -> String {
@@ -2077,5 +2096,84 @@ async fn space_after_restart_counts_what_is_downloaded() {
     let view = engine.snapshot().into_iter().find(|v| v.id == id).unwrap();
     assert_eq!(view.error, None);
     assert!(fs::read(rs.dest.join(&view.file_name)).unwrap() == file);
+    engine.shutdown().await.unwrap();
+}
+
+// Restarts as the product restarts: librqbit restores its torrents and the
+// reconcile only pauses them.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_in_place_shares_from_local_data() {
+    let (seeder, a, b) = seeder().await;
+    let total = (a.len() + b.len()) as u64;
+    let rs = Restarts {
+        in_place: true,
+        ..Restarts::new(vec![seeder.addr])
+    };
+    let engine = rs.open(true, policy(None, None)).await;
+    let mut events = engine.subscribe();
+    let id = engine.add(rs.request(&seeder.magnet)).await.unwrap();
+    events_until(&mut events, |e| updated_to(e, id, JobState::Seeding)).await;
+    engine.shutdown().await.unwrap();
+    drop(engine);
+    let ids = rs.session_ids();
+    assert_eq!(ids.len(), 1);
+    // Nobody to download from: whatever it has must come from its files.
+    drop(seeder);
+
+    let engine = rs.open(true, policy(None, None)).await;
+    let mut events = engine.subscribe();
+    let seen = events_until(&mut events, |e| updated_to(e, id, JobState::Seeding)).await;
+    for event in &seen {
+        if let Some(downloaded) = progress_of(event, id) {
+            assert_eq!(downloaded, total, "it had to get pieces again");
+        }
+    }
+    let view = engine.snapshot().into_iter().find(|v| v.id == id).unwrap();
+    assert_eq!((view.downloaded, view.error), (total, None));
+    assert!(tree(&rs.dest.join("pack")) == files_of(&[("a.bin", a), ("dir/b.bin", b)]));
+    // It is the torrent librqbit restored, not one added again (under the
+    // next free id).
+    assert_eq!(rs.session_ids(), ids);
+
+    // And the policy still applies: done as soon as sharing is not wanted.
+    let mut settings = engine.settings();
+    settings.torrent.stop_ratio = Some(0.0);
+    engine.set_settings(settings).await.unwrap();
+    assert_eq!(wait_job(&engine, id).await, JobState::Completed);
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn seed_time_counts_across_a_restart() {
+    let (seeder, _, _) = seeder().await;
+    let rs = Restarts {
+        in_place: true,
+        ..Restarts::new(vec![seeder.addr])
+    };
+    let engine = rs.open(true, policy(None, Some(6))).await;
+    let mut events = engine.subscribe();
+    let id = engine.add(rs.request(&seeder.magnet)).await.unwrap();
+    events_until(&mut events, |e| updated_to(e, id, JobState::Seeding)).await;
+    let seeding = Instant::now();
+    engine.shutdown().await.unwrap();
+    drop(engine);
+    let off = Duration::from_secs(4).saturating_sub(seeding.elapsed());
+    tokio::time::sleep(off).await;
+
+    let reopened = Instant::now();
+    let engine = rs.open(true, policy(None, Some(6))).await;
+    assert_eq!(wait_job(&engine, id).await, JobState::Completed);
+    // Six seconds from when it started sharing (counted in whole seconds),
+    // not six more from the restart.
+    let (shared, after) = (seeding.elapsed(), reopened.elapsed());
+    assert!(
+        shared >= Duration::from_millis(4500),
+        "shared for {shared:?}"
+    );
+    assert!(
+        after < Duration::from_secs(5),
+        "{after:?} after the restart"
+    );
     engine.shutdown().await.unwrap();
 }

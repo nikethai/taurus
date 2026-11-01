@@ -42,6 +42,10 @@ pub type TorrentHandle = Arc<ManagedTorrent>;
 #[derive(Clone, Debug, Default)]
 pub struct TorrentTestNet {
     pub initial_peers: Vec<SocketAddr>,
+    /// Torrents librqbit restores keep no initial peers, so the reconcile
+    /// adds them again with these; with this set it only pauses them, as in
+    /// the product (for tests whose restored torrents need no peers).
+    pub restore_in_place: bool,
 }
 
 pub struct TorrentHub {
@@ -459,7 +463,7 @@ impl TorrentHub {
             tracing::info!(info_hash = %hash, "dropping a torrent no running job owns");
             return delete_in(session, hash, false).await;
         }
-        if self.test.is_none() {
+        if self.test.as_ref().is_none_or(|t| t.restore_in_place) {
             return pause_in(session, hash).await;
         }
         // Torrents librqbit restores lose their initial peers; add them
