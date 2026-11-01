@@ -34,6 +34,8 @@ export component AppWindow inherits Window {
     in property <CountdownVm> countdown;
     in property <BannerVm> banner;
     in property <bool> has-tray;
+    // Window (and taskbar) icon, drawn by the app.
+    in property <image> app-icon;
 
     callback link-entered(string);
     callback add-confirmed();
@@ -72,6 +74,7 @@ export component AppWindow inherits Window {
     }
 
     title: window-title;
+    icon: app-icon;
     preferred-width: 420px;
     preferred-height: 640px;
     min-width: 360px;

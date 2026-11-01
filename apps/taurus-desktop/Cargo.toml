@@ -18,6 +18,19 @@ futures-util = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 serde_json = { workspace = true }
+directories = { workspace = true }
+url = { workspace = true }
+notify-rust = { workspace = true }
+arboard = { workspace = true }
+auto-launch = { workspace = true }
+opener = { workspace = true }
+rfd = { workspace = true }
+# Linux uses the D-Bus StatusNotifier backend (no GTK); the feature does
+# nothing on Windows and macOS.
+tray-icon = { workspace = true, features = ["ksni"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { workspace = true }
 
 [build-dependencies]
 slint-build = { workspace = true }
@@ -25,3 +38,4 @@ slint-build = { workspace = true }
 [dev-dependencies]
 i-slint-backend-testing = { workspace = true }
 tempfile = { workspace = true }
+taurus-testkit = { workspace = true }

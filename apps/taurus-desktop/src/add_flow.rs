@@ -1,0 +1,425 @@
+//! Adding a download: a link arrives (pasted, dropped, forwarded by a
+//! second launch, or offered from the clipboard), the Add screen shows what
+//! it is, and Download hands it to the engine.
+//!
+//! Forwarded batches: the first link goes to the Add screen; the others
+//! wait in a queue and come up one by one as each Add screen is confirmed
+//! or closed. A link that arrives while the Add screen is open waits too,
+//! except one pasted in the window, which replaces it.
+
+use std::path::{Path, PathBuf};
+
+use taurus_core::{AddRequest, CoreError, ErrorKind, JobKind, LinkInfo};
+
+use crate::app::{App, UiMsg};
+use crate::{AddVm, BannerVm, Screen, format, rows};
+
+/// The link on the Add screen.
+pub(crate) struct PendingAdd {
+    seq: u64,
+    url: String,
+    /// The icon family, once the link was looked at without error.
+    kind: Option<&'static str>,
+    /// A folder picked on the Add screen for this download only.
+    folder: Option<PathBuf>,
+}
+
+/// The type subfolder a kind is sorted into when "sort by type" is on;
+/// `None` saves it in the folder itself.
+pub fn sort_folder(kind: &str) -> Option<&'static str> {
+    match kind {
+        "media" | "live" => Some("Videos"),
+        "music" => Some("Music"),
+        "image" => Some("Pictures"),
+        "file" => Some("Documents"),
+        _ => None,
+    }
+}
+
+/// The OS Downloads folder, else the home folder, else the current one.
+pub fn default_download_dir() -> PathBuf {
+    let dirs = directories::UserDirs::new();
+    dirs.as_ref()
+        .and_then(|d| d.download_dir().map(Path::to_path_buf))
+        .or_else(|| dirs.as_ref().map(|d| d.home_dir().to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Where a download of `kind` goes: the folder picked for it, else the
+/// settings folder (or the OS Downloads folder) with its type subfolder
+/// when `sort_by_type`.
+fn destination(
+    picked: Option<&Path>,
+    folder: Option<&Path>,
+    sort_by_type: bool,
+    kind: &str,
+) -> PathBuf {
+    if let Some(p) = picked {
+        return p.to_path_buf();
+    }
+    let base = folder.map_or_else(default_download_dir, Path::to_path_buf);
+    match sort_folder(kind) {
+        Some(sub) if sort_by_type => base.join(sub),
+        _ => base,
+    }
+}
+
+fn folder_text(folder: Option<&Path>) -> slint::SharedString {
+    folder
+        .map(|p| p.display().to_string())
+        .unwrap_or_default()
+        .into()
+}
+
+/// What the Add screen shows for a looked-at link.
+fn add_vm(info: &LinkInfo) -> (AddVm, &'static str) {
+    match info {
+        LinkInfo::File { name, size, .. } => {
+            let kind = rows::kind_for(name, JobKind::Http);
+            let vm = AddVm {
+                kind: kind.into(),
+                name: name.as_str().into(),
+                size_text: size.map(format::bytes).unwrap_or_default().into(),
+                ..Default::default()
+            };
+            (vm, kind)
+        }
+        LinkInfo::Torrent(t) => {
+            let kind = rows::kind_for(&t.name, JobKind::Torrent);
+            let vm = AddVm {
+                kind: kind.into(),
+                name: t.name.as_str().into(),
+                size_text: format::bytes(t.total).into(),
+                is_torrent: true,
+                files_text: t.files.len().to_string().into(),
+                ..Default::default()
+            };
+            (vm, kind)
+        }
+    }
+}
+
+impl App {
+    /// A link typed, pasted or dropped in the window: shows it on the Add
+    /// screen (already in the list, or being looked at).
+    pub(crate) fn link_entered(&self, text: &str) {
+        let url = text.trim().to_string();
+        let Some(ui) = self.window.upgrade() else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let seq = self.seq.get() + 1;
+        self.seq.set(seq);
+        let folder = self.settings.borrow().ui.folder.clone();
+        *self.pending.borrow_mut() = Some(PendingAdd {
+            seq,
+            url: url.clone(),
+            kind: None,
+            folder: None,
+        });
+        if let Some(id) = self.engine.find_by_url(&url) {
+            let view = self.view.borrow();
+            let existing = view.view(id);
+            ui.set_add(AddVm {
+                duplicate: true,
+                kind: existing
+                    .map_or("file", |v| rows::kind_for(&v.file_name, v.kind))
+                    .into(),
+                name: existing.map(|v| v.file_name.clone()).unwrap_or(url).into(),
+                size_text: existing
+                    .and_then(|v| v.total)
+                    .map(format::bytes)
+                    .unwrap_or_default()
+                    .into(),
+                folder: existing
+                    .map(|v| folder_text(Some(&v.dest_dir)))
+                    .unwrap_or_default(),
+                ..Default::default()
+            });
+            ui.set_screen(Screen::Add);
+            return;
+        }
+        ui.set_add(AddVm {
+            loading: true,
+            folder: folder_text(folder.as_deref()),
+            ..Default::default()
+        });
+        ui.set_screen(Screen::Add);
+        let engine = self.engine.clone();
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let result = engine.inspect(&url).await.map_err(|e| e.kind);
+            tx.send(UiMsg::Inspected { seq, result });
+        });
+    }
+
+    /// `Engine::inspect` answered; ignored when the user moved on.
+    pub(crate) fn inspected(&self, seq: u64, result: Result<LinkInfo, ErrorKind>) {
+        let Some(ui) = self.window.upgrade() else {
+            return;
+        };
+        let mut pending = self.pending.borrow_mut();
+        let Some(p) = pending.as_mut().filter(|p| p.seq == seq) else {
+            return;
+        };
+        let folder = self.settings.borrow().ui.folder.clone();
+        let folder = p.folder.clone().or(folder);
+        let vm = match result {
+            Ok(info) => {
+                let (vm, kind) = add_vm(&info);
+                p.kind = Some(kind);
+                AddVm {
+                    folder: folder_text(folder.as_deref()),
+                    ..vm
+                }
+            }
+            Err(kind) => AddVm {
+                error_kind: kind.as_str().into(),
+                ..Default::default()
+            },
+        };
+        ui.set_add(vm);
+    }
+
+    /// Download: the engine adds the link; the list shows it.
+    pub(crate) fn add_confirmed(&self) {
+        let Some(ui) = self.window.upgrade() else {
+            return;
+        };
+        let Some(p) = self.pending.borrow_mut().take() else {
+            return;
+        };
+        let Some(kind) = p.kind else {
+            // Still being looked at, or it failed: nothing to add.
+            *self.pending.borrow_mut() = Some(p);
+            return;
+        };
+        let (dest_dir, sorted) = {
+            let s = self.settings.borrow();
+            let dest = destination(
+                p.folder.as_deref(),
+                s.ui.folder.as_deref(),
+                s.ui.sort_by_type,
+                kind,
+            );
+            let sorted = p.folder.is_none() && s.ui.sort_by_type && sort_folder(kind).is_some();
+            (dest, sorted)
+        };
+        ui.set_tab(0);
+        ui.set_screen(Screen::Downloads);
+        let engine = self.engine.clone();
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            // The type subfolder is made when missing, inside a folder that
+            // exists (a missing drive is reported, not created).
+            if sorted && dest_dir.parent().is_some_and(Path::is_dir) {
+                let _ = tokio::fs::create_dir_all(&dest_dir).await;
+            }
+            let request = AddRequest {
+                url: p.url,
+                dest_dir,
+                ..Default::default()
+            };
+            if let Err(CoreError { kind, detail }) = engine.add(request).await {
+                eprintln!("hyades: add failed: {detail}");
+                tx.send(UiMsg::AddFailed(kind));
+            }
+        });
+        self.next_queued();
+    }
+
+    /// Back, Cancel, Close or "Show it" on the Add screen.
+    pub(crate) fn add_cancelled(&self) {
+        self.pending.borrow_mut().take();
+        self.next_queued();
+    }
+
+    /// The engine refused a confirmed add: say why on the Add screen,
+    /// unless another link is there already.
+    pub(crate) fn add_failed(&self, kind: ErrorKind) {
+        let Some(ui) = self.window.upgrade() else {
+            return;
+        };
+        if self.pending.borrow().is_some() {
+            return;
+        }
+        // An empty pending add, so Close goes on with the queue.
+        let seq = self.seq.get() + 1;
+        self.seq.set(seq);
+        *self.pending.borrow_mut() = Some(PendingAdd {
+            seq,
+            url: String::new(),
+            kind: None,
+            folder: None,
+        });
+        ui.set_add(AddVm {
+            error_kind: kind.as_str().into(),
+            ..Default::default()
+        });
+        ui.set_screen(Screen::Add);
+    }
+
+    /// The next queued link, on the next tick (after the window finished
+    /// its own navigation for this click).
+    fn next_queued(&self) {
+        if let Some(link) = self.queue.borrow_mut().pop_front() {
+            self.tx.send(UiMsg::Link(link));
+        }
+    }
+
+    /// A link from outside the window: now, or after the open Add screen.
+    pub(crate) fn offer_link(&self, link: String) {
+        if self.pending.borrow().is_some() {
+            self.queue.borrow_mut().push_back(link);
+        } else {
+            self.link_entered(&link);
+        }
+    }
+
+    /// Links from a second launch: the window comes forward and the first
+    /// link is looked at; the others wait their turn.
+    pub(crate) fn forwarded(&self, links: Vec<String>) {
+        self.show_window();
+        let mut links = links.into_iter();
+        if let Some(first) = links.next() {
+            self.offer_link(first);
+        }
+        self.queue.borrow_mut().extend(links);
+    }
+
+    /// Picks a folder: for this download on the Add screen, else the
+    /// download folder in the settings.
+    pub(crate) fn choose_folder(&self) {
+        let Some(ui) = self.window.upgrade() else {
+            return;
+        };
+        let current = self.settings.borrow().ui.folder.clone();
+        let start = current.clone().unwrap_or_else(default_download_dir);
+        let Some(picked) = rfd::FileDialog::new().set_directory(&start).pick_folder() else {
+            return;
+        };
+        if ui.get_screen() == Screen::Add
+            && let Some(p) = self.pending.borrow_mut().as_mut()
+        {
+            ui.set_add(AddVm {
+                folder: folder_text(Some(&picked)),
+                ..ui.get_add()
+            });
+            p.folder = Some(picked);
+            return;
+        }
+        self.setting_changed("folder", &picked.to_string_lossy());
+    }
+
+    /// New clipboard text: offered in the banner when it is a new link and
+    /// the user wants such offers.
+    pub(crate) fn clipboard_text(&self, text: &str) {
+        let Some(link) = self.filter.borrow_mut().offer(text) else {
+            return;
+        };
+        if !self.settings.borrow().ui.offer_copied_links {
+            return;
+        }
+        let Some(ui) = self.window.upgrade() else {
+            return;
+        };
+        ui.set_banner(banner_for(&link));
+        *self.banner_link.borrow_mut() = Some(link);
+    }
+
+    pub(crate) fn banner_download(&self) {
+        let link = self.banner_link.borrow_mut().take();
+        self.hide_banner();
+        if let Some(link) = link {
+            self.offer_link(link);
+        }
+    }
+
+    pub(crate) fn hide_banner(&self) {
+        self.banner_link.borrow_mut().take();
+        if let Some(ui) = self.window.upgrade() {
+            ui.set_banner(BannerVm::default());
+        }
+    }
+
+    /// The app put `text` on the clipboard: it is not offered back.
+    pub fn we_copied(&self, text: &str) {
+        self.filter.borrow_mut().we_copied(text);
+    }
+}
+
+/// The banner for a link: its host and the kind its file name suggests.
+fn banner_for(link: &str) -> BannerVm {
+    let (host, kind) = match url::Url::parse(link) {
+        Ok(u) if u.scheme() == "magnet" => (String::new(), "magnet"),
+        Ok(u) => {
+            let name = u
+                .path_segments()
+                .and_then(|mut s| s.next_back())
+                .unwrap_or("");
+            let kind = if name.to_ascii_lowercase().ends_with(".torrent") {
+                "magnet"
+            } else {
+                rows::kind_for(name, JobKind::Http)
+            };
+            (u.host_str().unwrap_or("").to_string(), kind)
+        }
+        Err(_) => (String::new(), "file"),
+    };
+    BannerVm {
+        visible: true,
+        host: host.into(),
+        kind: kind.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sort_folder_for_kind() {
+        assert_eq!(sort_folder("media"), Some("Videos"));
+        assert_eq!(sort_folder("live"), Some("Videos"));
+        assert_eq!(sort_folder("music"), Some("Music"));
+        assert_eq!(sort_folder("image"), Some("Pictures"));
+        assert_eq!(sort_folder("file"), Some("Documents"));
+        for kind in ["disc", "archive", "magnet"] {
+            assert_eq!(sort_folder(kind), None, "{kind}");
+        }
+    }
+
+    #[test]
+    fn destination_rules() {
+        let base = Path::new("/data/dl");
+        let picked = Path::new("/elsewhere");
+        assert_eq!(
+            destination(None, Some(base), true, "music"),
+            base.join("Music")
+        );
+        assert_eq!(destination(None, Some(base), true, "archive"), base);
+        assert_eq!(destination(None, Some(base), false, "music"), base);
+        // A folder picked for this download is used as it is.
+        assert_eq!(destination(Some(picked), Some(base), true, "music"), picked);
+        assert_eq!(
+            destination(None, None, false, "file"),
+            default_download_dir()
+        );
+    }
+
+    #[test]
+    fn banner_shows_host_and_kind() {
+        let b = banner_for("https://cdn.example.org/a/song.MP3?x=1");
+        assert_eq!(
+            (b.host.as_str(), b.kind.as_str()),
+            ("cdn.example.org", "music")
+        );
+        assert!(b.visible);
+        let b = banner_for("magnet:?xt=urn:btih:abc");
+        assert_eq!((b.host.as_str(), b.kind.as_str()), ("", "magnet"));
+        let b = banner_for("https://example.org/linux.torrent");
+        assert_eq!(b.kind.as_str(), "magnet");
+    }
+}

@@ -25,6 +25,8 @@ auto-launch = "0.6"
 interprocess = { version = "2.4", features = ["tokio"] }
 opener = { version = "0.9", features = ["reveal"] }
 rfd = "0.17"
+# Linux: asks D-Bus whether a StatusNotifier host (tray) runs.
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 
 # Runtime
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "signal"] }

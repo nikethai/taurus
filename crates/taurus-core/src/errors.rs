@@ -29,6 +29,31 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
+    /// Every kind, in declaration order (for tables that must cover them all).
+    pub const ALL: [ErrorKind; 21] = [
+        Self::ConnectionLost,
+        Self::Timeout,
+        Self::LinkExpired,
+        Self::NeedsSignIn,
+        Self::BlockedByBotCheck,
+        Self::CaptivePortal,
+        Self::RateLimited,
+        Self::QuotaExceeded,
+        Self::DiskFull,
+        Self::FolderUnavailable,
+        Self::NoPermission,
+        Self::FileTooLargeForDisk,
+        Self::FileChangedOnServer,
+        Self::ToolMissing,
+        Self::ToolFailed,
+        Self::SiteNotSupported,
+        Self::ChecksumMismatch,
+        Self::NoPeers,
+        Self::UnsafeTorrent,
+        Self::AlreadyAdded,
+        Self::Unknown,
+    ];
+
     /// Whether retrying the same request later can plausibly succeed.
     pub fn is_transient(self) -> bool {
         matches!(
@@ -161,29 +186,39 @@ mod tests {
     use std::io;
     use std::time::Duration;
 
-    const ALL: [ErrorKind; 21] = [
-        ErrorKind::ConnectionLost,
-        ErrorKind::Timeout,
-        ErrorKind::LinkExpired,
-        ErrorKind::NeedsSignIn,
-        ErrorKind::BlockedByBotCheck,
-        ErrorKind::CaptivePortal,
-        ErrorKind::RateLimited,
-        ErrorKind::QuotaExceeded,
-        ErrorKind::DiskFull,
-        ErrorKind::FolderUnavailable,
-        ErrorKind::NoPermission,
-        ErrorKind::FileTooLargeForDisk,
-        ErrorKind::FileChangedOnServer,
-        ErrorKind::ToolMissing,
-        ErrorKind::ToolFailed,
-        ErrorKind::SiteNotSupported,
-        ErrorKind::ChecksumMismatch,
-        ErrorKind::NoPeers,
-        ErrorKind::UnsafeTorrent,
-        ErrorKind::AlreadyAdded,
-        ErrorKind::Unknown,
-    ];
+    #[test]
+    fn all_lists_every_kind_once() {
+        // Exhaustive: a new variant fails to compile here until it gets an
+        // index, and the assert then needs it in ALL at that index.
+        fn index(kind: ErrorKind) -> usize {
+            match kind {
+                ErrorKind::ConnectionLost => 0,
+                ErrorKind::Timeout => 1,
+                ErrorKind::LinkExpired => 2,
+                ErrorKind::NeedsSignIn => 3,
+                ErrorKind::BlockedByBotCheck => 4,
+                ErrorKind::CaptivePortal => 5,
+                ErrorKind::RateLimited => 6,
+                ErrorKind::QuotaExceeded => 7,
+                ErrorKind::DiskFull => 8,
+                ErrorKind::FolderUnavailable => 9,
+                ErrorKind::NoPermission => 10,
+                ErrorKind::FileTooLargeForDisk => 11,
+                ErrorKind::FileChangedOnServer => 12,
+                ErrorKind::ToolMissing => 13,
+                ErrorKind::ToolFailed => 14,
+                ErrorKind::SiteNotSupported => 15,
+                ErrorKind::ChecksumMismatch => 16,
+                ErrorKind::NoPeers => 17,
+                ErrorKind::UnsafeTorrent => 18,
+                ErrorKind::AlreadyAdded => 19,
+                ErrorKind::Unknown => 20,
+            }
+        }
+        for (i, kind) in ErrorKind::ALL.into_iter().enumerate() {
+            assert_eq!(index(kind), i, "{kind:?}");
+        }
+    }
 
     #[test]
     fn status_mapping() {
@@ -213,7 +248,7 @@ mod tests {
 
     #[test]
     fn transient_kinds() {
-        for kind in ALL {
+        for kind in ErrorKind::ALL {
             let expected = matches!(
                 kind,
                 ErrorKind::ConnectionLost
@@ -227,7 +262,7 @@ mod tests {
 
     #[test]
     fn kind_string_roundtrip() {
-        for kind in ALL {
+        for kind in ErrorKind::ALL {
             assert_eq!(ErrorKind::from_str(kind.as_str()), kind);
         }
         assert_eq!(ErrorKind::from_str("nope"), ErrorKind::Unknown);

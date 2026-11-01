@@ -3,8 +3,39 @@
 //! costs the UI one refresh.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
-use taurus_core::{Event, JobId, JobView, Settings, WhenDone};
+use taurus_core::{Engine, Event, JobId, JobView, Settings, WhenDone};
+use tokio::sync::broadcast::error::RecvError;
+
+/// Feeds the engine's events into `coalescer` on the runtime until the
+/// engine's event channel closes. Subscribes, then seeds the coalescer with
+/// the engine's snapshot, so no job is missed; after falling behind the
+/// channel (events were dropped) it seeds again from a fresh snapshot.
+pub fn spawn(
+    engine: &Engine,
+    rt: &tokio::runtime::Handle,
+    coalescer: Arc<Mutex<Coalescer>>,
+) -> tokio::task::JoinHandle<()> {
+    let mut events = engine.subscribe();
+    lock(&coalescer).seed(engine.snapshot());
+    let engine = engine.clone();
+    rt.spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(event) => lock(&coalescer).push(event),
+                Err(RecvError::Lagged(_)) => lock(&coalescer).seed(engine.snapshot()),
+                Err(RecvError::Closed) => break,
+            }
+        }
+    })
+}
+
+/// The coalescer, also after a panic elsewhere while it was locked (its
+/// state stays consistent: every method leaves it whole).
+pub fn lock(c: &Mutex<Coalescer>) -> std::sync::MutexGuard<'_, Coalescer> {
+    c.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// What the when-done action is doing, from the newest such event.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,12 +83,13 @@ impl Coalescer {
         }
     }
 
-    /// Loads the jobs that exist already, from `engine.snapshot()`. Call it
-    /// after subscribing, so no event is missed (an event older than the
+    /// Replaces the known jobs with `views`, from `engine.snapshot()`. Call
+    /// it after subscribing, so no event is missed (an event older than the
     /// snapshot just replaces a view with an equal or older one, and the
-    /// next event for that job corrects it). The next flush carries them
-    /// all and is structural.
+    /// next event for that job corrects it), and again after missing
+    /// events. The next flush carries them all and is structural.
     pub fn seed(&mut self, views: Vec<JobView>) {
+        self.views.clear();
         for v in views {
             self.views.insert(v.id, v);
         }
@@ -215,6 +247,12 @@ mod tests {
         assert_eq!(f.views.len(), 1);
         c.push(Event::JobRemoved(JobId(2)));
         assert!(c.take_if_due(t0 + Duration::from_secs(4)).is_none());
+
+        // seeding again (after missed events) replaces the known jobs
+        c.seed(vec![view(3, "c", JobState::Queued)]);
+        let f = c.take_if_due(t0 + Duration::from_secs(5)).unwrap();
+        assert!(f.structural);
+        assert_eq!(f.views.iter().map(|v| v.id.0).collect::<Vec<_>>(), [3]);
     }
 
     #[test]
