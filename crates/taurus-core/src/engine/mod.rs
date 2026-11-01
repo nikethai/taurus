@@ -25,6 +25,7 @@ use crate::settings::{PowerMode, Settings, WhenDone};
 use crate::store::{JobId, JobKind, JobState, Store};
 use crate::system::{AwakeGuard, SpaceSource, available_space};
 use crate::timing::Timing;
+use crate::torrent::hub::TorrentTestNet;
 use crate::when_done::{EngineLink, WhenDoneRunner};
 
 use actor::{Actor, Command, JobMsg};
@@ -56,6 +57,9 @@ pub struct EngineConfig {
     /// disk. Not for front ends.
     #[doc(hidden)]
     pub available_space: SpaceSource,
+    /// Test-only torrent networking; front ends leave this None.
+    #[doc(hidden)]
+    pub torrent_test: Option<TorrentTestNet>,
 }
 
 impl EngineConfig {
@@ -67,6 +71,7 @@ impl EngineConfig {
             power: PowerMode::Execute,
             autostart: true,
             available_space,
+            torrent_test: None,
         }
     }
 }

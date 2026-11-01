@@ -1,7 +1,8 @@
-//! Pure torrent logic: input classification, path safety, output folders and
-//! seeding policy. Nothing here touches the network or a librqbit session.
+//! Torrents: pure logic (input classification, path safety, output folders
+//! and seeding policy) and, in `hub`, the librqbit session.
 
 pub mod files;
+pub mod hub;
 pub mod policy;
 pub mod source;
 

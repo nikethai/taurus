@@ -77,6 +77,12 @@ pub fn classify_torrent_error(message: &str) -> ErrorKind {
         "suspicious separator",
     ]) {
         ErrorKind::UnsafeTorrent
+    } else if has(&[
+        // A magnet's metadata could not be fetched from anyone.
+        "no known way to resolve peers",
+        "no way to discover torrent metainfo",
+    ]) {
+        ErrorKind::NoPeers
     } else {
         ErrorKind::Unknown
     }
@@ -186,6 +192,14 @@ mod tests {
         assert_eq!(
             k("suspicious separator in filename"),
             ErrorKind::UnsafeTorrent
+        );
+        assert_eq!(
+            k("no known way to resolve peers (no DHT, no trackers, no initial_peers)"),
+            ErrorKind::NoPeers
+        );
+        assert_eq!(
+            k("input address stream exhausted, no way to discover torrent metainfo"),
+            ErrorKind::NoPeers
         );
         assert_eq!(k("connection reset"), ErrorKind::Unknown);
         assert_eq!(k("failed (os error 50)"), ErrorKind::Unknown);

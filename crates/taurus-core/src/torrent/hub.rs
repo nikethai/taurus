@@ -1,0 +1,629 @@
+//! The one librqbit session an engine owns: started on first use, it adds,
+//! lists, pauses and deletes torrents, applies rate limits, and reconciles
+//! librqbit's own persistence with the store, which stays the source of
+//! truth.
+
+use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::num::NonZeroU32;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use librqbit::api::TorrentIdOrHash;
+use librqbit::dht::Id20;
+use librqbit::limits::LimitsConfig;
+use librqbit::{
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ListenerMode,
+    ListenerOptions, ManagedTorrent, Session, SessionOptions, SessionPersistenceConfig,
+    ValidatedTorrentMetaV1Info,
+};
+use tokio::sync::OnceCell;
+
+use super::files::stored_output_dir;
+use super::policy::classify_torrent_error;
+use super::source::Source;
+use super::{TorrentFile, TorrentInfo};
+use crate::errors::{CoreError, ErrorKind, classify_io};
+use crate::settings::TorrentSettings;
+use crate::store::{JobKind, JobRecord, JobState, Store};
+
+/// Under `data_dir`: librqbit's torrent list and fastresume bitfields.
+const SESSION_DIR: &str = "torrent-session";
+/// librqbit moves data in 16 KiB blocks and its limiter's burst is one
+/// second of the limit, so a lower limit stalls the transfer.
+const MIN_BPS: u64 = 16_384;
+
+/// librqbit's torrent handle.
+pub type TorrentHandle = Arc<ManagedTorrent>;
+
+/// Test-only networking overrides; front ends leave this None. When set, the
+/// session has no DHT, trackers, local service discovery or UPnP, listens on
+/// `127.0.0.1:0`, and every torrent added gets `initial_peers`.
+#[derive(Clone, Debug, Default)]
+pub struct TorrentTestNet {
+    pub initial_peers: Vec<SocketAddr>,
+}
+
+pub struct TorrentHub {
+    session: OnceCell<Arc<Session>>,
+    settings: TorrentSettings,
+    data_dir: PathBuf,
+    test: Option<TorrentTestNet>,
+    /// The latest `set_limits`, as librqbit takes them; a session starting
+    /// later starts with these.
+    limits: Mutex<LimitsConfig>,
+}
+
+impl TorrentHub {
+    /// Nothing starts until [`TorrentHub::session`] is first called.
+    /// `settings` is a snapshot: the port, DHT and UPnP apply when the
+    /// session starts; limits change through [`TorrentHub::set_limits`].
+    pub fn new(
+        data_dir: &Path,
+        settings: &TorrentSettings,
+        test: Option<TorrentTestNet>,
+    ) -> TorrentHub {
+        TorrentHub {
+            session: OnceCell::new(),
+            settings: settings.clone(),
+            data_dir: data_dir.to_path_buf(),
+            test,
+            limits: Mutex::new(limits_config(
+                settings.download_limit_bps,
+                settings.upload_limit_bps,
+            )),
+        }
+    }
+
+    /// The session, started on the first call.
+    pub async fn session(&self) -> Result<Arc<Session>, CoreError> {
+        self.session.get_or_try_init(|| self.start()).await.cloned()
+    }
+
+    async fn start(&self) -> Result<Arc<Session>, CoreError> {
+        let ipv6 = ipv6_available();
+        let limits = *self.limits.lock().unwrap_or_else(|e| e.into_inner());
+        let opts = session_options(
+            &self.data_dir,
+            &self.settings,
+            self.test.is_some(),
+            ipv6,
+            limits,
+        );
+        tracing::info!(
+            listen = ?opts.listen.as_ref().map(|l| l.listen_addr),
+            ipv6,
+            "starting the torrent session"
+        );
+        Session::new_with_opts(self.data_dir.join(SESSION_DIR), opts)
+            .await
+            .map_err(lib_error)
+    }
+
+    /// Adds a torrent from a magnet link, a `.torrent` URL or file. A magnet
+    /// resolves its metadata before this returns, so callers bound it with a
+    /// timeout.
+    pub async fn add(
+        &self,
+        source: &Source,
+        output: &Path,
+        only_files: Option<Vec<usize>>,
+        paused: bool,
+    ) -> Result<TorrentHandle, CoreError> {
+        let add = add_torrent(source).await?;
+        self.add_torrent(add, output, only_files, paused).await
+    }
+
+    /// Adds a torrent from its metainfo (the bencoded `.torrent` file).
+    pub async fn add_bytes(
+        &self,
+        torrent_meta: &[u8],
+        output: &Path,
+        only_files: Option<Vec<usize>>,
+        paused: bool,
+    ) -> Result<TorrentHandle, CoreError> {
+        let add = AddTorrent::from_bytes(torrent_meta.to_vec());
+        self.add_torrent(add, output, only_files, paused).await
+    }
+
+    async fn add_torrent(
+        &self,
+        add: AddTorrent<'static>,
+        output: &Path,
+        only_files: Option<Vec<usize>>,
+        paused: bool,
+    ) -> Result<TorrentHandle, CoreError> {
+        let output = output.to_str().ok_or_else(|| CoreError {
+            kind: ErrorKind::FolderUnavailable,
+            detail: format!("folder path is not valid UTF-8: {}", output.display()),
+        })?;
+        let opts = AddTorrentOptions {
+            paused,
+            only_files,
+            // Resuming or seeding needs the files already there.
+            overwrite: true,
+            output_folder: Some(output.to_string()),
+            ..self.add_options()
+        };
+        let session = self.session().await?;
+        match session
+            .add_torrent(add, Some(opts))
+            .await
+            .map_err(lib_error)?
+        {
+            AddTorrentResponse::Added(_, handle)
+            | AddTorrentResponse::AlreadyManaged(_, handle) => Ok(handle),
+            AddTorrentResponse::ListOnly(_) => Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: "librqbit listed the torrent instead of adding it".to_string(),
+            }),
+        }
+    }
+
+    fn add_options(&self) -> AddTorrentOptions {
+        AddTorrentOptions {
+            initial_peers: self.test.as_ref().map(|t| t.initial_peers.clone()),
+            ..Default::default()
+        }
+    }
+
+    /// The torrent's metadata and metainfo bytes, without adding it. A
+    /// magnet nobody serves within `timeout` is `NoPeers`.
+    pub async fn list_files(
+        &self,
+        source: &Source,
+        timeout: Duration,
+    ) -> Result<(TorrentInfo, Vec<u8>), CoreError> {
+        let add = add_torrent(source).await?;
+        let opts = AddTorrentOptions {
+            list_only: true,
+            ..self.add_options()
+        };
+        let session = self.session().await?;
+        let listed = tokio::time::timeout(timeout, session.add_torrent(add, Some(opts)))
+            .await
+            .map_err(|_| CoreError {
+                kind: ErrorKind::NoPeers,
+                detail: format!(
+                    "no peer sent the torrent's metadata within {} s",
+                    timeout.as_secs()
+                ),
+            })?
+            .map_err(lib_error)?;
+        let AddTorrentResponse::ListOnly(listed) = listed else {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: "librqbit added the torrent instead of listing it".to_string(),
+            });
+        };
+        let fallback = match source {
+            Source::Magnet { name, .. } => name.clone(),
+            _ => None,
+        };
+        let info = torrent_info(listed.info_hash, &listed.info, fallback);
+        Ok((info, listed.torrent_bytes.to_vec()))
+    }
+
+    /// Stops the torrent's transfers; pausing a paused torrent is fine.
+    pub async fn pause(&self, info_hash: &str) -> Result<(), CoreError> {
+        let session = self.session().await?;
+        let handle = find(&session, info_hash)?;
+        if handle.is_paused() {
+            return Ok(());
+        }
+        session.pause(&handle).await.map_err(lib_error)
+    }
+
+    /// Restarts the torrent's transfers; a running torrent is left alone.
+    pub async fn unpause(&self, info_hash: &str) -> Result<(), CoreError> {
+        let session = self.session().await?;
+        let handle = find(&session, info_hash)?;
+        if handle.live().is_some() {
+            return Ok(());
+        }
+        session.unpause(&handle).await.map_err(lib_error)
+    }
+
+    /// Removes the torrent from the session, and with `delete_files` its own
+    /// files (and its now-empty folders). A torrent the session does not
+    /// have is already gone.
+    pub async fn delete(&self, info_hash: &str, delete_files: bool) -> Result<(), CoreError> {
+        let session = self.session().await?;
+        let id = parse_hash(info_hash)?;
+        if session.get(TorrentIdOrHash::Hash(id)).is_none() {
+            return Ok(());
+        }
+        session
+            .delete(TorrentIdOrHash::Hash(id), delete_files)
+            .await
+            .map_err(lib_error)
+    }
+
+    /// The torrent's handle, if the session is running and has it.
+    pub fn handle(&self, info_hash: &str) -> Option<TorrentHandle> {
+        let id = parse_hash(info_hash).ok()?;
+        self.session.get()?.get(TorrentIdOrHash::Hash(id))
+    }
+
+    /// Session-wide limits in bytes/s; `None` is unlimited. Any other value
+    /// is raised to 16 KiB/s (lower stalls librqbit) and capped at
+    /// `u32::MAX`.
+    pub fn set_limits(&self, download_bps: Option<u64>, upload_bps: Option<u64>) {
+        let config = limits_config(download_bps, upload_bps);
+        *self.limits.lock().unwrap_or_else(|e| e.into_inner()) = config;
+        if let Some(session) = self.session.get() {
+            session.ratelimits.set_download_bps(config.download_bps);
+            session.ratelimits.set_upload_bps(config.upload_bps);
+        }
+    }
+
+    /// Where the running session accepts peers.
+    pub fn listen_addr(&self) -> Option<SocketAddr> {
+        self.session.get()?.listen_addr()
+    }
+
+    /// Makes the session agree with the store, starting it if needed:
+    /// - a session torrent with no job, or whose job is Completed or Failed,
+    ///   is removed (its files stay);
+    /// - one whose job may still run is paused, so only the queue starts it;
+    /// - a job that may still run, has metadata and is missing from the
+    ///   session is added back, paused.
+    ///
+    /// A torrent that cannot be fixed is logged and skipped; its job meets
+    /// the error when it runs.
+    pub async fn reconcile(&self, store: &Store) -> Result<(), CoreError> {
+        let session = self.session().await?;
+        let jobs = store.list_jobs()?;
+        let live: HashMap<&str, &JobRecord> = jobs
+            .iter()
+            .filter(|j| j.kind == JobKind::Torrent && may_run(j.state))
+            .filter_map(|j| Some((j.info_hash.as_deref()?, j)))
+            .collect();
+        let present: Vec<TorrentHandle> =
+            session.with_torrents(|it| it.map(|(_, h)| h.clone()).collect());
+
+        for handle in present {
+            let hash = handle.info_hash().as_string();
+            let owned = live.contains_key(hash.as_str());
+            if let Err(e) = self.reconcile_present(&handle, &hash, owned).await {
+                tracing::warn!(info_hash = %hash, "could not reconcile a torrent: {e}");
+            }
+        }
+        for (hash, job) in live {
+            if job.torrent_meta.is_some()
+                && self.handle(hash).is_none()
+                && let Err(e) = self.restore(job).await
+            {
+                tracing::warn!(job = job.id.0, "could not restore a torrent: {e}");
+            }
+        }
+        Ok(())
+    }
+
+    async fn reconcile_present(
+        &self,
+        handle: &TorrentHandle,
+        hash: &str,
+        owned: bool,
+    ) -> Result<(), CoreError> {
+        if !owned {
+            tracing::info!(info_hash = %hash, "dropping a torrent no running job owns");
+            return self.delete(hash, false).await;
+        }
+        if self.test.is_none() {
+            return self.pause(hash).await;
+        }
+        // Torrents librqbit restores lose their initial peers; add them
+        // again with the test peers.
+        let meta = handle
+            .with_metadata(|m| m.torrent_bytes.to_vec())
+            .map_err(lib_error)?;
+        let output = handle.output_folder().to_path_buf();
+        let only_files = handle.only_files();
+        self.delete(hash, false).await?;
+        self.add_bytes(&meta, &output, only_files, true).await?;
+        Ok(())
+    }
+
+    async fn restore(&self, job: &JobRecord) -> Result<(), CoreError> {
+        let meta = job.torrent_meta.as_deref().unwrap_or_default();
+        let info = info_from_bytes(meta)?;
+        let output = stored_output_dir(&job.dest_dir, &job.file_name, &info);
+        tracing::info!(job = job.id.0, output = %output.display(), "restoring a torrent");
+        self.add_bytes(meta, &output, job.only_files.clone(), true)
+            .await?;
+        Ok(())
+    }
+
+    /// Pauses every torrent and stops the session's tasks.
+    pub async fn shutdown(&self) {
+        if let Some(session) = self.session.get() {
+            session.stop().await;
+        }
+    }
+}
+
+impl Drop for TorrentHub {
+    fn drop(&mut self) {
+        // Background tasks hold the session alive; without this its listener
+        // stays open after the engine is gone.
+        if let Some(session) = self.session.get() {
+            session.cancellation_token().cancel();
+        }
+    }
+}
+
+/// Jobs whose torrent belongs in the session.
+fn may_run(state: JobState) -> bool {
+    matches!(
+        state,
+        JobState::Queued
+            | JobState::Waiting
+            | JobState::Downloading
+            | JobState::Seeding
+            | JobState::Paused
+    )
+}
+
+fn find(session: &Session, info_hash: &str) -> Result<TorrentHandle, CoreError> {
+    session
+        .get(TorrentIdOrHash::Hash(parse_hash(info_hash)?))
+        .ok_or_else(|| CoreError {
+            kind: ErrorKind::Unknown,
+            detail: format!("torrent {info_hash} is not in the session"),
+        })
+}
+
+fn parse_hash(info_hash: &str) -> Result<Id20, CoreError> {
+    Id20::from_str(info_hash).map_err(|e| CoreError {
+        kind: ErrorKind::Unknown,
+        detail: format!("bad info hash {info_hash:?}: {e:#}"),
+    })
+}
+
+/// A librqbit error, with its whole cause chain: io errors are wrapped in
+/// context, so `os error N` is only in a cause.
+fn lib_error(e: impl std::fmt::Display) -> CoreError {
+    let detail = format!("{e:#}");
+    CoreError {
+        kind: classify_torrent_error(&detail),
+        detail,
+    }
+}
+
+async fn add_torrent(source: &Source) -> Result<AddTorrent<'static>, CoreError> {
+    Ok(match source {
+        Source::Magnet { uri, .. } => AddTorrent::from_url(uri.clone()),
+        Source::TorrentUrl(url) => AddTorrent::from_url(url.to_string()),
+        Source::TorrentFile(path) => {
+            AddTorrent::from_bytes(tokio::fs::read(path).await.map_err(|e| CoreError {
+                kind: classify_io(&e),
+                detail: format!("cannot read {}: {e}", path.display()),
+            })?)
+        }
+        Source::Http(url) => {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: format!("{url} is not a torrent"),
+            });
+        }
+    })
+}
+
+/// Parses and validates metainfo bytes.
+pub fn info_from_bytes(bytes: &[u8]) -> Result<TorrentInfo, CoreError> {
+    let meta = librqbit::torrent_from_bytes(bytes).map_err(lib_error)?;
+    let info = meta.info.data.validate().map_err(lib_error)?;
+    Ok(torrent_info(meta.info_hash, &info, None))
+}
+
+/// `fallback` names a torrent whose metadata has none (else the info hash).
+fn torrent_info<B: AsRef<[u8]>>(
+    info_hash: Id20,
+    info: &ValidatedTorrentMetaV1Info<B>,
+    fallback: Option<String>,
+) -> TorrentInfo {
+    let info_hash = info_hash.as_string();
+    let name = info
+        .name()
+        .map(|n| n.into_owned())
+        .filter(|n| !n.is_empty())
+        .or(fallback)
+        .unwrap_or_else(|| info_hash.clone());
+    let files = info
+        .iter_file_details()
+        .enumerate()
+        .map(|(index, f)| TorrentFile {
+            index,
+            path: f.filename.to_vec().join("/"),
+            size: f.len,
+        })
+        .collect();
+    TorrentInfo {
+        info_hash,
+        name,
+        files,
+        total: info.lengths().total_length(),
+    }
+}
+
+/// Whether this host can open IPv6 sockets at all.
+fn ipv6_available() -> bool {
+    UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).is_ok()
+}
+
+/// The session's options. Without IPv6 everything binds IPv4, since
+/// librqbit's listener and DHT default to `[::]` and fail to start there.
+fn session_options(
+    data_dir: &Path,
+    settings: &TorrentSettings,
+    test: bool,
+    ipv6: bool,
+    ratelimits: LimitsConfig,
+) -> SessionOptions {
+    let port = settings.listen_port.unwrap_or(0);
+    let listen_addr: SocketAddr = if test {
+        (Ipv4Addr::LOCALHOST, 0).into()
+    } else if ipv6 {
+        (Ipv6Addr::UNSPECIFIED, port).into()
+    } else {
+        (Ipv4Addr::UNSPECIFIED, port).into()
+    };
+    SessionOptions {
+        persistence: Some(SessionPersistenceConfig::Json {
+            folder: Some(data_dir.join(SESSION_DIR)),
+        }),
+        fastresume: true,
+        listen: Some(ListenerOptions {
+            mode: ListenerMode::TcpOnly,
+            listen_addr,
+            enable_upnp_port_forwarding: settings.upnp && !test,
+            ipv4_only: !ipv6,
+            ..Default::default()
+        }),
+        dht: (settings.dht && !test).then(DhtSessionConfig::default),
+        disable_trackers: test,
+        disable_local_service_discovery: test,
+        ipv4_only: !ipv6,
+        peer_limit: settings.peer_limit.map(|n| n as usize),
+        client_name_and_version: Some(format!("Hyades/{}", crate::VERSION)),
+        ratelimits,
+        ..Default::default()
+    }
+}
+
+fn limits_config(download_bps: Option<u64>, upload_bps: Option<u64>) -> LimitsConfig {
+    LimitsConfig {
+        download_bps: clamp_bps(download_bps),
+        upload_bps: clamp_bps(upload_bps),
+    }
+}
+
+fn clamp_bps(bps: Option<u64>) -> Option<NonZeroU32> {
+    let bps = bps?.clamp(MIN_BPS, u64::from(u32::MAX));
+    NonZeroU32::new(u32::try_from(bps).unwrap_or(u32::MAX))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(test: bool, ipv6: bool) -> SessionOptions {
+        let settings = TorrentSettings {
+            listen_port: Some(6881),
+            peer_limit: Some(50),
+            ..TorrentSettings::default()
+        };
+        let limits = limits_config(Some(100_000), None);
+        session_options(Path::new("/data"), &settings, test, ipv6, limits)
+    }
+
+    #[test]
+    fn product_options_with_ipv6() {
+        let o = options(false, true);
+        let listen = o.listen.as_ref().unwrap();
+        assert_eq!(listen.listen_addr, "[::]:6881".parse().unwrap());
+        assert!(!listen.ipv4_only && !o.ipv4_only);
+        assert!(listen.enable_upnp_port_forwarding);
+        assert!(matches!(listen.mode, ListenerMode::TcpOnly));
+        assert!(o.dht.is_some());
+        assert!(!o.disable_trackers && !o.disable_local_service_discovery);
+        assert!(o.fastresume);
+        match &o.persistence {
+            Some(SessionPersistenceConfig::Json { folder }) => {
+                assert_eq!(folder.as_deref(), Some(Path::new("/data/torrent-session")))
+            }
+            _ => panic!("JSON persistence expected"),
+        }
+        assert_eq!(o.peer_limit, Some(50));
+        assert_eq!(
+            o.client_name_and_version,
+            Some(format!("Hyades/{}", env!("CARGO_PKG_VERSION")))
+        );
+        assert_eq!(o.ratelimits.download_bps, NonZeroU32::new(100_000));
+        assert_eq!(o.ratelimits.upload_bps, None);
+    }
+
+    #[test]
+    fn product_options_without_ipv6_bind_ipv4() {
+        let o = options(false, false);
+        let listen = o.listen.as_ref().unwrap();
+        assert_eq!(listen.listen_addr, "0.0.0.0:6881".parse().unwrap());
+        assert!(listen.ipv4_only);
+        // The DHT binds 0.0.0.0 too.
+        assert!(o.ipv4_only);
+        assert!(o.dht.is_some());
+    }
+
+    #[test]
+    fn random_port_and_settings_off() {
+        let settings = TorrentSettings {
+            upnp: false,
+            dht: false,
+            ..TorrentSettings::default()
+        };
+        let o = session_options(
+            Path::new("/d"),
+            &settings,
+            false,
+            true,
+            LimitsConfig::default(),
+        );
+        let listen = o.listen.as_ref().unwrap();
+        assert_eq!(listen.listen_addr.port(), 0);
+        assert!(!listen.enable_upnp_port_forwarding);
+        assert!(o.dht.is_none());
+        assert_eq!(o.peer_limit, None);
+    }
+
+    #[test]
+    fn test_options_are_private_loopback() {
+        for ipv6 in [true, false] {
+            let o = options(true, ipv6);
+            let listen = o.listen.as_ref().unwrap();
+            assert_eq!(listen.listen_addr, "127.0.0.1:0".parse().unwrap());
+            assert!(!listen.enable_upnp_port_forwarding);
+            assert!(o.dht.is_none());
+            assert!(o.disable_trackers && o.disable_local_service_discovery);
+            assert!(o.persistence.is_some() && o.fastresume);
+        }
+    }
+
+    #[test]
+    fn limits_are_clamped() {
+        let n = NonZeroU32::new;
+        assert_eq!(clamp_bps(None), None);
+        assert_eq!(clamp_bps(Some(0)), n(16_384));
+        assert_eq!(clamp_bps(Some(16_383)), n(16_384));
+        assert_eq!(clamp_bps(Some(16_385)), n(16_385));
+        assert_eq!(clamp_bps(Some(u64::from(u32::MAX) + 1)), n(u32::MAX));
+        assert_eq!(clamp_bps(Some(u64::MAX)), n(u32::MAX));
+    }
+
+    #[test]
+    fn info_from_bytes_lists_files() {
+        let bytes = taurus_testkit::make_torrent_bytes(
+            "set",
+            &[("a.bin", &[1; 40_000]), ("sub/b.bin", &[2; 5])],
+            16_384,
+        );
+        let info = info_from_bytes(&bytes).unwrap();
+        assert_eq!(info.name, "set");
+        assert_eq!(info.total, 40_005);
+        assert_eq!(info.info_hash.len(), 40);
+        let files: Vec<_> = info
+            .files
+            .iter()
+            .map(|f| (f.index, &*f.path, f.size))
+            .collect();
+        assert_eq!(files, [(0, "a.bin", 40_000), (1, "sub/b.bin", 5)]);
+
+        let evil = taurus_testkit::make_torrent_bytes("x", &[("../e", b"boo")], 16_384);
+        assert_eq!(
+            info_from_bytes(&evil).unwrap_err().kind,
+            ErrorKind::UnsafeTorrent
+        );
+    }
+}

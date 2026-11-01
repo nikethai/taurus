@@ -123,6 +123,30 @@ fn first_free(dest: &Path, base: &str, first: u32, taken: &dyn Fn(&str) -> bool)
         .expect("unbounded counter yields a free name")
 }
 
+/// What a torrent job stores as its `file_name`: the entry its files occupy
+/// in `dest`. That is the raw first path component of a single file saved
+/// straight into `dest` (the name librqbit writes), otherwise the name of the
+/// folder [`output_dir`] chose (`Show (1)`).
+pub fn stored_name(dest: &Path, output: &Path, info: &TorrentInfo) -> String {
+    match info.files.as_slice() {
+        [file] if output == dest => file.path.split('/').next().unwrap_or("").to_string(),
+        _ => output
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    }
+}
+
+/// Where a stored torrent job's files are: the inverse of [`stored_name`].
+/// A folder chosen for a single file always has a ` (n)` suffix, so it never
+/// equals the file's own first path component.
+pub fn stored_output_dir(dest: &Path, file_name: &str, info: &TorrentInfo) -> PathBuf {
+    match info.files.as_slice() {
+        [file] if file.path.split('/').next() == Some(file_name) => dest.to_path_buf(),
+        _ => dest.join(file_name),
+    }
+}
+
 /// Bytes of the selected files (`None` selects every file).
 pub fn selected_total(info: &TorrentInfo, only_files: Option<&[usize]>) -> u64 {
     info.files
@@ -311,6 +335,40 @@ mod tests {
         let name = second.file_name().unwrap().to_str().unwrap();
         assert!(name.len() + 5 <= 255, "len {}", name.len());
         assert!(name.ends_with(" (1)"));
+    }
+
+    #[test]
+    fn stored_name_roundtrips_output_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let none = HashSet::new();
+        let single = info("movie.mkv", vec![file(0, "movie.mkv", 5)]);
+        let nested = info("sub", vec![file(0, "sub/x.mkv", 5)]);
+        let multi = info("Show", vec![file(0, "a", 1), file(1, "b", 2)]);
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            for t in [&single, &nested, &multi] {
+                let out = output_dir(d, t, &none);
+                let name = stored_name(d, &out, t);
+                assert_eq!(stored_output_dir(d, &name, t), out, "{name}");
+                seen.push(name);
+            }
+            // Take every name, so the second round gets folders.
+            fs::write(d.join("movie.mkv"), b"x").unwrap();
+            fs::create_dir_all(d.join("sub")).unwrap();
+            fs::create_dir_all(d.join("Show")).unwrap();
+        }
+        assert_eq!(
+            seen,
+            [
+                "movie.mkv",
+                "sub",
+                "Show",
+                "movie (1)",
+                "sub (1)",
+                "Show (1)"
+            ]
+        );
     }
 
     #[test]
