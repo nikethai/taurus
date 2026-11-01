@@ -120,9 +120,21 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
         Ok(()) => watch(ctx, job, &info, &output, total, &mut uploads).await,
         Err(e) => Err(e),
     };
-    // Whatever ended the run, sharing stops with it.
-    if let Err(e) = ctx.hub.pause(&info.info_hash).await {
-        tracing::warn!(job = job.id.0, "could not pause the torrent: {e}");
+    // Whatever ended the run, sharing stops with it. A torrent that is done
+    // for good (Completed or Failed) leaves the session, files kept, so that
+    // librqbit does not bring it back, files and all, when it next starts.
+    let done = match &end {
+        Ok(End::Completed) => true,
+        Ok(End::Cancelled) => false,
+        Err(e) => !e.kind.is_transient(),
+    };
+    let stopped = if done {
+        ctx.hub.delete(&info.info_hash, false).await
+    } else {
+        ctx.hub.pause(&info.info_hash).await
+    };
+    if let Err(e) = stopped {
+        tracing::warn!(job = job.id.0, "could not stop the torrent: {e}");
     }
     let committed = ctx.store.commit_torrent_progress(job.id, uploads.total());
     let end = end?;

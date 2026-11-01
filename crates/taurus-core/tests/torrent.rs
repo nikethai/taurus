@@ -684,8 +684,8 @@ async fn runner_downloads_and_seeds_until_ratio() {
     );
     assert_eq!(job.total, Some((a.len() + b.len()) as u64));
     assert!(job.seed_started_at.is_some());
-    // Sharing stopped, and the runner let go of the torrent.
-    assert!(rig.hub.handle(&seeder.info_hash).unwrap().is_paused());
+    // Sharing stopped: the torrent left the session, its files kept.
+    assert!(rig.hub.handle(&seeder.info_hash).is_none());
     rig.hub.shutdown().await;
 }
 
@@ -1814,4 +1814,176 @@ async fn pause_and_resume_torrent() {
     let folder = rig.dest.join(rig.view(id).file_name);
     assert_eq!(tree(&folder), files_of(&[("a.bin", a), ("dir/b.bin", b)]));
     rig.engine.shutdown().await.unwrap();
+}
+
+// What a later session start must not bring back.
+
+/// Engines on one data dir in `<tmp>/data`, saving into `<tmp>/dest`.
+struct Restarts {
+    tmp: TempDir,
+    dest: PathBuf,
+    peers: Vec<SocketAddr>,
+}
+
+impl Restarts {
+    fn new(peers: Vec<SocketAddr>) -> Restarts {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        Restarts { tmp, dest, peers }
+    }
+
+    /// Without `autostart`, as a front end that only looks at the jobs: the
+    /// torrent session does not start.
+    async fn open(&self, autostart: bool, torrent: TorrentSettings) -> Engine {
+        let mut config = engine_config(self.tmp.path(), self.peers.clone(), available_space);
+        config.autostart = autostart;
+        let engine = Engine::open(config).await.unwrap();
+        engine
+            .set_settings(Settings {
+                torrent,
+                ..Settings::default()
+            })
+            .await
+            .unwrap();
+        engine
+    }
+
+    fn request(&self, input: &str) -> AddRequest {
+        AddRequest {
+            url: input.to_string(),
+            dest_dir: self.dest.clone(),
+            ..AddRequest::default()
+        }
+    }
+
+    fn session_file(&self) -> String {
+        let path = self.tmp.path().join("data/torrent-session/session.json");
+        fs::read_to_string(path).unwrap_or_default()
+    }
+
+    /// Queues `magnet` while the session is not running, then opens an
+    /// engine that starts the session for it and lets it complete.
+    async fn start_session_for(&self, magnet: &str) {
+        let engine = self.open(false, policy(Some(0.0), None)).await;
+        let id = engine.add(self.request(magnet)).await.unwrap();
+        engine.shutdown().await.unwrap();
+        drop(engine);
+        let engine = self.open(true, policy(Some(0.0), None)).await;
+        assert_eq!(wait_job(&engine, id).await, JobState::Completed);
+        engine.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removed_torrent_does_not_come_back() {
+    let (seeder, _, _) = seeder().await;
+    let other = TorrentSeeder::start("other", &[("o.bin", data(100 * 1024, 13))], None).await;
+    let rs = Restarts::new(vec![seeder.addr, other.addr]);
+    // Sharing as Taurus stops: librqbit saves it.
+    let engine = rs.open(true, policy(None, None)).await;
+    let mut events = engine.subscribe();
+    let id = engine.add(rs.request(&seeder.magnet)).await.unwrap();
+    events_until(&mut events, |e| updated_to(e, id, JobState::Seeding)).await;
+    engine.shutdown().await.unwrap();
+    drop(engine);
+    assert!(rs.session_file().contains(&seeder.info_hash));
+
+    // Removed with its files while the session is not running.
+    let engine = rs.open(false, policy(None, None)).await;
+    engine.remove(id, true).await.unwrap();
+    engine.shutdown().await.unwrap();
+    drop(engine);
+    assert!(!rs.dest.join("pack").exists());
+
+    // A later session, started for another torrent, does not restore it.
+    rs.start_session_for(&other.magnet).await;
+    assert_eq!(
+        sizes(&rs.dest),
+        BTreeMap::from([("o.bin".into(), 100 * 1024)])
+    );
+    assert!(!rs.session_file().contains(&seeder.info_hash));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn completed_torrent_files_moved_away_do_not_come_back() {
+    let (seeder, a, b) = seeder().await;
+    let other = TorrentSeeder::start("other", &[("o.bin", data(100 * 1024, 13))], None).await;
+    let rs = Restarts::new(vec![seeder.addr, other.addr]);
+    let engine = rs.open(true, policy(Some(0.0), None)).await;
+    let id = engine.add(rs.request(&seeder.magnet)).await.unwrap();
+    assert_eq!(wait_job(&engine, id).await, JobState::Completed);
+    engine.shutdown().await.unwrap();
+    drop(engine);
+
+    // The user moves the finished files elsewhere.
+    let moved = rs.tmp.path().join("moved");
+    fs::rename(rs.dest.join("pack"), &moved).unwrap();
+    rs.start_session_for(&other.magnet).await;
+    assert_eq!(
+        sizes(&rs.dest),
+        BTreeMap::from([("o.bin".into(), 100 * 1024)])
+    );
+    assert!(tree(&moved) == files_of(&[("a.bin", a), ("dir/b.bin", b)]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unreadable_session_list_does_not_block_the_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    let dest = tmp.path().join("out");
+    let folder = data_dir.join("torrent-session");
+    fs::create_dir_all(&folder).unwrap();
+    fs::create_dir_all(&dest).unwrap();
+    fs::write(folder.join("session.json"), b"{ not json").unwrap();
+    let meta = make_torrent_bytes("kept", &[("k.bin", &data(20_000, 1))], 16_384);
+    let store = Store::open(&data_dir.join("taurus.db")).unwrap();
+    store
+        .insert_job(&torrent_job(&dest, "kept", &meta))
+        .unwrap();
+
+    let hub = hub_with(&data_dir, vec![], store);
+    hub.session().await.unwrap();
+    // The store's torrent is added back.
+    assert!(hub.handle(&hash_of(&meta)).is_some());
+    hub.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remove_with_files_deletes_empty_placeholders() {
+    // Whole pieces per file: the unselected file gets no byte.
+    let a = data(64 * 1024, 51);
+    let seeder = TorrentSeeder::start(
+        "pair",
+        &[("a.bin", a.clone()), ("b.bin", data(32 * 1024, 52))],
+        None,
+    )
+    .await;
+    let rs = Restarts::new(vec![seeder.addr]);
+    let engine = rs.open(true, policy(Some(0.0), None)).await;
+    let info = engine.torrent_files(&seeder.magnet).await.unwrap();
+    let index = info.files.iter().find(|f| f.path == "a.bin").unwrap().index;
+    let request = AddRequest {
+        only_files: Some(vec![index]),
+        ..rs.request(&seeder.magnet)
+    };
+    let id = engine.add(request).await.unwrap();
+    assert_eq!(wait_job(&engine, id).await, JobState::Completed);
+    engine.shutdown().await.unwrap();
+    drop(engine);
+    let folder = rs.dest.join("pair");
+    assert_eq!(fs::read(folder.join("a.bin")).unwrap(), a);
+    assert_eq!(fs::metadata(folder.join("b.bin")).unwrap().len(), 0);
+
+    // Removed while the session is not running: the files are ours to
+    // delete, the empty one librqbit made too.
+    let engine = rs.open(false, policy(Some(0.0), None)).await;
+    engine.remove(id, true).await.unwrap();
+    assert!(!folder.exists(), "left: {:?}", sizes(&rs.dest));
+    engine.shutdown().await.unwrap();
+}
+
+/// Every file under `dir` with its size, by its `/`-joined path inside it.
+fn sizes(dir: &Path) -> BTreeMap<String, usize> {
+    tree(dir).into_iter().map(|(k, v)| (k, v.len())).collect()
 }

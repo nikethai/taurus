@@ -3,7 +3,7 @@
 //! librqbit's own persistence with the store, which stays the source of
 //! truth.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
@@ -21,6 +21,7 @@ use super::files::stored_output_dir;
 pub use super::meta::info_from_bytes;
 use super::meta::{add_torrent, hash_of, torrent_info};
 use super::options::{SESSION_DIR, ipv6_available, limits_config, session_options};
+use super::persist::prune;
 use super::policy::classify_torrent_error;
 use super::source::Source;
 use crate::errors::{CoreError, ErrorKind};
@@ -127,6 +128,19 @@ impl TorrentHub {
     }
 
     async fn start(&self) -> Result<Arc<Session>, CoreError> {
+        // librqbit restores (and opens the files of) what it saved before
+        // the reconcile below can drop it.
+        let keep: HashSet<String> = self
+            .store
+            .list_jobs()?
+            .into_iter()
+            .filter(|j| j.kind == JobKind::Torrent && may_run(j.state) && j.torrent_meta.is_some())
+            .filter_map(|j| j.info_hash)
+            .collect();
+        prune(&self.data_dir.join(SESSION_DIR), &keep).map_err(|e| CoreError {
+            kind: ErrorKind::Unknown,
+            detail: format!("could not prune the torrent session's list: {e}"),
+        })?;
         let ipv6 = ipv6_available();
         let limits = *lock(&self.limits);
         let opts = session_options(

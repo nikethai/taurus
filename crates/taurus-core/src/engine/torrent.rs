@@ -339,13 +339,16 @@ impl Actor {
 }
 
 /// Deletes what is left of the torrent's files in `output` (librqbit may not
-/// have had the torrent, or was not asked to delete), then the folders they
-/// leave empty inside `output`, and `output` itself if it is not `dest` and
-/// is empty: `dest` is never removed.
+/// have had the torrent, or was not asked to delete): each at its exact path,
+/// if it has the size the torrent gives it or is empty (librqbit creates
+/// every file, even one not selected). Then the folders they leave empty
+/// inside `output`, and `output` itself if it is not `dest` and is empty:
+/// `dest` is never removed.
 fn delete_files_of(dest: &Path, output: &Path, info: &TorrentInfo) -> Result<(), CoreError> {
     for file in &info.files {
         let path = file_path(output, file);
-        let ours = std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == file.size);
+        let ours = std::fs::metadata(&path)
+            .is_ok_and(|m| m.is_file() && (m.len() == file.size || m.len() == 0));
         if ours {
             remove_if_exists(&path)?;
         }

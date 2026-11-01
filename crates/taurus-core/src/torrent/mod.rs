@@ -7,6 +7,7 @@ pub mod hub;
 pub mod job;
 mod meta;
 mod options;
+mod persist;
 pub mod policy;
 pub mod source;
 
