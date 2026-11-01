@@ -6,20 +6,20 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use librqbit::api::TorrentIdOrHash;
-use librqbit::dht::Id20;
+use librqbit::dht::{DhtPersistenceConfig, Id20};
 use librqbit::limits::LimitsConfig;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ListenerMode,
     ListenerOptions, ManagedTorrent, Session, SessionOptions, SessionPersistenceConfig,
     ValidatedTorrentMetaV1Info,
 };
-use tokio::sync::OnceCell;
 
 use super::files::stored_output_dir;
 use super::policy::classify_torrent_error;
@@ -31,6 +31,8 @@ use crate::store::{JobKind, JobRecord, JobState, Store};
 
 /// Under `data_dir`: librqbit's torrent list and fastresume bitfields.
 const SESSION_DIR: &str = "torrent-session";
+/// Under `SESSION_DIR`: the DHT's routing table and port.
+const DHT_FILE: &str = "dht.json";
 /// librqbit moves data in 16 KiB blocks and its limiter's burst is one
 /// second of the limit, so a lower limit stalls the transfer.
 const MIN_BPS: u64 = 16_384;
@@ -47,7 +49,14 @@ pub struct TorrentTestNet {
 }
 
 pub struct TorrentHub {
-    session: OnceCell<Arc<Session>>,
+    /// The running session: `None` before the first start and after
+    /// shutdown.
+    session: Mutex<Option<Arc<Session>>>,
+    /// Held while the session starts or stops, so only one start runs.
+    lifecycle: tokio::sync::Mutex<()>,
+    /// Set by `shutdown`; the session never starts again.
+    closed: AtomicBool,
+    store: Store,
     settings: TorrentSettings,
     data_dir: PathBuf,
     test: Option<TorrentTestNet>,
@@ -60,13 +69,18 @@ impl TorrentHub {
     /// Nothing starts until [`TorrentHub::session`] is first called.
     /// `settings` is a snapshot: the port, DHT and UPnP apply when the
     /// session starts; limits change through [`TorrentHub::set_limits`].
+    /// `store` is what every start reconciles the session with.
     pub fn new(
         data_dir: &Path,
         settings: &TorrentSettings,
         test: Option<TorrentTestNet>,
+        store: Store,
     ) -> TorrentHub {
         TorrentHub {
-            session: OnceCell::new(),
+            session: Mutex::new(None),
+            lifecycle: tokio::sync::Mutex::new(()),
+            closed: AtomicBool::new(false),
+            store,
             settings: settings.clone(),
             data_dir: data_dir.to_path_buf(),
             test,
@@ -77,14 +91,41 @@ impl TorrentHub {
         }
     }
 
-    /// The session, started on the first call.
+    /// The session. The first call starts it and reconciles it with the
+    /// store (see [`TorrentHub::reconcile`]) before anything else can use
+    /// it. After [`TorrentHub::shutdown`] this is an error.
     pub async fn session(&self) -> Result<Arc<Session>, CoreError> {
-        self.session.get_or_try_init(|| self.start()).await.cloned()
+        if let Some(session) = self.running()? {
+            return Ok(session);
+        }
+        let _start = self.lifecycle.lock().await;
+        if let Some(session) = self.running()? {
+            return Ok(session);
+        }
+        let session = self.start().await?;
+        *lock(&self.session) = Some(session.clone());
+        // A `set_limits` while the session was starting saw no session.
+        self.apply_limits(&session);
+        Ok(session)
+    }
+
+    fn running(&self) -> Result<Option<Arc<Session>>, CoreError> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: "the torrent session is shut down".to_string(),
+            });
+        }
+        Ok(self.current())
+    }
+
+    fn current(&self) -> Option<Arc<Session>> {
+        lock(&self.session).clone()
     }
 
     async fn start(&self) -> Result<Arc<Session>, CoreError> {
         let ipv6 = ipv6_available();
-        let limits = *self.limits.lock().unwrap_or_else(|e| e.into_inner());
+        let limits = *lock(&self.limits);
         let opts = session_options(
             &self.data_dir,
             &self.settings,
@@ -97,14 +138,21 @@ impl TorrentHub {
             ipv6,
             "starting the torrent session"
         );
-        Session::new_with_opts(self.data_dir.join(SESSION_DIR), opts)
+        let session = Session::new_with_opts(self.data_dir.join(SESSION_DIR), opts)
             .await
-            .map_err(lib_error)
+            .map_err(lib_error)?;
+        // librqbit has already restored, and started, what it persisted.
+        if let Err(e) = self.reconcile_with(&session).await {
+            session.cancellation_token().cancel();
+            return Err(e);
+        }
+        Ok(session)
     }
 
-    /// Adds a torrent from a magnet link, a `.torrent` URL or file. A magnet
+    /// Adds a torrent from a magnet link or a `.torrent` file. A magnet
     /// resolves its metadata before this returns, so callers bound it with a
-    /// timeout.
+    /// timeout. A `.torrent` URL is refused: fetch it with the job's client
+    /// and use [`TorrentHub::add_bytes`].
     pub async fn add(
         &self,
         source: &Source,
@@ -113,7 +161,8 @@ impl TorrentHub {
         paused: bool,
     ) -> Result<TorrentHandle, CoreError> {
         let add = add_torrent(source).await?;
-        self.add_torrent(add, output, only_files, paused).await
+        let session = self.session().await?;
+        self.add_in(&session, add, output, only_files, paused).await
     }
 
     /// Adds a torrent from its metainfo (the bencoded `.torrent` file).
@@ -124,12 +173,26 @@ impl TorrentHub {
         only_files: Option<Vec<usize>>,
         paused: bool,
     ) -> Result<TorrentHandle, CoreError> {
-        let add = AddTorrent::from_bytes(torrent_meta.to_vec());
-        self.add_torrent(add, output, only_files, paused).await
+        let session = self.session().await?;
+        self.add_bytes_in(&session, torrent_meta, output, only_files, paused)
+            .await
     }
 
-    async fn add_torrent(
+    async fn add_bytes_in(
         &self,
+        session: &Arc<Session>,
+        torrent_meta: &[u8],
+        output: &Path,
+        only_files: Option<Vec<usize>>,
+        paused: bool,
+    ) -> Result<TorrentHandle, CoreError> {
+        let add = AddTorrent::from_bytes(torrent_meta.to_vec());
+        self.add_in(session, add, output, only_files, paused).await
+    }
+
+    async fn add_in(
+        &self,
+        session: &Arc<Session>,
         add: AddTorrent<'static>,
         output: &Path,
         only_files: Option<Vec<usize>>,
@@ -147,7 +210,6 @@ impl TorrentHub {
             output_folder: Some(output.to_string()),
             ..self.add_options()
         };
-        let session = self.session().await?;
         match session
             .add_torrent(add, Some(opts))
             .await
@@ -170,7 +232,8 @@ impl TorrentHub {
     }
 
     /// The torrent's metadata and metainfo bytes, without adding it. A
-    /// magnet nobody serves within `timeout` is `NoPeers`.
+    /// magnet nobody serves within `timeout` is `NoPeers`. A `.torrent` URL
+    /// is refused: fetch it and use [`info_from_bytes`].
     pub async fn list_files(
         &self,
         source: &Source,
@@ -186,10 +249,7 @@ impl TorrentHub {
             .await
             .map_err(|_| CoreError {
                 kind: ErrorKind::NoPeers,
-                detail: format!(
-                    "no peer sent the torrent's metadata within {} s",
-                    timeout.as_secs()
-                ),
+                detail: format!("no peer sent the torrent's metadata within {timeout:?}"),
             })?
             .map_err(lib_error)?;
         let AddTorrentResponse::ListOnly(listed) = listed else {
@@ -209,11 +269,7 @@ impl TorrentHub {
     /// Stops the torrent's transfers; pausing a paused torrent is fine.
     pub async fn pause(&self, info_hash: &str) -> Result<(), CoreError> {
         let session = self.session().await?;
-        let handle = find(&session, info_hash)?;
-        if handle.is_paused() {
-            return Ok(());
-        }
-        session.pause(&handle).await.map_err(lib_error)
+        pause_in(&session, info_hash).await
     }
 
     /// Restarts the torrent's transfers; a running torrent is left alone.
@@ -231,40 +287,38 @@ impl TorrentHub {
     /// have is already gone.
     pub async fn delete(&self, info_hash: &str, delete_files: bool) -> Result<(), CoreError> {
         let session = self.session().await?;
-        let id = parse_hash(info_hash)?;
-        if session.get(TorrentIdOrHash::Hash(id)).is_none() {
-            return Ok(());
-        }
-        session
-            .delete(TorrentIdOrHash::Hash(id), delete_files)
-            .await
-            .map_err(lib_error)
+        delete_in(&session, info_hash, delete_files).await
     }
 
     /// The torrent's handle, if the session is running and has it.
     pub fn handle(&self, info_hash: &str) -> Option<TorrentHandle> {
         let id = parse_hash(info_hash).ok()?;
-        self.session.get()?.get(TorrentIdOrHash::Hash(id))
+        self.current()?.get(TorrentIdOrHash::Hash(id))
     }
 
     /// Session-wide limits in bytes/s; `None` is unlimited. Any other value
     /// is raised to 16 KiB/s (lower stalls librqbit) and capped at
     /// `u32::MAX`.
     pub fn set_limits(&self, download_bps: Option<u64>, upload_bps: Option<u64>) {
-        let config = limits_config(download_bps, upload_bps);
-        *self.limits.lock().unwrap_or_else(|e| e.into_inner()) = config;
-        if let Some(session) = self.session.get() {
-            session.ratelimits.set_download_bps(config.download_bps);
-            session.ratelimits.set_upload_bps(config.upload_bps);
+        *lock(&self.limits) = limits_config(download_bps, upload_bps);
+        if let Some(session) = self.current() {
+            self.apply_limits(&session);
         }
+    }
+
+    fn apply_limits(&self, session: &Session) {
+        let config = *lock(&self.limits);
+        session.ratelimits.set_download_bps(config.download_bps);
+        session.ratelimits.set_upload_bps(config.upload_bps);
     }
 
     /// Where the running session accepts peers.
     pub fn listen_addr(&self) -> Option<SocketAddr> {
-        self.session.get()?.listen_addr()
+        self.current()?.listen_addr()
     }
 
-    /// Makes the session agree with the store, starting it if needed:
+    /// Makes the session agree with the store. Every start does this; it is
+    /// idempotent, so calling it again is harmless.
     /// - a session torrent with no job, or whose job is Completed or Failed,
     ///   is removed (its files stay);
     /// - one whose job may still run is paused, so only the queue starts it;
@@ -273,28 +327,32 @@ impl TorrentHub {
     ///
     /// A torrent that cannot be fixed is logged and skipped; its job meets
     /// the error when it runs.
-    pub async fn reconcile(&self, store: &Store) -> Result<(), CoreError> {
+    pub async fn reconcile(&self) -> Result<(), CoreError> {
         let session = self.session().await?;
-        let jobs = store.list_jobs()?;
+        self.reconcile_with(&session).await
+    }
+
+    async fn reconcile_with(&self, session: &Arc<Session>) -> Result<(), CoreError> {
+        let jobs = self.store.list_jobs()?;
         let live: HashMap<&str, &JobRecord> = jobs
             .iter()
             .filter(|j| j.kind == JobKind::Torrent && may_run(j.state))
             .filter_map(|j| Some((j.info_hash.as_deref()?, j)))
             .collect();
-        let present: Vec<TorrentHandle> =
-            session.with_torrents(|it| it.map(|(_, h)| h.clone()).collect());
 
-        for handle in present {
+        for handle in torrents(session) {
             let hash = handle.info_hash().as_string();
             let owned = live.contains_key(hash.as_str());
-            if let Err(e) = self.reconcile_present(&handle, &hash, owned).await {
+            if let Err(e) = self.reconcile_present(session, &handle, &hash, owned).await {
                 tracing::warn!(info_hash = %hash, "could not reconcile a torrent: {e}");
             }
         }
         for (hash, job) in live {
+            let missing =
+                parse_hash(hash).is_ok_and(|id| session.get(TorrentIdOrHash::Hash(id)).is_none());
             if job.torrent_meta.is_some()
-                && self.handle(hash).is_none()
-                && let Err(e) = self.restore(job).await
+                && missing
+                && let Err(e) = self.restore(session, job).await
             {
                 tracing::warn!(job = job.id.0, "could not restore a torrent: {e}");
             }
@@ -304,16 +362,17 @@ impl TorrentHub {
 
     async fn reconcile_present(
         &self,
+        session: &Arc<Session>,
         handle: &TorrentHandle,
         hash: &str,
         owned: bool,
     ) -> Result<(), CoreError> {
         if !owned {
             tracing::info!(info_hash = %hash, "dropping a torrent no running job owns");
-            return self.delete(hash, false).await;
+            return delete_in(session, hash, false).await;
         }
         if self.test.is_none() {
-            return self.pause(hash).await;
+            return pause_in(session, hash).await;
         }
         // Torrents librqbit restores lose their initial peers; add them
         // again with the test peers.
@@ -322,26 +381,47 @@ impl TorrentHub {
             .map_err(lib_error)?;
         let output = handle.output_folder().to_path_buf();
         let only_files = handle.only_files();
-        self.delete(hash, false).await?;
-        self.add_bytes(&meta, &output, only_files, true).await?;
-        Ok(())
-    }
-
-    async fn restore(&self, job: &JobRecord) -> Result<(), CoreError> {
-        let meta = job.torrent_meta.as_deref().unwrap_or_default();
-        let info = info_from_bytes(meta)?;
-        let output = stored_output_dir(&job.dest_dir, &job.file_name, &info);
-        tracing::info!(job = job.id.0, output = %output.display(), "restoring a torrent");
-        self.add_bytes(meta, &output, job.only_files.clone(), true)
+        delete_in(session, hash, false).await?;
+        self.add_bytes_in(session, &meta, &output, only_files, true)
             .await?;
         Ok(())
     }
 
-    /// Pauses every torrent and stops the session's tasks.
-    pub async fn shutdown(&self) {
-        if let Some(session) = self.session.get() {
-            session.stop().await;
+    async fn restore(&self, session: &Arc<Session>, job: &JobRecord) -> Result<(), CoreError> {
+        // With overwrite on, a bad name could aim at a neighbour's files.
+        if !is_single_name(&job.file_name) {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: format!("stored name {:?} is not a plain name", job.file_name),
+            });
         }
+        let meta = job.torrent_meta.as_deref().unwrap_or_default();
+        let info = info_from_bytes(meta)?;
+        let output = stored_output_dir(&job.dest_dir, &job.file_name, &info);
+        tracing::info!(job = job.id.0, output = %output.display(), "restoring a torrent");
+        self.add_bytes_in(session, meta, &output, job.only_files.clone(), true)
+            .await?;
+        Ok(())
+    }
+
+    /// Pauses every torrent (saving that, so none comes back running on the
+    /// next start), stops the session's tasks and lets go of the session.
+    /// Its files close once nobody else holds a torrent handle. Every later
+    /// call that needs the session fails.
+    pub async fn shutdown(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        let _stop = self.lifecycle.lock().await;
+        let Some(session) = lock(&self.session).take() else {
+            return;
+        };
+        for handle in torrents(&session) {
+            if !handle.is_paused()
+                && let Err(e) = session.pause(&handle).await
+            {
+                tracing::warn!(info_hash = %handle.info_hash().as_string(), "could not pause a torrent: {e:#}");
+            }
+        }
+        session.stop().await;
     }
 }
 
@@ -349,10 +429,50 @@ impl Drop for TorrentHub {
     fn drop(&mut self) {
         // Background tasks hold the session alive; without this its listener
         // stays open after the engine is gone.
-        if let Some(session) = self.session.get() {
+        if let Some(session) = self.current() {
             session.cancellation_token().cancel();
         }
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn torrents(session: &Session) -> Vec<TorrentHandle> {
+    session.with_torrents(|it| it.map(|(_, h)| h.clone()).collect())
+}
+
+async fn pause_in(session: &Session, info_hash: &str) -> Result<(), CoreError> {
+    let handle = find(session, info_hash)?;
+    if handle.is_paused() {
+        return Ok(());
+    }
+    session.pause(&handle).await.map_err(lib_error)
+}
+
+async fn delete_in(
+    session: &Session,
+    info_hash: &str,
+    delete_files: bool,
+) -> Result<(), CoreError> {
+    let id = parse_hash(info_hash)?;
+    if session.get(TorrentIdOrHash::Hash(id)).is_none() {
+        return Ok(());
+    }
+    session
+        .delete(TorrentIdOrHash::Hash(id), delete_files)
+        .await
+        .map_err(lib_error)
+}
+
+/// One normal path component: not empty, `.`, `..`, rooted or nested.
+fn is_single_name(name: &str) -> bool {
+    !name.contains(['/', '\\'])
+        && matches!(
+            Path::new(name).components().collect::<Vec<_>>().as_slice(),
+            [Component::Normal(_)]
+        )
 }
 
 /// Jobs whose torrent belongs in the session.
@@ -396,7 +516,12 @@ fn lib_error(e: impl std::fmt::Display) -> CoreError {
 async fn add_torrent(source: &Source) -> Result<AddTorrent<'static>, CoreError> {
     Ok(match source {
         Source::Magnet { uri, .. } => AddTorrent::from_url(uri.clone()),
-        Source::TorrentUrl(url) => AddTorrent::from_url(url.to_string()),
+        Source::TorrentUrl(url) => {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: format!("fetch {url} first: the torrent session takes its bytes"),
+            });
+        }
         Source::TorrentFile(path) => {
             AddTorrent::from_bytes(tokio::fs::read(path).await.map_err(|e| CoreError {
                 kind: classify_io(&e),
@@ -483,7 +608,14 @@ fn session_options(
             ipv4_only: !ipv6,
             ..Default::default()
         }),
-        dht: (settings.dht && !test).then(DhtSessionConfig::default),
+        // DHT state goes in our data dir, not librqbit's shared one.
+        dht: (settings.dht && !test).then(|| DhtSessionConfig {
+            persistence: Some(DhtPersistenceConfig {
+                config_filename: Some(data_dir.join(SESSION_DIR).join(DHT_FILE)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
         disable_trackers: test,
         disable_local_service_discovery: test,
         ipv4_only: !ipv6,
@@ -528,7 +660,11 @@ mod tests {
         assert!(!listen.ipv4_only && !o.ipv4_only);
         assert!(listen.enable_upnp_port_forwarding);
         assert!(matches!(listen.mode, ListenerMode::TcpOnly));
-        assert!(o.dht.is_some());
+        let dht = o.dht.as_ref().unwrap().persistence.as_ref().unwrap();
+        assert_eq!(
+            dht.config_filename.as_deref(),
+            Some(Path::new("/data/torrent-session/dht.json"))
+        );
         assert!(!o.disable_trackers && !o.disable_local_service_discovery);
         assert!(o.fastresume);
         match &o.persistence {
@@ -600,6 +736,16 @@ mod tests {
         assert_eq!(clamp_bps(Some(16_385)), n(16_385));
         assert_eq!(clamp_bps(Some(u64::from(u32::MAX) + 1)), n(u32::MAX));
         assert_eq!(clamp_bps(Some(u64::MAX)), n(u32::MAX));
+    }
+
+    #[test]
+    fn stored_names_must_be_plain() {
+        for bad in ["", ".", "..", "a/b", "a\\b", "/abs", "../x"] {
+            assert!(!is_single_name(bad), "{bad:?}");
+        }
+        for good in ["Show (1)", "movie.mkv", "..a", "a.."] {
+            assert!(is_single_name(good), "{good:?}");
+        }
     }
 
     #[test]

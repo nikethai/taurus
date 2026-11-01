@@ -2,15 +2,19 @@
 
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use librqbit::api::TorrentIdOrHash;
+use librqbit::dht::Id20;
+use librqbit::{Session, SessionOptions, SessionPersistenceConfig};
 use taurus_core::store::{JobKind, NewJob, Store};
 use taurus_core::torrent::TorrentFile;
 use taurus_core::torrent::hub::{TorrentHub, TorrentTestNet};
 use taurus_core::torrent::source::{Source, classify};
 use taurus_core::{ErrorKind, JobState, TorrentSettings};
-use taurus_testkit::{FileSpec, TorrentSeeder, content, make_torrent_bytes};
+use taurus_testkit::{FileSpec, TorrentSeeder, content, make_torrent_bytes, test_session_options};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -22,12 +26,19 @@ fn data(size: usize, seed: u64) -> Vec<u8> {
 }
 
 fn hub(data_dir: &Path, peers: Vec<std::net::SocketAddr>) -> TorrentHub {
+    fs::create_dir_all(data_dir).unwrap();
+    let store = Store::open(&data_dir.join("taurus.db")).unwrap();
+    hub_with(data_dir, peers, store)
+}
+
+fn hub_with(data_dir: &Path, peers: Vec<std::net::SocketAddr>, store: Store) -> TorrentHub {
     TorrentHub::new(
         data_dir,
         &TorrentSettings::default(),
         Some(TorrentTestNet {
             initial_peers: peers,
         }),
+        store,
     )
 }
 
@@ -131,7 +142,7 @@ async fn list_files_times_out_with_no_peers() {
         .await
         .unwrap_err();
     assert_eq!(e.kind, ErrorKind::NoPeers, "{}", e.detail);
-    assert!(e.detail.contains("within 1 s"), "{}", e.detail);
+    assert!(e.detail.contains("within 1s"), "{}", e.detail);
     assert!(started.elapsed() < Duration::from_secs(5));
     hub_silent.shutdown().await;
 
@@ -265,10 +276,16 @@ async fn reconcile_drops_unknown_and_restores_missing() {
     broken.info_hash = Some("ab".repeat(20));
     broken.torrent_meta = Some(b"not a torrent".to_vec());
     store.insert_job(&broken).unwrap();
+    // So is one whose stored name is not a plain name.
+    let bad_name = meta("bad", 9);
+    store
+        .insert_job(&torrent_job(&dest, "../escape", &bad_name))
+        .unwrap();
 
-    // A first session that librqbit persists: the unknown, completed and
-    // paused torrents, all running.
-    let first = hub(&data_dir, vec![]);
+    // A first session, with no jobs, that librqbit persists: the unknown,
+    // completed and paused torrents, all running.
+    let empty = Store::open(&tmp.path().join("empty.db")).unwrap();
+    let first = hub_with(&data_dir, vec![], empty);
     for (bytes, name) in [
         (&unknown, "unknown"),
         (&completed, "completed"),
@@ -280,12 +297,12 @@ async fn reconcile_drops_unknown_and_restores_missing() {
             .unwrap();
     }
     first.shutdown().await;
+    drop(first);
 
-    // The next session restores them, then reconciles with the store.
-    let second = hub(&data_dir, vec![]);
+    // The next session restores them and, as it starts, reconciles with the
+    // store.
+    let second = hub_with(&data_dir, vec![], store.clone());
     let session = second.session().await.unwrap();
-    assert_eq!(session.with_torrents(|it| it.count()), 3);
-    second.reconcile(&store).await.unwrap();
 
     assert!(second.handle(&hash_of(&unknown)).is_none());
     assert!(second.handle(&hash_of(&completed)).is_none());
@@ -297,12 +314,112 @@ async fn reconcile_drops_unknown_and_restores_missing() {
     let restored = second.handle(&hash_of(&missing)).expect("missing restored");
     assert!(restored.is_paused());
     assert_eq!(restored.output_folder(), dest.join("missing (1)"));
+    assert!(second.handle(&hash_of(&bad_name)).is_none());
+    assert!(!tmp.path().join("escape").exists());
     assert_eq!(session.with_torrents(|it| it.count()), 2);
 
     // Reconciling again changes nothing.
-    second.reconcile(&store).await.unwrap();
+    second.reconcile().await.unwrap();
     assert_eq!(session.with_torrents(|it| it.count()), 2);
     second.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn any_start_reconciles() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    let dest = tmp.path().join("out");
+    let stale = make_torrent_bytes("stale", &[("s.bin", &data(20_000, 1))], 16_384);
+    let other = make_torrent_bytes("other", &[("o.bin", &data(20_000, 2))], 16_384);
+    let first = hub(&data_dir, vec![]);
+    first
+        .add_bytes(&stale, &dest.join("stale"), None, false)
+        .await
+        .unwrap();
+    first.shutdown().await;
+    drop(first);
+
+    // No job owns `stale`: the start an unrelated add causes drops it.
+    let second = hub(&data_dir, vec![]);
+    second
+        .add_bytes(&other, &dest.join("other"), None, true)
+        .await
+        .unwrap();
+    assert!(second.handle(&hash_of(&stale)).is_none());
+    let session = second.session().await.unwrap();
+    assert_eq!(session.with_torrents(|it| it.count()), 1);
+    second.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_pauses_saves_and_releases() {
+    let (seeder, _, _) = seeder().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    let out = tmp.path().join("out");
+    let hub = hub(&data_dir, vec![seeder.addr]);
+    hub.add_bytes(&seeder.torrent_bytes, &out, None, false)
+        .await
+        .unwrap();
+    wait_finished(&hub, &seeder.info_hash).await;
+    let weak = Arc::downgrade(&hub.session().await.unwrap());
+
+    hub.shutdown().await;
+    // The session, and with it every open file, is let go.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while weak.upgrade().is_some() {
+        assert!(Instant::now() < deadline, "session still held");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    fs::remove_dir_all(&out).unwrap();
+    let Err(e) = hub.session().await else {
+        panic!("the session started again after shutdown");
+    };
+    assert!(e.detail.contains("shut down"), "{}", e.detail);
+    assert!(hub.handle(&seeder.info_hash).is_none());
+    assert_eq!(hub.listen_addr(), None);
+    drop(hub);
+
+    // librqbit saved the torrent as paused, so a plain restore of its
+    // session keeps it paused.
+    let folder = data_dir.join("torrent-session");
+    let opts = SessionOptions {
+        persistence: Some(SessionPersistenceConfig::Json {
+            folder: Some(folder.clone()),
+        }),
+        ..test_session_options(&folder)
+    };
+    let raw = Session::new_with_opts(folder, opts).await.unwrap();
+    let id = Id20::from_str(&seeder.info_hash).unwrap();
+    let restored = raw.get(TorrentIdOrHash::Hash(id)).expect("persisted");
+    assert!(restored.is_paused());
+    raw.cancellation_token().cancel();
+
+    // And a new hub on the same data dir starts.
+    let again = hub_with(
+        &data_dir,
+        vec![],
+        Store::open(&data_dir.join("taurus.db")).unwrap(),
+    );
+    again.session().await.unwrap();
+    again.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn torrent_url_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hub = hub(tmp.path(), vec![]);
+    let source = classify("https://example.org/x.torrent").unwrap();
+    let e = hub
+        .list_files(&source, Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(e.detail.contains("fetch"), "{}", e.detail);
+    let Err(e) = hub.add(&source, tmp.path(), None, true).await else {
+        panic!("a .torrent URL was added");
+    };
+    assert!(e.detail.contains("fetch"), "{}", e.detail);
+    hub.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
