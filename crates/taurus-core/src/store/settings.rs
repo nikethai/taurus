@@ -31,8 +31,9 @@ impl Store {
     /// The saved settings, never failing on their content: unreadable ones
     /// are logged and copied to `settings.unreadable` (replacing an older
     /// copy), then each readable field is kept and the rest defaulted
-    /// (everything, if the value is not a JSON object). `max_active` is at
-    /// least 1. Only a database error is returned.
+    /// (everything, if the value is not a JSON object). `max_active` and
+    /// `torrent.max_active` are at least 1. Only a database error is
+    /// returned.
     pub fn load_settings_lenient(&self) -> Result<Settings, CoreError> {
         let Some(raw) = self.setting(SETTINGS_KEY)? else {
             return Ok(Settings::default());
@@ -46,6 +47,7 @@ impl Store {
             }
         };
         settings.max_active = settings.max_active.max(1);
+        settings.torrent.max_active = settings.torrent.max_active.max(1);
         Ok(settings)
     }
 
@@ -208,6 +210,15 @@ mod tests {
             .unwrap();
         let s = store.load_settings_lenient().unwrap();
         assert_eq!((s.max_active, s.torrent), (4, TorrentSettings::default()));
+        // Nothing would ever start: both limits load as 1.
+        store
+            .put_setting(
+                SETTINGS_KEY,
+                r#"{"max_active":0,"torrent":{"max_active":0}}"#,
+            )
+            .unwrap();
+        let s = store.load_settings_lenient().unwrap();
+        assert_eq!((s.max_active, s.torrent.max_active), (1, 1));
     }
 
     #[test]

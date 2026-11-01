@@ -245,6 +245,7 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
                         mirrors: mirrors.clone(),
                         checksum: checksum.clone(),
                         referer: referer.clone(),
+                        only_files: None,
                     };
                     match engine.add(req).await {
                         Ok(id) => enqueued.ids.push(id),

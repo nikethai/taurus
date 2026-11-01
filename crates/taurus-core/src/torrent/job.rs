@@ -9,7 +9,7 @@
 //! torrent handle across a wait, so neither a finished run nor the hub's
 //! shutdown is left holding the torrent's files open.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,7 +18,10 @@ use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 
-use super::files::{check_paths, output_dir, selected_total, stored_name, stored_output_dir};
+use super::files::{
+    check_paths, check_selection, file_path, output_dir, selected_total, stored_name,
+    stored_output_dir,
+};
 use super::hub::{TorrentHub, info_from_bytes};
 use super::policy::{SeedPolicy, classify_torrent_error};
 use super::source::classify;
@@ -35,6 +38,9 @@ use crate::timing::Timing;
 /// also saved whenever the run ends.
 const COMMIT_EVERY: Duration = Duration::from_secs(5);
 
+/// Bytes other downloads to the disk holding a folder still have to write.
+pub type ReservedBytes = Arc<dyn Fn(&Path) -> u64 + Send + Sync>;
+
 pub struct TorrentJobContext {
     pub id: JobId,
     pub hub: Arc<TorrentHub>,
@@ -44,6 +50,9 @@ pub struct TorrentJobContext {
     pub settings: TorrentSettings,
     /// Where free space is read from.
     pub space: SpaceSource,
+    /// What other downloads to the disk holding a folder still need, so the
+    /// free space they will fill is not counted twice.
+    pub reserved: ReservedBytes,
     /// Pause, removal or shutdown: the torrent is paused and the run ends.
     pub cancel: CancellationToken,
     /// `Progress` and `TorrentStats` every `timing.torrent_poll` (at most 4
@@ -168,6 +177,7 @@ async fn metadata(
         () = ctx.cancel.cancelled() => return Ok(None),
     };
     check_paths(&info.files)?;
+    check_selection(&info, job.only_files.as_deref())?;
     if let Some(other) = ctx.store.find_by_info_hash(&info.info_hash)?
         && other != job.id
     {
@@ -199,8 +209,9 @@ async fn metadata(
     Ok(Some(info))
 }
 
-/// The selected bytes still to download must fit in `dest_dir`, and the
-/// largest selected file on its file system. A torrent that already
+/// The selected bytes still to download must fit in `dest_dir` beside what
+/// other downloads to its disk still need, and the largest selected file on
+/// its file system. A torrent that already
 /// finished once (it is only shared again) needs nothing.
 fn preflight(
     ctx: &TorrentJobContext,
@@ -225,7 +236,8 @@ fn preflight(
         return Ok(());
     }
     let largest = selected(info, job).map(|f| f.size).max();
-    check_fits(ctx.space, &job.dest_dir, 0, remaining, largest)
+    let reserved = (ctx.reserved)(&job.dest_dir);
+    check_fits(ctx.space, &job.dest_dir, reserved, remaining, largest)
 }
 
 /// Polls the torrent every `torrent_poll`, reporting its progress and saving
@@ -350,12 +362,6 @@ fn selected<'a>(
             .as_ref()
             .is_none_or(|only| only.contains(&f.index))
     })
-}
-
-fn file_path(output: &Path, file: &TorrentFile) -> PathBuf {
-    file.path
-        .split('/')
-        .fold(output.to_path_buf(), |p, c| p.join(c))
 }
 
 fn count(n: usize) -> u32 {

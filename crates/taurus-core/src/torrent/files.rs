@@ -147,6 +147,35 @@ pub fn stored_output_dir(dest: &Path, file_name: &str, info: &TorrentInfo) -> Pa
     }
 }
 
+/// Refuses a selection that names no file, or a file the torrent does not
+/// have (`None` selects every file).
+pub fn check_selection(info: &TorrentInfo, only_files: Option<&[usize]>) -> Result<(), CoreError> {
+    let refuse = |detail: String| {
+        Err(CoreError {
+            kind: ErrorKind::Unknown,
+            detail,
+        })
+    };
+    match only_files {
+        None => Ok(()),
+        Some([]) => refuse("select at least one file".to_string()),
+        Some(only) => match only.iter().find(|&&i| i >= info.files.len()) {
+            Some(i) => refuse(format!(
+                "the torrent has no file {i} (it has {} files)",
+                info.files.len()
+            )),
+            None => Ok(()),
+        },
+    }
+}
+
+/// Where `file` of a torrent whose files go into `output` is written.
+pub fn file_path(output: &Path, file: &TorrentFile) -> PathBuf {
+    file.path
+        .split('/')
+        .fold(output.to_path_buf(), |p, c| p.join(c))
+}
+
 /// Bytes of the selected files (`None` selects every file).
 pub fn selected_total(info: &TorrentInfo, only_files: Option<&[usize]>) -> u64 {
     info.files
@@ -369,6 +398,18 @@ mod tests {
                 "Show (1)"
             ]
         );
+    }
+
+    #[test]
+    fn selection_must_name_files_the_torrent_has() {
+        let t = info("t", vec![file(0, "a", 10), file(1, "b", 20)]);
+        assert!(check_selection(&t, None).is_ok());
+        assert!(check_selection(&t, Some(&[1, 0])).is_ok());
+        let e = check_selection(&t, Some(&[0, 2])).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Unknown);
+        assert_eq!(e.detail, "the torrent has no file 2 (it has 2 files)");
+        let e = check_selection(&t, Some(&[])).unwrap_err();
+        assert_eq!(e.detail, "select at least one file");
     }
 
     #[test]

@@ -14,17 +14,22 @@ use librqbit::{Session, SessionOptions, SessionPersistenceConfig};
 use taurus_core::engine::JobMsg;
 use taurus_core::http::JobOutcome;
 use taurus_core::store::{JobId, JobKind, NewJob, Store};
+use taurus_core::system::space::SPACE_MARGIN;
 use taurus_core::system::{SpaceSource, available_space};
 use taurus_core::torrent::TorrentFile;
 use taurus_core::torrent::hub::{TorrentHub, TorrentTestNet};
 use taurus_core::torrent::job::{TorrentJobContext, run_torrent_job};
 use taurus_core::torrent::source::{Source, classify};
-use taurus_core::{ErrorKind, JobState, Timing, TorrentSettings};
+use taurus_core::{
+    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobState, JobView, PowerMode, Settings,
+    Timing, TorrentSettings,
+};
 use taurus_testkit::{
-    FileSpec, TorrentLeecher, TorrentSeeder, content, make_torrent_bytes, test_session_options,
+    FileSpec, TestServer, TorrentLeecher, TorrentSeeder, content, make_torrent_bytes,
+    test_session_options,
 };
 use tempfile::TempDir;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -601,6 +606,7 @@ fn context(
         timing: Timing::fast_for_tests(),
         settings,
         space,
+        reserved: Arc::new(|_| 0),
         cancel: cancel.clone(),
         msgs,
     };
@@ -990,4 +996,428 @@ async fn runner_cancel_pauses() {
     assert!(rig.hub.handle(&seeder.info_hash).unwrap().is_paused());
     drop(leecher);
     rig.hub.shutdown().await;
+}
+
+// The engine.
+
+/// An engine whose torrents reach `peers`, saving into `<tmp>/dest`.
+struct EngineRig {
+    tmp: TempDir,
+    dest: PathBuf,
+    engine: Engine,
+}
+
+impl EngineRig {
+    async fn new(peers: Vec<SocketAddr>, torrent: TorrentSettings) -> EngineRig {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::create_dir_all(&dest).unwrap();
+        let engine = Engine::open(engine_config(tmp.path(), peers, available_space))
+            .await
+            .unwrap();
+        engine
+            .set_settings(Settings {
+                torrent,
+                ..Settings::default()
+            })
+            .await
+            .unwrap();
+        EngineRig { tmp, dest, engine }
+    }
+
+    fn request(&self, input: &str) -> AddRequest {
+        AddRequest {
+            url: input.to_string(),
+            dest_dir: self.dest.clone(),
+            ..AddRequest::default()
+        }
+    }
+
+    fn view(&self, id: JobId) -> JobView {
+        self.engine
+            .snapshot()
+            .into_iter()
+            .find(|v| v.id == id)
+            .expect("job in snapshot")
+    }
+}
+
+fn engine_config(dir: &Path, peers: Vec<SocketAddr>, space: SpaceSource) -> EngineConfig {
+    let mut config = EngineConfig::new(dir.join("data"));
+    config.timing = Timing::fast_for_tests();
+    config.power = PowerMode::DryRun;
+    config.available_space = space;
+    config.torrent_test = Some(TorrentTestNet {
+        initial_peers: peers,
+    });
+    config
+}
+
+async fn wait_job(engine: &Engine, id: JobId) -> JobState {
+    tokio::time::timeout(Duration::from_secs(30), engine.wait(id))
+        .await
+        .expect("job did not settle in 30 s")
+}
+
+/// Events until (and including) the first one `stop` accepts.
+async fn events_until(
+    events: &mut broadcast::Receiver<Event>,
+    stop: impl Fn(&Event) -> bool,
+) -> Vec<Event> {
+    let mut seen = Vec::new();
+    loop {
+        let event = tokio::time::timeout(TIMEOUT, events.recv())
+            .await
+            .expect("no event in time")
+            .expect("event channel open");
+        let done = stop(&event);
+        seen.push(event);
+        if done {
+            return seen;
+        }
+    }
+}
+
+fn updated_to(event: &Event, id: JobId, state: JobState) -> bool {
+    matches!(event, Event::JobUpdated(v) if v.id == id && v.state == state)
+}
+
+async fn until_state(rig: &EngineRig, id: JobId, state: JobState) {
+    let deadline = Instant::now() + TIMEOUT;
+    while rig.view(id).state != state {
+        assert!(Instant::now() < deadline, "job never got {state:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_magnet_downloads() {
+    let (seeder, a, b) = seeder().await;
+    let rig = EngineRig::new(vec![seeder.addr], policy(Some(0.0), None)).await;
+    let mut events = rig.engine.subscribe();
+    let id = rig.engine.add(rig.request(&seeder.magnet)).await.unwrap();
+    assert_eq!(wait_job(&rig.engine, id).await, JobState::Completed);
+
+    let seen = events_until(&mut events, |e| updated_to(e, id, JobState::Completed)).await;
+    assert!(matches!(&seen[0], Event::JobAdded(v) if v.id == id && v.kind == JobKind::Torrent));
+    assert!(
+        seen.iter()
+            .any(|e| matches!(e, Event::Progress { id: p, .. } if *p == id))
+    );
+    // Stopped as soon as it finished: never Seeding.
+    assert!(!seen.iter().any(|e| updated_to(e, id, JobState::Seeding)));
+    assert_eq!(fs::read(rig.dest.join("pack/a.bin")).unwrap(), a);
+    assert_eq!(fs::read(rig.dest.join("pack/dir/b.bin")).unwrap(), b);
+    let view = rig.view(id);
+    assert_eq!(view.file_name, "pack");
+    assert_eq!(view.total, Some((a.len() + b.len()) as u64));
+    assert_eq!(view.downloaded, view.total.unwrap());
+    let torrent = view.torrent.expect("a torrent view");
+    assert_eq!((torrent.files_selected, torrent.files_total), (2, 2));
+    rig.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn seeding_job_pauses_and_resumes() {
+    let (seeder, _, _) = seeder().await;
+    // Never stops sharing on its own.
+    let rig = EngineRig::new(vec![seeder.addr], policy(None, None)).await;
+    let mut events = rig.engine.subscribe();
+    let id = rig.engine.add(rig.request(&seeder.magnet)).await.unwrap();
+    events_until(&mut events, |e| updated_to(e, id, JobState::Seeding)).await;
+    assert_eq!(rig.view(id).state, JobState::Seeding);
+    // Sharing is not busy: the queue is idle.
+    events_until(&mut events, |e| matches!(e, Event::QueueIdle)).await;
+
+    rig.engine.pause(id).await.unwrap();
+    assert_eq!(rig.view(id).state, JobState::Paused);
+    // Resuming queues it again, without asking any server.
+    rig.engine.resume(id).await.unwrap();
+    events_until(&mut events, |e| updated_to(e, id, JobState::Seeding)).await;
+    rig.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_torrent_file_and_url() {
+    let (seeder, a, b) = seeder().await;
+    let rig = EngineRig::new(vec![seeder.addr], policy(Some(0.0), None)).await;
+    let file = rig.tmp.path().join("x.torrent");
+    fs::write(&file, &seeder.torrent_bytes).unwrap();
+    let id = rig
+        .engine
+        .add(rig.request(file.to_str().unwrap()))
+        .await
+        .unwrap();
+    // Placed at once: the metadata is known.
+    assert_eq!(rig.view(id).file_name, "pack");
+    assert_eq!(wait_job(&rig.engine, id).await, JobState::Completed);
+    assert_eq!(fs::read(rig.dest.join("pack/a.bin")).unwrap(), a);
+
+    // Removed with its files, the same torrent can come again by URL.
+    rig.engine.remove(id, true).await.unwrap();
+    assert!(!rig.dest.join("pack").exists());
+    let server = TestServer::start().await;
+    let url = server.serve_bytes(
+        "/x.torrent",
+        "application/x-bittorrent",
+        &seeder.torrent_bytes,
+    );
+    let id = rig.engine.add(rig.request(&url)).await.unwrap();
+    assert_eq!(wait_job(&rig.engine, id).await, JobState::Completed);
+    assert_eq!(fs::read(rig.dest.join("pack/dir/b.bin")).unwrap(), b);
+    rig.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_selected_files_written() {
+    let (seeder, a, b) = seeder().await;
+    let rig = EngineRig::new(vec![seeder.addr], policy(Some(0.0), None)).await;
+    let info = rig.engine.torrent_files(&seeder.magnet).await.unwrap();
+    let index = info.files.iter().find(|f| f.path == "a.bin").unwrap().index;
+    let id = rig
+        .engine
+        .add(AddRequest {
+            only_files: Some(vec![index]),
+            ..rig.request(&seeder.magnet)
+        })
+        .await
+        .unwrap();
+    assert_eq!(wait_job(&rig.engine, id).await, JobState::Completed);
+    assert_eq!(fs::read(rig.dest.join("pack/a.bin")).unwrap(), a);
+    let other = fs::read(rig.dest.join("pack/dir/b.bin")).unwrap_or_default();
+    assert_ne!(other, b, "an unselected file was downloaded");
+    let view = rig.view(id);
+    assert_eq!(view.total, Some(a.len() as u64));
+    assert_eq!(
+        view.torrent.map(|t| (t.files_selected, t.files_total)),
+        Some((1, 2))
+    );
+
+    // An index the torrent does not have is refused at once.
+    let file = rig.tmp.path().join("x.torrent");
+    fs::write(&file, &seeder.torrent_bytes).unwrap();
+    rig.engine.remove(id, false).await.unwrap();
+    let e = rig
+        .engine
+        .add(AddRequest {
+            only_files: Some(vec![2]),
+            ..rig.request(file.to_str().unwrap())
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Unknown, "{}", e.detail);
+    assert!(rig.engine.snapshot().is_empty());
+    rig.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn same_magnet_twice_is_already_added() {
+    let (seeder, _, _) = seeder().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = engine_config(tmp.path(), vec![seeder.addr], available_space);
+    // Nothing runs: only the adds are under test.
+    config.autostart = false;
+    let engine = Engine::open(config).await.unwrap();
+    let dest = tmp.path().to_path_buf();
+    let request = |url: &str| AddRequest {
+        url: url.to_string(),
+        dest_dir: dest.clone(),
+        ..AddRequest::default()
+    };
+    let id = engine.add(request(&seeder.magnet)).await.unwrap();
+    let e = engine.add(request(&seeder.magnet)).await.unwrap_err();
+    assert_eq!(e.kind, ErrorKind::AlreadyAdded, "{}", e.detail);
+    assert!(e.detail.contains(&format!("job {}", id.0)), "{}", e.detail);
+    // The same torrent from its file is the same torrent.
+    let file = tmp.path().join("x.torrent");
+    fs::write(&file, &seeder.torrent_bytes).unwrap();
+    let e = engine
+        .add(request(file.to_str().unwrap()))
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, ErrorKind::AlreadyAdded, "{}", e.detail);
+    assert_eq!(engine.snapshot().len(), 1);
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn torrent_files_lists_without_adding() {
+    let (seeder, a, b) = seeder().await;
+    let rig = EngineRig::new(vec![seeder.addr], TorrentSettings::default()).await;
+    assert_eq!(rig.engine.torrent_listen_addr(), None);
+    let info = rig.engine.torrent_files(&seeder.magnet).await.unwrap();
+    assert_eq!(info.info_hash, seeder.info_hash);
+    assert_eq!(info.name, "pack");
+    assert_eq!(info.total, (a.len() + b.len()) as u64);
+    assert_eq!(info.files.len(), 2);
+    let file = rig.tmp.path().join("x.torrent");
+    fs::write(&file, &seeder.torrent_bytes).unwrap();
+    assert_eq!(
+        rig.engine
+            .torrent_files(file.to_str().unwrap())
+            .await
+            .unwrap(),
+        info
+    );
+    assert!(rig.engine.snapshot().is_empty());
+    // Listing a magnet needed the session.
+    assert!(rig.engine.torrent_listen_addr().is_some());
+    rig.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn torrents_have_their_own_cap() {
+    let (seeder, _, _) = slow_seeder((500 * 1024, 100 * 1024)).await;
+    let server = TestServer::start().await;
+    let mut spec = FileSpec::new(1024 * 1024);
+    spec.bytes_per_sec = Some(64 * 1024);
+    let url = server.serve("/big.bin", spec);
+    let rig = EngineRig::new(
+        vec![seeder.addr],
+        TorrentSettings {
+            max_active: 1,
+            ..policy(Some(0.0), None)
+        },
+    )
+    .await;
+    let mut settings = rig.engine.settings();
+    settings.max_active = 1;
+    rig.engine.set_settings(settings).await.unwrap();
+
+    let http = rig.engine.add(rig.request(&url)).await.unwrap();
+    let torrent = rig.engine.add(rig.request(&seeder.magnet)).await.unwrap();
+    until_state(&rig, torrent, JobState::Downloading).await;
+    assert_eq!(rig.view(http).state, JobState::Downloading);
+    // A second torrent waits for the torrent slot, not the HTTP one.
+    let file = rig.tmp.path().join("other.torrent");
+    fs::write(
+        &file,
+        make_torrent_bytes("other", &[("o.bin", &[7; 1000])], 16_384),
+    )
+    .unwrap();
+    let second = rig
+        .engine
+        .add(rig.request(file.to_str().unwrap()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(rig.view(second).state, JobState::Queued);
+    rig.engine.shutdown().await.unwrap();
+}
+
+fn little_space(_: &Path) -> std::io::Result<u64> {
+    Ok(SPACE_MARGIN + 1024 * 1024)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn torrent_space_check_counts_running_downloads() {
+    let (seeder, _, _) = seeder().await;
+    let server = TestServer::start().await;
+    let mut spec = FileSpec::new(900 * 1024);
+    spec.bytes_per_sec = Some(32 * 1024);
+    let url = server.serve("/big.bin", spec);
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(engine_config(tmp.path(), vec![seeder.addr], little_space))
+        .await
+        .unwrap();
+    let request = |url: &str| AddRequest {
+        url: url.to_string(),
+        dest_dir: tmp.path().to_path_buf(),
+        ..AddRequest::default()
+    };
+    let http = engine.add(request(&url)).await.unwrap();
+    // 400 KiB fits on its own, not beside the 900 KiB still downloading.
+    let torrent = engine.add(request(&seeder.magnet)).await.unwrap();
+    assert_eq!(wait_job(&engine, torrent).await, JobState::Failed);
+    let view = engine
+        .snapshot()
+        .into_iter()
+        .find(|v| v.id == torrent)
+        .unwrap();
+    assert_eq!(view.error.map(|e| e.0), Some(ErrorKind::DiskFull));
+    engine.pause(http).await.unwrap();
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn torrent_requests_are_checked() {
+    let rig = EngineRig::new(vec![], TorrentSettings::default()).await;
+    let magnet = format!("magnet:?xt=urn:btih:{}", "1f".repeat(20));
+    let e = rig
+        .engine
+        .add(AddRequest {
+            mirrors: vec!["http://127.0.0.1:9/x".into()],
+            ..rig.request(&magnet)
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (e.kind, e.detail.as_str()),
+        (
+            ErrorKind::Unknown,
+            "mirrors and checksum apply only to web downloads"
+        )
+    );
+    let e = rig
+        .engine
+        .add(AddRequest {
+            only_files: Some(vec![0]),
+            ..rig.request("http://127.0.0.1:9/x.bin")
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (e.kind, e.detail.as_str()),
+        (
+            ErrorKind::Unknown,
+            "file selection applies only to torrents"
+        )
+    );
+    let e = rig
+        .engine
+        .add(rig.request("magnet:?dn=nothing"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, ErrorKind::SiteNotSupported);
+    // A torrent max_active of 0 would queue torrents for ever.
+    let mut settings = rig.engine.settings();
+    settings.torrent.max_active = 0;
+    let e = rig.engine.set_settings(settings).await.unwrap_err();
+    assert_eq!(
+        (e.kind, e.detail.as_str()),
+        (ErrorKind::Unknown, "torrent.max_active must be at least 1")
+    );
+    assert!(rig.engine.snapshot().is_empty());
+    // HTTP-only use never starts the torrent session.
+    assert_eq!(rig.engine.torrent_listen_addr(), None);
+    rig.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_with_torrent_jobs_starts_the_session() {
+    let (seeder, _, _) = seeder().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let config = |autostart| {
+        let mut config = engine_config(tmp.path(), vec![seeder.addr], available_space);
+        config.autostart = autostart;
+        config
+    };
+    let engine = Engine::open(config(false)).await.unwrap();
+    let request = AddRequest {
+        url: seeder.magnet.clone(),
+        dest_dir: tmp.path().to_path_buf(),
+        ..AddRequest::default()
+    };
+    let id = engine.add(request).await.unwrap();
+    engine.shutdown().await.unwrap();
+
+    // Only looking at the jobs: no session.
+    let engine = Engine::open(config(false)).await.unwrap();
+    assert_eq!(engine.torrent_listen_addr(), None);
+    engine.shutdown().await.unwrap();
+    // A queue that runs a torrent starts it at once.
+    let engine = Engine::open(config(true)).await.unwrap();
+    assert!(engine.torrent_listen_addr().is_some());
+    engine.pause(id).await.unwrap();
+    engine.shutdown().await.unwrap();
 }
