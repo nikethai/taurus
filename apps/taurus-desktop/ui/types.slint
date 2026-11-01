@@ -1,0 +1,31 @@
+// Plain data the Rust view models fill in and the screens read.
+
+export struct RowVm {
+    id: int,
+    name: string,
+    kind: string,
+    // "queued" "downloading" "paused" "waiting" "seeding" "failed" "done" "recording"
+    state: string,
+    // 0..1, -1 = unknown size
+    progress: float,
+    done-text: string,
+    total-text: string,
+    // "unknown" "under-minute" "minutes" "hours"
+    eta-kind: string,
+    eta-value: int,
+    retry-seconds: int,
+    // ErrorKind::as_str() or ""
+    error-kind: string,
+    ratio-text: string,
+    when-text: string,
+    peers: int,
+}
+
+// Footer numbers: counts and the overall time left.
+export struct SummaryVm {
+    downloading: int,
+    finished: int,
+    eta-kind: string,
+    eta-value: int,
+    all-paused: bool,
+}
