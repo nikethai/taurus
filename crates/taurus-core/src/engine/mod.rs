@@ -12,6 +12,7 @@ mod open;
 mod remove;
 mod schedule;
 mod settings;
+mod tool_ops;
 mod torrent;
 
 use std::collections::HashMap;
@@ -29,6 +30,7 @@ use crate::settings::{PowerMode, Settings, WhenDone};
 use crate::store::{JobId, JobKind, JobState, Store};
 use crate::system::{SpaceSource, available_space};
 use crate::timing::Timing;
+use crate::tools::{ToolManager, ToolSources, ToolStatus};
 use crate::torrent::hub::{TorrentHub, TorrentTestNet};
 use crate::torrent::source::{Source, classify};
 
@@ -62,6 +64,9 @@ pub struct EngineConfig {
     /// on open: for short-lived front ends that only look at or edit the
     /// jobs.
     pub autostart: bool,
+    /// Where yt-dlp, ffmpeg and Deno are downloaded from; the real
+    /// publishers by default.
+    pub tool_sources: ToolSources,
     /// Test-only: where free space is read from, so tests need not fill a
     /// disk. Not for front ends.
     #[doc(hidden)]
@@ -79,6 +84,7 @@ impl EngineConfig {
             timing: Timing::default(),
             power: PowerMode::Execute,
             autostart: true,
+            tool_sources: ToolSources::default(),
             available_space,
             torrent_test: None,
         }
@@ -184,6 +190,9 @@ pub enum Event {
         action: WhenDone,
         command: Option<String>,
     },
+    /// A tool's status changed while it was installed, updated or rolled
+    /// back (see `Engine::install_tools`).
+    ToolStatus(ToolStatus),
 }
 
 type Views = Arc<RwLock<HashMap<JobId, JobView>>>;
@@ -208,6 +217,8 @@ pub struct Engine {
     hub: Arc<TorrentHub>,
     /// How long a magnet link's metadata is waited for.
     metadata_timeout: Duration,
+    /// yt-dlp, ffmpeg and Deno under `data_dir/tools`.
+    tools: Arc<ToolManager>,
 }
 
 impl Engine {

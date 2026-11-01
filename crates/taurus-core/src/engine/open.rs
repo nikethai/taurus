@@ -13,6 +13,7 @@ use crate::http::build_client;
 use crate::limit::{Limiter, PeakTracker};
 use crate::store::{JobKind, JobState, Store};
 use crate::system::AwakeGuard;
+use crate::tools::ToolManager;
 use crate::torrent::hub::TorrentHub;
 use crate::when_done::{EngineLink, WhenDoneRunner};
 
@@ -98,6 +99,7 @@ pub(super) async fn assemble(
     };
     let client = build_client();
     let (torrent_settings, _) = watch::channel(settings.torrent.clone());
+    let store_for_tools = store.clone();
     let actor = Actor {
         _lock: lock,
         store,
@@ -147,12 +149,16 @@ pub(super) async fn assemble(
         views,
         settings: shared_settings,
         keeping_awake,
-        client,
+        client: client.clone(),
         holds,
         hold_tx: job_tx,
         space: config.available_space,
         hub,
         metadata_timeout: config.timing.torrent_metadata_timeout,
+        tools: Arc::new(
+            ToolManager::new(&config.data_dir, config.tool_sources, client)
+                .with_store(store_for_tools),
+        ),
     };
     Ok((engine, actor, commands_rx))
 }

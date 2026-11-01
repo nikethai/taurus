@@ -12,6 +12,7 @@ pub mod settings;
 pub mod store;
 pub mod system;
 pub mod timing;
+pub mod tools;
 pub mod torrent;
 mod when_done;
 

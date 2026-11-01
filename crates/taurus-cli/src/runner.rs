@@ -219,7 +219,8 @@ impl<'a> Runner<'a> {
             }
             Event::Progress { .. }
             | Event::SettingsChanged(_)
-            | Event::WhenDoneCountdown { .. } => {}
+            | Event::WhenDoneCountdown { .. }
+            | Event::ToolStatus(_) => {}
         }
         if self.busy() {
             self.idle_due = true;
@@ -439,7 +440,7 @@ impl Output {
                     self.line(&line)?;
                 }
             }
-            Event::QueueIdle | Event::SettingsChanged(_) => {}
+            Event::QueueIdle | Event::SettingsChanged(_) | Event::ToolStatus(_) => {}
         }
         Ok(())
     }

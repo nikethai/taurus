@@ -7,16 +7,8 @@ use std::time::Duration;
 use super::*;
 use crate::sha256_hex;
 
-/// Runs `cmd`, retrying while a concurrent fork briefly holds the freshly
-/// written binary open for writing (ETXTBSY on Unix).
 fn run(cmd: &mut Command) -> Output {
-    for _ in 0..50 {
-        match cmd.output() {
-            Err(e) if e.raw_os_error() == Some(26) => thread::sleep(Duration::from_millis(20)),
-            other => return other.expect("run fake tool"),
-        }
-    }
-    panic!("fake tool stayed busy");
+    run_retrying(cmd).expect("run fake tool")
 }
 
 fn stdout(out: &Output) -> String {

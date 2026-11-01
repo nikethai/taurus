@@ -140,7 +140,8 @@ impl Coalescer {
                 self.structural = true;
             }
             Event::SettingsChanged(s) => self.settings = Some(s),
-            Event::QueueIdle => return,
+            // Tool statuses are not shown yet.
+            Event::QueueIdle | Event::ToolStatus(_) => return,
             Event::WhenDoneCountdown {
                 action,
                 seconds_left,

@@ -109,6 +109,23 @@ fn write_executable(path: &Path, bytes: &[u8]) {
     }
 }
 
+/// Runs `cmd` to completion like [`Command::output`], retrying for up to
+/// about a second while exec fails with ETXTBSY (errno 26, Linux): a
+/// binary written a moment ago can still be open for writing in a child
+/// that another thread forked meanwhile.
+pub fn run_retrying(cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    let mut attempt = 0;
+    loop {
+        match cmd.output() {
+            Err(e) if e.raw_os_error() == Some(26) && cfg!(unix) && attempt < 50 => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => return other,
+        }
+    }
+}
+
 /// One line of the `FAKE_TOOL_ARGS_LOG` file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArgsLogEntry {
