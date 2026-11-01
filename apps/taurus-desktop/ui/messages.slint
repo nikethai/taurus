@@ -29,6 +29,14 @@ export global Messages {
             return @tr("This torrent has unsafe file names, so it wasn't saved.");
         } else if (kind == "already_added") {
             return @tr("This download is already in your list.");
+        } else if (kind == "media_unavailable") {
+            return @tr("This video is private or was removed.");
+        } else if (kind == "media_region_locked") {
+            return @tr("This video isn't available in your country.");
+        } else if (kind == "tool_failed") {
+            return @tr("The video tools couldn't finish this file. The pieces were kept in the folder.");
+        } else if (kind == "needs_confirmation") {
+            return @tr("This needs your confirmation.");
         } else if (kind == "file_changed_on_server") {
             return @tr("The file changed on the server, so the download started over.");
         }

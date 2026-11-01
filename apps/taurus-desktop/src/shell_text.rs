@@ -68,6 +68,12 @@ pub fn simple_message(kind: ErrorKind) -> &'static str {
         ErrorKind::SiteNotSupported => "This link is a web page, not a file.",
         ErrorKind::UnsafeTorrent => "This torrent has unsafe file names, so it wasn't saved.",
         ErrorKind::AlreadyAdded => "This download is already in your list.",
+        ErrorKind::MediaUnavailable => "This video is private or was removed.",
+        ErrorKind::MediaRegionLocked => "This video isn't available in your country.",
+        ErrorKind::ToolFailed => {
+            "The video tools couldn't finish this file. The pieces were kept in the folder."
+        }
+        ErrorKind::NeedsConfirmation => "This needs your confirmation.",
         ErrorKind::FileChangedOnServer => {
             "The file changed on the server, so the download started over."
         }
@@ -75,7 +81,6 @@ pub fn simple_message(kind: ErrorKind) -> &'static str {
         | ErrorKind::Timeout
         | ErrorKind::RateLimited
         | ErrorKind::ToolMissing
-        | ErrorKind::ToolFailed
         | ErrorKind::NoPeers
         | ErrorKind::Unknown => "Something went wrong. Try again.",
     }

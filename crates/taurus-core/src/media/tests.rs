@@ -1,6 +1,5 @@
 use serde_json::{Value, json};
 
-use super::inspect::classify_stderr;
 use super::*;
 use crate::errors::ErrorKind;
 
@@ -277,42 +276,61 @@ fn fast_path_hosts() {
 }
 
 #[test]
-fn yt_dlp_complaints_map_to_kinds() {
-    for (stderr, kind) in [
-        (
-            "ERROR: Unsupported URL: https://example.com/blog",
-            ErrorKind::SiteNotSupported,
-        ),
-        (
-            "ERROR: [youtube] x: Sign in to confirm you\u{2019}re not a bot.",
-            ErrorKind::BlockedByBotCheck,
-        ),
-        (
-            "ERROR: [youtube] x: Private video. Sign in if you've been granted access",
-            ErrorKind::NeedsSignIn,
-        ),
-        (
-            "ERROR: [vimeo] 1: This video is available to members-only",
-            ErrorKind::NeedsSignIn,
-        ),
-        (
-            "ERROR: Unable to download JSON metadata: HTTP Error 429: Too Many Requests",
-            ErrorKind::RateLimited,
-        ),
-        (
-            "ERROR: [youtube] x: Video unavailable. This video has been removed",
-            ErrorKind::LinkExpired,
-        ),
-        (
-            "ERROR: [youtube] x: Unable to download webpage: <urlopen error [Errno -2] Name or service not known>",
-            ErrorKind::ConnectionLost,
-        ),
-        (
-            "ERROR: [generic] Unable to extract title; please report this issue",
-            ErrorKind::ToolFailed,
-        ),
-        ("", ErrorKind::ToolFailed),
+fn single_video_links() {
+    for url in [
+        "https://www.youtube.com/watch?v=abc&list=PL123",
+        "https://youtube.com/watch?list=PL123&v=abc&index=2",
+        "https://m.youtube.com/watch?v=abc&list=PL123",
+        "https://music.youtube.com/watch?v=abc&list=RDAMVMabc",
+        "https://youtu.be/abc?list=PL123",
+        "https://youtu.be/abc?si=x&list=PL123",
+        "  https://www.youtube.com/watch/?v=abc&list=PL123  ",
     ] {
-        assert_eq!(classify_stderr(stderr), kind, "{stderr}");
+        assert!(single_video_link(url), "{url}");
     }
+    for url in [
+        // A playlist, or a video alone.
+        "https://www.youtube.com/playlist?list=PL123",
+        "https://www.youtube.com/watch?v=abc",
+        "https://youtu.be/abc",
+        "https://www.youtube.com/watch?list=PL123",
+        "https://www.youtube.com/watch?v=&list=PL123",
+        "https://youtu.be/?list=PL123",
+        "https://youtu.be/abc/def?list=PL123",
+        "https://www.youtube.com/@channel?v=abc&list=PL123",
+        // Other hosts and schemes.
+        "https://vimeo.com/watch?v=abc&list=PL123",
+        "https://notyoutube.com/watch?v=abc&list=PL123",
+        "https://youtube.com.evil.example/watch?v=abc&list=PL123",
+        "ftp://youtube.com/watch?v=abc&list=PL123",
+        "not a url",
+        "",
+    ] {
+        assert!(!single_video_link(url), "{url}");
+    }
+}
+
+#[test]
+fn playlist_count_skips_unavailable_entries() {
+    let json = json!({
+        "_type": "playlist",
+        "title": "Mix",
+        "playlist_count": 5,
+        "entries": [{"id": "a"}, null, {"id": "b"}, null, {"id": "c"}],
+    });
+    let info = parse_info(&json).unwrap();
+    assert_eq!(info.playlist.unwrap().count, 3);
+    let none = json!({"_type": "playlist", "title": "Gone", "entries": [null, null]});
+    assert_eq!(parse_info(&none).unwrap().playlist.unwrap().count, 0);
+}
+
+#[test]
+fn failure_detail_is_the_error_line() {
+    let detail = inspect::failure_detail;
+    assert_eq!(
+        detail("WARNING: x\nERROR: [youtube] a: Private video\n"),
+        "[youtube] a: Private video"
+    );
+    assert_eq!(detail("just a line\n\n"), "just a line");
+    assert_eq!(detail(""), "yt-dlp failed without a message");
 }

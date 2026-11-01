@@ -25,12 +25,18 @@ pub enum ErrorKind {
     NoPeers,
     UnsafeTorrent,
     AlreadyAdded,
+    /// A video that is private, removed or deleted.
+    MediaUnavailable,
+    MediaRegionLocked,
+    /// The caller must confirm something first; the detail says what
+    /// (for example `playlist:51`).
+    NeedsConfirmation,
     Unknown,
 }
 
 impl ErrorKind {
     /// Every kind, in declaration order (for tables that must cover them all).
-    pub const ALL: [ErrorKind; 21] = [
+    pub const ALL: [ErrorKind; 24] = [
         Self::ConnectionLost,
         Self::Timeout,
         Self::LinkExpired,
@@ -51,6 +57,9 @@ impl ErrorKind {
         Self::NoPeers,
         Self::UnsafeTorrent,
         Self::AlreadyAdded,
+        Self::MediaUnavailable,
+        Self::MediaRegionLocked,
+        Self::NeedsConfirmation,
         Self::Unknown,
     ];
 
@@ -85,6 +94,9 @@ impl ErrorKind {
             Self::NoPeers => "no_peers",
             Self::UnsafeTorrent => "unsafe_torrent",
             Self::AlreadyAdded => "already_added",
+            Self::MediaUnavailable => "media_unavailable",
+            Self::MediaRegionLocked => "media_region_locked",
+            Self::NeedsConfirmation => "needs_confirmation",
             Self::Unknown => "unknown",
         }
     }
@@ -113,6 +125,9 @@ impl ErrorKind {
             "no_peers" => Self::NoPeers,
             "unsafe_torrent" => Self::UnsafeTorrent,
             "already_added" => Self::AlreadyAdded,
+            "media_unavailable" => Self::MediaUnavailable,
+            "media_region_locked" => Self::MediaRegionLocked,
+            "needs_confirmation" => Self::NeedsConfirmation,
             _ => Self::Unknown,
         }
     }
@@ -212,7 +227,10 @@ mod tests {
                 ErrorKind::NoPeers => 17,
                 ErrorKind::UnsafeTorrent => 18,
                 ErrorKind::AlreadyAdded => 19,
-                ErrorKind::Unknown => 20,
+                ErrorKind::MediaUnavailable => 20,
+                ErrorKind::MediaRegionLocked => 21,
+                ErrorKind::NeedsConfirmation => 22,
+                ErrorKind::Unknown => 23,
             }
         }
         for (i, kind) in ErrorKind::ALL.into_iter().enumerate() {
@@ -291,6 +309,9 @@ mod tests {
             (ErrorKind::NoPeers, "no_peers", true),
             (ErrorKind::UnsafeTorrent, "unsafe_torrent", false),
             (ErrorKind::AlreadyAdded, "already_added", false),
+            (ErrorKind::MediaUnavailable, "media_unavailable", false),
+            (ErrorKind::MediaRegionLocked, "media_region_locked", false),
+            (ErrorKind::NeedsConfirmation, "needs_confirmation", false),
         ] {
             assert_eq!(kind.as_str(), name);
             assert_eq!(ErrorKind::from_str(name), kind);

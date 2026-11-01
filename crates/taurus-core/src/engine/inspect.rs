@@ -43,10 +43,10 @@ impl Engine {
     /// a magnet link, `.torrent` URL or local `.torrent` file is listed as
     /// `torrent_files` does (a magnet link's metadata comes from its peers,
     /// which starts the torrent session). A link to a well-known video
-    /// site (`media::fast_path_host`) is read by yt-dlp straight away; a web
-    /// page (the web server answers with a page, not a file) is tried with
-    /// yt-dlp too, and stays `SiteNotSupported` if it has no extractor for
-    /// it. The first read installs yt-dlp and Deno if needed, announcing
+    /// site (`media::fast_path_host`) is read by yt-dlp straight away, and its
+    /// errors are reported as they are; a web page (the web server answers
+    /// with a page, not a file) is tried with yt-dlp too, and stays
+    /// `SiteNotSupported` if that fails in any way. The first read installs yt-dlp and Deno if needed, announcing
     /// each step as `Event::ToolStatus`.
     pub async fn inspect(&self, input: &str) -> Result<LinkInfo, CoreError> {
         self.check_running()?;
@@ -68,13 +68,15 @@ impl Engine {
                 size: probe.size,
                 content_type: probe.content_type,
             }),
-            // A web page: yt-dlp may know it. Its "no extractor" answer
-            // leaves the page as unsupported as before.
+            // A web page: yt-dlp may know it. If it does not, or cannot be
+            // asked (tools offline, a timeout, any yt-dlp error), the page
+            // stays as unsupported as it was: the person never asked for
+            // video, so no video error is shown for it.
             Err(page) if page.kind == ErrorKind::SiteNotSupported => {
-                match self.inspect_media(link).await {
-                    Err(e) if e.kind == ErrorKind::SiteNotSupported => Err(page),
-                    other => other,
-                }
+                self.inspect_media(link).await.map_err(|e| {
+                    tracing::debug!("yt-dlp could not read {link}: {e}");
+                    page
+                })
             }
             Err(e) => Err(e),
         }

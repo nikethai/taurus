@@ -15,6 +15,7 @@ mod install;
 pub(crate) mod spawn;
 #[cfg(test)]
 mod tests;
+pub(crate) mod tree;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

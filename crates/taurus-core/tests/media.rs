@@ -213,12 +213,23 @@ async fn yt_dlp_failures_keep_their_meaning() {
             "ERROR: [youtube] x: Sign in to confirm you\u{2019}re not a bot",
             ErrorKind::BlockedByBotCheck,
         ),
-        ("ERROR: [youtube] x: Private video", ErrorKind::NeedsSignIn),
+        (
+            "ERROR: [youtube] x: Private video",
+            ErrorKind::MediaUnavailable,
+        ),
         (
             "ERROR: [youtube] x: Video unavailable",
-            ErrorKind::LinkExpired,
+            ErrorKind::MediaUnavailable,
         ),
-        ("ERROR: something broke", ErrorKind::ToolFailed),
+        (
+            "ERROR: [youtube] x: This video is not available in your country",
+            ErrorKind::MediaRegionLocked,
+        ),
+        (
+            "ERROR: [youtube] x: Sign in to confirm your age",
+            ErrorKind::NeedsSignIn,
+        ),
+        ("ERROR: something broke", ErrorKind::Unknown),
     ] {
         let rig = Rig::new(&fails(stderr)).await;
         let err = rig
@@ -240,7 +251,7 @@ async fn yt_dlp_failures_keep_their_meaning() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn media_inspect_kills_yt_dlp_on_timeout() {
+async fn media_inspect_kills_the_process_group_on_timeout() {
     // A line every 30 s: the fake is still printing when the limit passes.
     let version = unique_version();
     set_ytdlp_scenario(
@@ -275,5 +286,89 @@ async fn media_inspect_kills_yt_dlp_on_timeout() {
         let pid = calls[0].pid as libc::pid_t;
         // Killed and reaped: no process of that pid is left.
         assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "yt-dlp is still running");
+        // yt-dlp led a process group of its own (pgid = pid), and that group
+        // has no member left either.
+        assert_ne!(
+            unsafe { libc::kill(-pid, 0) },
+            0,
+            "the process group is still running"
+        );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unlisted_page_with_failing_ytdlp_stays_site_not_supported() {
+    let server = TestServer::start().await;
+    // Whatever yt-dlp complains about, an unlisted page is "a web page".
+    for (i, stderr) in [
+        "ERROR: [generic] Private video",
+        "ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests",
+        "ERROR: [generic] Unable to extract title",
+        "no error line at all",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let rig = Rig::new(&fails(stderr)).await;
+        let page = server.serve_page(
+            &format!("/blog/unlisted_failing_{i}"),
+            200,
+            &[],
+            "<html>hi</html>",
+        );
+        let err = rig.engine.inspect(&page).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::SiteNotSupported, "{stderr}");
+        assert!(err.detail.contains("web page"), "{}", err.detail);
+        assert_eq!(calls_with(&page).len(), 1, "yt-dlp was asked: {stderr}");
+    }
+    // The same complaint on a listed host keeps its meaning.
+    let rig = Rig::new(&fails("ERROR: [youtube] x: Private video")).await;
+    let err = rig
+        .engine
+        .inspect("https://www.youtube.com/watch?v=listed_keeps_error")
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::MediaUnavailable);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unlisted_page_with_tools_offline_stays_site_not_supported() {
+    let server = TestServer::start().await;
+    let page = server.serve_page("/blog/tools_offline", 200, &[], "<html>hi</html>");
+    // A tool host that is not there: yt-dlp cannot be installed.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut config = EngineConfig::new(tmp.path().join("data"));
+    config.tool_sources = ToolSources::under(&url::Url::parse("http://127.0.0.1:9/").unwrap());
+    let engine = Engine::open(config).await.unwrap();
+    let err = engine.inspect(&page).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::SiteNotSupported);
+    assert!(err.detail.contains("web page"), "{}", err.detail);
+    // A listed host has no page to fall back to: the real error shows.
+    let err = engine
+        .inspect("https://www.youtube.com/watch?v=tools_offline_listed")
+        .await
+        .unwrap_err();
+    assert_ne!(err.kind, ErrorKind::SiteNotSupported, "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watch_link_with_a_list_is_inspected_as_the_single_video() {
+    let rig = Rig::new(&prints(&fixture("single_video.json"))).await;
+    let with_list = "https://www.youtube.com/watch?v=one_video&list=PLsingle_video";
+    let playlist = "https://www.youtube.com/playlist?list=PLreal_playlist";
+    let plain = "https://www.youtube.com/watch?v=no_list";
+    for link in [with_list, playlist, plain] {
+        rig.engine.inspect(link).await.unwrap();
+    }
+    let has_flag = |link: &str| {
+        let calls = calls_with(link);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let argv = &calls[0].argv;
+        // Before the `--`, so yt-dlp reads it as an option.
+        let dashes = argv.iter().position(|a| a == "--").unwrap();
+        argv[..dashes].iter().any(|a| a == "--no-playlist")
+    };
+    assert!(has_flag(with_list));
+    assert!(!has_flag(playlist));
+    assert!(!has_flag(plain));
 }

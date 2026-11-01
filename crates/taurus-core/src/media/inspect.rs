@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::errors::{CoreError, ErrorKind};
 
+use super::errors::{classify_stderr, error_line};
 use super::process::run_captured;
 use super::{LiveStatus, MediaInfo, PlaylistInfo, QualityOption, YtDlp};
 
@@ -55,7 +56,7 @@ pub(crate) fn fast_path_host(url: &str) -> bool {
 /// Runs `yt-dlp --flat-playlist -J <url>` (installing yt-dlp and Deno
 /// first if they are missing) and reads what it prints. A link yt-dlp has
 /// no extractor for is `SiteNotSupported`; its other failures are mapped by
-/// [`classify_stderr`]; a run longer than `timeout` is killed and fails with
+/// [`classify_stderr`](super::errors); a run longer than `timeout` is killed and fails with
 /// `Timeout`.
 pub async fn inspect(
     tools: &crate::tools::ToolManager,
@@ -65,13 +66,16 @@ pub async fn inspect(
     let url = url.trim();
     let yt_dlp = YtDlp::prepare(tools).await?;
     let mut command = yt_dlp.command();
+    if single_video_link(url) {
+        command.arg("--no-playlist");
+    }
     // `--` so that a link can never be taken for an option.
     command.args(["--flat-playlist", "-J", "--", url]);
     let out = run_captured(command, timeout).await?;
     if !out.success {
         return Err(CoreError {
-            kind: classify_stderr(&out.stderr),
-            detail: error_line(&out.stderr),
+            kind: classify_stderr(&out.stderr).0,
+            detail: failure_detail(&out.stderr),
         });
     }
     let json: Value = serde_json::from_slice(&out.stdout)
@@ -83,64 +87,46 @@ pub async fn inspect(
     Ok(info)
 }
 
-/// The kind of failure yt-dlp's stderr describes; anything unrecognized is
-/// `ToolFailed` (an extractor that broke because a site changed is that too).
-pub(crate) fn classify_stderr(stderr: &str) -> ErrorKind {
-    let text = stderr.to_lowercase().replace('\u{2019}', "'");
-    let has = |needles: &[&str]| needles.iter().any(|n| text.contains(n));
-    if text.contains("unsupported url") {
-        ErrorKind::SiteNotSupported
-    } else if has(&["not a bot", "captcha"]) {
-        ErrorKind::BlockedByBotCheck
-    } else if has(&[
-        "sign in",
-        "log in",
-        "login required",
-        "private video",
-        "members-only",
-        "members only",
-        "authentication",
-    ]) {
-        ErrorKind::NeedsSignIn
-    } else if has(&["http error 429", "too many requests"]) {
-        ErrorKind::RateLimited
-    } else if has(&[
-        "video unavailable",
-        "has been removed",
-        "no longer available",
-        "http error 404",
-        "http error 410",
-        "does not exist",
-    ]) {
-        ErrorKind::LinkExpired
-    } else if has(&[
-        "unable to download",
-        "urlopen error",
-        "name or service not known",
-        "temporary failure in name resolution",
-        "timed out",
-        "connection reset",
-        "connection refused",
-        "network is unreachable",
-        "getaddrinfo",
-    ]) {
-        ErrorKind::ConnectionLost
-    } else {
-        ErrorKind::ToolFailed
-    }
+/// What to show for a failed run: its last `ERROR:` line without the
+/// prefix, else its last line.
+pub(super) fn failure_detail(stderr: &str) -> String {
+    error_line(stderr)
+        .or_else(|| stderr.lines().map(str::trim).rfind(|l| !l.is_empty()))
+        .unwrap_or("yt-dlp failed without a message")
+        .to_owned()
 }
 
-/// The last `ERROR:` line of yt-dlp's stderr without the prefix, or its
-/// last line.
-fn error_line(stderr: &str) -> String {
-    let lines = || stderr.lines().map(str::trim).filter(|l| !l.is_empty());
-    let line = lines()
-        .rev()
-        .find(|l| l.starts_with("ERROR:"))
-        .map(|l| l.trim_start_matches("ERROR:").trim())
-        .or_else(|| lines().next_back())
-        .unwrap_or("yt-dlp failed without a message");
-    line.to_owned()
+/// Whether `url` is a YouTube link to one video that also names a playlist
+/// (`watch?v=<id>&list=<id>` on youtube.com, m.youtube.com or
+/// music.youtube.com; `youtu.be/<id>?list=<id>`). Such a link means the
+/// video: inspect and download it with `--no-playlist`. A `/playlist?list=`
+/// link is a playlist and is not matched.
+pub fn single_video_link(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    let has_param = |name: &str| {
+        parsed
+            .query_pairs()
+            .any(|(k, v)| k == name && !v.trim().is_empty())
+    };
+    let on = |domain: &str| {
+        host == domain || host.strip_suffix(domain).is_some_and(|p| p.ends_with('.'))
+    };
+    if on("youtube.com") {
+        parsed.path().trim_end_matches('/') == "/watch" && has_param("v") && has_param("list")
+    } else if on("youtu.be") {
+        let id = parsed.path().trim_matches('/');
+        !id.is_empty() && !id.contains('/') && has_param("list")
+    } else {
+        false
+    }
 }
 
 fn failed(detail: String) -> CoreError {
@@ -151,7 +137,8 @@ fn failed(detail: String) -> CoreError {
 }
 
 /// Reads yt-dlp's `-J` output for a video or a playlist. A playlist
-/// (`_type` `playlist` or `multi_video`) gets its title and entry count and
+/// (`_type` `playlist` or `multi_video`) gets its title and count of entries
+/// that are not `null` and
 /// the options `best` and `audio-best` without sizes; a video's options and
 /// sizes come from its `formats`. `url` is `webpage_url` (else
 /// `original_url`; `inspect` fills in the link it was given if neither is
@@ -173,10 +160,12 @@ pub fn parse_info(json: &Value) -> Result<MediaInfo, CoreError> {
         Some("playlist" | "multi_video")
     );
     let (playlist, qualities) = if is_playlist {
+        // Flat playlists hold `null` for items that are unavailable: they
+        // will not download, so they are not counted.
         let count = json
             .get("entries")
             .and_then(Value::as_array)
-            .map_or(0, Vec::len);
+            .map_or(0, |entries| entries.iter().filter(|e| !e.is_null()).count());
         let playlist = PlaylistInfo {
             title: title.clone(),
             count: u32::try_from(count).unwrap_or(u32::MAX),

@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::errors::{CoreError, ErrorKind};
-use crate::tools::spawn::spawn;
+use crate::tools::tree::TreeChild;
 
 /// The most of each stream that is kept; the rest is read and dropped.
 const MAX_STDOUT: usize = 64 * 1024 * 1024;
@@ -19,8 +19,9 @@ pub(super) struct Captured {
 }
 
 /// Starts `command` (stdout and stderr are piped here) and waits for it to
-/// finish. After `timeout` the process is killed and the error is
-/// `Timeout`; if it cannot start, `ToolFailed`.
+/// finish. After `timeout` the process and everything it started are
+/// killed (see `tools::tree`) and the error is `Timeout`; if it cannot
+/// start, `ToolFailed`.
 pub(super) async fn run_captured(
     mut command: tokio::process::Command,
     timeout: Duration,
@@ -28,24 +29,26 @@ pub(super) async fn run_captured(
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = spawn(&mut command).await.map_err(|e| CoreError {
-        kind: ErrorKind::ToolFailed,
-        detail: format!("could not run yt-dlp: {e}"),
-    })?;
-    let mut stdout = child.stdout.take().expect("stdout is piped");
-    let mut stderr = child.stderr.take().expect("stderr is piped");
+    let mut run = TreeChild::spawn(&mut command)
+        .await
+        .map_err(|e| CoreError {
+            kind: ErrorKind::ToolFailed,
+            detail: format!("could not run yt-dlp: {e}"),
+        })?;
+    let mut stdout = run.child.stdout.take().expect("stdout is piped");
+    let mut stderr = run.child.stderr.take().expect("stderr is piped");
     let finished = tokio::time::timeout(timeout, async {
         let (out, err, status) = tokio::join!(
             read_capped(&mut stdout, MAX_STDOUT),
             read_capped(&mut stderr, MAX_STDERR),
-            child.wait()
+            run.child.wait()
         );
         (out, err, status)
     })
     .await;
     match finished {
         Err(_) => {
-            if let Err(e) = child.kill().await {
+            if let Err(e) = run.kill().await {
                 tracing::warn!("could not stop yt-dlp: {e}");
             }
             Err(CoreError {

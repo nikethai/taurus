@@ -4,6 +4,7 @@
 //! The tools come from the `ToolManager` (yt-dlp itself, Deno for the
 //! JavaScript some extractors need, and ffmpeg for merging and converting).
 
+mod errors;
 mod inspect;
 mod process;
 #[cfg(test)]
@@ -17,8 +18,11 @@ use tokio::process::Command;
 use crate::errors::CoreError;
 use crate::tools::{ToolKind, ToolManager};
 
+// The download runner uses what inspection does not.
+#[allow(unused_imports)]
+pub(crate) use errors::{classify_stderr, classify_stderr_with, error_line};
 pub(crate) use inspect::fast_path_host;
-pub use inspect::{inspect, parse_info, qualities};
+pub use inspect::{inspect, parse_info, qualities, single_video_link};
 
 /// One way to download a video: yt-dlp's format selector, plus the
 /// audio options [`QualityOption::extra_args`] adds.
