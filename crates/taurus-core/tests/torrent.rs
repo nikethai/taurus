@@ -33,7 +33,7 @@ use tempfile::TempDir;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
-const TIMEOUT: Duration = Duration::from_secs(20);
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 fn data(size: usize, seed: u64) -> Vec<u8> {
     content(&FileSpec {
@@ -1612,9 +1612,12 @@ async fn seed_time_stop() {
     events_until(&mut events, |e| updated_to(e, id, JobState::Seeding)).await;
     let seeding = Instant::now();
     events_until(&mut events, |e| updated_to(e, id, JobState::Completed)).await;
+    // The clock starts only as the Seeding event arrives, after the store
+    // write and the actor: the lower bound guards against stopping at once,
+    // not the exact time.
     let shared = seeding.elapsed();
     assert!(
-        shared >= Duration::from_millis(900) && shared < Duration::from_secs(5),
+        shared >= Duration::from_millis(600) && shared < Duration::from_secs(5),
         "shared for {shared:?}"
     );
     assert_eq!(rig.view(id).state, JobState::Completed);

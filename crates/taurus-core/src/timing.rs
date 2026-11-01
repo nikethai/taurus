@@ -46,7 +46,9 @@ impl Timing {
             waiting_retry_first: Duration::from_millis(100),
             waiting_retry_cap: Duration::from_millis(400),
             when_done_countdown: Duration::from_millis(300),
-            torrent_metadata_timeout: Duration::from_secs(2),
+            // Test magnets come from real local sessions: a shorter wait
+            // times out on a loaded machine.
+            torrent_metadata_timeout: Duration::from_secs(5),
             torrent_poll: Duration::from_millis(250),
         }
     }
@@ -75,7 +77,7 @@ mod tests {
         assert_eq!(f.waiting_retry_first, Duration::from_millis(100));
         assert_eq!(f.waiting_retry_cap, Duration::from_millis(400));
         assert_eq!(f.when_done_countdown, Duration::from_millis(300));
-        assert_eq!(f.torrent_metadata_timeout, Duration::from_secs(2));
+        assert_eq!(f.torrent_metadata_timeout, Duration::from_secs(5));
         assert_eq!(f.torrent_poll, Duration::from_millis(250));
     }
 }
