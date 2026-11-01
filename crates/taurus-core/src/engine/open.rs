@@ -60,7 +60,7 @@ pub(super) async fn assemble(
             _ => {}
         }
         let downloaded = downloaded(&store, job.id)?;
-        views.insert(job.id, view_of(&job, downloaded));
+        views.insert(job.id, view_of(&store, &job, downloaded));
     }
 
     let hub = Arc::new(TorrentHub::new(

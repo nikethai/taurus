@@ -246,6 +246,19 @@ impl Store {
             .map_err(db_err)
     }
 
+    /// When the job was last written (unix secs), if it is Completed: that
+    /// is when it finished, as nothing writes a Completed job again.
+    pub fn finished_at(&self, id: JobId) -> Result<Option<i64>, CoreError> {
+        self.lock()
+            .query_row(
+                "SELECT updated_at FROM jobs WHERE id = ?1 AND state = ?2",
+                params![id.0, JobState::Completed.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
     pub fn list_jobs(&self) -> Result<Vec<JobRecord>, CoreError> {
         let conn = self.lock();
         let mut stmt = conn

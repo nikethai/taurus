@@ -17,6 +17,7 @@ use crate::system::marks::loggable;
 
 use super::actor::{Actor, JobMsg, Run};
 use super::schedule::check_space;
+use super::settings::unix_now;
 use super::torrent::{stored_downloaded, stored_torrent_view};
 use super::{AddRequest, Event, JobView, io_error, no_such_job, read, write};
 
@@ -87,7 +88,7 @@ impl Actor {
             }
             return Err(e);
         }
-        let view = view_of(&job, 0);
+        let view = view_of(&self.store, &job, 0);
         write(&self.views).insert(id, view.clone());
         self.emit(Event::JobAdded(view));
         self.after_change();
@@ -181,7 +182,7 @@ impl Actor {
         }
         self.store.update_job(&job)?;
         self.store.clear_revalidation(id)?;
-        let view = view_of(&job, done);
+        let view = view_of(&self.store, &job, done);
         write(&self.views).insert(id, view.clone());
         self.emit(Event::JobUpdated(view));
         fits?;
@@ -273,6 +274,7 @@ impl Actor {
             }
         };
         if let Some(mut view) = view {
+            view.retry_at = None;
             if state == JobState::Waiting {
                 if let Err(e) = self.store.set_state(id, JobState::Waiting) {
                     tracing::warn!(job = id.0, "could not record the wait: {e}");
@@ -281,9 +283,10 @@ impl Actor {
                 if !self.stopping && self.autostart {
                     let progressed =
                         run.is_some_and(|run| view.downloaded > run.downloaded_at_start);
-                    self.retry_later(id, progressed);
+                    view.retry_at = Some(self.retry_later(id, progressed));
                 }
             }
+            view.finished_at = (state == JobState::Completed).then(unix_now);
             view.state = state;
             view.speed_bps = 0;
             write(&self.views).insert(id, view.clone());
@@ -410,10 +413,8 @@ impl Actor {
     /// Records the job as Waiting with `e` and retries it later (only with
     /// `autostart`), as a run that failed with `e` would be.
     fn wait_to_retry(&mut self, id: JobId, e: CoreError) {
-        self.record_error(id, JobState::Waiting, e);
-        if !self.stopping && self.autostart {
-            self.retry_later(id, false);
-        }
+        let retry_at = (!self.stopping && self.autostart).then(|| self.retry_later(id, false));
+        self.record_error(id, JobState::Waiting, retry_at, e);
         self.after_change();
     }
 
@@ -425,12 +426,13 @@ impl Actor {
 
     /// `fail` without the `after_change`, for use within it.
     pub(super) fn record_failure(&mut self, id: JobId, e: CoreError) {
-        self.record_error(id, JobState::Failed, e);
+        self.record_error(id, JobState::Failed, None, e);
         self.job_ended = true;
     }
 
-    /// Records the job in `state` with `e` as its error and announces it.
-    fn record_error(&mut self, id: JobId, state: JobState, e: CoreError) {
+    /// Records the job in `state` with `e` as its error (and, if Waiting,
+    /// its next retry at `retry_at`) and announces it.
+    fn record_error(&mut self, id: JobId, state: JobState, retry_at: Option<i64>, e: CoreError) {
         let error = Some((e.kind, e.detail));
         match self.store.get_job(id) {
             Ok(Some(mut job)) => {
@@ -447,6 +449,7 @@ impl Actor {
             view.state = state;
             view.speed_bps = 0;
             view.error = error;
+            view.retry_at = retry_at;
             view.clone()
         });
         if let Some(view) = view {
@@ -538,13 +541,21 @@ fn describe_size(size: Option<u64>) -> String {
 
 /// `downloaded` is the durable progress (see `stored_downloaded` for a
 /// torrent's).
-pub(super) fn view_of(job: &JobRecord, downloaded: u64) -> JobView {
-    view_with(job, downloaded, None)
+pub(super) fn view_of(store: &Store, job: &JobRecord, downloaded: u64) -> JobView {
+    view_with(store, job, downloaded, None)
 }
 
 /// [`view_of`], reusing what `known` (the job's view so far) has that only
 /// the stored metadata could tell otherwise.
-fn view_with(job: &JobRecord, downloaded: u64, known: Option<&JobView>) -> JobView {
+fn view_with(store: &Store, job: &JobRecord, downloaded: u64, known: Option<&JobView>) -> JobView {
+    let finished_at = if job.state == JobState::Completed {
+        store.finished_at(job.id).unwrap_or_else(|e| {
+            tracing::warn!(job = job.id.0, "could not read when the job finished: {e}");
+            None
+        })
+    } else {
+        None
+    };
     JobView {
         id: job.id,
         url: job.url.clone(),
@@ -559,6 +570,9 @@ fn view_with(job: &JobRecord, downloaded: u64, known: Option<&JobView>) -> JobVi
         error: job.error.clone(),
         kind: job.kind,
         torrent: stored_torrent_view(job, known.and_then(|v| v.torrent.as_ref())),
+        retry_at: None,
+        finished_at,
+        info_hash: job.info_hash.clone(),
     }
 }
 
@@ -570,7 +584,7 @@ fn load_view(
     let Some(job) = store.get_job(id)? else {
         return Ok(None);
     };
-    Ok(Some(view_with(&job, downloaded(store, id)?, known)))
+    Ok(Some(view_with(store, &job, downloaded(store, id)?, known)))
 }
 
 /// Durable progress: the sum of the stored segments' `done`.

@@ -207,7 +207,7 @@ impl Actor {
                 return Err(e);
             }
         }
-        let view = view_of(&job, 0);
+        let view = view_of(&self.store, &job, 0);
         write(&self.views).insert(id, view.clone());
         self.emit(Event::JobAdded(view));
         self.after_change();

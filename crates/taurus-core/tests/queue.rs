@@ -1323,3 +1323,49 @@ async fn keep_awake_follows_downloads() {
     engine.shutdown().await.unwrap();
     assert!(!engine.keeping_awake());
 }
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn waiting_job_has_retry_at() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let mut events = engine.subscribe();
+    let mut spec = FileSpec::new(MIB);
+    // The add-time probe passes; the job's requests then get 503s.
+    spec.fail_first = [vec![0], vec![503; 6]].concat();
+    let before = unix_now();
+    let id = fx.add(&engine, "x.bin", &spec).await;
+    assert_eq!(view(&engine, id).retry_at, None);
+
+    let seen = events_until(&mut events, |e| is_update(e, id, JobState::Waiting)).await;
+    let after = unix_now();
+    let Some(Event::JobUpdated(waiting)) = seen.last() else {
+        panic!("no Waiting update");
+    };
+    let first = Timing::fast_for_tests()
+        .waiting_retry_first
+        .as_secs_f64()
+        .ceil() as i64;
+    let retry_at = waiting.retry_at.expect("a Waiting job has retry_at");
+    assert!(
+        (before..=after + first).contains(&retry_at),
+        "{retry_at} not in {before}..={}",
+        after + first
+    );
+    assert_eq!(view(&engine, id).retry_at, Some(retry_at));
+
+    // Once retried it no longer has one.
+    let seen = events_until(&mut events, |e| is_update(e, id, JobState::Queued)).await;
+    let Some(Event::JobUpdated(queued)) = seen.last() else {
+        panic!("no Queued update");
+    };
+    assert_eq!(queued.retry_at, None);
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_eq!(view(&engine, id).retry_at, None);
+}

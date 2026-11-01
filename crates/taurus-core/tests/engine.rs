@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use taurus_core::store::{JobKind, JobRecord, NewJob, Store};
 use taurus_core::{
-    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, JobView, Settings,
-    SpeedLimit,
+    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, JobView, LinkInfo,
+    Settings, SpeedLimit,
 };
 use taurus_testkit::{FailAfter, FileSpec, TestServer, content, sha256_hex};
 use tokio::sync::broadcast;
@@ -1362,4 +1362,139 @@ async fn auto_checksum_follows_the_setting() {
     assert_eq!(wait(&engine, id).await, JobState::Completed);
     assert_file(&fx.dest.join(view(&engine, id).file_name), &spec);
     assert_eq!(fx.server.requests("/rel/SHA256SUMS"), 1);
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inspect_http_file() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let mut spec = FileSpec::new(2 * MIB);
+    spec.content_disposition = Some("attachment; filename=\"report.pdf\"".into());
+    spec.content_type = Some("application/pdf".into());
+    let url = fx.server.serve(PATH, spec);
+
+    let info = engine.inspect(&format!("  {url}\n")).await.unwrap();
+    assert_eq!(
+        info,
+        LinkInfo::File {
+            url,
+            name: "report.pdf".to_string(),
+            size: Some(2 * MIB as u64),
+            content_type: Some("application/pdf".to_string()),
+        }
+    );
+    // Nothing was added, in memory or in the store.
+    assert!(engine.snapshot().is_empty());
+    let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
+    assert!(store.list_jobs().unwrap().is_empty());
+    assert!(fs::read_dir(&fx.dest).unwrap().next().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inspect_web_page_fails_site_not_supported() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let page = fx
+        .server
+        .serve_page("/blog/", 200, &[], "<html><body>Hello</body></html>");
+
+    let err = engine.inspect(&page).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::SiteNotSupported);
+    let err = engine
+        .inspect("magnet:?xt=urn:btih:nope")
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::SiteNotSupported);
+    assert!(engine.snapshot().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn find_by_url_matches_fixed_up_link() {
+    let fx = Fixture::new().await;
+    // A job added from a Dropbox share link records the direct link as its
+    // `url` (the network is not reachable here, so it is stored as `add`
+    // would have). Without autostart it stays as it is.
+    let share = "https://www.dropbox.com/s/abc123/file.bin?dl=0";
+    let direct = "https://www.dropbox.com/s/abc123/file.bin?dl=1";
+    fs::create_dir_all(fx.data_dir()).unwrap();
+    let dropbox_id = {
+        let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
+        store
+            .insert_job(&NewJob {
+                url: direct.into(),
+                source_url: share.into(),
+                dest_dir: fx.dest.clone(),
+                file_name: "file.bin".into(),
+                connections: 4,
+                mirrors: Vec::new(),
+                checksum: None,
+                referer: None,
+                queue_pos: 0,
+                kind: JobKind::Http,
+                info_hash: None,
+                torrent_meta: None,
+                only_files: None,
+            })
+            .unwrap()
+    };
+    let mut config = EngineConfig::new(fx.data_dir());
+    config.autostart = false;
+    let engine = Engine::open(config).await.unwrap();
+
+    assert_eq!(engine.find_by_url(share), Some(dropbox_id));
+    assert_eq!(engine.find_by_url(&format!(" {share} ")), Some(dropbox_id));
+    // The same file by its other spellings.
+    assert_eq!(engine.find_by_url(direct), Some(dropbox_id));
+    assert_eq!(
+        engine.find_by_url("https://www.dropbox.com/s/other/file.bin?dl=0"),
+        None
+    );
+
+    // A job added the ordinary way is found by the link it was added with.
+    let url = fx.server.serve(PATH, FileSpec::new(1024));
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(engine.find_by_url(&url), Some(id));
+    assert_eq!(engine.find_by_url("not a link"), None);
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completed_job_has_finished_at() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let spec = FileSpec::new(MIB);
+    let url = fx.server.serve(PATH, spec);
+    let before = unix_now();
+
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(view(&engine, id).finished_at, None);
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    let after = unix_now();
+    let finished = view(&engine, id).finished_at.expect("finished_at is set");
+    assert!((before..=after).contains(&finished), "{finished}");
+    assert_eq!(view(&engine, id).retry_at, None);
+
+    // A job that has not completed has none.
+    let paused = fx.server.serve("/p.bin", throttled(8 * MIB));
+    let other = engine.add(fx.request(&paused)).await.unwrap();
+    engine.pause(other).await.unwrap();
+    assert_eq!(view(&engine, other).finished_at, None);
+    engine.shutdown().await.unwrap();
+
+    // It comes back from the store, in the snapshot and the engine's views.
+    let engine = fx.engine().await;
+    let again = view(&engine, id).finished_at.expect("finished_at is kept");
+    assert!((before..=unix_now()).contains(&again), "{again}");
+    assert_eq!(view(&engine, other).finished_at, None);
+    let config = EngineConfig::new(fx.data_dir());
+    let snapshot = Engine::read_snapshot(&config).unwrap();
+    assert_eq!(snapshot[0].finished_at, Some(again));
+    engine.shutdown().await.unwrap();
 }

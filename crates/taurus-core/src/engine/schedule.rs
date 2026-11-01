@@ -19,6 +19,7 @@ use crate::timing::Timing;
 
 use super::actor::{Actor, JobMsg, Retry, Run, is_final};
 use super::jobs::downloaded;
+use super::settings::unix_now;
 use super::{Event, Views, no_such_job, read, write};
 
 impl Actor {
@@ -190,7 +191,8 @@ impl Actor {
 
     /// Retries the Waiting job after `waiting_retry_first`, doubling per wait
     /// in a row in which it made no progress, up to `waiting_retry_cap`.
-    pub(super) fn retry_later(&mut self, id: JobId, progressed: bool) {
+    /// Returns when the retry is due, in unix seconds (rounded up).
+    pub(super) fn retry_later(&mut self, id: JobId, progressed: bool) -> i64 {
         let count = self.retry_counts.entry(id).or_insert(0);
         if progressed {
             *count = 0;
@@ -208,6 +210,8 @@ impl Actor {
         if let Some(old) = self.retries.insert(id, Retry { seq, timer }) {
             old.timer.abort();
         }
+        let secs = i64::try_from(delay.as_secs_f64().ceil() as u64).unwrap_or(i64::MAX);
+        unix_now().saturating_add(secs)
     }
 
     pub(super) fn on_retry_due(&mut self, id: JobId, seq: u64) {
