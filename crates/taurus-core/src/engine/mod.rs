@@ -9,6 +9,7 @@ mod actor;
 mod inspect;
 mod jobs;
 mod open;
+mod remove;
 mod schedule;
 mod settings;
 mod torrent;
@@ -37,6 +38,7 @@ pub use actor::JobMsg;
 pub use inspect::LinkInfo;
 use jobs::{downloaded, fixed_url, vet_mirrors, view_of};
 use open::assemble;
+pub use remove::RemoveFiles;
 use schedule::check_space;
 
 const COMMAND_CAPACITY: usize = 64;
@@ -380,12 +382,20 @@ impl Engine {
     /// torrent's), then the folders they leave empty, and the folder it was
     /// given if that is empty.
     pub async fn remove(&self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
-        self.call(|reply| Command::Remove {
-            id,
-            delete_files,
-            reply,
-        })
-        .await?
+        let files = if delete_files {
+            RemoveFiles::All
+        } else {
+            RemoveFiles::Keep
+        };
+        self.remove_with(id, files).await
+    }
+
+    /// Like `remove`, with the choice of files made by the engine: with
+    /// `RemoveFiles::IfUnfinished` it looks at the job as it is when it
+    /// removes it, so a download that finished a moment ago keeps its file.
+    pub async fn remove_with(&self, id: JobId, files: RemoveFiles) -> Result<(), CoreError> {
+        self.call(|reply| Command::Remove { id, files, reply })
+            .await?
     }
 
     /// Every job, ordered by id.

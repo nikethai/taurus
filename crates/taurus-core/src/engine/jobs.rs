@@ -15,6 +15,7 @@ use crate::plan::DEFAULT_CONNECTIONS;
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob, Store};
 use crate::system::marks::loggable;
 
+use super::RemoveFiles;
 use super::actor::{Actor, JobMsg, Run};
 use super::schedule::check_space;
 use super::settings::unix_now;
@@ -190,7 +191,7 @@ impl Actor {
         Ok(())
     }
 
-    pub(super) async fn remove(&mut self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
+    pub(super) async fn remove(&mut self, id: JobId, files: RemoveFiles) -> Result<(), CoreError> {
         if !read(&self.views).contains_key(&id) {
             return Err(no_such_job());
         }
@@ -201,6 +202,8 @@ impl Actor {
         self.cancel_retry(id);
         self.retry_counts.remove(&id);
         self.resolved_again.remove(&id);
+        // Decided now, after the run stopped: it may have just finished.
+        let delete_files = files.deletes(read(&self.views).get(&id));
         let removed = self.delete(id, delete_files).await;
         self.after_change();
         removed

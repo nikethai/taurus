@@ -20,7 +20,7 @@ use crate::torrent::hub::TorrentHub;
 use crate::when_done::WhenDoneRunner;
 
 use super::torrent::TorrentInput;
-use super::{AddRequest, Event, TorrentView, Views, no_such_job, read, write};
+use super::{AddRequest, Event, RemoveFiles, TorrentView, Views, no_such_job, read, write};
 
 pub(super) type Reply<T> = oneshot::Sender<Result<T, CoreError>>;
 
@@ -55,7 +55,7 @@ pub(super) enum Command {
     },
     Remove {
         id: JobId,
-        delete_files: bool,
+        files: RemoveFiles,
         reply: Reply<()>,
     },
     Wait {
@@ -268,12 +268,8 @@ impl Actor {
                         .and_then(|j| j.ok_or_else(no_such_job)),
                 );
             }
-            Command::Remove {
-                id,
-                delete_files,
-                reply,
-            } => {
-                let _ = reply.send(self.remove(id, delete_files).await);
+            Command::Remove { id, files, reply } => {
+                let _ = reply.send(self.remove(id, files).await);
             }
             Command::Wait { id, reply } => self.wait(id, reply),
             Command::SetSettings { settings, reply } => {

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use taurus_core::store::{JobKind, JobRecord, NewJob, Store};
 use taurus_core::{
     AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, JobView, LinkInfo,
-    Settings, SpeedLimit,
+    RemoveFiles, Settings, SpeedLimit,
 };
 use taurus_testkit::{FailAfter, FileSpec, TestServer, content, sha256_hex};
 use tokio::sync::broadcast;
@@ -433,6 +433,49 @@ async fn open_turns_interrupted_jobs_into_queued() {
     let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
     let states: Vec<JobState> = store.list_jobs().unwrap().iter().map(|j| j.state).collect();
     assert_eq!(states, vec![JobState::Queued, JobState::Paused]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_if_unfinished_keeps_completed_files() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let spec = FileSpec::new(MIB);
+    let url = fx.server.serve(PATH, spec.clone());
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+
+    engine
+        .remove_with(id, RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    assert!(engine.snapshot().is_empty());
+    assert_file(&fx.dest.join("x.bin"), &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_if_unfinished_deletes_partial() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let id = add_and_pause(&fx, &engine, &throttled(20 * MIB)).await;
+    assert!(fx.tapa().exists());
+
+    engine
+        .remove_with(id, RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    assert!(!fx.tapa().exists());
+    assert!(engine.snapshot().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_keep_leaves_partial() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let id = add_and_pause(&fx, &engine, &throttled(20 * MIB)).await;
+
+    engine.remove_with(id, RemoveFiles::Keep).await.unwrap();
+    assert!(fx.tapa().exists());
+    assert!(engine.snapshot().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

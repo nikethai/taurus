@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use slint::{CloseRequestResponse, ComponentHandle, SharedPixelBuffer, Timer, TimerMode};
-use taurus_core::{Engine, ErrorKind, JobId, JobKind, JobState, JobView, LinkInfo, Settings};
+use taurus_core::{Engine, ErrorKind, JobId, JobState, LinkInfo, RemoveFiles, Settings};
 
 use crate::add_flow::PendingAdd;
 use crate::bridge::{self, Coalescer};
@@ -315,13 +315,7 @@ impl App {
 
     /// "Remove from list": an unfinished download's partial file goes too.
     fn remove(&self, id: i32) {
-        let id = JobId(id.into());
-        let delete_files = self
-            .view
-            .borrow()
-            .view(id)
-            .is_some_and(remove_deletes_files);
-        self.spawn_job(id, Job::Remove { delete_files });
+        self.job_call(id, Job::Remove);
     }
 
     fn spawn_job(&self, id: JobId, job: Job) {
@@ -330,7 +324,8 @@ impl App {
             let result = match job {
                 Job::Pause => engine.pause(id).await,
                 Job::Resume => engine.resume(id).await,
-                Job::Remove { delete_files } => engine.remove(id, delete_files).await,
+                // The engine decides about the files as it removes the job.
+                Job::Remove => engine.remove_with(id, RemoveFiles::IfUnfinished).await,
             };
             // A failed resume keeps the job as it was, with its error shown.
             if let Err(e) = result {
@@ -409,26 +404,7 @@ impl Drop for App {
 enum Job {
     Pause,
     Resume,
-    Remove { delete_files: bool },
-}
-
-/// Whether removing `view` from the list also deletes its files: yes for
-/// an unfinished download (its partial file would be left behind for
-/// good), never for a finished one. A torrent's files are finished user
-/// data once Seeding or Completed, and also when it was paused with all of
-/// its data (after seeding).
-pub fn remove_deletes_files(view: &JobView) -> bool {
-    let unfinished = matches!(
-        view.state,
-        JobState::Queued
-            | JobState::Downloading
-            | JobState::Paused
-            | JobState::Waiting
-            | JobState::Failed
-    );
-    let complete_torrent =
-        view.kind == JobKind::Torrent && view.total.is_some_and(|total| view.downloaded >= total);
-    unfinished && !complete_torrent
+    Remove,
 }
 
 /// `path` if it exists, else its nearest existing parent (a removed file
@@ -448,33 +424,6 @@ mod tests {
     fn close_policy() {
         assert_eq!(super::close_policy(true), ClosePolicy::HideToTray);
         assert_eq!(super::close_policy(false), ClosePolicy::Quit);
-    }
-
-    #[test]
-    fn remove_deletes_only_unfinished_files() {
-        use crate::testutil::view;
-        for state in [
-            JobState::Queued,
-            JobState::Downloading,
-            JobState::Paused,
-            JobState::Waiting,
-            JobState::Failed,
-        ] {
-            assert!(remove_deletes_files(&view(1, "a.bin", state)), "{state:?}");
-        }
-        for state in [JobState::Seeding, JobState::Completed] {
-            assert!(!remove_deletes_files(&view(1, "a.bin", state)), "{state:?}");
-        }
-        // A torrent half downloaded and paused: its pieces go.
-        let mut torrent = view(2, "pack", JobState::Paused);
-        torrent.kind = JobKind::Torrent;
-        torrent.downloaded = 10;
-        assert!(remove_deletes_files(&torrent));
-        // Paused after it finished (and shared): the files are the user's.
-        torrent.downloaded = torrent.total.unwrap();
-        assert!(!remove_deletes_files(&torrent));
-        torrent.state = JobState::Seeding;
-        assert!(!remove_deletes_files(&torrent));
     }
 
     #[test]
