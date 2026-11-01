@@ -1442,8 +1442,24 @@ async fn inspect_http_file() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn inspect_web_page_fails_site_not_supported() {
+    // A web page is also tried with yt-dlp; here (a fake one) it has no
+    // extractor for it, so nothing changes. No real tool is downloaded.
+    let version = taurus_testkit::unique_version();
+    taurus_testkit::set_ytdlp_scenario(
+        &version,
+        r#"{"stderr": ["ERROR: Unsupported URL: https://example.com/blog/"], "exit": 1}"#,
+    );
+    let tools = taurus_testkit::FakeToolHost::start(
+        taurus_testkit::ToolRelease::new(&version),
+        taurus_testkit::ToolRelease::new("7.1"),
+        taurus_testkit::ToolRelease::new("2.5.0"),
+    )
+    .await;
     let fx = Fixture::new().await;
-    let engine = fx.engine().await;
+    let mut config = EngineConfig::new(fx.data_dir());
+    config.tool_sources =
+        taurus_core::tools::ToolSources::under(&url::Url::parse(&tools.base_url()).unwrap());
+    let engine = Engine::open(config).await.unwrap();
     let page = fx
         .server
         .serve_page("/blog/", 200, &[], "<html><body>Hello</body></html>");

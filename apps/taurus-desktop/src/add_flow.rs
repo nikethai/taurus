@@ -72,9 +72,10 @@ fn folder_text(folder: Option<&Path>) -> slint::SharedString {
         .into()
 }
 
-/// What the Add screen shows for a looked-at link.
-fn add_vm(info: &LinkInfo) -> (AddVm, &'static str) {
-    match info {
+/// What the Add screen shows for a looked-at link; `None` for a video link,
+/// which this screen does not handle yet (it is shown as unsupported).
+fn add_vm(info: &LinkInfo) -> Option<(AddVm, &'static str)> {
+    let shown = match info {
         LinkInfo::File { name, size, .. } => {
             let kind = rows::kind_for(name, JobKind::Http);
             let vm = AddVm {
@@ -85,6 +86,7 @@ fn add_vm(info: &LinkInfo) -> (AddVm, &'static str) {
             };
             (vm, kind)
         }
+        LinkInfo::Media(_) => return None,
         LinkInfo::Torrent(t) => {
             let kind = rows::kind_for(&t.name, JobKind::Torrent);
             let vm = AddVm {
@@ -97,7 +99,8 @@ fn add_vm(info: &LinkInfo) -> (AddVm, &'static str) {
             };
             (vm, kind)
         }
-    }
+    };
+    Some(shown)
 }
 
 impl App {
@@ -165,9 +168,9 @@ impl App {
         let Some(p) = pending.as_mut().filter(|p| p.seq == seq) else {
             return;
         };
-        let vm = match result {
-            Ok(info) => {
-                let (vm, kind) = add_vm(&info);
+        let shown = result.and_then(|info| add_vm(&info).ok_or(ErrorKind::SiteNotSupported));
+        let vm = match shown {
+            Ok((vm, kind)) => {
                 p.kind = Some(kind);
                 AddVm {
                     folder: self.destination_text(p, kind),
@@ -399,6 +402,22 @@ fn banner_for(link: &str) -> BannerVm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_links_are_not_shown_yet() {
+        let media = taurus_core::media::MediaInfo {
+            url: "https://www.youtube.com/watch?v=x".into(),
+            title: "t".into(),
+            uploader: None,
+            duration_secs: None,
+            thumbnail_url: None,
+            extractor: "Youtube".into(),
+            live: taurus_core::media::LiveStatus::NotLive,
+            playlist: None,
+            qualities: Vec::new(),
+        };
+        assert!(add_vm(&LinkInfo::Media(media)).is_none());
+    }
 
     #[test]
     fn sort_folder_for_kind() {

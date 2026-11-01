@@ -549,3 +549,24 @@ async fn host_goes_offline_and_back_on_the_same_port() {
     assert!(client.get(&url).send().await.unwrap().status().is_success());
     assert_eq!(host.requests("api/"), 2);
 }
+
+#[test]
+fn shared_scenarios_are_keyed_by_version() {
+    let (a, b) = (unique_version(), unique_version());
+    assert_ne!(a, b);
+    set_ytdlp_scenario(&a, r#"{"stdout": ["from a"]}"#);
+    set_ytdlp_scenario(&b, r#"{"stdout": ["from b"], "exit": 5}"#);
+    let dir = tempfile::tempdir().unwrap();
+    for (version, line, code) in [(&a, "from a", 0), (&b, "from b", 5)] {
+        let yt = write_fake_tool(dir.path(), "yt-dlp", version, false);
+        let out = run(Command::new(&yt).arg(format!("--marker-{version}")));
+        assert_eq!(stdout(&out).trim(), line);
+        assert_eq!(out.status.code(), Some(code));
+        let logged: Vec<_> = process_args_log()
+            .into_iter()
+            .filter(|e| e.argv == [format!("--marker-{version}")])
+            .collect();
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0].tool, "yt-dlp");
+    }
+}

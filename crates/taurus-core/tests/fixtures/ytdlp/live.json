@@ -1,0 +1,11 @@
+{
+  "id": "live1",
+  "title": "Live Now",
+  "webpage_url": "https://www.twitch.tv/somebody",
+  "extractor_key": "TwitchStream",
+  "live_status": "is_live",
+  "is_live": true,
+  "formats": [
+    {"format_id": "720p60", "ext": "mp4", "vcodec": "avc1", "acodec": "mp4a.40.2", "height": 720}
+  ]
+}

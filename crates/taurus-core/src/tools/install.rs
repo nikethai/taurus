@@ -18,14 +18,13 @@ use crate::http::client::request_error;
 
 use super::CURRENT_FILE;
 use super::catalog::{Asset, ChecksumSource, Layout, parse_sidecar, parse_sums};
+use super::spawn::spawn;
 
 const INCOMING: &str = ".incoming";
 /// Download progress is reported at most once per this many bytes.
 const REPORT_STEP: u64 = 512 * 1024;
 /// ffmpeg's version: this many hex digits of its archive's SHA-256.
 const HASH_VERSION_LEN: usize = 12;
-/// Attempts at running a binary that exec refuses as busy (ETXTBSY).
-const BUSY_ATTEMPTS: u32 = 10;
 
 /// `(downloaded, total)` of the install's downloads so far.
 pub(super) type Report<'a> = &'a (dyn Fn(u64, Option<u64>) + Send + Sync);
@@ -411,35 +410,15 @@ async fn run_version(path: &Path, arg: &str, timeout: Duration) -> Result<(), Co
 
 /// Starts `<path> <arg>`, retrying while exec refuses it as busy.
 async fn spawn_version(path: &Path, arg: &str) -> Result<tokio::process::Child, CoreError> {
-    let mut attempt = 0;
-    loop {
-        let mut command = tokio::process::Command::new(path);
-        command
-            .arg(arg)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(windows)]
-        {
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
-        match command.spawn() {
-            Err(e) if is_busy(&e) && attempt + 1 < BUSY_ATTEMPTS => {
-                attempt += 1;
-                tokio::time::sleep(Duration::from_millis(25) * attempt).await;
-            }
-            Err(e) => return Err(failed(format!("could not run {}: {e}", path.display()))),
-            Ok(child) => return Ok(child),
-        }
-    }
-}
-
-/// Linux refuses to run a binary still open for writing (ETXTBSY, 26 on
-/// Linux and macOS), which a child forked by another thread may briefly hold.
-fn is_busy(e: &io::Error) -> bool {
-    cfg!(unix) && e.raw_os_error() == Some(26)
+    let mut command = tokio::process::Command::new(path);
+    command
+        .arg(arg)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    spawn(&mut command)
+        .await
+        .map_err(|e| failed(format!("could not run {}: {e}", path.display())))
 }
 
 fn hash_version(sha256: &str) -> String {

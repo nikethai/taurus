@@ -1,0 +1,38 @@
+//! Starting a tool's process: no console window on Windows, the child
+//! killed if its handle is dropped, and a retry where Linux briefly refuses.
+
+use std::io;
+use std::time::Duration;
+
+use tokio::process::{Child, Command};
+
+/// Attempts at running a binary that exec refuses as busy (ETXTBSY).
+const BUSY_ATTEMPTS: u32 = 10;
+
+/// Spawns `command` with `kill_on_drop` set (and `CREATE_NO_WINDOW` on
+/// Windows), retrying for about a second while exec answers ETXTBSY: a binary
+/// just written can still be open for writing in a child another thread
+/// forked. The caller sets stdio and arguments.
+pub(crate) async fn spawn(command: &mut Command) -> io::Result<Child> {
+    command.kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut attempt = 0;
+    loop {
+        match command.spawn() {
+            Err(e) if is_busy(&e) && attempt + 1 < BUSY_ATTEMPTS => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(25) * attempt).await;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// ETXTBSY is 26 on Linux and macOS.
+fn is_busy(e: &io::Error) -> bool {
+    cfg!(unix) && e.raw_os_error() == Some(26)
+}

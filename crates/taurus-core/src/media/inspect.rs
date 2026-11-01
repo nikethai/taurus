@@ -1,0 +1,351 @@
+//! Reading what a link holds: `yt-dlp --flat-playlist -J <url>`, and turning
+//! its JSON into a [`MediaInfo`].
+
+use std::time::Duration;
+
+use serde_json::Value;
+
+use crate::errors::{CoreError, ErrorKind};
+
+use super::process::run_captured;
+use super::{LiveStatus, MediaInfo, PlaylistInfo, QualityOption, YtDlp};
+
+const BEST: &str = "bv*+ba/b";
+const AUDIO: &str = "ba/b";
+/// Video heights that get an option of their own, highest first.
+const CAPS: [u64; 2] = [1080, 720];
+
+/// Hosts whose links go to yt-dlp without first asking the web server
+/// what they are (a page there is never a file).
+const FAST_PATH_HOSTS: [&str; 14] = [
+    "youtube.com",
+    "youtu.be",
+    "m.youtube.com",
+    "music.youtube.com",
+    "vimeo.com",
+    "twitch.tv",
+    "soundcloud.com",
+    "x.com",
+    "twitter.com",
+    "tiktok.com",
+    "instagram.com",
+    "facebook.com",
+    "dailymotion.com",
+    "bilibili.com",
+];
+
+/// Whether `url` is an http(s) link to one of the well-known video hosts
+/// (or a subdomain of one, such as `www.youtube.com`).
+pub(crate) fn fast_path_host(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    FAST_PATH_HOSTS
+        .iter()
+        .any(|h| host == *h || host.strip_suffix(h).is_some_and(|p| p.ends_with('.')))
+}
+
+/// Runs `yt-dlp --flat-playlist -J <url>` (installing yt-dlp and Deno
+/// first if they are missing) and reads what it prints. A link yt-dlp has
+/// no extractor for is `SiteNotSupported`; its other failures are mapped by
+/// [`classify_stderr`]; a run longer than `timeout` is killed and fails with
+/// `Timeout`.
+pub async fn inspect(
+    tools: &crate::tools::ToolManager,
+    url: &str,
+    timeout: Duration,
+) -> Result<MediaInfo, CoreError> {
+    let url = url.trim();
+    let yt_dlp = YtDlp::prepare(tools).await?;
+    let mut command = yt_dlp.command();
+    // `--` so that a link can never be taken for an option.
+    command.args(["--flat-playlist", "-J", "--", url]);
+    let out = run_captured(command, timeout).await?;
+    if !out.success {
+        return Err(CoreError {
+            kind: classify_stderr(&out.stderr),
+            detail: error_line(&out.stderr),
+        });
+    }
+    let json: Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| failed(format!("yt-dlp printed something that is not JSON: {e}")))?;
+    let mut info = parse_info(&json)?;
+    if info.url.is_empty() {
+        info.url = url.to_owned();
+    }
+    Ok(info)
+}
+
+/// The kind of failure yt-dlp's stderr describes; anything unrecognized is
+/// `ToolFailed` (an extractor that broke because a site changed is that too).
+pub(crate) fn classify_stderr(stderr: &str) -> ErrorKind {
+    let text = stderr.to_lowercase().replace('\u{2019}', "'");
+    let has = |needles: &[&str]| needles.iter().any(|n| text.contains(n));
+    if text.contains("unsupported url") {
+        ErrorKind::SiteNotSupported
+    } else if has(&["not a bot", "captcha"]) {
+        ErrorKind::BlockedByBotCheck
+    } else if has(&[
+        "sign in",
+        "log in",
+        "login required",
+        "private video",
+        "members-only",
+        "members only",
+        "authentication",
+    ]) {
+        ErrorKind::NeedsSignIn
+    } else if has(&["http error 429", "too many requests"]) {
+        ErrorKind::RateLimited
+    } else if has(&[
+        "video unavailable",
+        "has been removed",
+        "no longer available",
+        "http error 404",
+        "http error 410",
+        "does not exist",
+    ]) {
+        ErrorKind::LinkExpired
+    } else if has(&[
+        "unable to download",
+        "urlopen error",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "timed out",
+        "connection reset",
+        "connection refused",
+        "network is unreachable",
+        "getaddrinfo",
+    ]) {
+        ErrorKind::ConnectionLost
+    } else {
+        ErrorKind::ToolFailed
+    }
+}
+
+/// The last `ERROR:` line of yt-dlp's stderr without the prefix, or its
+/// last line.
+fn error_line(stderr: &str) -> String {
+    let lines = || stderr.lines().map(str::trim).filter(|l| !l.is_empty());
+    let line = lines()
+        .rev()
+        .find(|l| l.starts_with("ERROR:"))
+        .map(|l| l.trim_start_matches("ERROR:").trim())
+        .or_else(|| lines().next_back())
+        .unwrap_or("yt-dlp failed without a message");
+    line.to_owned()
+}
+
+fn failed(detail: String) -> CoreError {
+    CoreError {
+        kind: ErrorKind::ToolFailed,
+        detail,
+    }
+}
+
+/// Reads yt-dlp's `-J` output for a video or a playlist. A playlist
+/// (`_type` `playlist` or `multi_video`) gets its title and entry count and
+/// the options `best` and `audio-best` without sizes; a video's options and
+/// sizes come from its `formats`. `url` is `webpage_url` (else
+/// `original_url`; `inspect` fills in the link it was given if neither is
+/// there). Fails with `ToolFailed` if there is no title (or id) to show.
+pub fn parse_info(json: &Value) -> Result<MediaInfo, CoreError> {
+    let text = |key: &str| {
+        json.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let title = text("title")
+        .or_else(|| text("fulltitle"))
+        .or_else(|| text("id"))
+        .ok_or_else(|| failed("yt-dlp's answer has no title".into()))?;
+    let is_playlist = matches!(
+        json.get("_type").and_then(Value::as_str),
+        Some("playlist" | "multi_video")
+    );
+    let (playlist, qualities) = if is_playlist {
+        let count = json
+            .get("entries")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let playlist = PlaylistInfo {
+            title: title.clone(),
+            count: u32::try_from(count).unwrap_or(u32::MAX),
+        };
+        (Some(playlist), qualities(&[]))
+    } else {
+        let formats = json.get("formats").and_then(Value::as_array);
+        (None, qualities(formats.map_or(&[], Vec::as_slice)))
+    };
+    Ok(MediaInfo {
+        url: text("webpage_url")
+            .or_else(|| text("original_url"))
+            .unwrap_or_default(),
+        title,
+        uploader: text("uploader")
+            .or_else(|| text("channel"))
+            .or_else(|| text("uploader_id")),
+        duration_secs: json.get("duration").and_then(whole),
+        thumbnail_url: text("thumbnail").or_else(|| last_thumbnail(json)),
+        extractor: text("extractor_key")
+            .or_else(|| text("extractor"))
+            .unwrap_or_else(|| "generic".to_owned()),
+        live: live_status(json),
+        playlist,
+        qualities,
+    })
+}
+
+fn last_thumbnail(json: &Value) -> Option<String> {
+    json.get("thumbnails")?
+        .as_array()?
+        .iter()
+        .rev()
+        .find_map(|t| t.get("url")?.as_str())
+        .map(str::to_owned)
+}
+
+/// A JSON number as whole non-negative units (durations and sizes come as
+/// integers or floats).
+fn whole(v: &Value) -> Option<u64> {
+    v.as_u64()
+        .or_else(|| v.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64))
+}
+
+fn live_status(json: &Value) -> LiveStatus {
+    let flag = |key: &str| json.get(key).and_then(Value::as_bool) == Some(true);
+    match json.get("live_status").and_then(Value::as_str) {
+        Some("is_live") => LiveStatus::IsLive,
+        Some("is_upcoming") => upcoming(json),
+        Some("was_live" | "post_live") => LiveStatus::WasLive,
+        Some(_) => LiveStatus::NotLive,
+        None if flag("is_live") => LiveStatus::IsLive,
+        None if flag("is_upcoming") => upcoming(json),
+        None if flag("was_live") => LiveStatus::WasLive,
+        None => LiveStatus::NotLive,
+    }
+}
+
+fn upcoming(json: &Value) -> LiveStatus {
+    LiveStatus::IsUpcoming {
+        starts_at: json
+            .get("release_timestamp")
+            .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))),
+    }
+}
+
+/// One of a video's formats, as far as sizes and options care.
+struct Format {
+    height: Option<u64>,
+    size: Option<u64>,
+    /// No audio in it: it needs an audio format to be merged with.
+    video_only: bool,
+}
+
+/// What the `formats` of a video allow, best first: `best`; `1080p` and
+/// `720p` when the video reaches that height (and has a format at or below
+/// it); `audio-best` and `audio-small` when there is audio. Without any
+/// usable format (a direct link, a playlist), `best` and `audio-best`
+/// without sizes. A video with no picture has audio options only.
+///
+/// `est_size` is the largest video format's `filesize` (or
+/// `filesize_approx`) among those the option allows, plus the largest
+/// audio-only format's when that video has no audio of its own; `None` when
+/// no video size is known. `audio-best` is the largest audio-only format;
+/// `audio-small` is re-encoded, so it has none.
+pub fn qualities(formats: &[Value]) -> Vec<QualityOption> {
+    let mut videos = Vec::new();
+    let mut audio_sizes = Vec::new();
+    let mut audio_any = false;
+    for f in formats {
+        let codec = |key: &str| f.get(key).and_then(Value::as_str);
+        let (vcodec, acodec) = (codec("vcodec"), codec("acodec"));
+        let height = f.get("height").and_then(whole);
+        let size = f
+            .get("filesize")
+            .and_then(whole)
+            .or_else(|| f.get("filesize_approx").and_then(whole));
+        let storyboard = codec("ext") == Some("mhtml");
+        let has_video = vcodec != Some("none") && (vcodec.is_some() || height.is_some());
+        if storyboard {
+            continue;
+        }
+        if has_video {
+            let video_only = acodec == Some("none");
+            audio_any |= !video_only;
+            videos.push(Format {
+                height,
+                size,
+                video_only,
+            });
+        } else if matches!(acodec, Some(a) if a != "none") {
+            audio_any = true;
+            audio_sizes.extend(size);
+        }
+    }
+    let audio_best = audio_sizes.iter().copied().max();
+    if videos.is_empty() && !audio_any {
+        return vec![
+            option("best", BEST, false, None),
+            option("audio-best", AUDIO, true, None),
+        ];
+    }
+    let mut out = Vec::new();
+    if !videos.is_empty() {
+        out.push(option(
+            "best",
+            BEST,
+            false,
+            video_size(&videos, audio_best, u64::MAX),
+        ));
+        let tallest = videos.iter().filter_map(|v| v.height).max();
+        for cap in CAPS {
+            let reached = tallest.is_some_and(|h| h >= cap);
+            if reached && videos.iter().any(|v| v.height.is_some_and(|h| h <= cap)) {
+                let selector = format!("bv*[height<={cap}]+ba/b[height<={cap}]");
+                let size = video_size(&videos, audio_best, cap);
+                out.push(option(&format!("{cap}p"), &selector, false, size));
+            }
+        }
+    }
+    if audio_any {
+        out.push(option("audio-best", AUDIO, true, audio_best));
+        out.push(option("audio-small", AUDIO, true, None));
+    }
+    out
+}
+
+fn option(id: &str, selector: &str, audio_only: bool, est_size: Option<u64>) -> QualityOption {
+    QualityOption {
+        id: id.to_owned(),
+        selector: selector.to_owned(),
+        audio_only,
+        est_size,
+    }
+}
+
+/// The largest known size among `videos` no taller than `cap` (a format of
+/// unknown height counts only when there is no cap), plus the best audio's
+/// if that video has none of its own.
+fn video_size(videos: &[Format], audio_best: Option<u64>, cap: u64) -> Option<u64> {
+    let largest = videos
+        .iter()
+        .filter(|v| cap == u64::MAX || v.height.is_some_and(|h| h <= cap))
+        .filter_map(|v| v.size.map(|s| (s, v.video_only)))
+        .max_by_key(|(size, _)| *size)?;
+    let (size, video_only) = largest;
+    Some(size.saturating_add(if video_only {
+        audio_best.unwrap_or(0)
+    } else {
+        0
+    }))
+}

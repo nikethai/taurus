@@ -1,0 +1,14 @@
+{
+  "_type": "playlist",
+  "id": "PL123",
+  "title": "Road Trip Songs",
+  "webpage_url": "https://www.youtube.com/playlist?list=PL123",
+  "extractor": "youtube:tab",
+  "extractor_key": "YoutubeTab",
+  "uploader": "Some Channel",
+  "entries": [
+    {"_type": "url", "id": "a", "title": "One", "url": "https://www.youtube.com/watch?v=a"},
+    {"_type": "url", "id": "b", "title": "Two", "url": "https://www.youtube.com/watch?v=b"},
+    {"_type": "url", "id": "c", "title": "Three", "url": "https://www.youtube.com/watch?v=c"}
+  ]
+}

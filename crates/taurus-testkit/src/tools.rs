@@ -51,6 +51,7 @@
 //! Written files hold a repeating byte pattern of the given size.
 
 mod package;
+mod scenario;
 #[cfg(test)]
 mod tests;
 
@@ -71,6 +72,7 @@ use package::{
     DENO_TRIPLES, FFMPEG_BUILDS, MACOS_ARCHS, MACOS_ZIPS, YT_DLP_ASSETS, deno_asset,
     ffmpeg_build_asset, published_sha256,
 };
+pub use scenario::{process_args_log, set_ytdlp_scenario, unique_version};
 
 #[cfg(windows)]
 static FAKE_TOOL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fake-tool.exe"));

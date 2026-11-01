@@ -2,9 +2,12 @@
 //! how big it is (for an "add" dialog), and whether a job already has it.
 
 use std::io::Read;
+use std::time::Duration;
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::http::resolve;
+use crate::media::{self, MediaInfo};
+use crate::tools::ToolKind;
 use crate::torrent::MAX_TORRENT_BYTES;
 use crate::torrent::TorrentInfo;
 use crate::torrent::hub::info_from_bytes;
@@ -26,7 +29,12 @@ pub enum LinkInfo {
         content_type: Option<String>,
     },
     Torrent(TorrentInfo),
+    /// A video, audio or playlist link that yt-dlp reads.
+    Media(MediaInfo),
 }
+
+/// How long yt-dlp may take to read a link before it is killed.
+const MEDIA_TIMEOUT: Duration = Duration::from_secs(90);
 
 impl Engine {
     /// Reads what `input` names without adding a job or storing anything: a
@@ -34,7 +42,12 @@ impl Engine {
     /// followed; any other web page or bot check fails as it does there),
     /// a magnet link, `.torrent` URL or local `.torrent` file is listed as
     /// `torrent_files` does (a magnet link's metadata comes from its peers,
-    /// which starts the torrent session).
+    /// which starts the torrent session). A link to a well-known video
+    /// site (`media::fast_path_host`) is read by yt-dlp straight away; a web
+    /// page (the web server answers with a page, not a file) is tried with
+    /// yt-dlp too, and stays `SiteNotSupported` if it has no extractor for
+    /// it. The first read installs yt-dlp and Deno if needed, announcing
+    /// each step as `Event::ToolStatus`.
     pub async fn inspect(&self, input: &str) -> Result<LinkInfo, CoreError> {
         self.check_running()?;
         match classify(input) {
@@ -44,13 +57,42 @@ impl Engine {
             Err(e) if e.kind == ErrorKind::SiteNotSupported => return Err(e),
             Err(_) => {}
         }
-        let probe = resolve(&self.client, &fixed_url(input.trim()), None).await?;
-        Ok(LinkInfo::File {
-            url: probe.requested_url.to_string(),
-            name: probe.file_name,
-            size: probe.size,
-            content_type: probe.content_type,
-        })
+        let link = input.trim();
+        if media::fast_path_host(link) {
+            return self.inspect_media(link).await;
+        }
+        match resolve(&self.client, &fixed_url(link), None).await {
+            Ok(probe) => Ok(LinkInfo::File {
+                url: probe.requested_url.to_string(),
+                name: probe.file_name,
+                size: probe.size,
+                content_type: probe.content_type,
+            }),
+            // A web page: yt-dlp may know it. Its "no extractor" answer
+            // leaves the page as unsupported as before.
+            Err(page) if page.kind == ErrorKind::SiteNotSupported => {
+                match self.inspect_media(link).await {
+                    Err(e) if e.kind == ErrorKind::SiteNotSupported => Err(page),
+                    other => other,
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn inspect_media(&self, link: &str) -> Result<LinkInfo, CoreError> {
+        // Installing the tools may take minutes: the machine must not sleep.
+        let _hold = self.hold_when_done();
+        let emit = self.tool_emitter();
+        let (yt_dlp, deno) = tokio::join!(
+            self.tools.ensure(ToolKind::YtDlp, &emit),
+            self.tools.ensure(ToolKind::Deno, &emit),
+        );
+        yt_dlp?;
+        deno?;
+        media::inspect(&self.tools, link, MEDIA_TIMEOUT)
+            .await
+            .map(LinkInfo::Media)
     }
 
     /// The job that already has `input`, if any (the lowest id when several

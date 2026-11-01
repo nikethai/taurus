@@ -58,7 +58,7 @@ impl Engine {
         Ok(())
     }
 
-    fn tool_emitter(&self) -> impl Fn(ToolStatus) + Send + Sync + use<> {
+    pub(super) fn tool_emitter(&self) -> impl Fn(ToolStatus) + Send + Sync + use<> {
         let events = self.events.clone();
         move |status| {
             // No subscriber is fine.

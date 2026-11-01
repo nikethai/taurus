@@ -5,7 +5,8 @@ mod torrent;
 
 pub use tools::{
     ArgsLogEntry, FakeToolHost, ToolRelease, fake_tool_bytes, fake_tool_release, hang_pid_file,
-    read_args_log, run_retrying, write_fake_tool,
+    process_args_log, read_args_log, run_retrying, set_ytdlp_scenario, unique_version,
+    write_fake_tool,
 };
 pub use torrent::{TorrentLeecher, TorrentSeeder, make_torrent_bytes, test_session_options};
 

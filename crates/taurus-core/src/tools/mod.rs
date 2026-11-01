@@ -12,6 +12,7 @@
 
 pub mod catalog;
 mod install;
+pub(crate) mod spawn;
 #[cfg(test)]
 mod tests;
 
@@ -189,6 +190,11 @@ impl ToolManager {
     pub fn with_store(mut self, store: Store) -> ToolManager {
         self.store = Some(store);
         self
+    }
+
+    /// The folder holding all of the tool's versions (it may not exist).
+    pub fn tool_dir(&self, kind: ToolKind) -> PathBuf {
+        self.root.join(kind.name())
     }
 
     /// Every tool, in `ToolKind::ALL` order.
@@ -396,10 +402,6 @@ impl ToolManager {
         let version = install::read_current(&dir)?;
         let path = dir.join(&version).join(main_binary(kind));
         path.is_file().then_some((version, path))
-    }
-
-    fn tool_dir(&self, kind: ToolKind) -> PathBuf {
-        self.root.join(kind.name())
     }
 
     fn checked_at(&self, kind: ToolKind) -> Option<i64> {
