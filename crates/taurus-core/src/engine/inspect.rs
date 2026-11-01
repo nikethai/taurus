@@ -43,11 +43,12 @@ impl Engine {
     /// a magnet link, `.torrent` URL or local `.torrent` file is listed as
     /// `torrent_files` does (a magnet link's metadata comes from its peers,
     /// which starts the torrent session). A link to a well-known video
-    /// site (`media::fast_path_host`) is read by yt-dlp straight away, and its
-    /// errors are reported as they are; a web page (the web server answers
-    /// with a page, not a file) is tried with yt-dlp too, and stays
-    /// `SiteNotSupported` if that fails in any way. The first read installs yt-dlp and Deno if needed, announcing
-    /// each step as `Event::ToolStatus`.
+    /// site (`media::fast_path_host`) is read by yt-dlp straight away, and
+    /// its errors are reported as they are; a web page (the web server
+    /// answers with a page, not a file) is tried with yt-dlp too, and stays
+    /// `SiteNotSupported` if that fails in any way. The first read installs
+    /// yt-dlp and Deno if needed, announcing each step as
+    /// `Event::ToolStatus`.
     pub async fn inspect(&self, input: &str) -> Result<LinkInfo, CoreError> {
         self.check_running()?;
         match classify(input) {

@@ -56,8 +56,8 @@ pub(crate) fn fast_path_host(url: &str) -> bool {
 /// Runs `yt-dlp --flat-playlist -J <url>` (installing yt-dlp and Deno
 /// first if they are missing) and reads what it prints. A link yt-dlp has
 /// no extractor for is `SiteNotSupported`; its other failures are mapped by
-/// [`classify_stderr`](super::errors); a run longer than `timeout` is killed and fails with
-/// `Timeout`.
+/// [`classify_stderr`](super::errors); a run longer than `timeout` is killed
+/// (with everything it started) and fails with `Timeout`.
 pub async fn inspect(
     tools: &crate::tools::ToolManager,
     url: &str,
@@ -137,10 +137,9 @@ fn failed(detail: String) -> CoreError {
 }
 
 /// Reads yt-dlp's `-J` output for a video or a playlist. A playlist
-/// (`_type` `playlist` or `multi_video`) gets its title and count of entries
-/// that are not `null` and
-/// the options `best` and `audio-best` without sizes; a video's options and
-/// sizes come from its `formats`. `url` is `webpage_url` (else
+/// (`_type` `playlist` or `multi_video`) gets its title, a count of its
+/// entries that are not `null`, and the options `best` and `audio-best`
+/// without sizes; a video's options and sizes come from its `formats`. `url` is `webpage_url` (else
 /// `original_url`; `inspect` fills in the link it was given if neither is
 /// there). Fails with `ToolFailed` if there is no title (or id) to show.
 pub fn parse_info(json: &Value) -> Result<MediaInfo, CoreError> {

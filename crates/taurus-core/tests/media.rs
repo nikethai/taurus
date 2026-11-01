@@ -348,7 +348,7 @@ async fn unlisted_page_with_tools_offline_stays_site_not_supported() {
         .inspect("https://www.youtube.com/watch?v=tools_offline_listed")
         .await
         .unwrap_err();
-    assert_ne!(err.kind, ErrorKind::SiteNotSupported, "{err}");
+    assert_eq!(err.kind, ErrorKind::ConnectionLost, "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

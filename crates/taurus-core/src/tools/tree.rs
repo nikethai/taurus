@@ -49,7 +49,12 @@ impl TreeChild {
             .ok_or_else(|| io::Error::other("the process ended before it could be grouped"))?;
         #[cfg(windows)]
         let job = job::Job::containing(&child)
-            .map_err(|e| tracing::warn!("no job object for pid {pid}: {e}"))
+            .map_err(|e| {
+                tracing::warn!(
+                    "could not put pid {pid} in a job object, so stopping it will not stop \
+                     what it starts: {e}"
+                )
+            })
             .ok();
         Ok(TreeChild {
             child,
@@ -68,11 +73,15 @@ impl TreeChild {
     /// Asks the whole group to stop as Ctrl+C would: SIGINT to the process
     /// group on Unix; CTRL_BREAK_EVENT to the process group on Windows
     /// (yt-dlp, being Python, then raises KeyboardInterrupt). A group that
-    /// is already gone is not an error.
+    /// is already gone is not an error. On Unix nothing is sent once the
+    /// process has been reaped (see [`TreeChild::kill`]).
     #[allow(dead_code)] // the download runner's graceful stop
     pub(crate) fn interrupt(&self) -> io::Result<()> {
         #[cfg(unix)]
         {
+            if self.reaped() {
+                return Ok(());
+            }
             signal_group(self.pid, libc::SIGINT)
         }
         #[cfg(windows)]
@@ -87,15 +96,33 @@ impl TreeChild {
     }
 
     /// Kills the whole tree at once (SIGKILL to the group; the job
-    /// terminated on Windows) and reaps the started process.
+    /// terminated on Windows) and reaps the started process. Safe to call
+    /// at any time, also twice.
+    ///
+    /// On Unix the group is signalled only while the started process has not
+    /// been reaped, and always before it is reaped here: an exited but
+    /// unreaped leader still reserves its pid as the group id, but once it
+    /// is reaped an empty group's id can be given to an unrelated process
+    /// group. So a leader that was reaped (by `child.wait()` or `try_wait()`)
+    /// leaves any straggler alone; whoever reaps the leader should kill the
+    /// tree first if it wants none left.
     pub(crate) async fn kill(&mut self) -> io::Result<()> {
         self.kill_tree();
         self.child.wait().await.map(|_| ())
     }
 
+    /// Whether the started process has been reaped, which is when tokio
+    /// stops giving its id.
+    #[cfg(unix)]
+    fn reaped(&self) -> bool {
+        self.child.id().is_none()
+    }
+
     fn kill_tree(&mut self) {
         #[cfg(unix)]
-        if let Err(e) = signal_group(self.pid, libc::SIGKILL) {
+        if !self.reaped()
+            && let Err(e) = signal_group(self.pid, libc::SIGKILL)
+        {
             tracing::warn!("could not kill process group {}: {e}", self.pid);
         }
         #[cfg(windows)]
@@ -112,11 +139,9 @@ impl TreeChild {
 
 impl Drop for TreeChild {
     fn drop(&mut self) {
-        // Reaped (it finished by itself): nothing to stop, and on Unix its
-        // pid may already belong to someone else.
-        if self.child.id().is_some() {
-            self.kill_tree();
-        }
+        // `kill_tree` leaves a reaped group alone on Unix; on Windows
+        // closing the job (after this) kills what is left anyway.
+        self.kill_tree();
     }
 }
 
@@ -288,6 +313,15 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         let mut command = Command::new("sleep");
         command.arg("300").stdin(Stdio::null());
+        // A test run started in the background of a non-interactive shell
+        // inherits SIGINT as ignored; the child must not.
+        // SAFETY: only `signal`, which is async-signal-safe, runs after fork.
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                Ok(())
+            });
+        }
         let mut run = TreeChild::spawn(&mut command).await.unwrap();
         run.interrupt().unwrap();
         let status = tokio::time::timeout(Duration::from_secs(5), run.child.wait())
@@ -295,8 +329,52 @@ mod tests {
             .expect("sleep did not stop")
             .unwrap();
         assert_eq!(status.signal(), Some(libc::SIGINT));
-        // The group is gone: interrupting it now is not an error.
+        // Reaped: interrupting again is a no-op.
         run.interrupt().unwrap();
+    }
+
+    /// A shell that starts a long `sleep`, prints its pid and exits at once.
+    fn shell_that_leaves_a_grandchild() -> Command {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 300 & echo $!"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped());
+        command
+    }
+
+    #[tokio::test]
+    async fn a_reaped_leader_is_never_signalled_again() {
+        let mut run = TreeChild::spawn(&mut shell_that_leaves_a_grandchild())
+            .await
+            .unwrap();
+        let straggler = grandchild_pid(&mut run).await;
+        // The leader exits by itself and is reaped.
+        assert!(run.child.wait().await.unwrap().success());
+        assert!(run.child.id().is_none());
+        // Neither call may signal the (possibly reused) group: if one did,
+        // the straggler, which is still in it, would be gone.
+        run.interrupt().unwrap();
+        run.kill().await.unwrap();
+        drop(run);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(alive(straggler), "a reaped group was signalled");
+        // SAFETY: cleaning up the sleep started above.
+        unsafe { libc::kill(straggler, libc::SIGKILL) };
+        assert!(gone_soon(straggler).await);
+    }
+
+    #[tokio::test]
+    async fn an_exited_but_unreaped_leader_still_kills_its_group() {
+        let mut run = TreeChild::spawn(&mut shell_that_leaves_a_grandchild())
+            .await
+            .unwrap();
+        let straggler = grandchild_pid(&mut run).await;
+        // Let the shell exit; nobody reaps it, so its pid still names the group.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(run.child.id().is_some());
+        run.kill().await.unwrap();
+        assert!(gone_soon(straggler).await, "the straggler survived");
     }
 
     #[tokio::test]

@@ -133,7 +133,8 @@ impl YtDlp {
 
     /// `yt-dlp <global flags>`, with stdin closed. The caller adds the
     /// arguments and the other stdio, and starts it with
-    /// `tools::spawn::spawn`.
+    /// `tools::tree::TreeChild::spawn`, so that stopping it stops
+    /// everything it starts.
     pub(crate) fn command(&self) -> Command {
         let mut command = Command::new(&self.path);
         command
