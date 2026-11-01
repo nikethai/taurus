@@ -297,7 +297,7 @@ fn exit_code(interrupted: bool, failed: bool, states: &[JobState]) -> ExitCode {
 fn is_busy(state: JobState) -> bool {
     matches!(
         state,
-        JobState::Downloading | JobState::Queued | JobState::Waiting
+        JobState::Downloading | JobState::Recording | JobState::Queued | JobState::Waiting
     )
 }
 
@@ -358,7 +358,7 @@ impl Output {
     /// Learns a job from a view that was not announced.
     fn seed(&mut self, view: &JobView) {
         self.names.insert(view.id, view.file_name.clone());
-        if view.state == JobState::Downloading {
+        if matches!(view.state, JobState::Downloading | JobState::Recording) {
             self.jobs.insert(view.id, progress(view));
         }
     }
@@ -386,7 +386,9 @@ impl Output {
             Event::JobAdded(view) | Event::JobUpdated(view) => {
                 self.names.insert(view.id, view.file_name.clone());
                 match view.state {
-                    JobState::Downloading => self.show(view.id, progress(view))?,
+                    JobState::Downloading | JobState::Recording => {
+                        self.show(view.id, progress(view))?;
+                    }
                     JobState::Waiting => {
                         let retry_at = self.retry_at(view);
                         self.show(view.id, Status::Waiting { retry_at })?;

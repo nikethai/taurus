@@ -84,6 +84,12 @@ impl Engine {
     }
 
     async fn inspect_media(&self, link: &str) -> Result<LinkInfo, CoreError> {
+        self.media_info(link).await.map(LinkInfo::Media)
+    }
+
+    /// What yt-dlp says `link` holds, installing yt-dlp and Deno first if
+    /// needed (announced as `Event::ToolStatus`).
+    pub(super) async fn media_info(&self, link: &str) -> Result<MediaInfo, CoreError> {
         // Installing the tools may take minutes: the machine must not sleep.
         let _hold = self.hold_when_done();
         let emit = self.tool_emitter();
@@ -93,9 +99,7 @@ impl Engine {
         );
         yt_dlp?;
         deno?;
-        media::inspect(&self.tools, link, MEDIA_TIMEOUT)
-            .await
-            .map(LinkInfo::Media)
+        media::inspect(&self.tools, link, MEDIA_TIMEOUT).await
     }
 
     /// The job that already has `input`, if any (the lowest id when several

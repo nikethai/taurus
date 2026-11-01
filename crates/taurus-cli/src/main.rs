@@ -335,6 +335,7 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
                         checksum: checksum.clone(),
                         referer: referer.clone(),
                         only_files: only_files.clone(),
+                        ..AddRequest::default()
                     };
                     match engine.add(req).await {
                         Ok(id) => enqueued.ids.push(id),

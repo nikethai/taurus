@@ -19,6 +19,7 @@ use crate::when_done::{EngineLink, WhenDoneRunner};
 
 use super::actor::{Actor, Command, JobMsg};
 use super::jobs::{downloaded, view_of};
+use super::media::restore_thumbnails;
 use super::settings::{fresh_peak, speed_limit, unix_now};
 use super::{
     COMMAND_CAPACITY, DB_FILE, EVENT_CAPACITY, Engine, EngineConfig, IN_USE, JobView, LOCK_FILE,
@@ -48,7 +49,7 @@ pub(super) async fn assemble(
             // Interrupted, not paused: it runs again, in its place, once
             // checked against the server (an HTTP job; see
             // `Store::requeue_interrupted`).
-            JobState::Downloading | JobState::Seeding => {
+            JobState::Downloading | JobState::Seeding | JobState::Recording => {
                 store.requeue_interrupted(job.id)?;
                 job.state = JobState::Queued;
             }
@@ -63,6 +64,7 @@ pub(super) async fn assemble(
         let downloaded = downloaded(&store, job.id)?;
         views.insert(job.id, view_of(&store, &job, downloaded));
     }
+    restore_thumbnails(&config.data_dir, views.values_mut());
 
     let hub = Arc::new(TorrentHub::new(
         &config.data_dir,
@@ -99,7 +101,10 @@ pub(super) async fn assemble(
     };
     let client = build_client();
     let (torrent_settings, _) = watch::channel(settings.torrent.clone());
-    let store_for_tools = store.clone();
+    let tools = Arc::new(
+        ToolManager::new(&config.data_dir, config.tool_sources, client.clone())
+            .with_store(store.clone()),
+    );
     let actor = Actor {
         _lock: lock,
         store,
@@ -142,6 +147,8 @@ pub(super) async fn assemble(
         measured_peak,
         peak,
         transferred: 0,
+        tools: tools.clone(),
+        media_stops: HashMap::new(),
     };
     let engine = Engine {
         commands,
@@ -155,10 +162,8 @@ pub(super) async fn assemble(
         space: config.available_space,
         hub,
         metadata_timeout: config.timing.torrent_metadata_timeout,
-        tools: Arc::new(
-            ToolManager::new(&config.data_dir, config.tool_sources, client)
-                .with_store(store_for_tools),
-        ),
+        tools,
+        data_dir: config.data_dir,
     };
     Ok((engine, actor, commands_rx))
 }

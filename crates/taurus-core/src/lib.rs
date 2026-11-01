@@ -18,8 +18,8 @@ pub mod torrent;
 mod when_done;
 
 pub use engine::{
-    AddRequest, Engine, EngineConfig, Event, JobView, LinkInfo, RemoveFiles, TorrentView,
-    WhenDoneHold,
+    AddRequest, Engine, EngineConfig, Event, JobView, LinkInfo, MediaChoice, MediaView,
+    RemoveFiles, TorrentView, WhenDoneHold,
 };
 pub use errors::{CoreError, ErrorKind};
 pub use settings::{

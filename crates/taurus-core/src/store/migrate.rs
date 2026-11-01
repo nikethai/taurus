@@ -9,7 +9,7 @@ use crate::errors::{CoreError, ErrorKind};
 
 use super::{Store, db_err, io_err, now_secs};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE jobs (
@@ -79,6 +79,12 @@ ALTER TABLE jobs ADD COLUMN seed_started_at INTEGER;
 CREATE UNIQUE INDEX jobs_info_hash ON jobs(info_hash) WHERE info_hash IS NOT NULL;
 ";
 
+/// Applied on top of v5: media jobs (kind 'media') and what they download,
+/// as JSON. The state 'recording' needs no change: states are text.
+const MIGRATE_V5_TO_V6: &str = "
+ALTER TABLE jobs ADD COLUMN media_options TEXT;
+";
+
 fn is_corruption(e: &rusqlite::Error) -> bool {
     matches!(
         e.sqlite_error_code(),
@@ -112,25 +118,16 @@ fn init(path: &Path) -> rusqlite::Result<Connection> {
         )));
     }
     // Each upgrade is one transaction; a failure leaves the old version intact.
-    let steps = match version {
-        0 => [
-            SCHEMA_V1,
-            MIGRATE_V1_TO_V2,
-            MIGRATE_V2_TO_V3,
-            MIGRATE_V3_TO_V4,
-            MIGRATE_V4_TO_V5,
-        ]
-        .concat(),
-        1 => [
-            MIGRATE_V1_TO_V2,
-            MIGRATE_V2_TO_V3,
-            MIGRATE_V3_TO_V4,
-            MIGRATE_V4_TO_V5,
-        ]
-        .concat(),
-        2 => [MIGRATE_V2_TO_V3, MIGRATE_V3_TO_V4, MIGRATE_V4_TO_V5].concat(),
-        3 => [MIGRATE_V3_TO_V4, MIGRATE_V4_TO_V5].concat(),
-        4 => MIGRATE_V4_TO_V5.to_owned(),
+    let chain = [
+        SCHEMA_V1,
+        MIGRATE_V1_TO_V2,
+        MIGRATE_V2_TO_V3,
+        MIGRATE_V3_TO_V4,
+        MIGRATE_V4_TO_V5,
+        MIGRATE_V5_TO_V6,
+    ];
+    let steps = match usize::try_from(version) {
+        Ok(from) if from < chain.len() => chain[from..].concat(),
         _ => return Ok(conn),
     };
     conn.execute_batch(&format!(
@@ -239,7 +236,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
@@ -281,7 +278,7 @@ mod tests {
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(version, 5);
+            assert_eq!(version, SCHEMA_VERSION);
             let other: String = conn
                 .query_row("SELECT value FROM settings WHERE key = 'other'", [], |r| {
                     r.get(0)
@@ -328,7 +325,7 @@ mod tests {
             .lock()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, SCHEMA_VERSION);
         drop(store);
         assert_eq!(Store::open(&path).unwrap().list_jobs().unwrap().len(), 1);
     }
@@ -359,7 +356,7 @@ mod tests {
             .lock()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
@@ -399,9 +396,80 @@ mod tests {
             .lock()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, SCHEMA_VERSION);
         drop(store);
         assert_eq!(Store::open(&path).unwrap().list_jobs().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn v5_database_migrates_to_v6() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taurus.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for step in [
+                SCHEMA_V1,
+                MIGRATE_V1_TO_V2,
+                MIGRATE_V2_TO_V3,
+                MIGRATE_V3_TO_V4,
+                MIGRATE_V4_TO_V5,
+            ] {
+                conn.execute_batch(step).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 5).unwrap();
+            conn.execute(
+                "INSERT INTO jobs (url, source_url, dest_dir, file_name, state, connections, \
+                 created_at, updated_at, kind, info_hash, uploaded) \
+                 VALUES ('magnet:?x', 'magnet:?x', '/d', 't', 'seeding', 1, 1, 1, 'torrent', \
+                 'abcd', 42)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        let jobs = store.list_jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        let mut job = jobs[0].clone();
+        // What v5 recorded survives; no job has media options yet.
+        assert_eq!(job.kind, JobKind::Torrent);
+        assert_eq!(job.state, JobState::Seeding);
+        assert_eq!(job.info_hash.as_deref(), Some("abcd"));
+        assert_eq!(job.uploaded, 42);
+        assert_eq!(job.media, None);
+        let version: i64 = store
+            .lock()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
+        // The new kind, state and column are usable.
+        let options = crate::media::MediaOptions {
+            quality: "audio-best".into(),
+            selector: "ba/b".into(),
+            audio_only: true,
+            convert: Some(crate::media::ConvertPreset::Mp3),
+            playlist: false,
+            live_from_start: true,
+        };
+        let id = store
+            .insert_job(&crate::store::NewJob {
+                kind: JobKind::Media,
+                ..new_job("m", "/d")
+            })
+            .unwrap();
+        let mut media = store.get_job(id).unwrap().unwrap();
+        media.media = Some(options.clone());
+        media.state = JobState::Recording;
+        store.update_job(&media).unwrap();
+        let stored = store.get_job(id).unwrap().unwrap();
+        assert_eq!(stored, media);
+        assert_eq!(stored.kind, JobKind::Media);
+        job.media = None;
+        store.update_job(&job).unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.get_job(id).unwrap().unwrap().media, Some(options));
+        assert_eq!(store.list_jobs().unwrap().len(), 2);
     }
 
     #[test]

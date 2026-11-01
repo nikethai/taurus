@@ -65,7 +65,6 @@ impl TreeChild {
     }
 
     /// The process's id.
-    #[allow(dead_code)] // for the runner's logs
     pub(crate) fn pid(&self) -> u32 {
         self.pid
     }
@@ -75,7 +74,6 @@ impl TreeChild {
     /// (yt-dlp, being Python, then raises KeyboardInterrupt). A group that
     /// is already gone is not an error. On Unix nothing is sent once the
     /// process has been reaped (see [`TreeChild::kill`]).
-    #[allow(dead_code)] // the download runner's graceful stop
     pub(crate) fn interrupt(&self) -> io::Result<()> {
         #[cfg(unix)]
         {

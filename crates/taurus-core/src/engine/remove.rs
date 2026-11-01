@@ -37,6 +37,7 @@ fn unfinished(view: &JobView) -> bool {
             | JobState::Paused
             | JobState::Waiting
             | JobState::Failed
+            | JobState::Recording
     );
     let complete_torrent =
         view.kind == JobKind::Torrent && view.total.is_some_and(|total| view.downloaded >= total);
@@ -68,6 +69,7 @@ mod tests {
             retry_at: None,
             finished_at: None,
             info_hash: None,
+            media: None,
         }
     }
 

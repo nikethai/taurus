@@ -19,6 +19,9 @@ pub struct Timing {
     pub torrent_metadata_timeout: Duration,
     /// How often a running torrent's stats are read and reported.
     pub torrent_poll: Duration,
+    /// How long yt-dlp may take to stop after the graceful interrupt
+    /// (pause, stop, shutdown) before it is killed.
+    pub media_stop_grace: Duration,
 }
 
 impl Default for Timing {
@@ -32,6 +35,7 @@ impl Default for Timing {
             when_done_countdown: Duration::from_secs(60),
             torrent_metadata_timeout: Duration::from_secs(120),
             torrent_poll: Duration::from_millis(250),
+            media_stop_grace: Duration::from_secs(10),
         }
     }
 }
@@ -50,6 +54,7 @@ impl Timing {
             // times out on a loaded machine.
             torrent_metadata_timeout: Duration::from_secs(5),
             torrent_poll: Duration::from_millis(250),
+            media_stop_grace: Duration::from_millis(300),
         }
     }
 }
@@ -69,6 +74,7 @@ mod tests {
         assert_eq!(t.when_done_countdown, Duration::from_secs(60));
         assert_eq!(t.torrent_metadata_timeout, Duration::from_secs(120));
         assert_eq!(t.torrent_poll, Duration::from_millis(250));
+        assert_eq!(t.media_stop_grace, Duration::from_secs(10));
 
         let f = Timing::fast_for_tests();
         assert_eq!(f.backoff_base, Duration::from_millis(10));
@@ -79,5 +85,6 @@ mod tests {
         assert_eq!(f.when_done_countdown, Duration::from_millis(300));
         assert_eq!(f.torrent_metadata_timeout, Duration::from_secs(5));
         assert_eq!(f.torrent_poll, Duration::from_millis(250));
+        assert_eq!(f.media_stop_grace, Duration::from_millis(300));
     }
 }

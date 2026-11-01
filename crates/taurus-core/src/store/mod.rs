@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::errors::{CoreError, ErrorKind, classify_io};
+use crate::media::MediaOptions;
 use crate::plan::Segment;
 
 mod migrate;
@@ -17,7 +18,8 @@ mod settings;
 mod test_support;
 
 use rows::{
-    JOB_COLUMNS, col_u64, encode, job_from_row, mirrors_json, only_files_json, opt_to_i64, to_i64,
+    JOB_COLUMNS, col_u64, encode, job_from_row, media_json, mirrors_json, only_files_json,
+    opt_to_i64, to_i64,
 };
 
 #[derive(
@@ -35,13 +37,18 @@ pub enum JobState {
     Seeding,
     Completed,
     Failed,
+    /// A live stream being recorded (a media job); it ends when the stream
+    /// does or when `Engine::stop_recording` stops it.
+    Recording,
 }
 
-/// What a job downloads: a file over HTTP, or a torrent.
+/// What a job downloads: a file over HTTP, a torrent, or a video, audio or
+/// playlist link that yt-dlp downloads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum JobKind {
     Http,
     Torrent,
+    Media,
 }
 
 impl JobKind {
@@ -49,6 +56,7 @@ impl JobKind {
         match self {
             Self::Http => "http",
             Self::Torrent => "torrent",
+            Self::Media => "media",
         }
     }
 
@@ -56,6 +64,7 @@ impl JobKind {
         Some(match s {
             "http" => Self::Http,
             "torrent" => Self::Torrent,
+            "media" => Self::Media,
             _ => return None,
         })
     }
@@ -94,6 +103,9 @@ pub struct JobRecord {
     pub uploaded: u64,
     /// When seeding began (unix secs).
     pub seed_started_at: Option<i64>,
+    /// What a media job downloads and how; `None` for other jobs. Stored
+    /// as JSON (`media_options`).
+    pub media: Option<MediaOptions>,
 }
 
 pub struct NewJob {
@@ -123,6 +135,7 @@ impl JobState {
             Self::Seeding => "seeding",
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::Recording => "recording",
         }
     }
 
@@ -135,6 +148,7 @@ impl JobState {
             "seeding" => Self::Seeding,
             "completed" => Self::Completed,
             "failed" => Self::Failed,
+            "recording" => Self::Recording,
             _ => return None,
         })
     }
@@ -282,6 +296,7 @@ impl Store {
         };
         let mirrors = mirrors_json(&job.mirrors)?;
         let only_files = only_files_json(job.only_files.as_deref())?;
+        let media = media_json(job.media.as_ref())?;
         let conn = self.lock();
         conn.execute(
             "UPDATE jobs SET url = ?2, final_url = ?3, dest_dir = ?4, file_name = ?5, \
@@ -289,7 +304,7 @@ impl Store {
                  connections = ?11, error_kind = ?12, error_detail = ?13, updated_at = ?14, \
                  mirrors = ?15, checksum = ?16, referer = ?17, queue_pos = ?18, \
                  info_hash = ?19, torrent_meta = ?20, only_files = ?21, \
-                 seed_started_at = ?22 WHERE id = ?1",
+                 seed_started_at = ?22, media_options = ?23 WHERE id = ?1",
             params![
                 job.id.0,
                 job.url,
@@ -313,6 +328,7 @@ impl Store {
                 job.torrent_meta,
                 only_files,
                 job.seed_started_at,
+                media,
             ],
         )
         .map_err(|e| duplicate_hash(&conn, e, job.info_hash.as_deref()))?;
@@ -590,6 +606,7 @@ mod tests {
                 only_files: None,
                 uploaded: 0,
                 seed_started_at: None,
+                media: None,
             }
         );
 

@@ -455,6 +455,7 @@ mod tests {
             only_files,
             uploaded: 0,
             seed_started_at: None,
+            media: None,
         }
     }
 

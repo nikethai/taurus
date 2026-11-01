@@ -7,8 +7,10 @@
 mod errors;
 mod inspect;
 mod process;
+pub(crate) mod run;
 #[cfg(test)]
 mod tests;
+pub(crate) mod thumbnail;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -18,11 +20,10 @@ use tokio::process::Command;
 use crate::errors::CoreError;
 use crate::tools::{ToolKind, ToolManager};
 
-// The download runner uses what inspection does not.
-#[allow(unused_imports)]
-pub(crate) use errors::{classify_stderr, classify_stderr_with, error_line};
-pub(crate) use inspect::fast_path_host;
+pub(crate) use errors::classify_stderr_with;
+pub(crate) use inspect::{failure_detail, fast_path_host, standard_quality};
 pub use inspect::{inspect, parse_info, qualities, single_video_link};
+pub use run::MediaPhase;
 
 /// One way to download a video: yt-dlp's format selector, plus the
 /// audio options [`QualityOption::extra_args`] adds.
@@ -42,10 +43,56 @@ impl QualityOption {
     /// `-x` for audio, plus `--audio-format mp3 --audio-quality 5` for
     /// `audio-small`; none for video.
     pub fn extra_args(&self) -> &'static [&'static str] {
-        match self.id.as_str() {
-            "audio-best" => &["-x"],
-            "audio-small" => &["-x", "--audio-format", "mp3", "--audio-quality", "5"],
-            _ => &[],
+        extra_args_for(&self.id)
+    }
+}
+
+/// [`QualityOption::extra_args`] for the option with this id.
+pub(crate) fn extra_args_for(id: &str) -> &'static [&'static str] {
+    match id {
+        "audio-best" => &["-x"],
+        "audio-small" => &["-x", "--audio-format", "mp3", "--audio-quality", "5"],
+        _ => &[],
+    }
+}
+
+/// What a media job downloads and how, stored with the job.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MediaOptions {
+    /// The chosen [`QualityOption::id`].
+    pub quality: String,
+    /// yt-dlp's `-f` for it.
+    pub selector: String,
+    pub audio_only: bool,
+    pub convert: Option<ConvertPreset>,
+    /// The link is a playlist: every entry is downloaded, into a folder
+    /// named after the playlist.
+    pub playlist: bool,
+    /// The link was live or upcoming when inspected: it is recorded from
+    /// its start, waiting for an upcoming stream to begin.
+    pub live_from_start: bool,
+}
+
+/// A conversion after the download.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ConvertPreset {
+    /// The audio as an MP3 (VBR quality 2).
+    Mp3,
+    /// The video re-encoded to a smaller MP4 (CRF 28).
+    SmallerMp4,
+}
+
+impl ConvertPreset {
+    /// The yt-dlp arguments for the conversion.
+    pub fn args(self) -> &'static [&'static str] {
+        match self {
+            ConvertPreset::Mp3 => &["-x", "--audio-format", "mp3", "--audio-quality", "2"],
+            ConvertPreset::SmallerMp4 => &[
+                "--recode-video",
+                "mp4",
+                "--postprocessor-args",
+                "VideoConvertor:-crf 28 -preset veryfast",
+            ],
         }
     }
 }

@@ -89,7 +89,7 @@ pub async fn inspect(
 
 /// What to show for a failed run: its last `ERROR:` line without the
 /// prefix, else its last line.
-pub(super) fn failure_detail(stderr: &str) -> String {
+pub(crate) fn failure_detail(stderr: &str) -> String {
     error_line(stderr)
         .or_else(|| stderr.lines().map(str::trim).rfind(|l| !l.is_empty()))
         .unwrap_or("yt-dlp failed without a message")
@@ -310,6 +310,20 @@ pub fn qualities(formats: &[Value]) -> Vec<QualityOption> {
         out.push(option("audio-small", AUDIO, true, None));
     }
     out
+}
+
+/// The quality option `id` names, as [`qualities`] builds it, without a
+/// size: for a link whose own list lacks it (a playlist lists only `best`
+/// and `audio-best`). `None` for an id that is not one of the five.
+pub(crate) fn standard_quality(id: &str) -> Option<QualityOption> {
+    match id {
+        "best" => Some(option(id, BEST, false, None)),
+        "audio-best" | "audio-small" => Some(option(id, AUDIO, true, None)),
+        _ => CAPS.iter().find(|cap| id == format!("{cap}p")).map(|cap| {
+            let selector = format!("bv*[height<={cap}]+ba/b[height<={cap}]");
+            option(id, &selector, false, None)
+        }),
+    }
 }
 
 fn option(id: &str, selector: &str, audio_only: bool, est_size: Option<u64>) -> QualityOption {

@@ -17,6 +17,7 @@ use crate::system::marks::loggable;
 
 use super::RemoveFiles;
 use super::actor::{Actor, JobMsg, Run};
+use super::media::stored_media_view;
 use super::schedule::check_space;
 use super::settings::unix_now;
 use super::torrent::{stored_downloaded, stored_torrent_view};
@@ -81,6 +82,7 @@ impl Actor {
             only_files: None,
             uploaded: 0,
             seed_started_at: None,
+            media: None,
         };
         apply_probe(&mut job, probe);
         if let Err(e) = self.store.update_job(&job) {
@@ -214,6 +216,7 @@ impl Actor {
             Some(job) if job.kind == JobKind::Torrent => {
                 self.delete_torrent(&job, delete_files).await?;
             }
+            Some(job) if job.kind == JobKind::Media => self.delete_media(&job, delete_files),
             Some(job) if delete_files => delete_job_files(&self.store, &job)?,
             _ => {}
         }
@@ -229,6 +232,7 @@ impl Actor {
     /// whose link expired may have it resolved again (`resolve_again`).
     pub(super) fn on_finished(&mut self, id: JobId, outcome: JobOutcome) {
         let run = self.running.remove(&id);
+        self.media_stops.remove(&id);
         // Pause, remove or shutdown is waiting for this run to end.
         let told_to_stop = run.as_ref().is_some_and(|run| run.cancel.is_cancelled());
         let known = read(&self.views).get(&id).cloned();
@@ -238,6 +242,7 @@ impl Actor {
         });
         if let Some(view) = &mut view {
             self.keep_torrent_progress(view);
+            self.keep_media_progress(view);
         }
         if let JobOutcome::Failed(e) = &outcome
             && !told_to_stop
@@ -576,6 +581,7 @@ fn view_with(store: &Store, job: &JobRecord, downloaded: u64, known: Option<&Job
         retry_at: None,
         finished_at,
         info_hash: job.info_hash.clone(),
+        media: stored_media_view(job, known.and_then(|v| v.media.as_ref())),
     }
 }
 

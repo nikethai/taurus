@@ -16,9 +16,11 @@ use crate::settings::{Settings, TorrentSettings, WhenDone};
 use crate::store::{JobId, JobKind, JobRecord, JobState, Store};
 use crate::system::{AwakeGuard, SpaceSource};
 use crate::timing::Timing;
+use crate::tools::ToolManager;
 use crate::torrent::hub::TorrentHub;
 use crate::when_done::WhenDoneRunner;
 
+use super::media::{MediaAdd, MediaUpdate};
 use super::torrent::TorrentInput;
 use super::{AddRequest, Event, RemoveFiles, TorrentView, Views, no_such_job, read, write};
 
@@ -34,6 +36,15 @@ pub(super) enum Command {
         req: AddRequest,
         input: TorrentInput,
         reply: Reply<JobId>,
+    },
+    AddMedia {
+        req: AddRequest,
+        add: MediaAdd,
+        reply: Reply<JobId>,
+    },
+    StopRecording {
+        id: JobId,
+        reply: Reply<()>,
     },
     Pause {
         id: JobId,
@@ -112,6 +123,16 @@ pub enum JobMsg {
     WhenDoneFired(WhenDone),
     /// A `WhenDoneHold` was taken or dropped.
     HoldChanged,
+    /// A running media job's phase, entries or files changed.
+    Media {
+        id: JobId,
+        update: MediaUpdate,
+    },
+    /// A media job's thumbnail was downloaded.
+    Thumbnail {
+        id: JobId,
+        path: std::path::PathBuf,
+    },
     /// The job's link as added was resolved again after its link expired;
     /// `None` if that was stopped (pause, removal, shutdown).
     Resolved {
@@ -177,6 +198,10 @@ pub(super) struct Actor {
     pub(super) peak: PeakTracker,
     /// Bytes downloaded by all jobs since the engine opened.
     pub(super) transferred: u64,
+    /// yt-dlp, ffmpeg and Deno, for media jobs.
+    pub(super) tools: Arc<ToolManager>,
+    /// The `stop_recording` token of each running media job.
+    pub(super) media_stops: HashMap<JobId, CancellationToken>,
 }
 
 pub(super) type Rates = (Option<u64>, Option<u64>, Option<u64>);
@@ -240,6 +265,7 @@ impl Actor {
             command,
             Command::Add { .. }
                 | Command::AddTorrent { .. }
+                | Command::AddMedia { .. }
                 | Command::Resume { .. }
                 | Command::StartNow { .. }
         ) {
@@ -251,6 +277,12 @@ impl Actor {
             }
             Command::AddTorrent { req, input, reply } => {
                 let _ = reply.send(self.add_torrent(req, input));
+            }
+            Command::AddMedia { req, add, reply } => {
+                let _ = reply.send(self.add_media(req, add));
+            }
+            Command::StopRecording { id, reply } => {
+                let _ = reply.send(self.stop_recording(id).await);
             }
             Command::Pause { id, reply } => {
                 let _ = reply.send(self.pause(id).await);
@@ -363,6 +395,8 @@ impl Actor {
             JobMsg::RetryDue { id, seq } => self.on_retry_due(id, seq),
             JobMsg::WhenDoneFired(action) => self.on_when_done_fired(action),
             JobMsg::Resolved { id, probe } => self.on_resolved(id, probe),
+            JobMsg::Media { id, update } => self.on_media_update(id, update),
+            JobMsg::Thumbnail { id, path } => self.on_thumbnail(id, path),
             JobMsg::HoldChanged => {
                 if self.holds.load(Ordering::SeqCst) > 0 {
                     self.when_done.cancel();

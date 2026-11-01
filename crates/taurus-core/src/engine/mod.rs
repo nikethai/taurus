@@ -8,6 +8,8 @@
 mod actor;
 mod inspect;
 mod jobs;
+mod media;
+mod media_job;
 mod open;
 mod remove;
 mod schedule;
@@ -26,6 +28,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::checksum;
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::http::resolve;
+use crate::media::fast_path_host;
 use crate::settings::{PowerMode, Settings, WhenDone};
 use crate::store::{JobId, JobKind, JobState, Store};
 use crate::system::{SpaceSource, available_space};
@@ -39,6 +42,7 @@ use actor::Command;
 pub use actor::JobMsg;
 pub use inspect::LinkInfo;
 use jobs::{downloaded, fixed_url, vet_mirrors, view_of};
+pub use media::{MediaChoice, MediaView};
 use open::assemble;
 pub use remove::RemoveFiles;
 use schedule::check_space;
@@ -110,6 +114,14 @@ pub struct AddRequest {
     pub referer: Option<String>,
     /// Torrents only: the indices of the files to download; `None` is all.
     pub only_files: Option<Vec<usize>>,
+    /// Video, audio and playlist links only: the quality and conversion.
+    /// `None` is the Simple default (`best`, no conversion) for a link to
+    /// a well-known video site; for any other link, `Some` asks for it to
+    /// be read by yt-dlp when the web server answers with a page.
+    pub media: Option<MediaChoice>,
+    /// Allows adding a playlist of more than 50 entries (otherwise
+    /// `NeedsConfirmation`).
+    pub confirm_large_playlist: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -140,6 +152,8 @@ pub struct JobView {
     pub finished_at: Option<i64>,
     /// Lowercase hex info-hash of a torrent; `None` for an HTTP job.
     pub info_hash: Option<String>,
+    /// `None` unless the job is a media job.
+    pub media: Option<MediaView>,
 }
 
 /// What only a torrent has.
@@ -219,6 +233,8 @@ pub struct Engine {
     metadata_timeout: Duration,
     /// yt-dlp, ffmpeg and Deno under `data_dir/tools`.
     tools: Arc<ToolManager>,
+    /// Holds the database, the tools and the media jobs' thumbnails.
+    data_dir: PathBuf,
 }
 
 impl Engine {
@@ -274,6 +290,15 @@ impl Engine {
     /// torrent, unless a job already has that torrent (`AlreadyAdded`); it
     /// starts once fewer than `torrent.max_active` torrents download.
     /// `only_files` selects its files; mirrors and a checksum are refused.
+    ///
+    /// A link to a well-known video site (or, with `req.media` set, any web
+    /// page yt-dlp reads) is read by yt-dlp (see `inspect`) and queued as a
+    /// media job named after the video (or playlist), with `req.media`'s
+    /// quality and conversion (`best` and none by default). A playlist of
+    /// more than 50 entries is refused with `NeedsConfirmation` and the
+    /// detail `playlist:<count>` unless `confirm_large_playlist`; mirrors
+    /// and a checksum are refused. It counts toward `max_active` like a web
+    /// download; see `stop_recording` for live streams.
     pub async fn add(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         self.check_running()?;
         // Resolving may take minutes: the machine must not sleep meanwhile.
@@ -317,7 +342,17 @@ impl Engine {
             });
         }
         let referer = req.referer.clone();
-        let probe = resolve(&self.client, &fixed_url(&req.url), referer.as_deref()).await?;
+        if fast_path_host(&req.url) {
+            return self.add_media(req).await;
+        }
+        let probe = match resolve(&self.client, &fixed_url(&req.url), referer.as_deref()).await {
+            Ok(probe) => probe,
+            // A web page; yt-dlp may read it, when asked for.
+            Err(page) if page.kind == ErrorKind::SiteNotSupported && req.media.is_some() => {
+                return self.add_media(req).await;
+            }
+            Err(e) => return Err(e),
+        };
         if let Some(size) = probe.size {
             check_space(
                 &self.views,
@@ -361,7 +396,7 @@ impl Engine {
         // Mirrors are not checked again: one that fails is dropped while
         // the job runs.
         let probe = match job.kind {
-            JobKind::Torrent => None,
+            JobKind::Torrent | JobKind::Media => None,
             JobKind::Http => Some(
                 resolve(
                     &self.client,
