@@ -3,6 +3,7 @@
 
 pub mod files;
 pub mod hub;
+mod options;
 pub mod policy;
 pub mod source;
 

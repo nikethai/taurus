@@ -4,8 +4,7 @@
 //! truth.
 
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
-use std::num::NonZeroU32;
+use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,29 +12,21 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use librqbit::api::TorrentIdOrHash;
-use librqbit::dht::{DhtPersistenceConfig, Id20};
+use librqbit::dht::Id20;
 use librqbit::limits::LimitsConfig;
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ListenerMode,
-    ListenerOptions, ManagedTorrent, Session, SessionOptions, SessionPersistenceConfig,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session,
     ValidatedTorrentMetaV1Info,
 };
 
 use super::files::stored_output_dir;
+use super::options::{SESSION_DIR, ipv6_available, limits_config, session_options};
 use super::policy::classify_torrent_error;
 use super::source::Source;
 use super::{TorrentFile, TorrentInfo};
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::settings::TorrentSettings;
 use crate::store::{JobKind, JobRecord, JobState, Store};
-
-/// Under `data_dir`: librqbit's torrent list and fastresume bitfields.
-const SESSION_DIR: &str = "torrent-session";
-/// Under `SESSION_DIR`: the DHT's routing table and port.
-const DHT_FILE: &str = "dht.json";
-/// librqbit moves data in 16 KiB blocks and its limiter's burst is one
-/// second of the limit, so a lower limit stalls the transfer.
-const MIN_BPS: u64 = 16_384;
 
 /// librqbit's torrent handle.
 pub type TorrentHandle = Arc<ManagedTorrent>;
@@ -574,169 +565,9 @@ fn torrent_info<B: AsRef<[u8]>>(
     }
 }
 
-/// Whether this host can open IPv6 sockets at all.
-fn ipv6_available() -> bool {
-    UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).is_ok()
-}
-
-/// The session's options. Without IPv6 everything binds IPv4, since
-/// librqbit's listener and DHT default to `[::]` and fail to start there.
-fn session_options(
-    data_dir: &Path,
-    settings: &TorrentSettings,
-    test: bool,
-    ipv6: bool,
-    ratelimits: LimitsConfig,
-) -> SessionOptions {
-    let port = settings.listen_port.unwrap_or(0);
-    let listen_addr: SocketAddr = if test {
-        (Ipv4Addr::LOCALHOST, 0).into()
-    } else if ipv6 {
-        (Ipv6Addr::UNSPECIFIED, port).into()
-    } else {
-        (Ipv4Addr::UNSPECIFIED, port).into()
-    };
-    SessionOptions {
-        persistence: Some(SessionPersistenceConfig::Json {
-            folder: Some(data_dir.join(SESSION_DIR)),
-        }),
-        fastresume: true,
-        listen: Some(ListenerOptions {
-            mode: ListenerMode::TcpOnly,
-            listen_addr,
-            enable_upnp_port_forwarding: settings.upnp && !test,
-            ipv4_only: !ipv6,
-            ..Default::default()
-        }),
-        // DHT state goes in our data dir, not librqbit's shared one.
-        dht: (settings.dht && !test).then(|| DhtSessionConfig {
-            persistence: Some(DhtPersistenceConfig {
-                config_filename: Some(data_dir.join(SESSION_DIR).join(DHT_FILE)),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
-        disable_trackers: test,
-        disable_local_service_discovery: test,
-        ipv4_only: !ipv6,
-        peer_limit: settings.peer_limit.map(|n| n as usize),
-        client_name_and_version: Some(format!("Hyades/{}", crate::VERSION)),
-        ratelimits,
-        ..Default::default()
-    }
-}
-
-fn limits_config(download_bps: Option<u64>, upload_bps: Option<u64>) -> LimitsConfig {
-    LimitsConfig {
-        download_bps: clamp_bps(download_bps),
-        upload_bps: clamp_bps(upload_bps),
-    }
-}
-
-fn clamp_bps(bps: Option<u64>) -> Option<NonZeroU32> {
-    let bps = bps?.clamp(MIN_BPS, u64::from(u32::MAX));
-    NonZeroU32::new(u32::try_from(bps).unwrap_or(u32::MAX))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn options(test: bool, ipv6: bool) -> SessionOptions {
-        let settings = TorrentSettings {
-            listen_port: Some(6881),
-            peer_limit: Some(50),
-            ..TorrentSettings::default()
-        };
-        let limits = limits_config(Some(100_000), None);
-        session_options(Path::new("/data"), &settings, test, ipv6, limits)
-    }
-
-    #[test]
-    fn product_options_with_ipv6() {
-        let o = options(false, true);
-        let listen = o.listen.as_ref().unwrap();
-        assert_eq!(listen.listen_addr, "[::]:6881".parse().unwrap());
-        assert!(!listen.ipv4_only && !o.ipv4_only);
-        assert!(listen.enable_upnp_port_forwarding);
-        assert!(matches!(listen.mode, ListenerMode::TcpOnly));
-        let dht = o.dht.as_ref().unwrap().persistence.as_ref().unwrap();
-        assert_eq!(
-            dht.config_filename.as_deref(),
-            Some(Path::new("/data/torrent-session/dht.json"))
-        );
-        assert!(!o.disable_trackers && !o.disable_local_service_discovery);
-        assert!(o.fastresume);
-        match &o.persistence {
-            Some(SessionPersistenceConfig::Json { folder }) => {
-                assert_eq!(folder.as_deref(), Some(Path::new("/data/torrent-session")))
-            }
-            _ => panic!("JSON persistence expected"),
-        }
-        assert_eq!(o.peer_limit, Some(50));
-        assert_eq!(
-            o.client_name_and_version,
-            Some(format!("Hyades/{}", env!("CARGO_PKG_VERSION")))
-        );
-        assert_eq!(o.ratelimits.download_bps, NonZeroU32::new(100_000));
-        assert_eq!(o.ratelimits.upload_bps, None);
-    }
-
-    #[test]
-    fn product_options_without_ipv6_bind_ipv4() {
-        let o = options(false, false);
-        let listen = o.listen.as_ref().unwrap();
-        assert_eq!(listen.listen_addr, "0.0.0.0:6881".parse().unwrap());
-        assert!(listen.ipv4_only);
-        // The DHT binds 0.0.0.0 too.
-        assert!(o.ipv4_only);
-        assert!(o.dht.is_some());
-    }
-
-    #[test]
-    fn random_port_and_settings_off() {
-        let settings = TorrentSettings {
-            upnp: false,
-            dht: false,
-            ..TorrentSettings::default()
-        };
-        let o = session_options(
-            Path::new("/d"),
-            &settings,
-            false,
-            true,
-            LimitsConfig::default(),
-        );
-        let listen = o.listen.as_ref().unwrap();
-        assert_eq!(listen.listen_addr.port(), 0);
-        assert!(!listen.enable_upnp_port_forwarding);
-        assert!(o.dht.is_none());
-        assert_eq!(o.peer_limit, None);
-    }
-
-    #[test]
-    fn test_options_are_private_loopback() {
-        for ipv6 in [true, false] {
-            let o = options(true, ipv6);
-            let listen = o.listen.as_ref().unwrap();
-            assert_eq!(listen.listen_addr, "127.0.0.1:0".parse().unwrap());
-            assert!(!listen.enable_upnp_port_forwarding);
-            assert!(o.dht.is_none());
-            assert!(o.disable_trackers && o.disable_local_service_discovery);
-            assert!(o.persistence.is_some() && o.fastresume);
-        }
-    }
-
-    #[test]
-    fn limits_are_clamped() {
-        let n = NonZeroU32::new;
-        assert_eq!(clamp_bps(None), None);
-        assert_eq!(clamp_bps(Some(0)), n(16_384));
-        assert_eq!(clamp_bps(Some(16_383)), n(16_384));
-        assert_eq!(clamp_bps(Some(16_385)), n(16_385));
-        assert_eq!(clamp_bps(Some(u64::from(u32::MAX) + 1)), n(u32::MAX));
-        assert_eq!(clamp_bps(Some(u64::MAX)), n(u32::MAX));
-    }
 
     #[test]
     fn stored_names_must_be_plain() {
