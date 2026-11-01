@@ -258,6 +258,13 @@ impl<'a> Runner<'a> {
         if unfinished {
             self.out.line(render::STOPPED)?;
         }
+        // Ctrl-C stored the Seeding ones Queued, so only a finished run says
+        // sharing ends with it.
+        if views.iter().any(|v| v.state == JobState::Seeding)
+            && let Some(note) = render::sharing_note(&self.engine.settings().torrent)
+        {
+            self.out.line(&note)?;
+        }
         if self.notify && !interrupted {
             self.out.line(render::ALL_FINISHED)?;
         }

@@ -4,10 +4,14 @@ mod runner;
 
 use std::error::Error;
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::str::FromStr;
 
 use clap::{CommandFactory, Parser, Subcommand};
+use taurus_core::torrent::hub::TorrentTestNet;
+use taurus_core::torrent::source::{Source, classify};
 use taurus_core::{AddRequest, Engine, EngineConfig, JobId, JobView, PowerMode, Timing};
 use tokio::sync::broadcast::error::TryRecvError;
 
@@ -36,7 +40,11 @@ struct Cli {
 enum Command {
     /// Queue downloads, then run the queue in the foreground until it is idle; Ctrl-C stops (taurus run continues)
     Add {
-        #[arg(value_name = "URL", required_unless_present = "file")]
+        /// Web links, magnet links, .torrent files or .torrent links
+        #[arg(
+            value_name = "URL|MAGNET|FILE.torrent",
+            required_unless_present = "file"
+        )]
         urls: Vec<String>,
         /// Also add the URLs in this file, one per line (blank lines and `#` lines are skipped)
         #[arg(long, value_name = "PATH")]
@@ -59,6 +67,9 @@ enum Command {
         /// Sent as the Referer of every request
         #[arg(long, value_name = "URL")]
         referer: Option<String>,
+        /// The files of a torrent to download, by index: 0,2,5-7 (one torrent only; see torrent-files) [default: all]
+        #[arg(long, value_name = "LIST")]
+        files: Option<FileList>,
     },
     /// Continue paused or failed downloads, then run the queue until it is idle; Ctrl-C stops (taurus run continues)
     Resume {
@@ -78,6 +89,11 @@ enum Command {
         #[arg(long)]
         delete_files: bool,
     },
+    /// List the files of a torrent (magnet link, .torrent file or link) with their indices, without adding it
+    TorrentFiles {
+        #[arg(value_name = "MAGNET|FILE.torrent|URL")]
+        input: String,
+    },
     /// Show or change the settings
     Config {
         #[command(subcommand)]
@@ -91,8 +107,41 @@ enum ConfigAction {
     Get { key: Option<String> },
     /// Change a setting: max_active <N> | speed fastest|balanced|gentle|<N>KB/s|<N>MB/s |
     /// when_done nothing|notify|sleep|shutdown|quit (sleep and shutdown run once, then reset
-    /// to nothing) | auto_checksum on|off | keep_awake on|off
+    /// to nothing) | auto_checksum on|off | keep_awake on|off |
+    /// torrent.ratio <N>|never | torrent.seed_time 30m|2h|1d|off |
+    /// torrent.upload_limit off|<N>KB/s|<N>MB/s | torrent.download_limit (same) |
+    /// torrent.max_active <N> | torrent.peers <N>|default | torrent.port 1024-65535|random |
+    /// torrent.upnp on|off | torrent.dht on|off
     Set { key: String, value: String },
+}
+
+/// File indices as `--files` takes them: `0,2,5-7`, sorted and deduplicated.
+#[derive(Clone, Debug, PartialEq)]
+struct FileList(Vec<usize>);
+
+impl FromStr for FileList {
+    type Err = String;
+
+    fn from_str(text: &str) -> std::result::Result<FileList, String> {
+        let invalid = |token: &str| format!("invalid file list item '{token}': use e.g. 0,2,5-7");
+        let mut indices = Vec::new();
+        for token in text.split(',').map(str::trim) {
+            let number = |n: &str| n.trim().parse::<usize>().map_err(|_| invalid(token));
+            match token.split_once('-') {
+                Some((first, last)) => {
+                    let (first, last) = (number(first)?, number(last)?);
+                    if first > last {
+                        return Err(invalid(token));
+                    }
+                    indices.extend(first..=last);
+                }
+                None => indices.push(number(token)?),
+            }
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        Ok(FileList(indices))
+    }
 }
 
 #[tokio::main]
@@ -119,6 +168,7 @@ fn parse() -> std::result::Result<Cli, ExitCode> {
         name,
         mirrors,
         checksum,
+        files,
         ..
     } = &mut cli.command
     {
@@ -145,8 +195,22 @@ fn parse() -> std::result::Result<Cli, ExitCode> {
             );
             return Err(usage_error(&e));
         }
+        if files.is_some() && !(urls.len() == 1 && is_torrent(&urls[0])) {
+            let e = Cli::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--files can only be used with exactly one torrent (magnet link, .torrent file or link)",
+            );
+            return Err(usage_error(&e));
+        }
     }
     Ok(cli)
+}
+
+fn is_torrent(input: &str) -> bool {
+    matches!(
+        classify(input),
+        Ok(Source::Magnet { .. } | Source::TorrentUrl(_) | Source::TorrentFile(_))
+    )
 }
 
 /// Prints a clap error; usage errors exit 1, since 2 means "stopped".
@@ -210,6 +274,18 @@ fn engine_config(data_dir: PathBuf, dry_run_power: bool, autostart: bool) -> Eng
     if std::env::var_os("TAURUS_FAST_TIMING").is_some_and(|v| v == "1") {
         config.timing = Timing::fast_for_tests();
     }
+    // Test-only switch: `host:port,...` are the peers every torrent gets, and
+    // the torrent session leaves DHT, trackers, LSD and UPnP off. Not for
+    // users.
+    if let Some(peers) = std::env::var_os("TAURUS_TORRENT_TEST_PEERS") {
+        config.torrent_test = Some(TorrentTestNet {
+            initial_peers: peers
+                .to_string_lossy()
+                .split(',')
+                .filter_map(|peer| peer.trim().parse::<SocketAddr>().ok())
+                .collect(),
+        });
+    }
     config
 }
 
@@ -225,7 +301,9 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
             mirrors,
             checksum,
             referer,
+            files,
         } => {
+            let only_files = files.map(|FileList(indices)| indices);
             let dest_dir = std::path::absolute(match dir {
                 Some(dir) => dir,
                 None => default_dest_dir()?,
@@ -245,7 +323,7 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
                         mirrors: mirrors.clone(),
                         checksum: checksum.clone(),
                         referer: referer.clone(),
-                        only_files: None,
+                        only_files: only_files.clone(),
                     };
                     match engine.add(req).await {
                         Ok(id) => enqueued.ids.push(id),
@@ -327,6 +405,15 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::TorrentFiles { input } => {
+            let info = engine.torrent_files(&input).await?;
+            if json {
+                println!("{}", serde_json::to_string(&info)?);
+            } else {
+                print!("{}", render::torrent_files(&info));
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Config { action } => configure(engine, action, json).await,
     }
 }
@@ -345,7 +432,11 @@ async fn configure(engine: &Engine, action: ConfigAction, json: bool) -> Result<
             let value = config::get(&settings, &key)?;
             if json {
                 let all = serde_json::to_value(&settings)?;
-                println!("{}", serde_json::json!({ key.as_str(): all[key.as_str()] }));
+                let field = match config::json_field(&key) {
+                    Some((section, name)) => &all[section][name],
+                    None => &all[key.as_str()],
+                };
+                println!("{}", serde_json::json!({ key.as_str(): field }));
             } else {
                 println!("{key} = {value}");
             }
@@ -357,6 +448,9 @@ async fn configure(engine: &Engine, action: ConfigAction, json: bool) -> Result<
                 println!("{}", serde_json::to_string(&settings)?);
             } else {
                 println!("{key} = {}", config::get(&settings, &key)?);
+                if config::RESTART_KEYS.contains(&key.as_str()) {
+                    println!("{}", config::RESTART_NOTE);
+                }
             }
         }
     }
@@ -389,5 +483,25 @@ fn default_dest_dir() -> Result<PathBuf> {
     match directories::UserDirs::new().and_then(|u| u.download_dir().map(PathBuf::from)) {
         Some(dir) => Ok(dir),
         None => Ok(std::env::current_dir()?),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn list(text: &str) -> std::result::Result<Vec<usize>, String> {
+        text.parse::<FileList>().map(|FileList(v)| v)
+    }
+
+    #[test]
+    fn file_list_grammar() {
+        assert_eq!(list("0,2,5-7"), Ok(vec![0, 2, 5, 6, 7]));
+        assert_eq!(list(" 3 , 1 - 2 "), Ok(vec![1, 2, 3]));
+        assert_eq!(list("4,4,3-4"), Ok(vec![3, 4]));
+        assert_eq!(list("5-5"), Ok(vec![5]));
+        for bad in ["", "a", "7-5", "1,,2", "-2", "2-", "1-2-3", "1.5", ","] {
+            assert!(list(bad).is_err(), "{bad:?}");
+        }
     }
 }
