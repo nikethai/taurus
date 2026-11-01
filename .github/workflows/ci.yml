@@ -17,6 +17,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
@@ -28,4 +31,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.89
       - uses: Swatinem/rust-cache@v2
       # `+1.89` so rust-toolchain.toml (stable) does not override the MSRV.
-      - run: cargo +1.89 check --workspace --all-targets --locked
+      # taurus-desktop has its own, higher MSRV (see msrv-desktop).
+      - run: cargo +1.89 check --workspace --exclude taurus-desktop --all-targets --locked
+
+  # slint 1.18 needs Rust 1.92 and tray-icon 0.26 needs 1.90, so the desktop
+  # app is checked separately with 1.92.
+  msrv-desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev
+      - run: cargo +1.92 check -p taurus-desktop --all-targets --locked

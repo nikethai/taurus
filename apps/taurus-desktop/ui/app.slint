@@ -1,0 +1,25 @@
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+
+export { Theme }
+
+export component AppWindow inherits Window {
+    in property <string> window-title: "Hyades";
+
+    title: window-title;
+    preferred-width: 420px;
+    preferred-height: 640px;
+    min-width: 360px;
+    min-height: 480px;
+    background: Theme.bg;
+
+    // Simple screen: one centered column, at most 640px wide.
+    Rectangle {
+        VerticalLayout {
+            alignment: stretch;
+            Rectangle {
+                max-width: 640px;
+            }
+        }
+    }
+}
