@@ -335,14 +335,7 @@ impl TorrentHub {
             match tokio::time::timeout(CHECK_TIMEOUT, handle.wait_until_initialized()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => failure = Some(lib_error(e)),
-                Err(_) => {
-                    return Err(CoreError {
-                        kind: ErrorKind::Timeout,
-                        detail: format!(
-                            "the torrent's files were still being checked after {CHECK_TIMEOUT:?}"
-                        ),
-                    });
-                }
+                Err(_) => return Err(check_timeout()),
             }
         }
         match failure {
@@ -353,6 +346,21 @@ impl TorrentHub {
                 detail: format!("torrent {info_hash} did not start"),
             }),
         }
+    }
+
+    /// Waits until the torrent's files are checked, or their check failed
+    /// (which the next start meets); a torrent the session does not have
+    /// has nothing to wait for. Still being checked after `CHECK_TIMEOUT`
+    /// is a `Timeout`. A check that a pause stopped is not started again:
+    /// that waits until the timeout.
+    pub async fn wait_checked(&self, info_hash: &str) -> Result<(), CoreError> {
+        let Some(handle) = self.handle(info_hash) else {
+            return Ok(());
+        };
+        tokio::time::timeout(CHECK_TIMEOUT, handle.wait_until_initialized())
+            .await
+            .map(|_| ())
+            .map_err(|_| check_timeout())
     }
 
     /// Held while a job chooses its output folder and records it, so two
@@ -517,6 +525,13 @@ impl Drop for TorrentHub {
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn check_timeout() -> CoreError {
+    CoreError {
+        kind: ErrorKind::Timeout,
+        detail: format!("the torrent's files were still being checked after {CHECK_TIMEOUT:?}"),
+    }
 }
 
 fn torrents(session: &Session) -> Vec<TorrentHandle> {

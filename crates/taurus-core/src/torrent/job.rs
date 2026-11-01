@@ -99,7 +99,8 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
     job.state = JobState::Downloading;
     job.total = Some(total);
     ctx.store.update_job(job)?;
-    preflight(ctx, job, &info, total)?;
+    let mut downloaded = stored_progress(ctx, job, total)?;
+    preflight(ctx, job, &info, total, downloaded).await?;
     if ctx.cancel.is_cancelled() {
         return paused(ctx, job);
     }
@@ -116,7 +117,6 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
     let stopped = handle.live().is_none();
     drop(handle);
 
-    let mut downloaded = stored_progress(ctx, job, total)?;
     let mut uploads = Uploads::new(job.uploaded);
     let end = match start(ctx, &info, stopped).await {
         Ok(()) => {
@@ -256,33 +256,63 @@ async fn metadata(
 
 /// The selected bytes still to download must fit in `dest_dir` beside what
 /// other downloads to its disk still need, and the largest selected file on
-/// its file system. A torrent that already
-/// finished once (it is only shared again) needs nothing.
-fn preflight(
+/// its file system. What is downloaded is the most of what is stored
+/// (`stored`) and what the session has checked; a torrent that already
+/// finished once (it is only shared again) needs nothing. A torrent the
+/// session is still checking that does not fit by that count is checked to
+/// the end first, then counted again; a cancel stops that wait (and the
+/// check passes).
+async fn preflight(
     ctx: &TorrentJobContext,
     job: &JobRecord,
     info: &TorrentInfo,
     total: u64,
+    stored: u64,
 ) -> Result<(), CoreError> {
-    let have = if job.seed_started_at.is_some() {
-        total
-    } else {
-        // Only a torrent the session has checked knows what is on disk.
-        ctx.hub.handle(&info.info_hash).map_or(0, |handle| {
-            let stats = handle.stats();
-            match stats.state {
-                TorrentStatsState::Live | TorrentStatsState::Paused => stats.progress_bytes,
-                _ => 0,
-            }
-        })
+    let fits = || {
+        let have = if job.seed_started_at.is_some() {
+            total
+        } else {
+            stored.max(checked_progress(ctx, info))
+        };
+        let remaining = total.saturating_sub(have);
+        if remaining == 0 {
+            return Ok(());
+        }
+        let largest = selected(info, job).map(|f| f.size).max();
+        let reserved = (ctx.reserved)(&job.dest_dir);
+        check_fits(ctx.space, &job.dest_dir, reserved, remaining, largest)
     };
-    let remaining = total.saturating_sub(have);
-    if remaining == 0 {
-        return Ok(());
+    match fits() {
+        Err(e) if e.kind == ErrorKind::DiskFull && being_checked(ctx, info) => {
+            tokio::select! {
+                checked = ctx.hub.wait_checked(&info.info_hash) => checked?,
+                () = ctx.cancel.cancelled() => return Ok(()),
+            }
+            fits()
+        }
+        fitting => fitting,
     }
-    let largest = selected(info, job).map(|f| f.size).max();
-    let reserved = (ctx.reserved)(&job.dest_dir);
-    check_fits(ctx.space, &job.dest_dir, reserved, remaining, largest)
+}
+
+/// The selected bytes the session found on disk; 0 until it has checked.
+fn checked_progress(ctx: &TorrentJobContext, info: &TorrentInfo) -> u64 {
+    ctx.hub.handle(&info.info_hash).map_or(0, |handle| {
+        let stats = handle.stats();
+        if checked(&stats) {
+            stats.progress_bytes
+        } else {
+            0
+        }
+    })
+}
+
+/// Whether the session is still checking the torrent's files (after a
+/// restart, or since a run added it).
+fn being_checked(ctx: &TorrentJobContext, info: &TorrentInfo) -> bool {
+    ctx.hub.handle(&info.info_hash).is_some_and(|handle| {
+        matches!(handle.stats().state, TorrentStatsState::Initializing { .. })
+    })
 }
 
 /// Polls the torrent every `torrent_poll`, reporting its progress and saving

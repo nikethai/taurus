@@ -2036,3 +2036,46 @@ async fn interrupted_seeding_torrent_shows_it_is_downloaded() {
     assert_eq!((view.downloaded, view.total), (total, Some(total)));
     engine.shutdown().await.unwrap();
 }
+
+/// Free space for `space_after_restart`, which alone reads it.
+static RESTART_SPACE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+
+fn restart_space(_: &Path) -> std::io::Result<u64> {
+    Ok(RESTART_SPACE.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn space_after_restart_counts_what_is_downloaded() {
+    let file = data(2 * MIB, 22);
+    let total = file.len() as u64;
+    // About eight seconds for the whole file.
+    let seeder = TorrentSeeder::start("big", &[("big.bin", file.clone())], Some(256 * 1024)).await;
+    let rs = Restarts::new(vec![seeder.addr]);
+    let engine = rs.open(true, policy(Some(0.0), None)).await;
+    let mut events = engine.subscribe();
+    let id = engine.add(rs.request(&seeder.magnet)).await.unwrap();
+    let seen = events_until(&mut events, |e| {
+        progress_of(e, id).is_some_and(|d| d >= MIB as u64)
+    })
+    .await;
+    let before = seen.iter().rev().find_map(|e| progress_of(e, id)).unwrap();
+    assert!(before < total, "finished before the restart");
+    engine.shutdown().await.unwrap();
+    drop(engine);
+
+    // Room for what is left, not for the whole torrent.
+    RESTART_SPACE.store(
+        SPACE_MARGIN + (total - before) + 256 * 1024,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let mut config = engine_config(rs.tmp.path(), vec![seeder.addr], restart_space);
+    // Started by hand, before anything else starts the torrent session.
+    config.autostart = false;
+    let engine = Engine::open(config).await.unwrap();
+    engine.start_now(id).await.unwrap();
+    assert_eq!(wait_job(&engine, id).await, JobState::Completed);
+    let view = engine.snapshot().into_iter().find(|v| v.id == id).unwrap();
+    assert_eq!(view.error, None);
+    assert!(fs::read(rs.dest.join(&view.file_name)).unwrap() == file);
+    engine.shutdown().await.unwrap();
+}
