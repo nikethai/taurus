@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use librqbit::{TorrentStats, TorrentStatsState};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 
@@ -46,8 +46,9 @@ pub struct TorrentJobContext {
     pub hub: Arc<TorrentHub>,
     pub store: Store,
     pub timing: Timing,
-    /// The seeding policy is read from here.
-    pub settings: TorrentSettings,
+    /// The seeding policy is read from here at every poll, so a change
+    /// applies to a running (or sharing) torrent at once.
+    pub settings: watch::Receiver<TorrentSettings>,
     /// Where free space is read from.
     pub space: SpaceSource,
     /// What other downloads to the disk holding a folder still need, so the
@@ -253,10 +254,6 @@ async fn watch(
     total: u64,
     uploads: &mut Uploads,
 ) -> Result<End, CoreError> {
-    let policy = SeedPolicy {
-        stop_ratio: ctx.settings.stop_ratio,
-        stop_after: ctx.settings.stop_after_secs.map(Duration::from_secs),
-    };
     let mut tick = tokio::time::interval(ctx.timing.torrent_poll);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut committed_at = Instant::now();
@@ -303,7 +300,7 @@ async fn watch(
         }
         let started = job.seed_started_at.unwrap_or_else(unix_now);
         let seeding_for = Duration::from_secs(u64::try_from(unix_now() - started).unwrap_or(0));
-        if policy.should_stop(uploaded, total, seeding_for) {
+        if seed_policy(&ctx.settings.borrow()).should_stop(uploaded, total, seeding_for) {
             return Ok(End::Completed);
         }
         if !seeding {
@@ -312,6 +309,13 @@ async fn watch(
             ctx.store.update_job(job)?;
             let _ = ctx.msgs.send(JobMsg::Seeding { id: job.id });
         }
+    }
+}
+
+fn seed_policy(settings: &TorrentSettings) -> SeedPolicy {
+    SeedPolicy {
+        stop_ratio: settings.stop_ratio,
+        stop_after: settings.stop_after_secs.map(Duration::from_secs),
     }
 }
 

@@ -5,14 +5,14 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::errors::CoreError;
 use crate::http::{JobOutcome, Probe};
 use crate::limit::{Limiter, PeakTracker};
-use crate::settings::{Settings, WhenDone};
+use crate::settings::{Settings, TorrentSettings, WhenDone};
 use crate::store::{JobId, JobKind, JobRecord, JobState, Store};
 use crate::system::{AwakeGuard, SpaceSource};
 use crate::timing::Timing;
@@ -164,6 +164,9 @@ pub(super) struct Actor {
     pub(super) limiter: Limiter,
     /// The engine's torrent session (started on first use).
     pub(super) hub: Arc<TorrentHub>,
+    /// The torrent settings each torrent runner reads its seeding policy
+    /// from.
+    pub(super) torrent_settings: watch::Sender<TorrentSettings>,
     /// The rates last applied: HTTP download, torrent download and upload.
     pub(super) rates: Option<Rates>,
     /// The saved peak speed (bytes/s) and when it was measured (unix secs).

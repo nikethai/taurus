@@ -34,6 +34,8 @@ impl Actor {
             self.when_done.cancel();
         }
         *write(&self.shared_settings) = settings.clone();
+        // Running torrents follow the new seeding policy at once.
+        self.torrent_settings.send_replace(settings.torrent.clone());
         self.settings = settings.clone();
         self.emit(Event::SettingsChanged(settings));
         self.after_change();

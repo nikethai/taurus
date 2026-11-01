@@ -10,6 +10,8 @@ mod options;
 pub mod policy;
 pub mod source;
 
+pub(crate) use meta::{MAX_TORRENT_BYTES, read_torrent_file, too_large};
+
 /// One file of a torrent.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct TorrentFile {

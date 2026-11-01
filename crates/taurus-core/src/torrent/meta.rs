@@ -1,8 +1,11 @@
 //! Reading a torrent's metainfo: into a [`TorrentInfo`], its info hash,
 //! and what librqbit adds for a source.
 
+use std::path::Path;
+
 use librqbit::dht::Id20;
 use librqbit::{AddTorrent, ValidatedTorrentMetaV1Info};
+use tokio::io::AsyncReadExt;
 
 use super::hub::{lib_error, parse_hash};
 use super::source::Source;
@@ -46,6 +49,35 @@ pub(super) fn torrent_info<B: AsRef<[u8]>>(
     }
 }
 
+/// The largest `.torrent` file read from disk or fetched from a URL.
+pub const MAX_TORRENT_BYTES: usize = 10 * 1024 * 1024;
+
+/// The error for a `.torrent` file over [`MAX_TORRENT_BYTES`].
+pub(crate) fn too_large() -> CoreError {
+    CoreError {
+        kind: ErrorKind::Unknown,
+        detail: "the .torrent file is larger than 10 MiB".to_string(),
+    }
+}
+
+/// A local `.torrent` file, at most [`MAX_TORRENT_BYTES`].
+pub(crate) async fn read_torrent_file(path: &Path) -> Result<Vec<u8>, CoreError> {
+    let cannot_read = |e: std::io::Error| CoreError {
+        kind: classify_io(&e),
+        detail: format!("cannot read {}: {e}", path.display()),
+    };
+    let file = tokio::fs::File::open(path).await.map_err(cannot_read)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_TORRENT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(cannot_read)?;
+    if bytes.len() > MAX_TORRENT_BYTES {
+        return Err(too_large());
+    }
+    Ok(bytes)
+}
+
 /// The info hash of metainfo bytes.
 pub(super) fn hash_of(torrent_meta: &[u8]) -> Result<Id20, CoreError> {
     Ok(librqbit::torrent_from_bytes(torrent_meta)
@@ -66,10 +98,7 @@ pub(super) async fn add_torrent(source: &Source) -> Result<(AddTorrent<'static>,
             });
         }
         Source::TorrentFile(path) => {
-            let bytes = tokio::fs::read(path).await.map_err(|e| CoreError {
-                kind: classify_io(&e),
-                detail: format!("cannot read {}: {e}", path.display()),
-            })?;
+            let bytes = read_torrent_file(path).await?;
             let info_hash = hash_of(&bytes)?;
             (AddTorrent::from_bytes(bytes), info_hash)
         }

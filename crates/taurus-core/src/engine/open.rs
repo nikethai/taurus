@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, RwLock};
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::http::build_client;
@@ -97,6 +97,7 @@ pub(super) async fn assemble(
         })
     };
     let client = build_client();
+    let (torrent_settings, _) = watch::channel(settings.torrent.clone());
     let actor = Actor {
         _lock: lock,
         store,
@@ -134,6 +135,7 @@ pub(super) async fn assemble(
         shared_settings: shared_settings.clone(),
         limiter,
         hub: hub.clone(),
+        torrent_settings,
         rates: None,
         measured_peak,
         peak,

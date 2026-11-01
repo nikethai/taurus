@@ -7,12 +7,11 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::errors::{CoreError, ErrorKind, classify_io};
+use crate::errors::{CoreError, ErrorKind};
 use crate::filename::{sanitize, unique_path};
 use crate::http::JobOutcome;
 use crate::http::client::{request_error, status_error};
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob};
-use crate::torrent::TorrentInfo;
 use crate::torrent::files::{
     check_paths, check_selection, file_path, output_dir, selected_total, stored_name,
     stored_output_dir,
@@ -20,14 +19,12 @@ use crate::torrent::files::{
 use crate::torrent::hub::info_from_bytes;
 use crate::torrent::job::{TorrentJobContext, run_torrent_job};
 use crate::torrent::source::{Source, classify};
+use crate::torrent::{MAX_TORRENT_BYTES, TorrentInfo, read_torrent_file, too_large};
 
 use super::actor::{Actor, Command, JobMsg, Run};
 use super::jobs::{remove_if_exists, view_of};
 use super::schedule::reserved_bytes;
 use super::{AddRequest, Engine, Event, JobView, TorrentView, read, write};
-
-/// The largest `.torrent` file fetched from a URL.
-const MAX_TORRENT_BYTES: usize = 10 * 1024 * 1024;
 
 /// A torrent to add, as read in the caller's task.
 pub(super) struct TorrentInput {
@@ -114,10 +111,7 @@ async fn metainfo(
     referer: Option<&str>,
 ) -> Result<(Vec<u8>, TorrentInfo), CoreError> {
     let bytes = match source {
-        Source::TorrentFile(path) => tokio::fs::read(path).await.map_err(|e| CoreError {
-            kind: classify_io(&e),
-            detail: format!("cannot read {}: {e}", path.display()),
-        })?,
+        Source::TorrentFile(path) => read_torrent_file(path).await?,
         Source::TorrentUrl(url) => fetch_torrent(client, url, referer).await?,
         Source::Magnet { .. } | Source::Http(_) => {
             return Err(error("not a .torrent file or URL"));
@@ -145,7 +139,7 @@ async fn fetch_torrent(
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(request_error)? {
         if body.len() + chunk.len() > MAX_TORRENT_BYTES {
-            return Err(error("the .torrent file is larger than 10 MiB"));
+            return Err(too_large());
         }
         body.extend_from_slice(&chunk);
     }
@@ -234,7 +228,7 @@ impl Actor {
             hub: self.hub.clone(),
             store: self.store.clone(),
             timing: self.timing.clone(),
-            settings: self.settings.torrent.clone(),
+            settings: self.torrent_settings.subscribe(),
             space: self.space,
             reserved: Arc::new(move |dir: &Path| reserved_bytes(&views, dir, Some(id))),
             cancel: cancel.clone(),
@@ -317,17 +311,26 @@ impl Actor {
             && !self
                 .store
                 .name_used_by_other(job.id, &job.dest_dir, &job.file_name)?;
+        let info = job
+            .torrent_meta
+            .as_deref()
+            .and_then(|m| info_from_bytes(m).ok());
+        let output = info
+            .as_ref()
+            .map(|info| stored_output_dir(&job.dest_dir, &job.file_name, info));
+        // librqbit also removes the torrent's folder once empty: a single
+        // file saved straight into the save folder is deleted below
+        // instead, so the save folder itself never goes.
+        let session_deletes = delete_files && output.as_ref().is_some_and(|o| *o != job.dest_dir);
         // A session that is not running has nothing to drop: it reconciles
         // when it starts, and the files are deleted below.
         if self.hub.handle(hash).is_some()
-            && let Err(e) = self.hub.delete(hash, delete_files).await
+            && let Err(e) = self.hub.delete(hash, session_deletes).await
         {
             tracing::warn!(job = job.id.0, "could not remove the torrent: {e}");
         }
-        let info = job.torrent_meta.as_deref().map(info_from_bytes);
-        match info {
-            Some(Ok(info)) if delete_files => {
-                let output = stored_output_dir(&job.dest_dir, &job.file_name, &info);
+        match (info, output) {
+            (Some(info), Some(output)) if delete_files => {
                 delete_files_of(&job.dest_dir, &output, &info)
             }
             _ => Ok(()),
@@ -336,8 +339,9 @@ impl Actor {
 }
 
 /// Deletes what is left of the torrent's files in `output` (librqbit may not
-/// have had the torrent), then the folders they leave empty, and `output`
-/// itself if it is not `dest` and is empty.
+/// have had the torrent, or was not asked to delete), then the folders they
+/// leave empty inside `output`, and `output` itself if it is not `dest` and
+/// is empty: `dest` is never removed.
 fn delete_files_of(dest: &Path, output: &Path, info: &TorrentInfo) -> Result<(), CoreError> {
     for file in &info.files {
         let path = file_path(output, file);
