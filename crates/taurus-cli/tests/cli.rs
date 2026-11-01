@@ -1022,3 +1022,164 @@ async fn meaningless_video_flags_exit_1() {
         assert!(stderr(&output).contains("--quality") || stderr(&output).contains("--audio"));
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn convert_flag_reaches_yt_dlp() {
+    let name = "A Fine Video [abc123].mp3";
+    let video = Video::new(&media_scenario(&video_info(), downloads(name, 64))).await;
+    let link = "https://www.youtube.com/watch?v=cli_convert_mp3";
+    let dir = video.fx.out.to_str().unwrap();
+
+    assert_exit(
+        &video
+            .fx
+            .run(&["add", link, "--convert", "mp3", "--dir", dir])
+            .await,
+        0,
+    );
+
+    let runs = download_argvs(link);
+    assert_eq!(runs.len(), 1);
+    assert!(
+        runs[0]
+            .windows(3)
+            .any(|w| w == ["-x", "--audio-format", "mp3"]),
+        "{:?}",
+        runs[0]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn web_page_that_yt_dlp_reads_is_added_as_media() {
+    let name = "A Fine Video [abc123].mp4";
+    let video = Video::new(&media_scenario(&video_info(), downloads(name, 64))).await;
+    let page = video.fx.server.serve_page(
+        "/videos/cli_page_falls_back",
+        200,
+        &[],
+        "<html><body><video src=x></video></body></html>",
+    );
+
+    let output = video
+        .fx
+        .run(&["add", &page, "--dir", video.fx.out.to_str().unwrap()])
+        .await;
+
+    assert_exit(&output, 0);
+    assert_eq!(download_argvs(&page).len(), 1);
+    let list = video.fx.run(&["--json", "list"]).await;
+    let jobs: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(jobs[0]["kind"], "Media");
+    assert_eq!(jobs[0]["state"], "Completed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn video_flags_on_a_plain_file_are_ignored_with_a_note() {
+    let video = Video::new(&media_scenario(&video_info(), downloads("v.mp4", 64))).await;
+    let spec = FileSpec::new(MIB);
+    let url = video.fx.server.serve(PATH, spec.clone());
+    let dir = video.fx.out.to_str().unwrap();
+
+    let output = video.fx.run(&["add", &url, "--audio", "--dir", dir]).await;
+
+    assert_exit(&output, 0);
+    assert!(
+        stderr(&output).contains("not a video link"),
+        "{}",
+        stderr(&output)
+    );
+    assert_same_bytes(&video.fx.file(), &spec);
+}
+
+/// Holds the data dir's lock as a process that never reads stop requests.
+fn hold_lock(fx: &Fixture) -> fs::File {
+    let data = fx.tmp.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data.join("taurus.lock"))
+        .unwrap();
+    file.try_lock().expect("the lock is free");
+    file
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unanswered_stop_exits_1_and_withdraws_the_request() {
+    let video = Video::new(&media_scenario(
+        &core_fixture("live.json"),
+        live_recording(),
+    ))
+    .await;
+    let link = "https://www.twitch.tv/cli_unanswered_stop";
+    let mut child = video
+        .fx
+        .taurus()
+        .args([
+            "--json",
+            "add",
+            link,
+            "--dir",
+            video.fx.out.to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    loop {
+        let line = lines.next_line().await.unwrap().expect("no progress");
+        if line.contains("\"Progress\"") {
+            break;
+        }
+    }
+    // Killed: the store still says Recording, as after a crash. Then
+    // something else holds the data dir and never answers.
+    child.kill().await.unwrap();
+    let _lock = hold_lock(&video.fx);
+
+    let started = std::time::Instant::now();
+    let stop = video.fx.run(&["stop", "1"]).await;
+
+    assert_exit(&stop, 1);
+    assert!(started.elapsed() < Duration::from_secs(30));
+    let err = stderr(&stop);
+    assert!(err.contains("did not answer"), "{err}");
+    assert!(!video.fx.tmp.path().join("data/stop-requests/1").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_names_what_is_wrong() {
+    let fx = Fixture::new().await;
+    let url = fx.server.serve(PATH, FileSpec::new(MIB));
+    assert_exit(&fx.add(&url, &fx.out).await, 0);
+
+    // Nothing holds the data dir.
+    for (id, words) in [("1", "not a video"), ("42", "not found")] {
+        let output = fx.run(&["stop", id]).await;
+        assert_exit(&output, 1);
+        assert!(stderr(&output).contains(words), "{}", stderr(&output));
+    }
+    // Something does: the same answers, without waiting for it.
+    let _lock = hold_lock(&fx);
+    for (id, words) in [("1", "not a video"), ("42", "not found")] {
+        let output = fx.run(&["stop", id]).await;
+        assert_exit(&output, 1);
+        assert!(stderr(&output).contains(words), "{}", stderr(&output));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_status_works_while_the_data_dir_is_held() {
+    let video = Video::new(&media_scenario(&video_info(), downloads("v.mp4", 64))).await;
+    assert_exit(&video.fx.run(&["tools", "install"]).await, 0);
+    let _lock = hold_lock(&video.fx);
+
+    let tools = video.tools().await;
+
+    assert_eq!(tools.len(), 3);
+    assert!(tools.iter().all(|t| t["state"] == "Ready"), "{tools:?}");
+    // The rest of the command needs the engine.
+    assert_exit(&video.fx.run(&["tools", "install"]).await, 1);
+}

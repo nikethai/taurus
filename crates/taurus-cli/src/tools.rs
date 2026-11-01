@@ -64,13 +64,18 @@ pub async fn run(engine: &Engine, action: Option<ToolsAction>, json: bool) -> Re
             }
         }
     }
-    let statuses = engine.tools_status();
-    if json {
-        println!("{}", serde_json::to_string(&statuses)?);
-    } else {
-        print!("{}", table(&statuses));
-    }
+    print_status(&engine.tools_status(), json)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// The tools as a table, or as one JSON array.
+pub fn print_status(statuses: &[ToolStatus], json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string(statuses)?);
+    } else {
+        print!("{}", table(statuses));
+    }
+    Ok(())
 }
 
 /// Runs `work` while printing the tools' progress: every event as a JSON

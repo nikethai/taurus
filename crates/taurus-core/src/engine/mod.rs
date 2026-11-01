@@ -14,6 +14,7 @@ mod open;
 mod remove;
 mod schedule;
 mod settings;
+mod stop_requests;
 mod tool_ops;
 mod torrent;
 
@@ -256,7 +257,21 @@ impl Engine {
         let (engine, mut actor, commands) = assemble(config).await?;
         actor.after_change();
         tokio::spawn(actor.run(commands));
+        stop_requests::watch(&engine.data_dir, &engine.commands);
         Ok(engine)
+    }
+
+    /// The tools' versions and paths as stored in `config.data_dir`, read
+    /// without opening an engine, so it works while another engine holds the
+    /// data dir. Every tool is Ready or Missing: an install in progress in
+    /// another process is not visible.
+    pub fn read_tools_status(config: &EngineConfig) -> Vec<ToolStatus> {
+        ToolManager::new(
+            &config.data_dir,
+            config.tool_sources.clone(),
+            reqwest::Client::new(),
+        )
+        .status()
     }
 
     /// Every stored job, ordered by id, read without opening an engine or

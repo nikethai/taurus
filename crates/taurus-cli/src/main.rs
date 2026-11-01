@@ -102,7 +102,7 @@ enum Command {
         #[arg(value_name = "MAGNET|FILE.torrent|URL")]
         input: String,
     },
-    /// Stop a live recording and keep what was recorded (it must be running in another taurus process)
+    /// Stop a running video download or live recording, keeping what was downloaded
     Stop { id: i64 },
     /// Show or install the tools that video downloads use (yt-dlp, ffmpeg, Deno)
     Tools {
@@ -236,7 +236,6 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         json: cli.json,
         dry_run: cli.dry_run_power,
         timing: config.timing.clone(),
-        data_dir: data_dir.clone(),
     };
     let engine = match Engine::open(config).await {
         Ok(engine) => engine,
@@ -248,12 +247,28 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             )?;
             return Ok(ExitCode::SUCCESS);
         }
-        // The recording to stop runs in that other process: ask it.
-        Err(e) if e.is_instance_locked() => {
-            if let Command::Stop { id } = cli.command {
-                return stop::request(data_dir, JobId(id), cli.json).await;
-            }
-            return Err(e.into());
+        // The job to stop runs in that other process: ask it.
+        Err(e) if e.is_instance_locked() && matches!(cli.command, Command::Stop { .. }) => {
+            let Command::Stop { id } = cli.command else {
+                unreachable!()
+            };
+            return stop::request(data_dir, JobId(id), cli.json).await;
+        }
+        // The tools on disk can be read without the engine.
+        Err(e)
+            if e.is_instance_locked()
+                && matches!(
+                    cli.command,
+                    Command::Tools {
+                        action: None | Some(ToolsAction::Status)
+                    }
+                ) =>
+        {
+            tools::print_status(
+                &Engine::read_tools_status(&EngineConfig::new(data_dir)),
+                cli.json,
+            )?;
+            return Ok(ExitCode::SUCCESS);
         }
         Err(e) => return Err(e.into()),
     };

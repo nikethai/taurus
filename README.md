@@ -102,18 +102,20 @@ taurus add https://www.twitch.tv/CHANNEL
 taurus stop 5
 ```
 
-`taurus stop <ID>` ends a recording that another `taurus` process is running (the one that `add` or `run` started), makes the file playable and waits for it. Ctrl-C in that process also stops a recording, but leaves it queued, not finished.
+`taurus stop <ID>` stops a running video download or recording from another terminal, keeping what was downloaded (a live stream is made playable), and says how it ended. It asks the `taurus` process or the desktop app that runs the job, which answers within a moment; if none answers within 5 seconds it exits 1. Ctrl-C in the process that runs it also stops the job, but leaves it queued, not finished.
 
 #### The tools
 
 Video downloads use yt-dlp, ffmpeg and Deno. Hyades downloads them itself, checks each against its published SHA-256 and keeps them in `<data dir>/tools/<tool>/<version>/`; the file `<data dir>/tools/<tool>/current` names the version in use, and the previous version is kept for a rollback. They are not installed system-wide and the ones on your `PATH` are not used. yt-dlp is checked for a newer version once a day while videos download (sites change often), ffmpeg and Deno once a week.
 
 ```sh
-taurus tools                    # version, state and path of each tool (--json: a JSON array)
+taurus tools                    # version, state and path of each tool (--json: a JSON array; works while a download runs)
 taurus tools install            # download what is missing, ahead of the first video
 taurus tools update --force     # look for newer versions now
 taurus tools rollback yt-dlp    # back to the previous version (also: ffmpeg, deno)
 ```
+
+With `--json`, `install` and `update` print each tool event as a JSON line, then the final array; a tool's `state` is `"Missing"`, `"Ready"`, `{"Installing":{...}}` or `{"Failed":"<kind>"}`.
 
 Licenses: yt-dlp is released under the Unlicense, the ffmpeg builds (from [yt-dlp/FFmpeg-Builds](https://github.com/yt-dlp/FFmpeg-Builds), and [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de) on macOS) are GPL builds, and Deno is MIT. They are separate programs that Hyades starts; none is linked into it.
 

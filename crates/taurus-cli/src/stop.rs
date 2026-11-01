@@ -1,13 +1,12 @@
-//! `taurus stop <ID>`: ends a live recording and keeps what was recorded.
+//! `taurus stop <ID>`: ends a running video download or live recording and
+//! keeps what was downloaded.
 //!
-//! The recording runs in the process that `add`, `resume` or `run` started,
-//! and the engine allows one process per data dir. So `stop` asks that
-//! process: it leaves a request file, the queue runner there picks it up
-//! within a moment and stops the recording (Ctrl-C would leave it queued
-//! instead), and `stop` waits for the job to end. With no such process,
-//! nothing runs and there is nothing to stop.
+//! The job runs in the process that holds the data dir (`add`, `run` or the
+//! desktop app), and a second process cannot open an engine beside it. So
+//! `stop` asks that engine through `Engine::request_stop` and waits for the
+//! answer: the request being taken, then the job's end.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -15,117 +14,88 @@ use taurus_core::{Engine, EngineConfig, JobId, JobKind, JobState, JobView};
 
 use crate::Result;
 
-/// The folder of request files, one empty file per job id.
-fn requests_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join("stop-requests")
-}
+/// How long the running engine has to take the request (it polls four times
+/// a second).
+const ANSWER: Duration = Duration::from_secs(5);
+/// How long a graceful stop may take: yt-dlp's wind-down, then ffmpeg making
+/// a recording playable.
+const WIND_DOWN: Duration = Duration::from_secs(60);
+const POLL: Duration = Duration::from_millis(100);
 
-/// How long `stop` waits for the other process: a graceful stop of yt-dlp
-/// (10 s), then ffmpeg making the recording playable.
-const WAIT: Duration = Duration::from_secs(90);
-const POLL: Duration = Duration::from_millis(200);
-
-/// Whether the job is a media job that runs now.
-fn recording(view: &JobView) -> bool {
-    view.kind == JobKind::Media && matches!(view.state, JobState::Recording | JobState::Downloading)
-}
-
-fn find(views: Vec<JobView>, id: JobId) -> Result<JobView> {
-    views
+/// The job, if it is one that can be stopped now.
+fn stoppable(views: Vec<JobView>, id: JobId) -> Result<JobView> {
+    let view = views
         .into_iter()
         .find(|v| v.id == id)
-        .ok_or_else(|| format!("download {} not found", id.0).into())
-}
-
-fn not_recording(id: JobId) -> Box<dyn std::error::Error> {
-    format!("download {} is not recording", id.0).into()
-}
-
-/// `stop` with no other process holding the data dir: nothing records.
-pub fn local(engine: &Engine, id: JobId) -> Result<ExitCode> {
-    find(engine.snapshot(), id)?;
-    Err(not_recording(id))
-}
-
-/// Asks the process that holds `data_dir` to stop job `id`, and waits for it
-/// to end. Prints the finished job (JSON with `--json`).
-pub async fn request(data_dir: PathBuf, id: JobId, json: bool) -> Result<ExitCode> {
-    let config = EngineConfig::new(data_dir.clone());
-    if !recording(&find(Engine::read_snapshot(&config)?, id)?) {
-        return Err(not_recording(id));
+        .ok_or_else(|| format!("download {} not found", id.0))?;
+    if view.kind != JobKind::Media {
+        return Err(format!("download {} is not a video or recording", id.0).into());
     }
-    let dir = requests_dir(&data_dir);
-    std::fs::create_dir_all(&dir)?;
-    let file = dir.join(id.0.to_string());
-    std::fs::write(&file, b"")?;
-    let deadline = tokio::time::Instant::now() + WAIT;
-    let view = loop {
+    if !running(&view) {
+        return Err(format!("download {} is not recording", id.0).into());
+    }
+    Ok(view)
+}
+
+fn running(view: &JobView) -> bool {
+    matches!(view.state, JobState::Recording | JobState::Downloading)
+}
+
+/// `stop` when no other process holds the data dir: nothing runs here, so
+/// there is nothing to stop.
+pub fn local(engine: &Engine, id: JobId) -> Result<ExitCode> {
+    stoppable(engine.snapshot(), id)?;
+    Err(format!("download {} is not recording", id.0).into())
+}
+
+/// Asks the engine that holds `data_dir` to stop job `id`, and reports how
+/// the job ended (the job as JSON with `--json`).
+pub async fn request(data_dir: PathBuf, id: JobId, json: bool) -> Result<ExitCode> {
+    let config = EngineConfig::new(data_dir);
+    stoppable(Engine::read_snapshot(&config)?, id)?;
+    Engine::request_stop(&config, id)?;
+    eprintln!("Asking the running Hyades to stop download {}...", id.0);
+    let deadline = tokio::time::Instant::now() + ANSWER;
+    while Engine::stop_request_pending(&config, id) {
+        if tokio::time::Instant::now() >= deadline {
+            Engine::withdraw_stop_request(&config, id);
+            return Err(format!(
+                "the running Hyades did not answer the request to stop download {} \
+                 (it may be busy, or too old to take stop requests)",
+                id.0
+            )
+            .into());
+        }
         tokio::time::sleep(POLL).await;
-        let view = find(Engine::read_snapshot(&config)?, id)?;
-        if !recording(&view) {
+    }
+    let deadline = tokio::time::Instant::now() + WIND_DOWN;
+    let view = loop {
+        let view = Engine::read_snapshot(&config)?
+            .into_iter()
+            .find(|v| v.id == id)
+            .ok_or_else(|| format!("download {} not found", id.0))?;
+        if !running(&view) {
             break view;
         }
         if tokio::time::Instant::now() >= deadline {
-            let _ = std::fs::remove_file(&file);
-            return Err(
-                format!("download {} did not stop within {} s", id.0, WAIT.as_secs()).into(),
-            );
+            return Err(format!(
+                "download {} is still stopping after {} s",
+                id.0,
+                WIND_DOWN.as_secs()
+            )
+            .into());
         }
+        tokio::time::sleep(POLL).await;
     };
     if json {
         println!("{}", serde_json::to_string(&view)?);
-    } else {
-        println!("Stopped {}: {}", id.0, view.file_name);
     }
-    Ok(if view.state == JobState::Completed {
-        ExitCode::SUCCESS
-    } else {
-        eprintln!("error: download {} ended as {:?}", id.0, view.state);
-        ExitCode::FAILURE
-    })
-}
-
-/// Forgets requests left over from before this process began.
-pub fn clear_stale(data_dir: &Path) {
-    if let Ok(entries) = std::fs::read_dir(requests_dir(data_dir)) {
-        for entry in entries.flatten() {
-            let _ = std::fs::remove_file(entry.path());
+    if view.state == JobState::Completed {
+        if !json {
+            println!("Stopped {}: {}", id.0, view.file_name);
         }
-    }
-}
-
-/// The jobs that other processes asked to stop since the last call. Each
-/// request is taken (its file removed) once.
-pub fn take_requests(data_dir: &Path) -> Vec<JobId> {
-    let Ok(entries) = std::fs::read_dir(requests_dir(data_dir)) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter_map(|entry| {
-            let id = entry.file_name().to_str()?.parse::<i64>().ok()?;
-            std::fs::remove_file(entry.path()).ok()?;
-            Some(JobId(id))
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn requests_are_taken_once() {
-        let tmp = std::env::temp_dir().join(format!("hyades-stop-{}", std::process::id()));
-        let dir = requests_dir(&tmp);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("7"), b"").unwrap();
-        std::fs::write(dir.join("not-an-id"), b"").unwrap();
-        assert_eq!(take_requests(&tmp), vec![JobId(7)]);
-        assert!(take_requests(&tmp).is_empty());
-        std::fs::write(dir.join("9"), b"").unwrap();
-        clear_stale(&tmp);
-        assert!(take_requests(&tmp).is_empty());
-        std::fs::remove_dir_all(&tmp).unwrap();
+        Ok(ExitCode::SUCCESS)
+    } else {
+        Err(format!("download {} ended as {:?}, not finished", id.0, view.state).into())
     }
 }

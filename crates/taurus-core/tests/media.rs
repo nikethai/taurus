@@ -846,6 +846,64 @@ async fn stop_recording_keeps_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_request_from_another_process_stops_the_recording() {
+    // What `taurus stop` does: a file in the data dir, no engine of its own.
+    let rig = MediaRig::new(&fixture("live.json"), live_recording(true, 0)).await;
+    let link = "https://www.twitch.tv/stop_request_file";
+    let id = recording(&rig, link).await;
+    let config = EngineConfig::new(rig.tmp.path().join("data"));
+    // Not a job id, a missing job and a non-numeric name change nothing.
+    let junk = rig.tmp.path().join("data/stop-requests");
+    Engine::request_stop(&config, JobId(999)).unwrap();
+    std::fs::write(junk.join("junk"), b"").unwrap();
+
+    Engine::request_stop(&config, id).unwrap();
+    let view = rig
+        .until(id, "completed", |v| v.state == JobState::Completed)
+        .await;
+    assert_eq!(view.file_name, "Live Now [live1].mp4");
+    // Answered means taken: the files are gone.
+    assert!(!Engine::stop_request_pending(&config, id));
+    assert!(!Engine::stop_request_pending(&config, JobId(999)));
+    assert!(junk.join("junk").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shut_down_engine_leaves_stop_requests_unanswered() {
+    let rig = Rig::new(&prints(&fixture("single_video.json"))).await;
+    rig.engine.shutdown().await.unwrap();
+    let config = EngineConfig::new(rig.tmp.path().join("data"));
+    // A shut-down engine does not answer.
+    Engine::request_stop(&config, JobId(1)).unwrap();
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(Engine::stop_request_pending(&config, JobId(1)));
+    Engine::withdraw_stop_request(&config, JobId(1));
+    assert!(!Engine::stop_request_pending(&config, JobId(1)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tools_status_is_readable_while_an_engine_holds_the_data_dir() {
+    let rig = Rig::new(&prints(&fixture("single_video.json"))).await;
+    let config = EngineConfig::new(rig.tmp.path().join("data"));
+    let before = Engine::read_tools_status(&config);
+    assert!(before.iter().all(|s| s.state == ToolState::Missing));
+    rig.engine
+        .inspect("https://vimeo.com/read_tools_status")
+        .await
+        .unwrap();
+    // Reading takes no lock, so the open engine does not mind.
+    let after = Engine::read_tools_status(&config);
+    assert_eq!(after.len(), 3);
+    for kind in [ToolKind::YtDlp, ToolKind::Deno] {
+        let tool = after.iter().find(|s| s.kind == kind).unwrap();
+        assert_eq!(tool.state, ToolState::Ready, "{kind:?}");
+        assert!(tool.version.is_some() && tool.path.is_some());
+    }
+    let ffmpeg = after.iter().find(|s| s.kind == ToolKind::Ffmpeg).unwrap();
+    assert_eq!(ffmpeg.state, ToolState::Missing);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stopped_recording_never_takes_another_jobs_file() {
     // No partial file reported: the folder is searched, by the video's id.
     let rig = MediaRig::new(&fixture("live.json"), live_recording(false, 0)).await;
