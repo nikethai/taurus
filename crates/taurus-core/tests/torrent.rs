@@ -1,7 +1,9 @@
-//! TorrentHub against real local librqbit sessions on 127.0.0.1.
+//! TorrentHub and the torrent job runner against real local librqbit
+//! sessions on 127.0.0.1.
 
 use std::fs;
-use std::path::Path;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -9,12 +11,21 @@ use std::time::{Duration, Instant};
 use librqbit::api::TorrentIdOrHash;
 use librqbit::dht::Id20;
 use librqbit::{Session, SessionOptions, SessionPersistenceConfig};
-use taurus_core::store::{JobKind, NewJob, Store};
+use taurus_core::engine::JobMsg;
+use taurus_core::http::JobOutcome;
+use taurus_core::store::{JobId, JobKind, NewJob, Store};
+use taurus_core::system::{SpaceSource, available_space};
 use taurus_core::torrent::TorrentFile;
 use taurus_core::torrent::hub::{TorrentHub, TorrentTestNet};
+use taurus_core::torrent::job::{TorrentJobContext, run_torrent_job};
 use taurus_core::torrent::source::{Source, classify};
-use taurus_core::{ErrorKind, JobState, TorrentSettings};
-use taurus_testkit::{FileSpec, TorrentSeeder, content, make_torrent_bytes, test_session_options};
+use taurus_core::{ErrorKind, JobState, Timing, TorrentSettings};
+use taurus_testkit::{
+    FileSpec, TorrentLeecher, TorrentSeeder, content, make_torrent_bytes, test_session_options,
+};
+use tempfile::TempDir;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -184,6 +195,22 @@ async fn add_bytes_downloads_to_output() {
     hub.delete(&seeder.info_hash, true).await.unwrap();
     assert!(hub.handle(&seeder.info_hash).is_none());
     assert!(!out.join("a.bin").exists());
+    hub.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unpause_while_files_are_checked() {
+    let (seeder, a, _) = seeder().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out");
+    let hub = hub(&tmp.path().join("data"), vec![seeder.addr]);
+    // Still checking its files: librqbit would drop a plain start.
+    hub.add_bytes(&seeder.torrent_bytes, &out, None, true)
+        .await
+        .unwrap();
+    hub.unpause(&seeder.info_hash).await.unwrap();
+    wait_finished(&hub, &seeder.info_hash).await;
+    assert_eq!(fs::read(out.join("a.bin")).unwrap(), a);
     hub.shutdown().await;
 }
 
@@ -442,4 +469,401 @@ async fn limits_are_applied() {
     hub.set_limits(Some(u64::MAX), None);
     assert_eq!(get(), (Some(u32::MAX), None));
     hub.shutdown().await;
+}
+
+// The job runner.
+
+/// A store and a hub in a temp dir, and the folder jobs save into.
+struct Rig {
+    tmp: TempDir,
+    dest: PathBuf,
+    store: Store,
+    hub: Arc<TorrentHub>,
+}
+
+fn rig(peers: Vec<SocketAddr>) -> Rig {
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    let dest = tmp.path().join("dest");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::create_dir_all(&dest).unwrap();
+    let store = Store::open(&data_dir.join("taurus.db")).unwrap();
+    let hub = Arc::new(hub_with(&data_dir, peers, store.clone()));
+    Rig {
+        tmp,
+        dest,
+        store,
+        hub,
+    }
+}
+
+/// A torrent job as the engine adds it: from a magnet link, from a local
+/// `.torrent` file (`source` is its path) with no metadata yet, or with its
+/// metadata already stored and placed (`meta`).
+fn job_for(dest: &Path, source: &str, name: &str, meta: Option<&[u8]>) -> NewJob {
+    NewJob {
+        url: source.to_string(),
+        source_url: source.to_string(),
+        dest_dir: dest.to_path_buf(),
+        file_name: name.to_string(),
+        connections: 1,
+        mirrors: vec![],
+        checksum: None,
+        referer: None,
+        queue_pos: 0,
+        kind: JobKind::Torrent,
+        info_hash: meta.map(hash_of),
+        torrent_meta: meta.map(<[u8]>::to_vec),
+        only_files: None,
+    }
+}
+
+fn policy(stop_ratio: Option<f64>, stop_after_secs: Option<u64>) -> TorrentSettings {
+    TorrentSettings {
+        stop_ratio,
+        stop_after_secs,
+        ..TorrentSettings::default()
+    }
+}
+
+fn context(
+    rig: &Rig,
+    id: JobId,
+    settings: TorrentSettings,
+    space: SpaceSource,
+) -> (
+    TorrentJobContext,
+    mpsc::UnboundedReceiver<JobMsg>,
+    CancellationToken,
+) {
+    let (msgs, rx) = mpsc::unbounded_channel();
+    let cancel = CancellationToken::new();
+    let ctx = TorrentJobContext {
+        id,
+        hub: rig.hub.clone(),
+        store: rig.store.clone(),
+        timing: Timing::fast_for_tests(),
+        settings,
+        space,
+        cancel: cancel.clone(),
+        msgs,
+    };
+    (ctx, rx, cancel)
+}
+
+async fn run(ctx: TorrentJobContext) -> JobOutcome {
+    tokio::time::timeout(Duration::from_secs(30), run_torrent_job(ctx))
+        .await
+        .expect("the runner ended")
+}
+
+/// Everything sent until the runner dropped its sender.
+async fn drain(rx: &mut mpsc::UnboundedReceiver<JobMsg>) -> Vec<JobMsg> {
+    let mut all = Vec::new();
+    while let Some(msg) = rx.recv().await {
+        all.push(msg);
+    }
+    all
+}
+
+fn failed(outcome: JobOutcome) -> taurus_core::CoreError {
+    match outcome {
+        JobOutcome::Failed(e) => e,
+        other => panic!("expected a failure, got {other:?}"),
+    }
+}
+
+/// A seeder sending at 64 KiB/s, so a download takes a few seconds.
+async fn slow_seeder(sizes: (usize, usize)) -> (TorrentSeeder, Vec<u8>, Vec<u8>) {
+    let a = data(sizes.0, 11);
+    let b = data(sizes.1, 12);
+    let seeder = TorrentSeeder::start(
+        "pack",
+        &[("a.bin", a.clone()), ("dir/b.bin", b.clone())],
+        Some(64 * 1024),
+    )
+    .await;
+    (seeder, a, b)
+}
+
+fn one_kib_free(_: &Path) -> std::io::Result<u64> {
+    Ok(1024)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runner_downloads_and_seeds_until_ratio() {
+    let (seeder, a, b) = seeder().await;
+    let rig = rig(vec![seeder.addr]);
+    // A magnet job: the runner fetches the metadata and places the job.
+    let mut new = job_for(&rig.dest, &seeder.magnet, "pack", None);
+    new.info_hash = Some(seeder.info_hash.clone());
+    let id = rig.store.insert_job(&new).unwrap();
+    let (ctx, _rx, _cancel) = context(&rig, id, policy(Some(0.0), None), available_space);
+
+    let JobOutcome::Completed(out) = run(ctx).await else {
+        panic!("not completed");
+    };
+    assert_eq!(out, rig.dest.join("pack"));
+    assert_eq!(fs::read(out.join("a.bin")).unwrap(), a);
+    assert_eq!(fs::read(out.join("dir").join("b.bin")).unwrap(), b);
+
+    let job = rig.store.get_job(id).unwrap().unwrap();
+    assert_eq!(job.state, JobState::Completed);
+    assert_eq!(job.file_name, "pack");
+    assert_eq!(job.info_hash.as_deref(), Some(seeder.info_hash.as_str()));
+    assert_eq!(
+        hash_of(job.torrent_meta.as_deref().unwrap()),
+        seeder.info_hash
+    );
+    assert_eq!(job.total, Some((a.len() + b.len()) as u64));
+    assert!(job.seed_started_at.is_some());
+    // Sharing stopped, and the runner let go of the torrent.
+    assert!(rig.hub.handle(&seeder.info_hash).unwrap().is_paused());
+    rig.hub.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runner_places_a_magnet_beside_a_taken_name() {
+    let (seeder, a, _) = seeder().await;
+    let rig = rig(vec![seeder.addr]);
+    fs::create_dir(rig.dest.join("pack")).unwrap();
+    fs::write(rig.dest.join("pack").join("a.bin"), b"neighbour").unwrap();
+    let id = rig
+        .store
+        .insert_job(&job_for(&rig.dest, &seeder.magnet, "pack", None))
+        .unwrap();
+    let (ctx, _rx, _cancel) = context(&rig, id, policy(Some(0.0), None), available_space);
+
+    let JobOutcome::Completed(out) = run(ctx).await else {
+        panic!("not completed");
+    };
+    assert_eq!(out, rig.dest.join("pack (1)"));
+    assert_eq!(fs::read(out.join("a.bin")).unwrap(), a);
+    assert_eq!(
+        fs::read(rig.dest.join("pack").join("a.bin")).unwrap(),
+        b"neighbour"
+    );
+    assert_eq!(
+        rig.store.get_job(id).unwrap().unwrap().file_name,
+        "pack (1)"
+    );
+    rig.hub.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runner_reports_progress_and_seeding_phase() {
+    let (seeder, a, b) = slow_seeder((160 * 1024, 40 * 1024)).await;
+    let total = (a.len() + b.len()) as u64;
+    let rig = rig(vec![seeder.addr]);
+    let new = job_for(
+        &rig.dest,
+        &seeder.magnet,
+        "pack",
+        Some(&seeder.torrent_bytes),
+    );
+    let id = rig.store.insert_job(&new).unwrap();
+    // Nobody downloads from this job, so the time limit ends the seeding.
+    let (ctx, mut rx, _cancel) = context(&rig, id, policy(Some(1.0), Some(1)), available_space);
+
+    let runner = tokio::spawn(run(ctx));
+    let msgs = drain(&mut rx).await;
+    let JobOutcome::Completed(out) = runner.await.unwrap() else {
+        panic!("not completed");
+    };
+    assert_eq!(fs::read(out.join("a.bin")).unwrap(), a);
+
+    let seeding: Vec<usize> = msgs
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m, JobMsg::Seeding { id: s } if *s == id))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(seeding.len(), 1, "one Seeding message");
+    let partial = msgs[..seeding[0]].iter().any(
+        |m| matches!(m, JobMsg::Progress { downloaded, total: Some(t), .. } if *downloaded < *t),
+    );
+    assert!(partial, "progress before the download finished");
+    for m in &msgs {
+        if let JobMsg::Progress {
+            id: p,
+            downloaded,
+            total: t,
+            ..
+        } = m
+        {
+            assert_eq!(*p, id);
+            assert_eq!(*t, Some(total));
+            assert!(*downloaded <= total);
+        }
+    }
+    let done = msgs[seeding[0]..]
+        .iter()
+        .any(|m| matches!(m, JobMsg::Progress { downloaded, .. } if *downloaded == total));
+    assert!(done, "complete progress while seeding");
+    let view = msgs
+        .iter()
+        .find_map(|m| match m {
+            JobMsg::TorrentStats { id: s, view } if *s == id => Some(view.clone()),
+            _ => None,
+        })
+        .expect("torrent stats");
+    assert_eq!((view.files_selected, view.files_total), (2, 2));
+
+    let job = rig.store.get_job(id).unwrap().unwrap();
+    assert_eq!(job.state, JobState::Completed);
+    assert!(job.seed_started_at.is_some());
+    rig.hub.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runner_rejects_unsafe_torrent() {
+    let rig = rig(vec![]);
+    // librqbit itself refuses `..`: read from a `.torrent` file.
+    let evil = make_torrent_bytes(
+        "evil",
+        &[("../evil.txt", b"boo"), ("ok.txt", b"ok")],
+        16_384,
+    );
+    let file = rig.tmp.path().join("evil.torrent");
+    fs::write(&file, &evil).unwrap();
+    let id = rig
+        .store
+        .insert_job(&job_for(&rig.dest, file.to_str().unwrap(), "evil", None))
+        .unwrap();
+    let (ctx, _rx, _cancel) = context(&rig, id, policy(Some(0.0), None), available_space);
+    let e = failed(run(ctx).await);
+    assert_eq!(e.kind, ErrorKind::UnsafeTorrent, "{}", e.detail);
+    let job = rig.store.get_job(id).unwrap().unwrap();
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(job.error.map(|e| e.0), Some(ErrorKind::UnsafeTorrent));
+    assert!(job.torrent_meta.is_none());
+
+    // A name librqbit would write but Taurus refuses, from stored metadata.
+    let odd = make_torrent_bytes("odd", &[("a\u{1}b.txt", b"boo"), ("ok.txt", b"ok")], 16_384);
+    let id = rig
+        .store
+        .insert_job(&job_for(&rig.dest, "odd.torrent", "odd", Some(&odd)))
+        .unwrap();
+    let (ctx, _rx, _cancel) = context(&rig, id, policy(Some(0.0), None), available_space);
+    let e = failed(run(ctx).await);
+    assert_eq!(e.kind, ErrorKind::UnsafeTorrent, "{}", e.detail);
+    assert!(rig.hub.handle(&hash_of(&odd)).is_none());
+
+    assert!(!rig.tmp.path().join("evil.txt").exists());
+    assert_eq!(fs::read_dir(&rig.dest).unwrap().count(), 0);
+    rig.hub.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runner_rejects_duplicate_torrent() {
+    let (seeder, _, _) = seeder().await;
+    let rig = rig(vec![seeder.addr]);
+    let first = job_for(
+        &rig.dest,
+        &seeder.magnet,
+        "pack",
+        Some(&seeder.torrent_bytes),
+    );
+    let first = rig.store.insert_job(&first).unwrap();
+    rig.store.set_state(first, JobState::Paused).unwrap();
+    let id = rig
+        .store
+        .insert_job(&job_for(&rig.dest, &seeder.magnet, "pack (1)", None))
+        .unwrap();
+    let (ctx, _rx, _cancel) = context(&rig, id, policy(Some(0.0), None), available_space);
+
+    let e = failed(run(ctx).await);
+    assert_eq!(e.kind, ErrorKind::AlreadyAdded);
+    assert!(
+        e.detail.contains(&format!("job {}", first.0)),
+        "{}",
+        e.detail
+    );
+    let job = rig.store.get_job(id).unwrap().unwrap();
+    assert_eq!((job.info_hash, job.torrent_meta), (None, None));
+    rig.hub.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runner_space_check() {
+    let (seeder, _, _) = seeder().await;
+    let rig = rig(vec![seeder.addr]);
+    let new = job_for(
+        &rig.dest,
+        &seeder.magnet,
+        "pack",
+        Some(&seeder.torrent_bytes),
+    );
+    let id = rig.store.insert_job(&new).unwrap();
+    let (ctx, _rx, _cancel) = context(&rig, id, policy(Some(0.0), None), one_kib_free);
+
+    let e = failed(run(ctx).await);
+    assert_eq!(e.kind, ErrorKind::DiskFull, "{}", e.detail);
+    // Refused before the torrent was added: nothing was written.
+    assert!(rig.hub.handle(&seeder.info_hash).is_none());
+    assert!(!rig.dest.join("pack").exists());
+    let job = rig.store.get_job(id).unwrap().unwrap();
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(job.error.map(|e| e.0), Some(ErrorKind::DiskFull));
+    rig.hub.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn runner_cancel_pauses() {
+    // About ten seconds at 64 KiB/s: still downloading when cancelled.
+    let (seeder, _, _) = slow_seeder((500 * 1024, 100 * 1024)).await;
+    let rig = rig(vec![seeder.addr]);
+    let new = job_for(
+        &rig.dest,
+        &seeder.magnet,
+        "pack",
+        Some(&seeder.torrent_bytes),
+    );
+    let id = rig.store.insert_job(&new).unwrap();
+    // Uploaded in earlier runs.
+    rig.store.commit_torrent_progress(id, 1_000).unwrap();
+    let (ctx, mut rx, cancel) = context(&rig, id, policy(None, None), available_space);
+    let runner = tokio::spawn(run(ctx));
+
+    // Another peer downloads from this job, so it uploads. It joins once
+    // the job has pieces: librqbit tells a peer that has nothing about its
+    // pieces only in the bitfield it sends as they connect.
+    let started = Instant::now();
+    let mut leecher = None;
+    let mut uploaded = 0;
+    while started.elapsed() < Duration::from_secs(1) || uploaded <= 1_000 {
+        assert!(started.elapsed() < TIMEOUT, "nothing uploaded");
+        let msg = tokio::time::timeout(TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match msg {
+            JobMsg::Progress { downloaded, .. } if downloaded >= 32 * 1024 && leecher.is_none() => {
+                let addr = rig.hub.listen_addr().unwrap();
+                leecher = Some(TorrentLeecher::start(&seeder.torrent_bytes, addr).await);
+            }
+            JobMsg::TorrentStats { view, .. } => uploaded = view.uploaded,
+            _ => {}
+        }
+    }
+    cancel.cancel();
+    let rest = drain(&mut rx).await;
+    assert!(matches!(runner.await.unwrap(), JobOutcome::Paused));
+    let last = rest
+        .iter()
+        .rev()
+        .find_map(|m| match m {
+            JobMsg::TorrentStats { view, .. } => Some(view.uploaded),
+            _ => None,
+        })
+        .unwrap_or(uploaded);
+
+    let job = rig.store.get_job(id).unwrap().unwrap();
+    assert_eq!(job.state, JobState::Paused);
+    assert_eq!(job.uploaded, last);
+    assert!(job.uploaded > 1_000);
+    assert!(job.seed_started_at.is_none());
+    assert!(rig.hub.handle(&seeder.info_hash).unwrap().is_paused());
+    drop(leecher);
+    rig.hub.shutdown().await;
 }

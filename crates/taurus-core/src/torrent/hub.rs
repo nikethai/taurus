@@ -264,9 +264,12 @@ impl TorrentHub {
     }
 
     /// Restarts the torrent's transfers; a running torrent is left alone.
+    /// Waits until the torrent's files are checked: librqbit drops a start
+    /// that comes while they are.
     pub async fn unpause(&self, info_hash: &str) -> Result<(), CoreError> {
         let session = self.session().await?;
         let handle = find(&session, info_hash)?;
+        handle.wait_until_initialized().await.map_err(lib_error)?;
         if handle.live().is_some() {
             return Ok(());
         }

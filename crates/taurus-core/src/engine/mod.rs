@@ -28,7 +28,9 @@ use crate::timing::Timing;
 use crate::torrent::hub::TorrentTestNet;
 use crate::when_done::{EngineLink, WhenDoneRunner};
 
-use actor::{Actor, Command, JobMsg};
+#[doc(hidden)]
+pub use actor::JobMsg;
+use actor::{Actor, Command};
 use jobs::{check_space, downloaded, fixed_url, vet_mirrors, view_of};
 use settings::{fresh_peak, speed_limit, unix_now};
 

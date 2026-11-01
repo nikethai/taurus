@@ -18,7 +18,7 @@ use crate::system::{AwakeGuard, SpaceSource};
 use crate::timing::Timing;
 use crate::when_done::WhenDoneRunner;
 
-use super::{AddRequest, Event, Views, no_such_job, read, write};
+use super::{AddRequest, Event, TorrentView, Views, no_such_job, read, write};
 
 pub(super) type Reply<T> = oneshot::Sender<Result<T, CoreError>>;
 
@@ -67,8 +67,10 @@ pub(super) enum Command {
 }
 
 /// Sent by a job's task (all of a run's progress precedes its `Finished`),
-/// or by a Waiting job's retry timer.
-pub(super) enum JobMsg {
+/// or by a Waiting job's retry timer. Public only for the torrent runner's
+/// tests; not for front ends.
+#[doc(hidden)]
+pub enum JobMsg {
     Progress {
         id: JobId,
         downloaded: u64,
@@ -78,6 +80,17 @@ pub(super) enum JobMsg {
     Finished {
         id: JobId,
         outcome: JobOutcome,
+    },
+    /// The torrent finished downloading and is sharing (sent once per run,
+    /// never when the seeding policy stops it as soon as it finishes).
+    Seeding {
+        id: JobId,
+    },
+    /// A running torrent's peers, uploads and file selection, with each
+    /// `Progress`.
+    TorrentStats {
+        id: JobId,
+        view: TorrentView,
     },
     /// Timer `seq` of the job ran out.
     RetryDue {
@@ -316,6 +329,8 @@ impl Actor {
                 });
             }
             JobMsg::Finished { id, outcome } => self.on_finished(id, outcome),
+            // Task 6 wires torrent jobs into the queue.
+            JobMsg::Seeding { .. } | JobMsg::TorrentStats { .. } => {}
             JobMsg::RetryDue { id, seq } => self.on_retry_due(id, seq),
             JobMsg::WhenDoneFired(action) => self.on_when_done_fired(action),
             JobMsg::Resolved { id, probe } => self.on_resolved(id, probe),

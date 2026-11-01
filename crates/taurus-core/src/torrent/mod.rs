@@ -1,8 +1,10 @@
 //! Torrents: pure logic (input classification, path safety, output folders
-//! and seeding policy) and, in `hub`, the librqbit session.
+//! and seeding policy), in `hub`, the librqbit session, and in `job`, the
+//! runner that drives one torrent job.
 
 pub mod files;
 pub mod hub;
+pub mod job;
 mod options;
 pub mod policy;
 pub mod source;
