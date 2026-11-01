@@ -8,8 +8,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use i_slint_backend_testing::{AccessibleRole, ElementHandle};
+use slint::platform::WindowEvent;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
-use taurus_core::{Engine, EngineConfig, ErrorKind, JobState, ThemeChoice};
+use taurus_core::{AddRequest, Engine, EngineConfig, ErrorKind, JobState, SpeedLimit, ThemeChoice};
 use taurus_desktop::app::App;
 use taurus_desktop::shell_text::simple_message;
 use taurus_desktop::{AppWindow, Messages, RowVm, Screen, Theme};
@@ -27,6 +28,8 @@ fn ui_smoke() {
     let ctx = Ctx::start(&ui);
     add_flow_shows_file_and_finishes(&ui, &ctx);
     settings_change_is_saved_and_shown(&ui, &ctx);
+    quick_setting_changes_end_on_the_last(&ui, &ctx);
+    close_hides_to_tray_and_keeps_downloading(&ctx);
     quit_shuts_down_engine_cleanly(&ui, &ctx);
     // later tasks append their checks here
 }
@@ -238,6 +241,12 @@ fn add_flow_shows_file_and_finishes(ui: &AppWindow, ctx: &Ctx) {
         ("", false, false),
         "{WHAT}: {add:?}"
     );
+    // "Save to" names the real folder, type subfolder included.
+    assert_eq!(
+        PathBuf::from(add.folder.as_str()),
+        ctx.documents(),
+        "{WHAT}: Save to"
+    );
     ui.invoke_add_confirmed();
     assert_eq!(
         ui.get_screen(),
@@ -288,6 +297,94 @@ fn settings_change_is_saved_and_shown(ui: &AppWindow, ctx: &Ctx) {
         "jade",
         "{WHAT}: bad value"
     );
+}
+
+/// Bursts of changes are saved in order: the engine and the screen end on
+/// the last one, also after the engine's echoes of the earlier ones.
+fn quick_setting_changes_end_on_the_last(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "quick_setting_changes_end_on_the_last";
+    for i in 0..30 {
+        let speed = if i % 2 == 0 { "gentle" } else { "fastest" };
+        ui.invoke_setting_changed("speed".into(), speed.into());
+        if i % 7 == 0 {
+            // Let some saves and echoes through mid-burst.
+            slint::platform::update_timers_and_animations();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    ui.invoke_setting_changed("speed".into(), "balanced".into());
+    assert_eq!(ui.get_settings().speed.as_str(), "balanced", "{WHAT}: echo");
+    wait_until(&format!("{WHAT}: saved"), || {
+        ctx.engine.settings().speed == SpeedLimit::Balanced
+    });
+    // Several flushes later (every engine echo has arrived) nothing moved.
+    let settle = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < settle {
+        slint::platform::update_timers_and_animations();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        ui.get_settings().speed.as_str(),
+        "balanced",
+        "{WHAT}: shown"
+    );
+    assert_eq!(
+        ctx.engine.settings().speed,
+        SpeedLimit::Balanced,
+        "{WHAT}: stored"
+    );
+    ui.invoke_setting_changed("speed".into(), "fastest".into());
+    wait_until(&format!("{WHAT}: reset"), || {
+        ctx.engine.settings().speed == SpeedLimit::Fastest
+    });
+}
+
+/// With a tray, closing the window only hides it: downloads go on and the
+/// engine keeps running.
+fn close_hides_to_tray_and_keeps_downloading(ctx: &Ctx) {
+    const WHAT: &str = "close_hides_to_tray_and_keeps_downloading";
+    let ui = AppWindow::new().unwrap();
+    let app = App::start(&ui, ctx.engine.clone(), ctx.rt.handle().clone(), true);
+    assert!(ui.get_has_tray(), "{WHAT}: has-tray not set");
+    let mut spec = FileSpec::new(20 * 1024 * 1024);
+    spec.bytes_per_sec = Some(256 * 1024);
+    let url = ctx.server.serve("tray.bin", spec);
+    let request = AddRequest {
+        url,
+        dest_dir: ctx.tmp.path().join("out"),
+        ..Default::default()
+    };
+    let id = ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    let state = || {
+        ctx.engine
+            .snapshot()
+            .into_iter()
+            .find(|v| v.id == id)
+            .map(|v| v.state)
+    };
+    wait_until(&format!("{WHAT}: downloading"), || {
+        state() == Some(JobState::Downloading)
+    });
+    ui.show().unwrap();
+    ui.window().dispatch_event(WindowEvent::CloseRequested);
+    assert!(!ui.window().is_visible(), "{WHAT}: window still shown");
+    // The pump keeps running and the engine keeps downloading.
+    let settle = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < settle {
+        slint::platform::update_timers_and_animations();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(state(), Some(JobState::Downloading), "{WHAT}: job stopped");
+    let rows = ui.get_downloading_rows();
+    assert!(
+        rows.iter()
+            .any(|r| r.name == "tray.bin" && r.state == "downloading"),
+        "{WHAT}: hidden window no longer updated"
+    );
+    drop(app);
+    ctx.rt
+        .block_on(ctx.engine.remove(id, true))
+        .unwrap_or_else(|e| panic!("{WHAT}: engine stopped by the close: {e}"));
 }
 
 fn quit_shuts_down_engine_cleanly(ui: &AppWindow, ctx: &Ctx) {

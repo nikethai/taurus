@@ -157,8 +157,7 @@ impl App {
             view.refresh(&ui);
         }
         if let Some(settings) = flush.settings {
-            *self.settings.borrow_mut() = settings;
-            self.push_settings();
+            self.engine_settings(settings);
         }
         if let Some(when_done) = flush.when_done {
             self.when_done(&ui, when_done);

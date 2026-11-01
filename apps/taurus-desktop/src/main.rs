@@ -1,3 +1,6 @@
+// No console window next to the app on Windows.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 //! Hyades desktop: one instance per data folder, the engine on a tokio
 //! runtime, the window on the main thread, and the OS shell around it
 //! (tray, notifications, clipboard offers, login item).
@@ -66,7 +69,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         app.sender().forwarded(links);
     }
     let sender = app.sender();
-    clipboard::watch(CLIPBOARD_POLL, move |text| sender.clipboard(text));
+    clipboard::watch(CLIPBOARD_POLL, app.offer_links_flag(), move |text| {
+        sender.clipboard(text)
+    });
 
     ui.show()?;
     // Not `ui.run()`: hiding the window to the tray must not end the loop.

@@ -14,6 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -25,6 +26,7 @@ use crate::add_flow::PendingAdd;
 use crate::bridge::{self, Coalescer};
 use crate::links::ClipboardFilter;
 use crate::pump::ViewState;
+use crate::settings_flow::SettingsWriter;
 use crate::{AppWindow, icon};
 
 /// How often engine state reaches the window, at most.
@@ -112,6 +114,9 @@ pub struct App {
     pub(crate) settings: RefCell<Settings>,
     pub(crate) view: RefCell<ViewState>,
     coalescer: Arc<Mutex<Coalescer>>,
+    pub(crate) writer: SettingsWriter,
+    /// Mirrors `settings.ui.offer_copied_links` for the clipboard thread.
+    pub(crate) offer_links: Arc<AtomicBool>,
     bridge: RefCell<Option<tokio::task::JoinHandle<()>>>,
     timer: Timer,
 }
@@ -142,11 +147,14 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let settings = engine.settings();
         let coalescer = Arc::new(Mutex::new(Coalescer::new(REFRESH)));
+        let tx = AppSender(tx);
+        let writer = SettingsWriter::spawn(&engine, &rt, tx.clone());
+        let offer_links = Arc::new(AtomicBool::new(settings.ui.offer_copied_links));
         let app = Rc::new(App {
             rt,
             engine,
             window: window.as_weak(),
-            tx: AppSender(tx),
+            tx,
             rx,
             has_tray,
             os_shell: Cell::new(false),
@@ -159,6 +167,8 @@ impl App {
             settings: RefCell::new(settings),
             view: RefCell::new(ViewState::default()),
             coalescer: coalescer.clone(),
+            writer,
+            offer_links,
             bridge: RefCell::new(None),
             timer: Timer::default(),
         });
@@ -235,6 +245,12 @@ impl App {
         self.tx.clone()
     }
 
+    /// True while the user wants copied links offered; the clipboard
+    /// watcher reads nothing while it is false.
+    pub fn offer_links_flag(&self) -> Arc<AtomicBool> {
+        self.offer_links.clone()
+    }
+
     /// Saves every job's progress, stops the engine (waiting at most 10 s)
     /// and ends the event loop. Later calls do nothing.
     pub fn quit(&self) {
@@ -244,6 +260,12 @@ impl App {
         self.timer.stop();
         if let Some(task) = self.bridge.borrow_mut().take() {
             task.abort();
+        }
+        // Gone at once, not frozen while the engine saves.
+        if let Some(ui) = self.window.upgrade()
+            && let Err(e) = ui.hide()
+        {
+            eprintln!("hyades: cannot hide the window: {e}");
         }
         let engine = self.engine.clone();
         let stopped = self
@@ -349,10 +371,7 @@ impl App {
         match msg {
             UiMsg::Inspected { seq, result } => self.inspected(seq, result),
             UiMsg::AddFailed(kind) => self.add_failed(kind),
-            UiMsg::SettingsFailed => {
-                *self.settings.borrow_mut() = self.engine.settings();
-                self.push_settings();
-            }
+            UiMsg::SettingsFailed => self.engine_settings(self.engine.settings()),
             UiMsg::Forwarded(links) => self.forwarded(links),
             UiMsg::Clipboard(text) => self.clipboard_text(&text),
             UiMsg::Link(link) => self.offer_link(link),
@@ -362,6 +381,14 @@ impl App {
     pub(crate) fn hide_countdown(&self) {
         if let Some(ui) = self.window.upgrade() {
             ui.set_countdown(Default::default());
+        }
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(task) = self.bridge.get_mut().take() {
+            task.abort();
         }
     }
 }

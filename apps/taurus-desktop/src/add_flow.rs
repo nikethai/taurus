@@ -164,14 +164,12 @@ impl App {
         let Some(p) = pending.as_mut().filter(|p| p.seq == seq) else {
             return;
         };
-        let folder = self.settings.borrow().ui.folder.clone();
-        let folder = p.folder.clone().or(folder);
         let vm = match result {
             Ok(info) => {
                 let (vm, kind) = add_vm(&info);
                 p.kind = Some(kind);
                 AddVm {
-                    folder: folder_text(folder.as_deref()),
+                    folder: self.destination_text(p, kind),
                     ..vm
                 }
             }
@@ -181,6 +179,33 @@ impl App {
             },
         };
         ui.set_add(vm);
+    }
+
+    /// Where the pending download of `kind` goes, and whether that is a
+    /// type subfolder (made when missing).
+    fn destination_of(&self, p: &PendingAdd, kind: &str) -> (PathBuf, bool) {
+        let s = self.settings.borrow();
+        let dest = destination(
+            p.folder.as_deref(),
+            s.ui.folder.as_deref(),
+            s.ui.sort_by_type,
+            kind,
+        );
+        let sorted = p.folder.is_none() && s.ui.sort_by_type && sort_folder(kind).is_some();
+        (dest, sorted)
+    }
+
+    /// "Save to" on the Add screen: the real destination, type subfolder
+    /// included; "" (the screen says "Downloads folder") when that is the
+    /// OS Downloads folder itself.
+    fn destination_text(&self, p: &PendingAdd, kind: &str) -> slint::SharedString {
+        let (dest, sorted) = self.destination_of(p, kind);
+        let plain_default =
+            p.folder.is_none() && !sorted && self.settings.borrow().ui.folder.is_none();
+        if plain_default {
+            return "".into();
+        }
+        folder_text(Some(&dest))
     }
 
     /// Download: the engine adds the link; the list shows it.
@@ -196,17 +221,7 @@ impl App {
             *self.pending.borrow_mut() = Some(p);
             return;
         };
-        let (dest_dir, sorted) = {
-            let s = self.settings.borrow();
-            let dest = destination(
-                p.folder.as_deref(),
-                s.ui.folder.as_deref(),
-                s.ui.sort_by_type,
-                kind,
-            );
-            let sorted = p.folder.is_none() && s.ui.sort_by_type && sort_folder(kind).is_some();
-            (dest, sorted)
-        };
+        let (dest_dir, sorted) = self.destination_of(&p, kind);
         ui.set_tab(0);
         ui.set_screen(Screen::Downloads);
         let engine = self.engine.clone();

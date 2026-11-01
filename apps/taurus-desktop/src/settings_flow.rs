@@ -1,14 +1,19 @@
 //! The Settings screen: `Settings` to `SettingsVm` and back, and the theme.
 //!
-//! Every change is saved with `Engine::set_settings` and echoed to the
-//! window at once (the controls show only what `settings` holds).
+//! Every change is echoed to the window at once (the controls show only
+//! what `settings` holds) and saved with `Engine::set_settings` by one
+//! writer task, in the order the changes were made.
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use slint::ComponentHandle;
-use taurus_core::{Settings, SpeedLimit, ThemeChoice, WhenDone};
+use taurus_core::{Engine, Settings, SpeedLimit, ThemeChoice, WhenDone};
+use tokio::sync::mpsc;
 
-use crate::app::{App, UiMsg};
+use crate::app::{App, AppSender, UiMsg};
 use crate::{SettingsVm, Theme, login};
 
 /// Accent names as stored in `UiSettings.accent`.
@@ -116,6 +121,62 @@ pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
     true
 }
 
+/// Saves the UI's settings one at a time, in order; of a burst of changes
+/// only the newest is saved. Each change has a generation number, so the
+/// app can tell whether a save is still on its way.
+pub(crate) struct SettingsWriter {
+    tx: mpsc::UnboundedSender<(u64, Settings)>,
+    /// Generation of the newest change handed to `save`.
+    made: Cell<u64>,
+    /// Generation of the newest save that finished (saved or failed).
+    saved: Arc<AtomicU64>,
+}
+
+impl SettingsWriter {
+    /// Starts the writer task on `rt`; it ends when the writer is dropped.
+    pub fn spawn(engine: &Engine, rt: &tokio::runtime::Handle, app: AppSender) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel::<(u64, Settings)>();
+        let saved = Arc::new(AtomicU64::new(0));
+        let done = saved.clone();
+        let engine = engine.clone();
+        rt.spawn(async move {
+            while let Some(mut change) = rx.recv().await {
+                // Only the newest of the changes waiting matters.
+                while let Ok(newer) = rx.try_recv() {
+                    change = newer;
+                }
+                let (generation, settings) = change;
+                let result = engine.set_settings(settings).await;
+                done.store(generation, Ordering::SeqCst);
+                if let Err(e) = result {
+                    eprintln!("hyades: saving settings failed: {e}");
+                    app.send(UiMsg::SettingsFailed);
+                }
+            }
+        });
+        Self {
+            tx,
+            made: Cell::new(0),
+            saved,
+        }
+    }
+
+    pub fn save(&self, settings: Settings) {
+        let generation = self.made.get() + 1;
+        self.made.set(generation);
+        let _ = self.tx.send((generation, settings));
+    }
+
+    /// Every change has been saved (or failed): the engine's settings are
+    /// as new as the UI's. While not idle, the engine's `SettingsChanged`
+    /// echoes are older than what the UI shows and are ignored. (An echo
+    /// can still trail the last save by an instant; the next flush, with
+    /// the last echo, puts it right.)
+    pub fn idle(&self) -> bool {
+        self.saved.load(Ordering::SeqCst) >= self.made.get()
+    }
+}
+
 impl App {
     /// Shows `self.settings` on the Settings screen and in the theme.
     pub(crate) fn push_settings(&self) {
@@ -123,6 +184,8 @@ impl App {
             return;
         };
         let vm = settings_vm(&self.settings.borrow());
+        self.offer_links
+            .store(vm.offer_copied_links, std::sync::atomic::Ordering::Relaxed);
         let theme = ui.global::<Theme>();
         theme.set_scheme(vm.theme.clone());
         theme.set_accent(vm.accent.clone());
@@ -147,14 +210,16 @@ impl App {
         }
         *self.settings.borrow_mut() = next.clone();
         self.push_settings();
-        let engine = self.engine.clone();
-        let tx = self.tx.clone();
-        self.rt.spawn(async move {
-            if let Err(e) = engine.set_settings(next).await {
-                eprintln!("hyades: saving settings failed: {e}");
-                tx.send(UiMsg::SettingsFailed);
-            }
-        });
+        self.writer.save(next);
+    }
+
+    /// Settings from the engine (its `SettingsChanged`), unless a change
+    /// made here is still being saved.
+    pub(crate) fn engine_settings(&self, settings: Settings) {
+        if self.writer.idle() {
+            *self.settings.borrow_mut() = settings;
+            self.push_settings();
+        }
     }
 }
 

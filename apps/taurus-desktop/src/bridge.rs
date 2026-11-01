@@ -11,7 +11,8 @@ use tokio::sync::broadcast::error::RecvError;
 /// Feeds the engine's events into `coalescer` on the runtime until the
 /// engine's event channel closes. Subscribes, then seeds the coalescer with
 /// the engine's snapshot, so no job is missed; after falling behind the
-/// channel (events were dropped) it seeds again from a fresh snapshot.
+/// channel (events were dropped) it seeds again from a fresh snapshot and
+/// the current settings.
 pub fn spawn(
     engine: &Engine,
     rt: &tokio::runtime::Handle,
@@ -24,7 +25,17 @@ pub fn spawn(
         loop {
             match events.recv().await {
                 Ok(event) => lock(&coalescer).push(event),
-                Err(RecvError::Lagged(_)) => lock(&coalescer).seed(engine.snapshot()),
+                // Events were dropped: jobs and settings are read again.
+                // A dropped when-done event (countdown, fired Notify or
+                // Quit) is not recoverable this way: the engine keeps no
+                // state to query. With a 1024-event channel drained at
+                // once this needs a stalled bridge task, and a countdown
+                // sends again every second.
+                Err(RecvError::Lagged(_)) => {
+                    let mut c = lock(&coalescer);
+                    c.seed(engine.snapshot());
+                    c.push(Event::SettingsChanged(engine.settings()));
+                }
                 Err(RecvError::Closed) => break,
             }
         }
