@@ -14,12 +14,11 @@ export component AppWindow inherits Window {
     background: Theme.bg;
 
     // Simple screen: one centered column, at most 640px wide.
-    Rectangle {
-        VerticalLayout {
-            alignment: stretch;
-            Rectangle {
-                max-width: 640px;
-            }
+    HorizontalLayout {
+        alignment: center;
+        Rectangle {
+            max-width: 640px;
+            horizontal-stretch: 1;
         }
     }
 }

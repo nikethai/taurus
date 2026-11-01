@@ -20,10 +20,10 @@ fn window_title(ui: &AppWindow) {
 
 fn theme_defaults(ui: &AppWindow) {
     let theme = ui.global::<Theme>();
-    assert_eq!(theme.get_accent(), "aldebaran");
-    // `dark` follows the OS scheme until overridden.
-    theme.set_dark(true);
-    assert!(theme.get_dark());
+    let color = |r, g, b| slint::Color::from_rgb_u8(r, g, b);
     theme.set_dark(false);
-    assert!(!theme.get_dark());
+    assert_eq!(theme.get_bg().color(), color(0xFB, 0xFB, 0xFC));
+    theme.set_dark(true);
+    assert_eq!(theme.get_bg().color(), color(0x1C, 0x1C, 0x1F));
+    assert_eq!(theme.get_accent_base().color(), color(0xE8, 0x59, 0x0C));
 }
