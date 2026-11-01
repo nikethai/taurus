@@ -29,9 +29,16 @@ clap = "4.6"
 directories = "6"
 bytes = "1"
 futures-util = "0.3"
+scraper = "0.29"
+sha2 = "0.11"
+hex = "0.4"
+fs4 = { version = "1.1", default-features = false }
+xattr = "1.6"
+libc = "0.2"
+windows-sys = "0.61"
+dunce = "1"
+keepawake = "0.6"
 
 # Tests only
 axum = "0.8"
-sha2 = "0.11"
-hex = "0.4"
 tempfile = "3"

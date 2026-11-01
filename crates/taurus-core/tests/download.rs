@@ -3,9 +3,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use taurus_core::errors::ErrorKind;
-use taurus_core::http::{JobContext, JobOutcome, build_client, probe, run_job};
+use taurus_core::http::{JobContext, JobOutcome, build_client, host_key, probe, resolve, run_job};
+use taurus_core::limit::Limiter;
+use taurus_core::plan;
 use taurus_core::store::{JobId, JobState, NewJob, Store};
-use taurus_testkit::{FileSpec, TestServer, content, sha256_hex};
+use taurus_core::timing::Timing;
+use taurus_testkit::{FailAfter, FileSpec, TestServer, content, sha256_hex};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -35,25 +38,56 @@ impl Fixture {
 
     /// Serves `spec` and inserts a job for it carrying the spec's probe fields.
     fn add(&self, spec: &FileSpec, connections: u32) -> JobId {
-        let url = self.server.serve(PATH, spec.clone());
+        self.add_at(PATH, "x.bin", spec, connections)
+    }
+
+    /// `add`, for a file at `path` saved as `file_name`.
+    fn add_at(&self, path: &str, file_name: &str, spec: &FileSpec, connections: u32) -> JobId {
+        let url = self.server.serve(path, spec.clone());
         let id = self
             .store
             .insert_job(&NewJob {
+                source_url: url.clone(),
                 url,
                 dest_dir: self.dest.clone(),
-                file_name: "x.bin".into(),
+                file_name: file_name.into(),
                 connections,
+                mirrors: Vec::new(),
+                checksum: None,
+                referer: None,
+                queue_pos: 0,
             })
             .unwrap();
         let mut job = self.store.get_job(id).unwrap().unwrap();
         job.total = Some(spec.size as u64);
         job.resumable = spec.ranges;
         job.etag = spec.etag.clone();
+        job.last_modified = spec.last_modified.clone();
         self.store.update_job(&job).unwrap();
         id
     }
 
     async fn run(&self, id: JobId, cancel: CancellationToken) -> JobOutcome {
+        self.run_with(id, cancel, Timing::default()).await
+    }
+
+    async fn run_with(&self, id: JobId, cancel: CancellationToken, timing: Timing) -> JobOutcome {
+        self.run_ctx(id, cancel, timing, false).await
+    }
+
+    /// `run`, looking for a `SHA256SUMS` file next to the download.
+    async fn run_auto(&self, id: JobId) -> JobOutcome {
+        self.run_ctx(id, CancellationToken::new(), Timing::default(), true)
+            .await
+    }
+
+    async fn run_ctx(
+        &self,
+        id: JobId,
+        cancel: CancellationToken,
+        timing: Timing,
+        auto_checksum: bool,
+    ) -> JobOutcome {
         let (progress, _progress_rx) = mpsc::unbounded_channel();
         let ctx = JobContext {
             id,
@@ -61,6 +95,9 @@ impl Fixture {
             store: self.store.clone(),
             cancel,
             progress,
+            limiter: Limiter::new(None),
+            timing,
+            auto_checksum,
         };
         tokio::time::timeout(Duration::from_secs(30), run_job(ctx))
             .await
@@ -376,4 +413,738 @@ async fn gapped_segment_list_is_replanned() {
     assert_eq!(segments[0].start, 0);
     assert_eq!(segments.last().unwrap().end, spec.size as u64);
     assert!(segments.windows(2).all(|w| w[0].end == w[1].start));
+}
+
+/// A "can't scan for viruses" page whose form submits `/file?confirm=t`.
+const CONFIRM_PAGE: &str = r#"<html><body><p>This file is too large to scan for viruses.</p>
+<form id="download-form" action="/file" method="get">
+<input type="submit" value="Download anyway">
+<input type="hidden" name="confirm" value="t">
+</form></body></html>"#;
+
+const QUOTA_PAGE: &str = "<html><body><p>Sorry, you can't view or download this file at \
+    this time.</p><p>Too many users have viewed or downloaded this file recently. Please \
+    try accessing the file again later.</p></body></html>";
+
+async fn resolve_err(url: &str) -> taurus_core::CoreError {
+    resolve(&build_client(), url, None).await.unwrap_err()
+}
+
+fn html_after(after_requests: usize, status: u16, headers: &[(&str, &str)]) -> FailAfter {
+    FailAfter {
+        after_requests,
+        status,
+        headers: headers
+            .iter()
+            .map(|&(n, v)| (n.to_owned(), v.to_owned()))
+            .collect(),
+    }
+}
+
+#[tokio::test]
+async fn resolve_follows_one_confirm_form() {
+    let fx = Fixture::new().await;
+    let page = fx.server.serve_page("/drive", 200, &[], CONFIRM_PAGE);
+    let file = fx.server.serve("/file", FileSpec::new(2 * MIB));
+
+    let p = resolve(&build_client(), &page, None).await.unwrap();
+    assert_eq!(p.size, Some(2 * MIB as u64));
+    assert!(p.ranges);
+    assert_eq!(p.requested_url.as_str(), format!("{file}?confirm=t"));
+    assert_eq!(fx.server.requests("/drive"), 1);
+    assert_eq!(fx.server.requests("/file"), 1);
+}
+
+#[tokio::test]
+async fn resolve_follows_only_one_confirm_form() {
+    let fx = Fixture::new().await;
+    let page = fx.server.serve_page("/drive", 200, &[], CONFIRM_PAGE);
+    fx.server.serve_page("/file", 200, &[], CONFIRM_PAGE);
+
+    let err = resolve_err(&page).await;
+    assert_eq!(err.kind, ErrorKind::SiteNotSupported);
+    assert!(err.detail.contains("repeated"), "{}", err.detail);
+    assert_eq!(fx.server.requests("/file"), 1);
+}
+
+#[tokio::test]
+async fn resolve_sends_referer_on_every_request() {
+    let fx = Fixture::new().await;
+    let page = fx.server.serve_page("/drive", 200, &[], CONFIRM_PAGE);
+    fx.server.serve("/file", FileSpec::new(1000));
+
+    resolve(&build_client(), &page, Some("https://ref.example/post"))
+        .await
+        .unwrap();
+    for path in ["/drive", "/file"] {
+        let headers = fx.server.last_request_headers(path);
+        assert!(
+            headers.contains(&("referer".into(), "https://ref.example/post".into())),
+            "{path}: {headers:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn resolve_bot_check_fails() {
+    let fx = Fixture::new().await;
+    let challenge = [("cf-mitigated", "challenge")];
+    let url = fx
+        .server
+        .serve_page("/dl/a.iso", 403, &challenge, "<html>checking</html>");
+    assert_eq!(resolve_err(&url).await.kind, ErrorKind::BlockedByBotCheck);
+
+    let cloudflare = [("server", "cloudflare")];
+    let body = "<html><head><title>Just a moment...</title></head></html>";
+    let url = fx.server.serve_page("/dl/b.iso", 403, &cloudflare, body);
+    assert_eq!(resolve_err(&url).await.kind, ErrorKind::BlockedByBotCheck);
+}
+
+#[tokio::test]
+async fn resolve_quota_fails() {
+    let fx = Fixture::new().await;
+    let url = fx.server.serve_page("/uc", 200, &[], QUOTA_PAGE);
+    assert_eq!(resolve_err(&url).await.kind, ErrorKind::QuotaExceeded);
+}
+
+#[tokio::test]
+async fn resolve_web_page_fails() {
+    let fx = Fixture::new().await;
+    let url = fx.server.serve_page(
+        "/files/",
+        200,
+        &[],
+        "<html><body>Index of /files</body></html>",
+    );
+    let err = resolve_err(&url).await;
+    assert_eq!(err.kind, ErrorKind::SiteNotSupported);
+    assert_eq!(err.detail, "this link is a web page");
+}
+
+#[tokio::test]
+async fn resolve_captive_portal_fails() {
+    let fx = Fixture::new().await;
+    let url = fx.server.serve_page(
+        "/files/a.iso",
+        200,
+        &[],
+        "<html><body>Hotel Wi-Fi login</body></html>",
+    );
+    assert_eq!(resolve_err(&url).await.kind, ErrorKind::CaptivePortal);
+}
+
+#[tokio::test]
+async fn resolve_keeps_status_errors_for_error_pages() {
+    let fx = Fixture::new().await;
+    let url = fx
+        .server
+        .serve_page("/gone.iso", 404, &[], "<html><body>Not Found</body></html>");
+    assert_eq!(resolve_err(&url).await.kind, ErrorKind::LinkExpired);
+    // The origin's own overload page behind Cloudflare is no bot check.
+    let cloudflare = [("server", "cloudflare")];
+    let busy = "<html><body>Service Unavailable</body></html>";
+    let url = fx.server.serve_page("/busy.iso", 503, &cloudflare, busy);
+    assert_eq!(resolve_err(&url).await.kind, ErrorKind::RateLimited);
+}
+
+#[tokio::test]
+async fn resolve_rereads_ranged_html_without_range() {
+    let fx = Fixture::new().await;
+    // An HTML "file" that honors bytes=0-0: one byte is not enough to judge.
+    let mut spec = FileSpec::new(4000);
+    spec.content_type = Some("text/html".into());
+    let url = fx.server.serve("/page", spec);
+
+    assert_eq!(resolve_err(&url).await.kind, ErrorKind::SiteNotSupported);
+    assert_eq!(fx.server.requests("/page"), 2);
+    let last = fx.server.last_request_headers("/page");
+    assert!(last.iter().all(|(name, _)| name != "range"), "{last:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn html_mid_download_is_not_written() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(8 * MIB);
+    // Requests after the third get a 200 web page, like expired hotel Wi-Fi.
+    spec.fail_after = Some(html_after(3, 200, &[("content-type", "text/html")]));
+    let id = fx.add(&spec, 16);
+
+    match fx.run(id, CancellationToken::new()).await {
+        JobOutcome::Failed(e) => assert_eq!(e.kind, ErrorKind::CaptivePortal),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    let on_disk = fs::read(fx.tapa()).unwrap();
+    let expected = content(&spec);
+    for s in fx
+        .store
+        .load_segments(id)
+        .unwrap()
+        .iter()
+        .filter(|s| s.done > 0)
+    {
+        let (start, end) = (s.start as usize, (s.start + s.done) as usize);
+        assert!(
+            end <= on_disk.len(),
+            "recorded {end} > {} on disk",
+            on_disk.len()
+        );
+        assert!(
+            on_disk[start..end] == expected[start..end],
+            "bytes {start}..{end} differ"
+        );
+    }
+    assert!(!on_disk.windows(5).any(|w| w == b"<html"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bot_check_mid_download_fails() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(8 * MIB);
+    spec.fail_after = Some(html_after(3, 403, &[("cf-mitigated", "challenge")]));
+    let id = fx.add(&spec, 16);
+
+    match fx.run(id, CancellationToken::new()).await {
+        JobOutcome::Failed(e) => assert_eq!(e.kind, ErrorKind::BlockedByBotCheck),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cloudflare_error_page_mid_download_is_retried() {
+    let fx = Fixture::new().await;
+    let healthy = FileSpec::new(8 * MIB);
+    let mut spec = healthy.clone();
+    // The origin is overloaded: an HTML 503 through Cloudflare, no challenge.
+    spec.fail_after = Some(html_after(
+        3,
+        503,
+        &[("server", "cloudflare"), ("content-type", "text/html")],
+    ));
+    let id = fx.add(&spec, 16);
+    let server = &fx.server;
+    let recover = async {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        server.replace(PATH, healthy.clone());
+    };
+
+    let (outcome, ()) = tokio::join!(fx.run(id, CancellationToken::new()), recover);
+    // Retried as transient until the origin recovered, not stopped as a bot check.
+    assert_completed(outcome, &healthy);
+    assert!(fx.server.requests(PATH) > 8);
+}
+
+/// A host that serves two connections at once and refuses the rest with
+/// `over_limit_status`: the job finishes on fewer connections and the next
+/// download from that host stays within the learned limit.
+async fn learns_connection_limit(over_limit_status: u16) {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(20 * MIB);
+    spec.max_concurrent = Some(2);
+    spec.over_limit_status = over_limit_status;
+    // Paced, so the accepted responses are still open when extras are refused.
+    spec.bytes_per_sec = Some(16 * MIB as u64);
+    let id = fx.add(&spec, 16);
+
+    assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    assert!(fx.server.over_limit_rejections(PATH) > 0);
+    let job = fx.store.get_job(id).unwrap().unwrap();
+    assert_eq!(job.error, None);
+    let host = host_key(&job.url).unwrap();
+    let cap = fx.store.host_cap(&host).unwrap();
+    assert!(matches!(cap, Some(1 | 2)), "learned cap {cap:?}");
+
+    let mut next = FileSpec::new(20 * MIB);
+    next.seed = 7;
+    next.max_concurrent = Some(2);
+    next.over_limit_status = over_limit_status;
+    let id = fx.add_at("/y.bin", "y.bin", &next, 16);
+    assert_completed(fx.run(id, CancellationToken::new()).await, &next);
+    assert_eq!(fx.server.over_limit_rejections("/y.bin"), 0);
+    assert!(fx.server.peak_concurrency("/y.bin") <= 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connection_limit_is_learned() {
+    learns_connection_limit(429).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connection_limit_is_learned_with_403() {
+    learns_connection_limit(403).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connection_limit_of_a_failed_job_is_not_remembered() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(20 * MIB);
+    spec.max_concurrent = Some(2);
+    spec.bytes_per_sec = Some(16 * MIB as u64);
+    // The link expires once the first 16 requests (2 served, the rest
+    // refused while those are open) are answered.
+    spec.fail_after = Some(html_after(16, 410, &[]));
+    let id = fx.add(&spec, 16);
+
+    match fx.run(id, CancellationToken::new()).await {
+        JobOutcome::Failed(e) => assert_eq!(e.kind, ErrorKind::LinkExpired),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert!(fx.server.over_limit_rejections(PATH) > 0);
+    let url = fx.store.get_job(id).unwrap().unwrap().url;
+    assert_eq!(fx.store.host_cap(&host_key(&url).unwrap()).unwrap(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn single_connection_429_is_still_rate_limited() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(2 * MIB);
+    spec.fail_first = vec![429; 50];
+    let id = fx.add(&spec, 1);
+
+    let outcome = fx
+        .run_with(id, CancellationToken::new(), Timing::fast_for_tests())
+        .await;
+    match outcome {
+        JobOutcome::Failed(e) => assert_eq!(e.kind, ErrorKind::RateLimited),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    let url = fx.store.get_job(id).unwrap().unwrap().url;
+    assert_eq!(fx.store.host_cap(&host_key(&url).unwrap()).unwrap(), None);
+}
+
+impl Fixture {
+    /// Records `mirrors` as the job's mirrors.
+    fn set_mirrors(&self, id: JobId, mirrors: Vec<String>) {
+        let mut job = self.store.get_job(id).unwrap().unwrap();
+        job.mirrors = mirrors;
+        self.store.update_job(&job).unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn etag_change_mid_download_fails_without_stitching() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(4 * MIB);
+    spec.etag = Some("\"v1\"".into());
+    // The one connection drops after 1 MiB and retries after about 0.5 s.
+    spec.drop_once_after = Some(MIB);
+    let id = fx.add(&spec, 1);
+    // Same size, other content.
+    let mut changed = FileSpec::new(4 * MIB);
+    changed.seed = 2;
+    changed.etag = Some("\"v2\"".into());
+    let server = &fx.server;
+    let change = async {
+        while server.bytes_served(PATH) < MIB as u64 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        server.replace(PATH, changed.clone());
+    };
+
+    let (outcome, ()) = tokio::join!(fx.run(id, CancellationToken::new()), change);
+    match outcome {
+        JobOutcome::Failed(e) => {
+            assert_eq!(e.kind, ErrorKind::FileChangedOnServer);
+            assert!(e.detail.contains("\"v2\""), "{}", e.detail);
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert!(!fx.dest.join("x.bin").exists());
+    // Only the first version's bytes are on disk.
+    let on_disk = fs::read(fx.tapa()).unwrap();
+    let done = fx.store.load_segments(id).unwrap()[0].done as usize;
+    assert!(done <= MIB && done <= on_disk.len(), "recorded {done}");
+    assert!(on_disk[..done] == content(&spec)[..done]);
+    assert!(fx.server.requests(PATH) >= 2);
+}
+
+const MODIFIED: &str = "Tue, 01 Jan 2030 00:00:00 GMT";
+
+/// A 4 MiB download over one connection that drops after 1 MiB; once 1 MiB
+/// is served the server switches to `then`, which the resumed request gets.
+async fn run_switching_to(fx: &Fixture, spec: &FileSpec, then: &FileSpec) -> JobOutcome {
+    let id = fx.add(spec, 1);
+    let server = &fx.server;
+    let switch = async {
+        while server.bytes_served(PATH) < MIB as u64 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        server.replace(PATH, then.clone());
+    };
+    let (outcome, ()) = tokio::join!(fx.run(id, CancellationToken::new()), switch);
+    outcome
+}
+
+fn tagged(etag: &str, last_modified: Option<&str>) -> FileSpec {
+    let mut spec = FileSpec::new(4 * MIB);
+    spec.etag = Some(etag.into());
+    spec.last_modified = last_modified.map(str::to_owned);
+    spec.drop_once_after = Some(MIB);
+    spec
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn per_backend_etag_with_same_last_modified_completes() {
+    let fx = Fixture::new().await;
+    // A load-balanced origin: another backend, same bytes, its own ETag.
+    let spec = tagged("\"5f2a:12\"", Some(MODIFIED));
+    let other_backend = tagged("\"5f2a:13\"", Some(MODIFIED));
+    let outcome = run_switching_to(&fx, &spec, &other_backend).await;
+    assert_completed(outcome, &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn weak_form_of_the_same_etag_completes() {
+    let fx = Fixture::new().await;
+    let spec = tagged("\"x\"", None);
+    let outcome = run_switching_to(&fx, &spec, &tagged("W/\"x\"", None)).await;
+    assert_completed(outcome, &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn other_etag_with_other_or_missing_last_modified_fails() {
+    for then in [Some("Wed, 02 Jan 2030 00:00:00 GMT"), None] {
+        let fx = Fixture::new().await;
+        let spec = tagged("\"v1\"", Some(MODIFIED));
+        let mut changed = tagged("\"v2\"", then);
+        changed.seed = 2;
+        match run_switching_to(&fx, &spec, &changed).await {
+            JobOutcome::Failed(e) => assert_eq!(e.kind, ErrorKind::FileChangedOnServer, "{then:?}"),
+            other => panic!("expected Failed with {then:?}, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mirror_with_another_etag_is_not_stitched() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(8 * MIB);
+    spec.etag = Some("\"v1\"".into());
+    let id = fx.add(&spec, 4);
+    // Changed since it was checked: same size, other content.
+    let mut other = spec.clone();
+    other.seed = 2;
+    other.etag = Some("\"v2\"".into());
+    let mirror = TestServer::start().await;
+    fx.set_mirrors(id, vec![mirror.serve(PATH, other)]);
+
+    assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    assert!(mirror.requests(PATH) > 0, "the mirror was not tried");
+    assert_eq!(fx.store.get_job(id).unwrap().unwrap().error, None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mirror_out_of_attempts_is_dropped() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(4 * MIB);
+    let id = fx.add(&spec, 4);
+    let mut failing = spec.clone();
+    failing.fail_first = vec![500; 100];
+    let mirror = TestServer::start().await;
+    fx.set_mirrors(id, vec![mirror.serve(PATH, failing)]);
+
+    let outcome = fx
+        .run_with(id, CancellationToken::new(), Timing::fast_for_tests())
+        .await;
+    assert_completed(outcome, &spec);
+    // Retried (the 500s are transient) until out of attempts.
+    assert!(mirror.requests(PATH) >= 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refusing_mirror_does_not_slow_the_primary() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(8 * MIB);
+    // Paced, so the primary's response is open when the mirror refuses.
+    spec.bytes_per_sec = Some(8 * MIB as u64);
+    let id = fx.add(&spec, 2);
+    // An expired signed link: 403 for good.
+    let mut expired = FileSpec::new(8 * MIB);
+    expired.fail_first = vec![403; 100];
+    let mirror = TestServer::start().await;
+    fx.set_mirrors(id, vec![mirror.serve(PATH, expired)]);
+
+    assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    // The mirror is dropped, not taken for a connection limit of the job:
+    // its segment moves to the primary while the primary's other is open.
+    assert_eq!(mirror.requests(PATH), 1);
+    assert_eq!(fx.server.peak_concurrency(PATH), 2);
+    let url = fx.store.get_job(id).unwrap().unwrap().url;
+    assert_eq!(fx.store.host_cap(&host_key(&url).unwrap()).unwrap(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mirror_connection_limit_is_not_remembered_for_the_primary_host() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(8 * MIB);
+    let id = fx.add(&spec, 4);
+    // Serves one connection at a time; paced, so it is open when refusing.
+    let mut limited = spec.clone();
+    limited.max_concurrent = Some(1);
+    limited.bytes_per_sec = Some(4 * MIB as u64);
+    let mirror = TestServer::start().await;
+    fx.set_mirrors(id, vec![mirror.serve(PATH, limited)]);
+    let timing = Timing {
+        max_segment_attempts: 8,
+        ..Timing::fast_for_tests()
+    };
+
+    assert_completed(
+        fx.run_with(id, CancellationToken::new(), timing).await,
+        &spec,
+    );
+    assert!(mirror.over_limit_rejections(PATH) > 0);
+    let url = fx.store.get_job(id).unwrap().unwrap().url;
+    assert_eq!(fx.store.host_cap(&host_key(&url).unwrap()).unwrap(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unranged_job_switching_to_a_mirror_restarts_from_zero() {
+    let fx = Fixture::new().await;
+    let mut spec = FileSpec::new(3 * MIB);
+    spec.ranges = false;
+    // Dies after 1 MiB; with one attempt the worker leaves 1 MiB written.
+    spec.drop_once_after = Some(MIB);
+    let id = fx.add(&spec, 4);
+    let mut healthy = FileSpec::new(3 * MIB);
+    healthy.ranges = false;
+    let mirror = TestServer::start().await;
+    fx.set_mirrors(id, vec![mirror.serve(PATH, healthy)]);
+    let timing = Timing {
+        max_segment_attempts: 1,
+        ..Timing::fast_for_tests()
+    };
+
+    assert_completed(
+        fx.run_with(id, CancellationToken::new(), timing).await,
+        &spec,
+    );
+    assert_eq!(fx.server.requests(PATH), 1);
+    assert_eq!(mirror.requests(PATH), 1);
+}
+
+const SUMS_PATH: &str = "/rel/SHA256SUMS";
+
+impl Fixture {
+    fn set_checksum(&self, id: JobId, checksum: &str) {
+        let mut job = self.store.get_job(id).unwrap().unwrap();
+        job.checksum = Some(checksum.to_owned());
+        self.store.update_job(&job).unwrap();
+    }
+
+    fn set_referer(&self, id: JobId, referer: &str) {
+        let mut job = self.store.get_job(id).unwrap().unwrap();
+        job.referer = Some(referer.to_owned());
+        self.store.update_job(&job).unwrap();
+    }
+
+    /// Serves `text` as the `SHA256SUMS` beside `/rel/x.iso`.
+    fn serve_sums(&self, text: &str) {
+        self.server
+            .serve_page(SUMS_PATH, 200, &[("content-type", "text/plain")], text);
+    }
+
+    /// Asserts a failed checksum: no partial, no final file, no segments.
+    fn assert_checksum_failed(&self, id: JobId, outcome: JobOutcome, expected: &str, got: &str) {
+        let detail = format!("expected {expected}, got {got}");
+        match outcome {
+            JobOutcome::Failed(e) => {
+                assert_eq!(e.kind, ErrorKind::ChecksumMismatch);
+                assert_eq!(e.detail, detail);
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        let job = self.store.get_job(id).unwrap().unwrap();
+        assert_eq!(job.state, JobState::Failed);
+        assert_eq!(job.error, Some((ErrorKind::ChecksumMismatch, detail)));
+        assert!(self.store.load_segments(id).unwrap().is_empty());
+        let left: Vec<_> = fs::read_dir(&self.dest).unwrap().collect();
+        assert!(left.is_empty(), "files left behind: {left:?}");
+    }
+}
+
+/// Asserts the xdg origin mark where the file system has user xattrs.
+#[cfg(target_os = "linux")]
+fn assert_marked(path: &std::path::Path, url: &str) {
+    if let Err(e) = xattr::set(path, "user.taurus.probe", b"1") {
+        eprintln!("not checking the mark: no user xattrs here ({e})");
+        return;
+    }
+    assert_eq!(
+        xattr::get(path, "user.xdg.origin.url").unwrap().as_deref(),
+        Some(url.as_bytes())
+    );
+}
+
+/// Each OS's own mark has unit tests in `system::marks`.
+#[cfg(not(target_os = "linux"))]
+fn assert_marked(_path: &std::path::Path, _url: &str) {}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_checksum_ok() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(3 * MIB);
+    let id = fx.add(&spec, 4);
+    let sum = sha256_hex(&content(&spec)).to_ascii_uppercase();
+    fx.set_checksum(id, &format!("sha256:{sum}"));
+
+    let path = assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    assert_eq!(
+        fx.store.get_job(id).unwrap().unwrap().state,
+        JobState::Completed
+    );
+    assert_marked(&path, &fx.store.get_job(id).unwrap().unwrap().url);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_checksum_mismatch_fails_and_removes_partial() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(3 * MIB);
+    let id = fx.add(&spec, 4);
+    let wrong = "0".repeat(64);
+    fx.set_checksum(id, &wrong);
+
+    let outcome = fx.run(id, CancellationToken::new()).await;
+    fx.assert_checksum_failed(id, outcome, &wrong, &sha256_hex(&content(&spec)));
+    assert!(!fx.tapa().exists());
+    assert!(!fx.dest.join("x.bin").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_sums_file_verifies() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(2 * MIB);
+    let other = "a".repeat(64);
+    fx.serve_sums(&format!(
+        "{other}  x (1).iso\n{}  x.iso\n",
+        sha256_hex(&content(&spec))
+    ));
+    // Saved under another name: the URL's name is the one looked up.
+    let id = fx.add_at("/rel/x.iso", "x (1).iso", &spec, 4);
+    fx.set_referer(id, "https://example.com/page");
+
+    let path = assert_completed(fx.run_auto(id).await, &spec);
+    assert_eq!(path, fx.dest.join("x (1).iso"));
+    assert_eq!(fx.server.requests(SUMS_PATH), 1);
+    let headers = fx.server.last_request_headers(SUMS_PATH);
+    assert!(
+        headers
+            .iter()
+            .any(|(n, v)| n == "referer" && v == "https://example.com/page"),
+        "{headers:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_sums_missing_is_skipped() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(2 * MIB);
+    let id = fx.add_at("/rel/x.iso", "x.iso", &spec, 4);
+
+    assert_completed(fx.run_auto(id).await, &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_sums_mismatch_fails() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(2 * MIB);
+    let wrong = "b".repeat(64);
+    fx.serve_sums(&format!("{wrong} *x.iso\n"));
+    let id = fx.add_at("/rel/x.iso", "x.iso", &spec, 4);
+
+    let outcome = fx.run_auto(id).await;
+    fx.assert_checksum_failed(id, outcome, &wrong, &sha256_hex(&content(&spec)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_sums_not_fetched_when_off() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(MIB);
+    fx.serve_sums(&format!("{}  x.iso\n", "b".repeat(64)));
+    let id = fx.add_at("/rel/x.iso", "x.iso", &spec, 4);
+
+    assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    assert_eq!(fx.server.requests(SUMS_PATH), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auto_sums_over_one_mib_is_skipped() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(MIB);
+    let mut text = format!("{}  x.iso\n", "b".repeat(64));
+    while text.len() <= MIB {
+        text.push_str(&format!("{}  filler.bin\n", "c".repeat(64)));
+    }
+    fx.serve_sums(&text);
+    let id = fx.add_at("/rel/x.iso", "x.iso", &spec, 4);
+
+    assert_completed(fx.run_auto(id).await, &spec);
+    assert_eq!(fx.server.requests(SUMS_PATH), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_during_sums_fetch_pauses() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(MIB);
+    // About 14 s to serve, under the 1 MiB cap.
+    let mut slow_sums = FileSpec::new(900 * 1024);
+    slow_sums.bytes_per_sec = Some(64 * 1024);
+    fx.server.serve(SUMS_PATH, slow_sums);
+    let id = fx.add_at("/rel/x.iso", "x.iso", &spec, 4);
+
+    let cancel = CancellationToken::new();
+    let stop = async {
+        while fx.server.requests(SUMS_PATH) == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        cancel.cancel();
+    };
+    let (outcome, ()) = tokio::join!(
+        fx.run_ctx(id, cancel.clone(), Timing::default(), true),
+        stop
+    );
+    assert!(matches!(outcome, JobOutcome::Paused), "{outcome:?}");
+    assert_eq!(
+        fx.store.get_job(id).unwrap().unwrap().state,
+        JobState::Paused
+    );
+    assert_eq!(
+        fs::metadata(fx.dest.join("x.iso.tapa")).unwrap().len(),
+        spec.size as u64
+    );
+
+    // The next run verifies it without downloading again.
+    fx.serve_sums(&format!("{}  x.iso\n", sha256_hex(&content(&spec))));
+    let served = fx.server.bytes_served("/rel/x.iso");
+    assert_completed(fx.run_auto(id).await, &spec);
+    assert_eq!(fx.server.bytes_served("/rel/x.iso"), served);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_while_hashing_pauses() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(3 * MIB);
+    let id = fx.add(&spec, 4);
+    fx.set_checksum(id, &sha256_hex(&content(&spec)));
+    // Everything is downloaded already: the run goes straight to the hash,
+    // and a pause already requested must win over it.
+    fs::write(fx.tapa(), content(&spec)).unwrap();
+    let mut segments = plan::plan_segments(spec.size as u64, 4);
+    segments.iter_mut().for_each(|s| s.done = s.end - s.start);
+    fx.store.replace_segments(id, &segments).unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let outcome = fx.run(id, cancel).await;
+    assert!(matches!(outcome, JobOutcome::Paused), "{outcome:?}");
+    assert_eq!(
+        fx.store.get_job(id).unwrap().unwrap().state,
+        JobState::Paused
+    );
+    assert_eq!(fs::read(fx.tapa()).unwrap(), content(&spec));
+    assert!(!fx.dest.join("x.bin").exists());
+    assert_eq!(fx.server.requests(PATH), 0);
+
+    // The next run verifies and completes it without downloading.
+    assert_completed(fx.run(id, CancellationToken::new()).await, &spec);
+    assert_eq!(fx.server.requests(PATH), 0);
 }
