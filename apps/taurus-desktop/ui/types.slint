@@ -17,7 +17,13 @@ export struct RowVm {
     // ErrorKind::as_str() or ""
     error-kind: string,
     ratio-text: string,
-    when-text: string,
+    // When a finished download finished, local time; month 0 = unknown.
+    // The row words it: "14:05" when finished-today, else "Oct 28".
+    finished-month: int,
+    finished-day: int,
+    finished-hour: int,
+    finished-minute: int,
+    finished-today: bool,
     peers: int,
 }
 

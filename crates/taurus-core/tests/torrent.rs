@@ -1291,6 +1291,20 @@ async fn find_by_url_matches_info_hash() {
     let view = rig.view(id);
     assert_eq!(view.info_hash.as_deref(), Some(seeder.info_hash.as_str()));
     rig.engine.shutdown().await.unwrap();
+
+    // The other way round: a job added from the .torrent file is found by
+    // its magnet link.
+    let rig = EngineRig::new(vec![seeder.addr], TorrentSettings::default()).await;
+    let file = rig.tmp.path().join("added.torrent");
+    fs::write(&file, &seeder.torrent_bytes).unwrap();
+    let id = rig
+        .engine
+        .add(rig.request(file.to_str().unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(rig.engine.find_by_url(&seeder.magnet), Some(id));
+    assert_eq!(rig.engine.find_by_url(&other), Some(id));
+    rig.engine.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

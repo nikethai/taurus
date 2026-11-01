@@ -113,30 +113,45 @@ pub async fn claim(name: &str, links: &[String]) -> io::Result<Instance> {
 }
 
 async fn claim_at(name: Name<'_>, links: &[String]) -> io::Result<Instance> {
-    match listen(name.clone(), false) {
-        Ok(inner) => Ok(Instance::Primary(Listener { inner })),
-        // Unix reports a taken name as AddrInUse, a Windows pipe as access denied.
-        Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            match send(name.clone(), links).await {
-                Ok(()) => Ok(Instance::Secondary),
-                // Nobody answers: a crashed instance left the name behind.
-                Err(c)
-                    if matches!(
-                        c.kind(),
-                        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
-                    ) =>
-                {
-                    listen(name, true).map(|inner| Instance::Primary(Listener { inner }))
+    let mut retried = false;
+    loop {
+        match listen(name.clone(), false) {
+            Ok(inner) => return Ok(Instance::Primary(Listener { inner })),
+            // Unix reports a taken name as AddrInUse, a Windows pipe as access denied.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                match send(name.clone(), links).await {
+                    Ok(()) => return Ok(Instance::Secondary),
+                    // Nobody answers: a crashed instance left the name behind.
+                    Err(c)
+                        if matches!(
+                            c.kind(),
+                            io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                        ) =>
+                    {
+                        return listen(name, true)
+                            .map(|inner| Instance::Primary(Listener { inner }));
+                    }
+                    // The primary went away while we were sending: it is
+                    // quitting, so claim again (once) instead of failing.
+                    Err(c)
+                        if !retried
+                            && matches!(
+                                c.kind(),
+                                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                            ) =>
+                    {
+                        retried = true;
+                    }
+                    Err(c) => return Err(c),
                 }
-                Err(c) => Err(c),
             }
+            Err(e) => return Err(e),
         }
-        Err(e) => Err(e),
     }
 }
 

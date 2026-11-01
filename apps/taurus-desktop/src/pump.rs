@@ -195,6 +195,8 @@ impl App {
                 match action {
                     WhenDone::Notify if self.os_shell.get() => notify::all_done(),
                     WhenDone::Quit => self.quit(),
+                    // The engine resets these to "nothing" once run.
+                    WhenDone::Sleep | WhenDone::Shutdown => self.when_done_fired(),
                     _ => {}
                 }
             }

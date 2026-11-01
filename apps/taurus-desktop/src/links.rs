@@ -20,6 +20,29 @@ pub fn candidate(text: &str) -> Option<String> {
     Some(t.to_string())
 }
 
+/// The downloads named on the command line: each argument that is a link
+/// (`candidate`) or an existing `.torrent` file, the file as an absolute
+/// path (a running instance may have another working folder). Flags and
+/// anything else, non-UTF-8 arguments included, are left out.
+pub fn launch_links(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<String> {
+    args.into_iter()
+        .filter_map(|arg| {
+            let text = arg.to_str()?;
+            if let Some(link) = candidate(text) {
+                return Some(link);
+            }
+            let path = std::path::Path::new(text);
+            let is_torrent = path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("torrent"));
+            if !is_torrent || !path.is_file() {
+                return None;
+            }
+            std::path::absolute(path).ok()?.to_str().map(str::to_string)
+        })
+        .collect()
+}
+
 /// Offers each new link on the clipboard once, and never one the app put
 /// there itself.
 #[derive(Debug, Default)]
@@ -85,6 +108,39 @@ mod tests {
         let at_limit = format!("https://x.org/{}", "a".repeat(MAX_LEN - 14));
         assert_eq!(at_limit.len(), MAX_LEN);
         assert!(candidate(&at_limit).is_some());
+    }
+
+    #[test]
+    fn launch_links_keep_links_and_torrent_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let torrent = dir.path().join("linux.TORRENT");
+        std::fs::write(&torrent, b"d4:infode").unwrap();
+        let other = dir.path().join("notes.txt");
+        std::fs::write(&other, b"hi").unwrap();
+        let args = [
+            "--help".into(),
+            "-v".into(),
+            "https://x.org/a.iso".into(),
+            torrent.clone().into_os_string(),
+            dir.path().join("missing.torrent").into_os_string(),
+            other.into_os_string(),
+            "hello".into(),
+            "magnet:?xt=urn:btih:abc".into(),
+        ];
+        assert_eq!(
+            launch_links(args),
+            vec![
+                "https://x.org/a.iso".to_string(),
+                torrent.to_str().unwrap().to_string(),
+                "magnet:?xt=urn:btih:abc".to_string(),
+            ]
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let bad = std::ffi::OsString::from_vec(vec![b'h', 0xff, b'.', b't']);
+            assert!(launch_links([bad]).is_empty());
+        }
     }
 
     #[test]

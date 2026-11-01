@@ -109,6 +109,7 @@ export component AppWindow inherits Window {
                 vertical-stretch: 1;
 
                 if root.screen == Screen.welcome: Welcome {
+                    offer-copied-links: root.settings.offer-copied-links;
                     link-entered(link) => {
                         root.link-entered(link);
                     }

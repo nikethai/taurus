@@ -127,6 +127,8 @@ pub struct JobView {
     /// Unix seconds of the next retry of a Waiting job; `None` otherwise.
     pub retry_at: Option<i64>,
     /// Unix seconds at which a Completed job finished; `None` otherwise.
+    /// For a torrent this is when seeding ended (the download itself
+    /// finished when seeding started, which the view does not carry).
     pub finished_at: Option<i64>,
     /// Lowercase hex info-hash of a torrent; `None` for an HTTP job.
     pub info_hash: Option<String>,

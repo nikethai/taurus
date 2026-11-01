@@ -1369,3 +1369,29 @@ async fn waiting_job_has_retry_at() {
     assert_eq!(wait(&engine, id).await, JobState::Completed);
     assert_eq!(view(&engine, id).retry_at, None);
 }
+
+#[tokio::test]
+async fn pausing_a_waiting_job_clears_retry_at() {
+    let fx = Fixture::new().await;
+    // A retry far away, so the pause lands while the job is Waiting.
+    let mut config = fx.config();
+    config.timing.waiting_retry_first = Duration::from_secs(60);
+    config.timing.waiting_retry_cap = Duration::from_secs(60);
+    let engine = Engine::open(config).await.unwrap();
+    let mut events = engine.subscribe();
+    let mut spec = FileSpec::new(MIB);
+    spec.fail_first = [vec![0], vec![503; 6]].concat();
+    let id = fx.add(&engine, "x.bin", &spec).await;
+    events_until(&mut events, |e| is_update(e, id, JobState::Waiting)).await;
+    assert!(view(&engine, id).retry_at.is_some());
+
+    engine.pause(id).await.unwrap();
+    let seen = events_until(&mut events, |e| is_update(e, id, JobState::Paused)).await;
+    let Some(Event::JobUpdated(paused)) = seen.last() else {
+        panic!("no Paused update");
+    };
+    assert_eq!(paused.retry_at, None);
+    assert_eq!(view(&engine, id).state, JobState::Paused);
+    assert_eq!(view(&engine, id).retry_at, None);
+    engine.shutdown().await.unwrap();
+}

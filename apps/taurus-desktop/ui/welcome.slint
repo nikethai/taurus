@@ -90,10 +90,13 @@ component Tip inherits HorizontalLayout {
         font-size: 13px;
         wrap: word-wrap;
         horizontal-stretch: 1;
+        accessible-role: AccessibleRole.text;
+        accessible-label: self.text;
     }
 }
 
 export component Welcome inherits Rectangle {
+    in property <bool> offer-copied-links: true;
     callback link-entered(string);
     callback open-settings();
 
@@ -151,17 +154,15 @@ export component Welcome inherits Rectangle {
                     root.link-entered(link);
                 }
             }
-            VerticalLayout {
+            // Only promises the app keeps: the clipboard offer while it is on.
+            // (No drag tip: the toolkit delivers no drops from other apps.)
+            if root.offer-copied-links: VerticalLayout {
                 spacing: 12px;
                 padding-left: 4px;
                 padding-right: 4px;
                 Tip {
                     icon: "link";
                     text: @tr("Copy a link and Hyades offers to download it");
-                }
-                Tip {
-                    icon: "down";
-                    text: @tr("Or drag a link onto this window");
                 }
             }
         }

@@ -61,17 +61,19 @@ impl Engine {
     /// engine holds; the network is not asked.
     pub fn find_by_url(&self, input: &str) -> Option<JobId> {
         let input = input.trim();
-        let views = read(&self.views);
+        // The file is read before taking the lock, so the actor never waits
+        // on disk I/O.
         let hash = match classify(input) {
             Ok(Source::Magnet { info_hash, .. }) => Some(info_hash),
             Ok(Source::TorrentFile(path)) => torrent_file_hash(&path),
             _ => None,
         };
         let fixed = fixed_url(input);
+        let views = read(&self.views);
         views
             .values()
             .filter(|v| {
-                hash.is_some() && v.info_hash == hash
+                (hash.is_some() && v.info_hash == hash)
                     || fixed_url(&v.source_url) == fixed
                     || fixed_url(&v.url) == fixed
             })

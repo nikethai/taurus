@@ -62,7 +62,9 @@ pub struct Flush {
     /// Every known job, in id order (the engine's snapshot order).
     pub views: Vec<JobView>,
     /// Jobs were added or removed, or one changed state, since the last
-    /// flush: the tabs need rebuilding. Otherwise only numbers moved.
+    /// flush: the tabs need rebuilding. When false only numbers moved, so
+    /// tab membership and order stand, but the rows and the footer summary
+    /// (its time left follows progress) must still be recomputed.
     /// (Addition to the brief's `Flush`; lets the UI skip the tab split.)
     pub structural: bool,
     /// The newest settings, when they changed since the last flush.

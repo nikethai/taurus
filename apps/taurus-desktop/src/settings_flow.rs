@@ -198,6 +198,35 @@ impl App {
             eprintln!("hyades: ignored setting {key:?} = {value:?}");
             return self.push_settings();
         }
+        self.change_settings(key, next);
+    }
+
+    /// A folder picked in the OS dialog for Settings: kept as the path it is
+    /// (the screen only shows its display text, which may be lossy).
+    pub(crate) fn set_folder(&self, folder: PathBuf) {
+        let mut next = self.settings.borrow().clone();
+        next.ui.folder = Some(folder);
+        self.change_settings("folder", next);
+    }
+
+    /// The when-done action ran and the engine set it back to "nothing":
+    /// the UI follows at once, so no later save of the UI's copy (or one
+    /// still on its way) can bring Sleep or Shut down back.
+    pub(crate) fn when_done_fired(&self) {
+        let next = Settings {
+            when_done: WhenDone::Nothing,
+            ..self.settings.borrow().clone()
+        };
+        let in_flight = !self.writer.idle();
+        *self.settings.borrow_mut() = next.clone();
+        self.push_settings();
+        if in_flight {
+            self.writer.save(next);
+        }
+    }
+
+    /// `next` (changed at `key`) becomes the UI's settings and is saved.
+    fn change_settings(&self, key: &str, next: Settings) {
         if key == "open-at-login"
             && self.os_shell.get()
             && let Err(e) = login::set_open_at_login(next.ui.open_at_login)

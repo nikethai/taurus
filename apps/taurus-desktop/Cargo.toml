@@ -25,6 +25,7 @@ arboard = { workspace = true }
 auto-launch = { workspace = true }
 opener = { workspace = true }
 rfd = { workspace = true }
+chrono = { workspace = true }
 # Linux uses the D-Bus StatusNotifier backend (no GTK); the feature does
 # nothing on Windows and macOS.
 tray-icon = { workspace = true, features = ["ksni"] }

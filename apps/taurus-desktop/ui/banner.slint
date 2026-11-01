@@ -28,7 +28,10 @@ export component Banner inherits Rectangle {
             }
         }
         Text {
-            text: @tr("Download the link you copied from {0}?", root.banner.host);
+            // A magnet link has no host to name.
+            text: root.banner.host != "" ? @tr("Download the link you copied from {0}?", root.banner.host)
+                : root.banner.kind == "magnet" ? @tr("Download the torrent link you copied?")
+                : @tr("Download the link you copied?");
             vertical-alignment: center;
             horizontal-stretch: 1;
             wrap: word-wrap;

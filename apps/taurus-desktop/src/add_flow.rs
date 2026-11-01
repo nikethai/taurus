@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use slint::ComponentHandle;
 use taurus_core::{AddRequest, CoreError, ErrorKind, JobKind, LinkInfo};
 
 use crate::app::{App, UiMsg};
@@ -293,7 +294,7 @@ impl App {
         }
     }
 
-    /// Links from a second launch: the window comes forward and the first
+    /// Links from a second launch: the window is shown and the first
     /// link is looked at; the others wait their turn.
     pub(crate) fn forwarded(&self, links: Vec<String>) {
         self.show_window();
@@ -325,7 +326,7 @@ impl App {
             p.folder = Some(picked);
             return;
         }
-        self.setting_changed("folder", &picked.to_string_lossy());
+        self.set_folder(picked);
     }
 
     /// New clipboard text: offered in the banner when it is a new link and
@@ -340,6 +341,11 @@ impl App {
         let Some(ui) = self.window.upgrade() else {
             return;
         };
+        // Hidden in the tray, the offer would wait unseen and be stale by
+        // the time the window opens.
+        if !ui.window().is_visible() {
+            return;
+        }
         ui.set_banner(banner_for(&link));
         *self.banner_link.borrow_mut() = Some(link);
     }

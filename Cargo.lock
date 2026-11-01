@@ -6942,6 +6942,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "auto-launch",
+ "chrono",
  "directories",
  "futures-util",
  "hex",

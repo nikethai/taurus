@@ -1,5 +1,5 @@
-//! Numbers as short text. Sentences live in the Slint files; numbers and
-//! dates are formatted here.
+//! Numbers as short text. Sentences and words live in the Slint files;
+//! numbers are formatted here, and dates are handed over as numbers.
 
 const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
 
@@ -71,35 +71,32 @@ pub fn ratio(r: f64) -> String {
     }
 }
 
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-/// (year, month 1-12, day 1-31) of a day count since 1970-01-01.
-fn civil_from_days(z: i64) -> (i64, usize, i64) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month as usize, day)
+/// When a download finished, in the local time of `tz`, as numbers the
+/// Finished list words (in `row.slint`): the clock time on the day of
+/// `now_unix`, else the month and day.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Moment {
+    pub same_day: bool,
+    pub hour: u32,
+    pub minute: u32,
+    /// 1-12.
+    pub month: u32,
+    pub day: u32,
 }
 
-/// Short moment for the Finished list: "14:05" on the day of `now_unix`,
-/// else "Oct 28". Uses UTC for now (no local time zone lookup yet).
-pub fn when_text(at_unix: i64, now_unix: i64) -> String {
-    let day = at_unix.div_euclid(86_400);
-    if day == now_unix.div_euclid(86_400) {
-        let s = at_unix.rem_euclid(86_400);
-        format!("{:02}:{:02}", s / 3600, s % 3600 / 60)
-    } else {
-        let (_, month, d) = civil_from_days(day);
-        format!("{} {d}", MONTHS[month - 1])
-    }
+/// `None` for a time chrono cannot represent.
+pub fn moment<Tz: chrono::TimeZone>(at_unix: i64, now_unix: i64, tz: &Tz) -> Option<Moment> {
+    use chrono::{Datelike, Timelike};
+    let local = |t| chrono::DateTime::from_timestamp(t, 0).map(|d| d.with_timezone(tz));
+    let at = local(at_unix)?;
+    let now = local(now_unix)?;
+    Some(Moment {
+        same_day: at.date_naive() == now.date_naive(),
+        hour: at.hour(),
+        minute: at.minute(),
+        month: at.month(),
+        day: at.day(),
+    })
 }
 
 #[cfg(test)]
@@ -143,12 +140,29 @@ mod tests {
     }
 
     #[test]
-    fn when_text_cases() {
+    fn moment_in_local_time() {
+        use chrono::{FixedOffset, Utc};
         // 2026-11-01 14:05:00 UTC
         let now = 1_793_541_900;
-        assert_eq!(when_text(now - 3600, now), "13:05");
-        assert_eq!(when_text(now - 7 * 86_400, now), "Oct 25");
+        let m = moment(now - 3600, now, &Utc).unwrap();
+        assert_eq!((m.same_day, m.hour, m.minute), (true, 13, 5));
+        let m = moment(now - 7 * 86_400, now, &Utc).unwrap();
+        assert_eq!((m.same_day, m.month, m.day), (false, 10, 25));
         // 2024-02-29 00:00:00 UTC
-        assert_eq!(when_text(1_709_164_800, now), "Feb 29");
+        let m = moment(1_709_164_800, now, &Utc).unwrap();
+        assert_eq!((m.same_day, m.month, m.day), (false, 2, 29));
+
+        // 23:30 UTC on 31 Oct and 00:30 UTC on 1 Nov are both 1 Nov at
+        // UTC+11: the same day there, though not in UTC.
+        let plus11 = FixedOffset::east_opt(11 * 3600).unwrap();
+        let half_past = now - (13 * 3600 + 35 * 60); // 2026-11-01 00:30 UTC
+        assert!(!moment(half_past - 3600, half_past, &Utc).unwrap().same_day);
+        let m = moment(half_past - 3600, half_past, &plus11).unwrap();
+        assert_eq!((m.same_day, m.hour, m.minute), (true, 10, 30));
+        // Past midnight local, the same instant is another day.
+        let minus5 = FixedOffset::west_opt(5 * 3600).unwrap();
+        let m = moment(now - 10 * 3600, now, &minus5).unwrap();
+        assert_eq!((m.same_day, m.hour, m.month, m.day), (false, 23, 10, 31));
+        assert_eq!(moment(i64::MAX, now, &Utc), None);
     }
 }

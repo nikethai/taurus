@@ -44,7 +44,11 @@ export global Messages {
     }
 
     // Shown for waiting rows (rate_limited, connection_lost, timeout, no_peers).
+    // An overdue retry (0 s left) is about to happen.
     public pure function waiting(seconds: int) -> string {
+        if (seconds < 1) {
+            return @tr("Waiting for a connection. Trying again in a moment.");
+        }
         return @tr("Waiting for a connection. Trying again in {0}.", retry-time(seconds));
     }
 }

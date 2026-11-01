@@ -17,7 +17,7 @@ use taurus_core::{
 };
 use taurus_desktop::app::App;
 use taurus_desktop::shell_text::simple_message;
-use taurus_desktop::{AppWindow, Messages, RowVm, Screen, Theme};
+use taurus_desktop::{AppWindow, BannerVm, Messages, RowVm, Screen, SettingsVm, Theme};
 use taurus_testkit::{FailAfter, FileSpec, TestServer, TorrentSeeder};
 use tokio::sync::broadcast::error::TryRecvError;
 
@@ -29,6 +29,7 @@ fn ui_smoke() {
     theme_defaults(&ui);
     welcome_has_paste_field(&ui);
     downloads_rows_show_status_and_retry(&ui);
+    rows_banner_and_tips_wording(&ui);
     shell_text_mirrors_messages(&ui);
     let ctx = Ctx::start(&ui);
     add_flow_shows_file_and_finishes(&ui, &ctx);
@@ -137,6 +138,88 @@ fn downloads_rows_show_status_and_retry(ui: &AppWindow) {
         vec![3],
         "downloads_rows_show_status_and_retry: retry(id) not called once with the failed row"
     );
+}
+
+/// Words the screens build from numbers and flags: an overdue retry, finish
+/// times, the copied-link offer for a magnet link, and Welcome tips that
+/// promise only what the app does.
+fn rows_banner_and_tips_wording(ui: &AppWindow) {
+    const WHAT: &str = "rows_banner_and_tips_wording";
+    let visible = |label: &str| {
+        assert!(
+            labelled(ui, label).iter().any(|e| e.size().width > 0.0),
+            "{WHAT}: no visible text {label:?}"
+        );
+    };
+    let overdue = RowVm {
+        retry_seconds: 0,
+        ..row(4, "waiting")
+    };
+    ui.set_downloading_rows(ModelRc::new(VecModel::from(vec![overdue])));
+    ui.set_tab(0);
+    ui.set_screen(Screen::Downloads);
+    visible("Waiting for a connection. Trying again in a moment.");
+
+    let today = RowVm {
+        finished_today: true,
+        finished_month: 11,
+        finished_day: 1,
+        finished_hour: 9,
+        finished_minute: 5,
+        ..row(5, "done")
+    };
+    let earlier = RowVm {
+        finished_month: 10,
+        finished_day: 28,
+        finished_hour: 23,
+        ..row(6, "done")
+    };
+    ui.set_finished_rows(ModelRc::new(VecModel::from(vec![
+        today,
+        earlier,
+        row(7, "done"),
+    ])));
+    ui.set_tab(1);
+    visible("400 MB · 09:05");
+    visible("400 MB · Oct 28");
+    visible("400 MB");
+
+    ui.set_banner(BannerVm {
+        visible: true,
+        host: "".into(),
+        kind: "magnet".into(),
+    });
+    visible("Download the torrent link you copied?");
+    ui.set_banner(BannerVm {
+        visible: true,
+        host: "cdn.example.org".into(),
+        kind: "music".into(),
+    });
+    visible("Download the link you copied from cdn.example.org?");
+    ui.set_banner(BannerVm::default());
+
+    ui.set_screen(Screen::Welcome);
+    assert!(
+        labelled(ui, "Or drag a link onto this window").is_empty(),
+        "{WHAT}: drag tip shown"
+    );
+    let tip = "Copy a link and Hyades offers to download it";
+    let offers = |on: bool| {
+        ui.set_settings(SettingsVm {
+            offer_copied_links: on,
+            ..ui.get_settings()
+        })
+    };
+    offers(true);
+    visible(tip);
+    offers(false);
+    assert!(
+        labelled(ui, tip).iter().all(|e| e.size().width == 0.0),
+        "{WHAT}: copy tip shown while offers are off"
+    );
+    ui.set_finished_rows(ModelRc::default());
+    ui.set_downloading_rows(ModelRc::default());
+    ui.set_tab(0);
 }
 
 /// The OS notification text (Rust) says exactly what the screens say.
@@ -408,11 +491,7 @@ fn close_hides_to_tray_and_keeps_downloading(ctx: &Ctx) {
     ui.window().dispatch_event(WindowEvent::CloseRequested);
     assert!(!ui.window().is_visible(), "{WHAT}: window still shown");
     // The pump keeps running and the engine keeps downloading.
-    let settle = Instant::now() + Duration::from_millis(500);
-    while Instant::now() < settle {
-        slint::platform::update_timers_and_animations();
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    settle(Duration::from_millis(500));
     assert_eq!(state(), Some(JobState::Downloading), "{WHAT}: job stopped");
     let rows = ui.get_downloading_rows();
     assert!(
@@ -420,6 +499,19 @@ fn close_hides_to_tray_and_keeps_downloading(ctx: &Ctx) {
             .any(|r| r.name == "tray.bin" && r.state == "downloading"),
         "{WHAT}: hidden window no longer updated"
     );
+    // A link copied while the window is in the tray is not offered...
+    app.sender()
+        .clipboard("https://example.org/hidden.iso".into());
+    settle(Duration::from_millis(300));
+    assert!(!ui.get_banner().visible, "{WHAT}: offered while hidden");
+    // ...one copied once it is back is.
+    app.show_window();
+    app.sender()
+        .clipboard("https://example.org/shown.iso".into());
+    wait_until(&format!("{WHAT}: offer once shown"), || {
+        ui.get_banner().visible
+    });
+    assert_eq!(ui.get_banner().host.as_str(), "example.org", "{WHAT}");
     drop(app);
     ctx.rt
         .block_on(ctx.engine.remove(id, true))
@@ -509,26 +601,38 @@ fn failed_row_explains_and_retries(ui: &AppWindow, ctx: &Ctx) {
     const WHAT: &str = "failed_row_explains_and_retries";
     const SIZE: usize = 1024 * 1024;
     let mut spec = FileSpec::new(SIZE);
-    // The probe at add succeeds; the download then gets 404.
+    // The Add screen's look at the link (request 1) and the engine's probe
+    // when adding it (request 2) succeed; the download then gets 404.
     spec.fail_after = Some(FailAfter {
-        after_requests: 1,
+        after_requests: 2,
         status: 404,
         headers: vec![],
     });
     let url = ctx.server.serve("expired.bin", spec);
-    ui.set_tab(0);
-    ui.set_screen(Screen::Downloads);
-    let request = AddRequest {
-        url,
-        dest_dir: ctx.out(),
-        ..Default::default()
-    };
-    ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    ui.invoke_link_entered(url.as_str().into());
+    wait_until(&format!("{WHAT}: Add screen shows expired.bin"), || {
+        let add = ui.get_add();
+        !add.loading && add.name == "expired.bin"
+    });
+    assert_eq!(
+        ctx.server.requests("expired.bin"),
+        1,
+        "{WHAT}: looking at the link"
+    );
+    ui.invoke_add_confirmed();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Downloads,
+        "{WHAT}: not on Downloads"
+    );
     wait_until(&format!("{WHAT}: expired.bin failed"), || {
         ui.get_downloading_rows()
             .iter()
             .any(|r| r.name == "expired.bin" && r.state == "failed")
     });
+    // Probe at add, then the download itself (one request or more).
+    let requests = ctx.server.requests("expired.bin");
+    assert!(requests >= 3, "{WHAT}: {requests} requests");
     let row = ui
         .get_downloading_rows()
         .iter()
@@ -548,7 +652,7 @@ fn failed_row_explains_and_retries(ui: &AppWindow, ctx: &Ctx) {
             .iter()
             .any(|r| r.name == "expired.bin" && r.state == "done")
     });
-    let file = ctx.out().join("expired.bin");
+    let file = ctx.documents().join("expired.bin");
     assert_eq!(
         std::fs::metadata(&file).map(|m| m.len()).ok(),
         Some(SIZE as u64),

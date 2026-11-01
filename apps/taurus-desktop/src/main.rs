@@ -16,7 +16,7 @@ use slint::ComponentHandle;
 use taurus_core::{Engine, EngineConfig};
 use taurus_desktop::app::App;
 use taurus_desktop::instance::{self, Instance};
-use taurus_desktop::{AppWindow, clipboard, tray};
+use taurus_desktop::{AppWindow, clipboard, links, shell_text, tray};
 
 const CLIPBOARD_POLL: Duration = Duration::from_secs(1);
 
@@ -35,7 +35,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let data_dir = data_dir()?;
     std::fs::create_dir_all(&data_dir)?;
     let data_dir = std::fs::canonicalize(&data_dir)?;
-    let links: Vec<String> = std::env::args().skip(1).collect();
+    let links = links::launch_links(std::env::args_os().skip(1));
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -50,7 +50,20 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         let _guard = rt.enter();
         listener.into_stream()
     };
-    let engine = rt.block_on(Engine::open(EngineConfig::new(&data_dir)))?;
+    let engine = match rt.block_on(Engine::open(EngineConfig::new(&data_dir))) {
+        Ok(engine) => engine,
+        Err(e) => {
+            // Started from a launcher there is no terminal to read this.
+            eprintln!("hyades: {e}");
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title(shell_text::APP_NAME)
+                .set_description(shell_text::open_failed(&e))
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
+            return Ok(ExitCode::FAILURE);
+        }
+    };
 
     let ui = AppWindow::new()?;
     let app_cell: Rc<OnceCell<Weak<App>>> = Rc::new(OnceCell::new());

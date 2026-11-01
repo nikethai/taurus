@@ -55,8 +55,14 @@ fn clamp_i32(n: i64) -> i32 {
     n.clamp(0, i32::MAX as i64) as i32
 }
 
-/// One list row. `now_unix` is the current time in Unix seconds.
+/// One list row. `now_unix` is the current time in Unix seconds; finish
+/// times are shown in the computer's local time.
 pub fn row_of(view: &JobView, now_unix: i64) -> RowVm {
+    row_in(view, now_unix, &chrono::Local)
+}
+
+/// `row_of` with finish times in the time zone `tz`.
+pub fn row_in<Tz: chrono::TimeZone>(view: &JobView, now_unix: i64, tz: &Tz) -> RowVm {
     let progress = if view.state == JobState::Completed {
         1.0
     } else {
@@ -75,9 +81,9 @@ pub fn row_of(view: &JobView, now_unix: i64) -> RowVm {
     let retry_seconds = view
         .retry_at
         .map_or(0, |at| clamp_i32(at.saturating_sub(now_unix)));
-    let when_text = match (view.state, view.finished_at) {
-        (JobState::Completed, Some(at)) => format::when_text(at, now_unix),
-        _ => String::new(),
+    let finished = match (view.state, view.finished_at) {
+        (JobState::Completed, Some(at)) => format::moment(at, now_unix, tz),
+        _ => None,
     };
     RowVm {
         id: view.id.0.clamp(0, i32::MAX as i64) as i32,
@@ -97,7 +103,12 @@ pub fn row_of(view: &JobView, now_unix: i64) -> RowVm {
             .map(|t| format::ratio(t.ratio))
             .unwrap_or_default()
             .into(),
-        when_text: when_text.into(),
+        // Month 0: no finish time to show.
+        finished_month: finished.map_or(0, |m| m.month as i32),
+        finished_day: finished.map_or(0, |m| m.day as i32),
+        finished_hour: finished.map_or(0, |m| m.hour as i32),
+        finished_minute: finished.map_or(0, |m| m.minute as i32),
+        finished_today: finished.is_some_and(|m| m.same_day),
         peers: view
             .torrent
             .as_ref()
@@ -230,9 +241,20 @@ mod tests {
         let mut done = view(6, "a.bin", JobState::Completed);
         done.downloaded = 1000;
         done.finished_at = Some(now - 600);
-        let r = row_of(&done, now);
+        let r = row_in(&done, now, &chrono::Utc);
         assert_eq!(r.progress, 1.0);
-        assert_eq!(r.when_text, "13:55");
+        assert_eq!(
+            (r.finished_today, r.finished_hour, r.finished_minute),
+            (true, 13, 55)
+        );
+        assert_eq!((r.finished_month, r.finished_day), (11, 1));
+        done.finished_at = Some(now - 7 * 86_400);
+        let r = row_in(&done, now, &chrono::Utc);
+        assert!(!r.finished_today);
+        assert_eq!((r.finished_month, r.finished_day), (10, 25));
+        // Not Completed (or no time): nothing to show.
+        done.state = JobState::Seeding;
+        assert_eq!(row_in(&done, now, &chrono::Utc).finished_month, 0);
     }
 
     #[test]
