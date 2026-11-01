@@ -1,0 +1,54 @@
+// Plain-language (Simple mode) sentences for engine error kinds and the
+// retry wait. The Rust text used for OS notifications must mirror `simple`.
+export global Messages {
+    // `kind` is ErrorKind::as_str(), e.g. "link_expired".
+    public pure function simple(kind: string) -> string {
+        if (kind == "link_expired") {
+            return @tr("This link stopped working. It may have expired.");
+        } else if (kind == "needs_sign_in") {
+            return @tr("This site wants you to sign in first.");
+        } else if (kind == "blocked_by_bot_check") {
+            return @tr("This site wants to check you're human. Open it in your browser and start the download there.");
+        } else if (kind == "captive_portal") {
+            return @tr("Your network wants you to sign in (hotel or café Wi-Fi?). Open your browser, then try again.");
+        } else if (kind == "quota_exceeded") {
+            return @tr("Too many people downloaded this file recently. Try again later.");
+        } else if (kind == "disk_full") {
+            return @tr("Your disk is full. Free up some space, then try again.");
+        } else if (kind == "folder_unavailable") {
+            return @tr("The save folder isn't available. Is the drive plugged in?");
+        } else if (kind == "no_permission") {
+            return @tr("Hyades can't save to this folder. Pick another one in Settings.");
+        } else if (kind == "file_too_large_for_disk") {
+            return @tr("This file is too big for that drive. Pick another folder.");
+        } else if (kind == "checksum_mismatch") {
+            return @tr("The downloaded file didn't match its checksum, so it was removed. Try again.");
+        } else if (kind == "site_not_supported") {
+            return @tr("This link is a web page, not a file.");
+        } else if (kind == "unsafe_torrent") {
+            return @tr("This torrent has unsafe file names, so it wasn't saved.");
+        } else if (kind == "already_added") {
+            return @tr("This download is already in your list.");
+        } else if (kind == "file_changed_on_server") {
+            return @tr("The file changed on the server, so the download started over.");
+        }
+        return @tr("Something went wrong. Try again.");
+    }
+
+    // Time until the next attempt: "1:05" from a minute up, "45 s" below.
+    public pure function retry-time(seconds: int) -> string {
+        if (seconds >= 60) {
+            return @tr("minutes:seconds" => "{0}:{1}", floor(seconds / 60), (mod(seconds, 60) < 10 ? "0" : "") + mod(seconds, 60));
+        }
+        return @tr("{0} s", max(seconds, 0));
+    }
+
+    // Shown for waiting rows (rate_limited, connection_lost, timeout, no_peers).
+    // An overdue retry (0 s left) is about to happen.
+    public pure function waiting(seconds: int) -> string {
+        if (seconds < 1) {
+            return @tr("Waiting for a connection. Trying again in a moment.");
+        }
+        return @tr("Waiting for a connection. Trying again in {0}.", retry-time(seconds));
+    }
+}

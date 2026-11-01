@@ -186,7 +186,7 @@ fn readable_fields(raw: &str) -> Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{SpeedLimit, TorrentSettings, WhenDone};
+    use crate::settings::{SpeedLimit, ThemeChoice, TorrentSettings, UiSettings, WhenDone};
     use crate::store::test_support::open_temp;
 
     #[test]
@@ -222,6 +222,36 @@ mod tests {
     }
 
     #[test]
+    fn lenient_settings_keep_readable_ui_fields() {
+        let (_dir, store) = open_temp();
+        let saved =
+            r#"{"max_active":4,"ui":{"theme":"Dark","mode":"Sideways","open_at_login":true}}"#;
+        store.put_setting(SETTINGS_KEY, saved).unwrap();
+        let s = store.load_settings_lenient().unwrap();
+        assert_eq!(s.max_active, 4);
+        assert_eq!(
+            s.ui,
+            UiSettings {
+                theme: ThemeChoice::Dark,
+                open_at_login: true,
+                ..UiSettings::default()
+            }
+        );
+        // A ui section that is not an object falls back to the defaults.
+        store
+            .put_setting(SETTINGS_KEY, r#"{"max_active":4,"ui":"dark"}"#)
+            .unwrap();
+        let s = store.load_settings_lenient().unwrap();
+        assert_eq!((s.max_active, s.ui), (4, UiSettings::default()));
+        // Settings saved before the UI existed have none.
+        store
+            .put_setting(SETTINGS_KEY, r#"{"max_active":4}"#)
+            .unwrap();
+        let s = store.load_settings_lenient().unwrap();
+        assert_eq!(s.ui, UiSettings::default());
+    }
+
+    #[test]
     fn settings_roundtrip() {
         let (_dir, store) = open_temp();
         assert_eq!(store.load_settings().unwrap(), Settings::default());
@@ -237,6 +267,11 @@ mod tests {
                 max_active: 2,
                 listen_port: Some(51413),
                 ..TorrentSettings::default()
+            },
+            ui: UiSettings {
+                accent: "Vega".to_string(),
+                folder: Some("/data/dl".into()),
+                ..UiSettings::default()
             },
         };
         store.save_settings(&s).unwrap();

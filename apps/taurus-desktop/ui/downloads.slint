@@ -1,0 +1,260 @@
+// Main screen: header, Downloading / Finished tabs, the list and a footer
+// with the overall time left and Pause all / Resume all.
+import { Theme } from "theme.slint";
+import { RowVm, SummaryVm } from "types.slint";
+import { ListView } from "std-widgets.slint";
+import { IconButton, TextButton, Pressable } from "widgets.slint";
+import { LinkField } from "welcome.slint";
+import { Row } from "row.slint";
+
+component TabButton inherits Pressable {
+    in property <string> text;
+    in property <int> count;
+    in property <bool> selected;
+
+    height: 34px;
+    // Equal halves whatever the label lengths.
+    min-width: 0;
+    preferred-width: 0;
+    horizontal-stretch: 1;
+    border-radius: 9px;
+    background: selected ? Theme.panel : root.hovered ? Theme.track : transparent;
+    border-width: selected ? 1px : 0;
+    border-color: Theme.line;
+    accessible-role: tab;
+    accessible-label: text;
+    accessible-item-selectable: true;
+    accessible-item-selected: selected;
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: 13px;
+            font-weight: root.selected ? 600 : 400;
+            color: root.selected ? Theme.text : Theme.muted;
+            accessible-role: none;
+        }
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                min-width: 22px;
+                height: 18px;
+                border-radius: 9px;
+                background: root.selected ? Theme.accent-soft : Theme.track;
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    Text {
+                        text: root.count;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: root.selected ? Theme.accent-strong : Theme.muted;
+                        accessible-role: none;
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component Downloads inherits Rectangle {
+    in property <[RowVm]> downloading-rows;
+    in property <[RowVm]> finished-rows;
+    in property <SummaryVm> summary;
+    in-out property <int> tab;
+    callback link-entered(string);
+    callback open-settings();
+    callback pause(int);
+    callback resume(int);
+    callback retry(int);
+    callback stop-recording(int);
+    callback open-file(int);
+    callback reveal(int);
+    callback remove(int);
+    callback pause-all();
+    callback resume-all();
+
+    // The plus button shows the paste field above the tabs.
+    property <bool> pasting: false;
+    property <[RowVm]> rows: tab == 0 ? downloading-rows : finished-rows;
+
+    pure function time-left(s: SummaryVm) -> string {
+        if (s.eta-kind == "minutes") {
+            return @tr("About {0} min left", s.eta-value);
+        } else if (s.eta-kind == "under-minute") {
+            return @tr("Less than a minute left");
+        } else if (s.eta-kind == "hours") {
+            return @tr("About {0} h left", s.eta-value);
+        }
+        return "";
+    }
+
+    VerticalLayout {
+        padding-top: 14px;
+        padding-bottom: 12px;
+        spacing: 12px;
+
+        HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 12px;
+            spacing: 4px;
+            Text {
+                text: @tr("Downloads");
+                vertical-alignment: center;
+                font-size: 20px;
+                font-weight: 700;
+                color: Theme.text;
+                horizontal-stretch: 1;
+            }
+            IconButton {
+                icon: root.pasting ? "close" : "plus";
+                label: root.pasting ? @tr("Close the link field") : @tr("Add a download");
+                clicked => {
+                    root.pasting = !root.pasting;
+                }
+            }
+            IconButton {
+                icon: "settings";
+                label: @tr("Settings");
+                clicked => {
+                    root.open-settings();
+                }
+            }
+        }
+
+        if root.pasting: HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            LinkField {
+                field-height: 48px;
+                init => {
+                    self.focus-input();
+                }
+                entered(link) => {
+                    root.pasting = false;
+                    root.link-entered(link);
+                }
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            Rectangle {
+                background: Theme.chip;
+                border-radius: 12px;
+                accessible-role: tab-list;
+                HorizontalLayout {
+                    padding: 3px;
+                    spacing: 3px;
+                    TabButton {
+                        text: @tr("Downloading");
+                        count: root.summary.downloading;
+                        selected: root.tab == 0;
+                        clicked => {
+                            root.tab = 0;
+                        }
+                    }
+                    TabButton {
+                        text: @tr("Finished");
+                        count: root.summary.finished;
+                        selected: root.tab == 1;
+                        clicked => {
+                            root.tab = 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            if root.rows.length == 0: Text {
+                x: 20px;
+                width: parent.width - 40px;
+                text: root.tab == 0 ? @tr("Nothing is downloading right now.") : @tr("Finished downloads show up here.");
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                font-size: 14px;
+                color: Theme.muted;
+            }
+            if root.rows.length > 0: ListView {
+                for r in root.rows: HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    Row {
+                        item: r;
+                        pause(id) => {
+                            root.pause(id);
+                        }
+                        resume(id) => {
+                            root.resume(id);
+                        }
+                        retry(id) => {
+                            root.retry(id);
+                        }
+                        stop-recording(id) => {
+                            root.stop-recording(id);
+                        }
+                        open-file(id) => {
+                            root.open-file(id);
+                        }
+                        reveal(id) => {
+                            root.reveal(id);
+                        }
+                        remove(id) => {
+                            root.remove(id);
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.tab == 0 && root.downloading-rows.length > 0: Rectangle {
+            height: 52px;
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 12px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    Text {
+                        x: 0;
+                        width: parent.width;
+                        text: root.summary.all-paused ? @tr("Everything is paused") : root.time-left(root.summary);
+                        vertical-alignment: center;
+                        overflow: elide;
+                        font-size: 13px;
+                        color: Theme.muted;
+                        accessible-role: text;
+                        accessible-label: self.text;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    TextButton {
+                        text: root.summary.all-paused ? @tr("Resume all") : @tr("Pause all");
+                        clicked => {
+                            if (root.summary.all-paused) {
+                                root.resume-all();
+                            } else {
+                                root.pause-all();
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                y: 0;
+                height: 1px;
+                background: Theme.line;
+            }
+        }
+    }
+}

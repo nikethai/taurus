@@ -1,0 +1,55 @@
+// "Sleeping in 30 seconds" with Cancel, before the when-done action runs.
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+import { CountdownVm } from "types.slint";
+import { TextButton } from "widgets.slint";
+
+export component Countdown inherits Rectangle {
+    in property <CountdownVm> countdown;
+    callback cancel();
+
+    background: Theme.panel;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Theme.line;
+    drop-shadow-blur: 12px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-color: Theme.shadow;
+
+    HorizontalLayout {
+        padding: 12px;
+        padding-left: 16px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                name: "moon";
+                width: 20px;
+                height: 20px;
+                stroke: Theme.accent-strong;
+            }
+        }
+        Text {
+            text: root.countdown.action == "shutdown"
+                ? @tr("Shutting down in {n} second" | "Shutting down in {n} seconds" % root.countdown.seconds)
+                : @tr("Sleeping in {n} second" | "Sleeping in {n} seconds" % root.countdown.seconds);
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
+            font-size: 14px;
+            font-weight: 600;
+            color: Theme.text;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+        VerticalLayout {
+            alignment: center;
+            TextButton {
+                text: @tr("Cancel");
+                clicked => {
+                    root.cancel();
+                }
+            }
+        }
+    }
+}

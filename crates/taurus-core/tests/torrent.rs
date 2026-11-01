@@ -22,8 +22,8 @@ use taurus_core::torrent::hub::{TorrentHub, TorrentTestNet};
 use taurus_core::torrent::job::{TorrentJobContext, run_torrent_job};
 use taurus_core::torrent::source::{Source, classify};
 use taurus_core::{
-    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobState, JobView, PowerMode, Settings,
-    Timing, TorrentSettings, WhenDone,
+    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobState, JobView, LinkInfo, PowerMode,
+    Settings, Timing, TorrentSettings, WhenDone,
 };
 use taurus_testkit::{
     FileSpec, TestServer, TorrentLeecher, TorrentSeeder, content, make_torrent_bytes,
@@ -1245,6 +1245,66 @@ async fn same_magnet_twice_is_already_added() {
     assert_eq!(e.kind, ErrorKind::AlreadyAdded, "{}", e.detail);
     assert_eq!(engine.snapshot().len(), 1);
     engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inspect_torrent() {
+    let (seeder, a, b) = seeder().await;
+    let rig = EngineRig::new(vec![seeder.addr], TorrentSettings::default()).await;
+    let LinkInfo::Torrent(info) = rig.engine.inspect(&seeder.magnet).await.unwrap() else {
+        panic!("a magnet link is a torrent");
+    };
+    assert_eq!(info.info_hash, seeder.info_hash);
+    assert_eq!(info.name, "pack");
+    assert_eq!(info.total, (a.len() + b.len()) as u64);
+    let file = rig.tmp.path().join("x.torrent");
+    fs::write(&file, &seeder.torrent_bytes).unwrap();
+    assert_eq!(
+        rig.engine.inspect(file.to_str().unwrap()).await.unwrap(),
+        LinkInfo::Torrent(info)
+    );
+    // Nothing was added.
+    assert!(rig.engine.snapshot().is_empty());
+    assert!(fs::read_dir(&rig.dest).unwrap().next().is_none());
+    let store = Store::open(&rig.tmp.path().join("data").join("taurus.db")).unwrap();
+    assert!(store.list_jobs().unwrap().is_empty());
+    rig.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn find_by_url_matches_info_hash() {
+    let (seeder, _, _) = seeder().await;
+    let rig = EngineRig::new(vec![seeder.addr], TorrentSettings::default()).await;
+    let id = rig.engine.add(rig.request(&seeder.magnet)).await.unwrap();
+
+    assert_eq!(rig.engine.find_by_url(&seeder.magnet), Some(id));
+    // Another spelling of the same magnet link: upper case, no name.
+    let other = format!("magnet:?xt=urn:btih:{}", seeder.info_hash.to_uppercase());
+    assert_eq!(rig.engine.find_by_url(&other), Some(id));
+    // The .torrent file of the same torrent.
+    let file = rig.tmp.path().join("same.torrent");
+    fs::write(&file, &seeder.torrent_bytes).unwrap();
+    assert_eq!(rig.engine.find_by_url(file.to_str().unwrap()), Some(id));
+    // Another torrent.
+    let unknown = format!("magnet:?xt=urn:btih:{}", "1".repeat(40));
+    assert_eq!(rig.engine.find_by_url(&unknown), None);
+    let view = rig.view(id);
+    assert_eq!(view.info_hash.as_deref(), Some(seeder.info_hash.as_str()));
+    rig.engine.shutdown().await.unwrap();
+
+    // The other way round: a job added from the .torrent file is found by
+    // its magnet link.
+    let rig = EngineRig::new(vec![seeder.addr], TorrentSettings::default()).await;
+    let file = rig.tmp.path().join("added.torrent");
+    fs::write(&file, &seeder.torrent_bytes).unwrap();
+    let id = rig
+        .engine
+        .add(rig.request(file.to_str().unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(rig.engine.find_by_url(&seeder.magnet), Some(id));
+    assert_eq!(rig.engine.find_by_url(&other), Some(id));
+    rig.engine.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

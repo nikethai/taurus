@@ -87,6 +87,8 @@ pub struct Settings {
     pub auto_checksum: bool,
     pub keep_awake: bool,
     pub torrent: TorrentSettings,
+    /// What only the desktop app reads.
+    pub ui: UiSettings,
 }
 
 impl Default for Settings {
@@ -98,6 +100,57 @@ impl Default for Settings {
             auto_checksum: true,
             keep_awake: true,
             torrent: TorrentSettings::default(),
+            ui: UiSettings::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum UiMode {
+    Simple,
+    Advanced,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ThemeChoice {
+    System,
+    Light,
+    Dark,
+}
+
+/// The desktop app's own preferences, kept with the engine's settings so
+/// there is one place to save them. The engine itself ignores them.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct UiSettings {
+    pub mode: UiMode,
+    pub theme: ThemeChoice,
+    pub accent: String,
+    /// Colour a job's progress bar by the kind of file.
+    pub progress_by_type: bool,
+    pub offer_copied_links: bool,
+    pub open_at_login: bool,
+    /// Videos, Music and Documents subfolders, chosen by the UI when adding.
+    pub sort_by_type: bool,
+    /// `None` is the OS language.
+    pub language: Option<String>,
+    /// Where downloads go; `None` is the OS Downloads folder, which the UI
+    /// resolves.
+    pub folder: Option<std::path::PathBuf>,
+}
+
+impl Default for UiSettings {
+    fn default() -> UiSettings {
+        UiSettings {
+            mode: UiMode::Simple,
+            theme: ThemeChoice::System,
+            accent: "Aldebaran".to_string(),
+            progress_by_type: true,
+            offer_copied_links: true,
+            open_at_login: false,
+            sort_by_type: true,
+            language: None,
+            folder: None,
         }
     }
 }
@@ -151,6 +204,43 @@ mod tests {
         // Settings saved before M3 have no torrent section.
         let old: Settings = serde_json::from_str(r#"{"max_active":5}"#).unwrap();
         assert_eq!(old.torrent, d);
+    }
+
+    #[test]
+    fn ui_settings_defaults() {
+        let d = UiSettings::default();
+        assert_eq!(d.mode, UiMode::Simple);
+        assert_eq!(d.theme, ThemeChoice::System);
+        assert_eq!(d.accent, "Aldebaran");
+        assert!(d.progress_by_type && d.offer_copied_links && d.sort_by_type);
+        assert!(!d.open_at_login);
+        assert_eq!((d.language, d.folder), (None, None));
+        assert_eq!(Settings::default().ui, UiSettings::default());
+
+        let s: Settings =
+            serde_json::from_str(r#"{"ui":{"theme":"Dark","folder":"/dl","language":"fr"}}"#)
+                .unwrap();
+        assert_eq!(
+            s.ui,
+            UiSettings {
+                theme: ThemeChoice::Dark,
+                folder: Some("/dl".into()),
+                language: Some("fr".to_string()),
+                ..UiSettings::default()
+            }
+        );
+    }
+
+    #[test]
+    fn old_settings_json_without_ui_loads() {
+        // As M3 saved it: everything but `ui`.
+        let m3 = r#"{"max_active":5,"speed":"Fastest","when_done":"Nothing","auto_checksum":true,
+            "keep_awake":true,"torrent":{"stop_ratio":1.0,"stop_after_secs":null,
+            "upload_limit_bps":null,"download_limit_bps":null,"max_active":3,"peer_limit":null,
+            "listen_port":null,"upnp":true,"dht":true}}"#;
+        let s: Settings = serde_json::from_str(m3).unwrap();
+        assert_eq!(s.max_active, 5);
+        assert_eq!(s.ui, UiSettings::default());
     }
 
     #[test]

@@ -267,6 +267,9 @@ mod tests {
             error: None,
             kind: JobKind::Http,
             torrent: None,
+            retry_at: None,
+            finished_at: None,
+            info_hash: None,
         }
     }
 

@@ -314,6 +314,9 @@ impl Actor {
         let view = write(&self.views).get_mut(&id).map(|view| {
             view.state = state;
             view.speed_bps = 0;
+            // Only a Waiting job has a retry ahead; callers that make a job
+            // Waiting set it themselves.
+            view.retry_at = None;
             view.clone()
         });
         if let Some(view) = view {

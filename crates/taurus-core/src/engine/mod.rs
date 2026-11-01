@@ -6,6 +6,7 @@
 //! running jobs or reserves names runs in the actor, one command at a time.
 
 mod actor;
+mod inspect;
 mod jobs;
 mod open;
 mod schedule;
@@ -33,6 +34,7 @@ use crate::torrent::source::{Source, classify};
 use actor::Command;
 #[doc(hidden)]
 pub use actor::JobMsg;
+pub use inspect::LinkInfo;
 use jobs::{downloaded, fixed_url, vet_mirrors, view_of};
 use open::assemble;
 use schedule::check_space;
@@ -122,6 +124,14 @@ pub struct JobView {
     pub kind: JobKind,
     /// `None` for an HTTP job.
     pub torrent: Option<TorrentView>,
+    /// Unix seconds of the next retry of a Waiting job; `None` otherwise.
+    pub retry_at: Option<i64>,
+    /// Unix seconds at which a Completed job finished; `None` otherwise.
+    /// For a torrent this is when seeding ended (the download itself
+    /// finished when seeding started, which the view does not carry).
+    pub finished_at: Option<i64>,
+    /// Lowercase hex info-hash of a torrent; `None` for an HTTP job.
+    pub info_hash: Option<String>,
 }
 
 /// What only a torrent has.
@@ -231,7 +241,7 @@ impl Engine {
         store
             .list_jobs()?
             .iter()
-            .map(|job| Ok(view_of(job, downloaded(&store, job.id)?)))
+            .map(|job| Ok(view_of(&store, job, downloaded(&store, job.id)?)))
             .collect()
     }
 

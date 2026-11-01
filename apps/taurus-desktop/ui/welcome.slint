@@ -1,0 +1,170 @@
+// First screen (no downloads yet) and the "Paste a link" field it shares
+// with the Downloads screen.
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+import { IconButton } from "widgets.slint";
+
+// Text field plus an add button. Return or the button sends the link.
+export component LinkField inherits Rectangle {
+    in property <length> field-height: 52px;
+    callback entered(string);
+
+    function send() {
+        if (input.text != "") {
+            root.entered(input.text);
+            input.text = "";
+        }
+    }
+
+    public function focus-input() {
+        input.focus();
+    }
+
+    height: field-height;
+    border-radius: 12px;
+    background: Theme.panel;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? Theme.accent-base : Theme.line;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 8px;
+        spacing: 8px;
+        Rectangle {
+            horizontal-stretch: 1;
+            input := TextInput {
+                y: (parent.height - self.height) / 2;
+                height: self.preferred-height;
+                width: parent.width;
+                font-size: 15px;
+                color: Theme.text;
+                selection-background-color: Theme.sel;
+                selection-foreground-color: Theme.text;
+                single-line: true;
+                accessible-label: @tr("Paste a link");
+                accepted => {
+                    root.send();
+                }
+            }
+            Text {
+                visible: input.text == "";
+                text: @tr("Paste a link");
+                x: 0;
+                y: (parent.height - self.height) / 2;
+                font-size: 15px;
+                color: Theme.muted;
+                accessible-role: none;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: "down";
+                label: @tr("Download this link");
+                filled: true;
+                enabled: input.text != "";
+                clicked => {
+                    root.send();
+                }
+            }
+        }
+    }
+}
+
+component Tip inherits HorizontalLayout {
+    in property <string> icon;
+    in property <string> text;
+    spacing: 10px;
+    VerticalLayout {
+        alignment: start;
+        Icon {
+            name: root.icon;
+            width: 18px;
+            height: 18px;
+            stroke: Theme.muted;
+        }
+    }
+    Text {
+        text: root.text;
+        color: Theme.muted;
+        font-size: 13px;
+        wrap: word-wrap;
+        horizontal-stretch: 1;
+        accessible-role: AccessibleRole.text;
+        accessible-label: self.text;
+    }
+}
+
+export component Welcome inherits Rectangle {
+    in property <bool> offer-copied-links: true;
+    callback link-entered(string);
+    callback open-settings();
+
+    VerticalLayout {
+        padding: 20px;
+        HorizontalLayout {
+            alignment: end;
+            IconButton {
+                icon: "settings";
+                label: @tr("Settings");
+                clicked => {
+                    root.open-settings();
+                }
+            }
+        }
+        VerticalLayout {
+            vertical-stretch: 1;
+            alignment: center;
+            spacing: 28px;
+            VerticalLayout {
+                spacing: 14px;
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 64px;
+                        height: 64px;
+                        border-radius: 16px;
+                        background: Theme.accent-base;
+                        Icon {
+                            name: "down";
+                            width: 32px;
+                            height: 32px;
+                            stroke: Theme.accent-text;
+                            stroke-width: 2.5px;
+                        }
+                    }
+                }
+                Text {
+                    text: @tr("Hyades");
+                    horizontal-alignment: center;
+                    font-size: 26px;
+                    font-weight: 700;
+                    color: Theme.text;
+                }
+                Text {
+                    text: @tr("Downloads made simple.");
+                    horizontal-alignment: center;
+                    font-size: 14px;
+                    color: Theme.muted;
+                }
+            }
+            LinkField {
+                field-height: 56px;
+                entered(link) => {
+                    root.link-entered(link);
+                }
+            }
+            // Only promises the app keeps: the clipboard offer while it is on.
+            // (No drag tip: the toolkit delivers no drops from other apps.)
+            if root.offer-copied-links: VerticalLayout {
+                spacing: 12px;
+                padding-left: 4px;
+                padding-right: 4px;
+                Tip {
+                    icon: "link";
+                    text: @tr("Copy a link and Hyades offers to download it");
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,91 @@
+// Plain data the Rust view models fill in and the screens read.
+
+export struct RowVm {
+    id: int,
+    name: string,
+    kind: string,
+    // "queued" "downloading" "paused" "waiting" "seeding" "failed" "done" "recording"
+    state: string,
+    // 0..1, -1 = unknown size
+    progress: float,
+    done-text: string,
+    total-text: string,
+    // "unknown" "under-minute" "minutes" "hours"
+    eta-kind: string,
+    eta-value: int,
+    retry-seconds: int,
+    // ErrorKind::as_str() or ""
+    error-kind: string,
+    ratio-text: string,
+    // When a finished download finished, local time; month 0 = unknown.
+    // The row words it: "14:05" when finished-today, else "Oct 28".
+    finished-month: int,
+    finished-day: int,
+    finished-hour: int,
+    finished-minute: int,
+    finished-today: bool,
+    peers: int,
+}
+
+// Footer numbers: counts and the overall time left.
+export struct SummaryVm {
+    downloading: int,
+    finished: int,
+    eta-kind: string,
+    eta-value: int,
+    all-paused: bool,
+}
+
+export enum Screen { welcome, downloads, add, settings }
+
+// The Add screen: what the pasted link turned out to be.
+export struct AddVm {
+    // true while the link is being looked at
+    loading: bool,
+    // ErrorKind::as_str() when the link can't be added, else ""
+    error-kind: string,
+    kind: string,
+    name: string,
+    // formatted size, "" when unknown
+    size-text: string,
+    // destination folder path, "" = the OS Downloads folder
+    folder: string,
+    is-torrent: bool,
+    // number of files in the torrent, as digits (e.g. "12"); the screen words it
+    files-text: string,
+    // the link is already in the list
+    duplicate: bool,
+}
+
+// Settings screen values. Keys of `setting-changed` are these field names;
+// booleans are sent as "true" / "false".
+export struct SettingsVm {
+    // "" = the OS Downloads folder
+    folder: string,
+    sort-by-type: bool,
+    // gentle | balanced | fastest
+    speed: string,
+    // nothing | notify | sleep | shutdown
+    when-done: string,
+    offer-copied-links: bool,
+    open-at-login: bool,
+    // system | light | dark
+    theme: string,
+    // aldebaran | cobalt | jade | grape | rose | sky
+    accent: string,
+}
+
+// When-done countdown before the computer sleeps or shuts down.
+export struct CountdownVm {
+    visible: bool,
+    // sleep | shutdown
+    action: string,
+    seconds: int,
+}
+
+// Offer to download a link found on the clipboard.
+export struct BannerVm {
+    visible: bool,
+    host: string,
+    kind: string,
+}

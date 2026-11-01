@@ -92,10 +92,20 @@ pub(crate) fn classify_at(
     PageVerdict::WebPage
 }
 
+/// Only the start of the page is read: a long ordinary page may mention a
+/// quota anywhere.
+const QUOTA_SCAN_BYTES: usize = 16_384;
+
+/// The Google Drive sentence or the phrase "quota exceeded", in the first
+/// 16 KiB; "quota" alone is common on ordinary pages.
 fn is_quota_page(body: &str) -> bool {
-    let body = body.to_lowercase();
-    body.contains("too many users have viewed or downloaded this file recently")
-        || (body.contains("quota") && body.contains("exceeded"))
+    let mut end = body.len().min(QUOTA_SCAN_BYTES);
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = body[..end].to_lowercase();
+    head.contains("too many users have viewed or downloaded this file recently")
+        || head.contains("quota exceeded")
 }
 
 /// The URL submitted by the page's only form, if that form is a GET with a
@@ -239,9 +249,25 @@ mod tests {
             classify(&url("https://h.example/uc?id=1"), 200, &html(), body),
             PageVerdict::QuotaExceeded
         );
-        let body = "<html>Download QUOTA for this file has been Exceeded</html>";
+        let body = "<html>Download QUOTA Exceeded for this file</html>";
         assert_eq!(
             classify(&url("https://h.example/a.iso"), 403, &html(), body),
+            PageVerdict::QuotaExceeded
+        );
+    }
+
+    #[test]
+    fn quota_word_alone_is_not_quota_page() {
+        let u = url("https://h.example/about");
+        let body =
+            "<html><body>Your disk quota is 5 GB. The meeting exceeded its time.</body></html>";
+        assert_eq!(classify(&u, 200, &html(), body), PageVerdict::WebPage);
+        // The phrase counts only near the start of the page.
+        let late = format!("<html>{}quota exceeded</html>", "x".repeat(20_000));
+        assert_eq!(classify(&u, 200, &html(), &late), PageVerdict::WebPage);
+        let early = format!("<html>quota exceeded{}</html>", "x".repeat(20_000));
+        assert_eq!(
+            classify(&u, 200, &html(), &early),
             PageVerdict::QuotaExceeded
         );
     }

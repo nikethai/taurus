@@ -1,0 +1,270 @@
+// Settings screen. Every change goes out as `changed(key, value)`; the app
+// stores it and sends the new SettingsVm back.
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+import { SettingsVm } from "types.slint";
+import { ScrollView } from "std-widgets.slint";
+import {
+    IconButton, TextButton, Toggle, Segment, Segmented, Card, SectionTitle, Pressable,
+} from "widgets.slint";
+
+component Divider inherits Rectangle {
+    height: 1px;
+    background: Theme.line;
+}
+
+// One line of a single-choice list, with a check mark when chosen.
+component Choice inherits Pressable {
+    in property <string> text;
+    in property <bool> selected;
+
+    height: 40px;
+    accessible-role: radio-button;
+    accessible-label: text;
+    accessible-checkable: true;
+    accessible-checked: selected;
+
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            font-size: 14px;
+            color: Theme.text;
+            accessible-role: none;
+        }
+        if root.selected: VerticalLayout {
+            alignment: center;
+            Icon {
+                name: "check";
+                width: 18px;
+                height: 18px;
+                stroke: Theme.accent-strong;
+                stroke-width: 2.25px;
+            }
+        }
+    }
+}
+
+component Swatch inherits Pressable {
+    in property <string> name;
+    in property <string> label;
+    in property <bool> selected;
+
+    width: 36px;
+    height: 36px;
+    border-radius: 18px;
+    background: Theme.accent-of(name);
+    accessible-role: radio-button;
+    accessible-label: label;
+    accessible-checkable: true;
+    accessible-checked: selected;
+
+    if root.selected: Icon {
+        name: "check";
+        width: 18px;
+        height: 18px;
+        stroke: Theme.accent-text;
+        stroke-width: 2.5px;
+    }
+}
+
+export component Settings inherits Rectangle {
+    in property <SettingsVm> settings;
+    callback changed(string, string);
+    callback choose-folder();
+    callback back();
+
+    property <[{value: string, label: string}]> speeds: [
+        { value: "gentle", label: @tr("Gentle") },
+        { value: "balanced", label: @tr("Balanced") },
+        { value: "fastest", label: @tr("Fastest") },
+    ];
+    property <[{value: string, label: string}]> when-done-choices: [
+        { value: "nothing", label: @tr("Do nothing") },
+        { value: "notify", label: @tr("Notify me") },
+        { value: "sleep", label: @tr("Sleep") },
+        { value: "shutdown", label: @tr("Shut down") },
+    ];
+    property <[{value: string, label: string}]> themes: [
+        { value: "system", label: @tr("System") },
+        { value: "light", label: @tr("Light") },
+        { value: "dark", label: @tr("Dark") },
+    ];
+    property <[{value: string, label: string}]> accents: [
+        { value: "aldebaran", label: @tr("Aldebaran") },
+        { value: "cobalt", label: @tr("Cobalt") },
+        { value: "jade", label: @tr("Jade") },
+        { value: "grape", label: @tr("Grape") },
+        { value: "rose", label: @tr("Rose") },
+        { value: "sky", label: @tr("Sky") },
+    ];
+    property <string> speed: settings.speed != "" ? settings.speed.to-lowercase() : "fastest";
+    property <string> when-done: settings.when-done != "" ? settings.when-done.to-lowercase() : "nothing";
+    property <string> theme: settings.theme != "" ? settings.theme.to-lowercase() : "system";
+    property <string> accent: settings.accent != "" ? settings.accent.to-lowercase() : "aldebaran";
+
+    function flag(b: bool) -> string {
+        return b ? "true" : "false";
+    }
+
+    VerticalLayout {
+        padding-top: 14px;
+
+        HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 8px;
+            spacing: 8px;
+            IconButton {
+                icon: "back";
+                label: @tr("Back");
+                clicked => {
+                    root.back();
+                }
+            }
+            Text {
+                text: @tr("Settings");
+                vertical-alignment: center;
+                font-size: 20px;
+                font-weight: 700;
+                color: Theme.text;
+            }
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-bottom: 24px;
+                spacing: 8px;
+                alignment: start;
+
+                SectionTitle {
+                    text: @tr("Save downloads to");
+                }
+                Card {
+                    HorizontalLayout {
+                        padding-top: 4px;
+                        padding-bottom: 4px;
+                        spacing: 10px;
+                        VerticalLayout {
+                            alignment: center;
+                            Icon {
+                                name: "folder";
+                                width: 20px;
+                                height: 20px;
+                                stroke: Theme.muted;
+                            }
+                        }
+                        Text {
+                            text: root.settings.folder != "" ? root.settings.folder : @tr("Downloads folder");
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                            font-size: 14px;
+                            color: Theme.text;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            TextButton {
+                                text: @tr("Change");
+                                kind: "quiet";
+                                clicked => {
+                                    root.choose-folder();
+                                }
+                            }
+                        }
+                    }
+                    Divider { }
+                    Toggle {
+                        label: @tr("Sort into folders by type");
+                        hint: @tr("Videos, Music and Documents");
+                        checked: root.settings.sort-by-type;
+                        clicked => {
+                            root.changed("sort-by-type", root.flag(!root.settings.sort-by-type));
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    text: @tr("Speed");
+                }
+                Segmented {
+                    for s in root.speeds: Segment {
+                        text: s.label;
+                        selected: root.speed == s.value;
+                        clicked => {
+                            root.changed("speed", s.value);
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    text: @tr("When downloads finish");
+                }
+                Card {
+                    for c[i] in root.when-done-choices: VerticalLayout {
+                        if i > 0: Divider { }
+                        Choice {
+                            text: c.label;
+                            selected: root.when-done == c.value;
+                            clicked => {
+                                root.changed("when-done", c.value);
+                            }
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    text: @tr("Links and startup");
+                }
+                Card {
+                    Toggle {
+                        label: @tr("Offer to download copied links");
+                        checked: root.settings.offer-copied-links;
+                        clicked => {
+                            root.changed("offer-copied-links", root.flag(!root.settings.offer-copied-links));
+                        }
+                    }
+                    Divider { }
+                    Toggle {
+                        label: @tr("Open Hyades at login");
+                        checked: root.settings.open-at-login;
+                        clicked => {
+                            root.changed("open-at-login", root.flag(!root.settings.open-at-login));
+                        }
+                    }
+                }
+
+                SectionTitle {
+                    text: @tr("Appearance");
+                }
+                Segmented {
+                    for t in root.themes: Segment {
+                        text: t.label;
+                        selected: root.theme == t.value;
+                        clicked => {
+                            root.changed("theme", t.value);
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    padding-top: 8px;
+                    spacing: 12px;
+                    alignment: start;
+                    for a in root.accents: Swatch {
+                        name: a.value;
+                        label: a.label;
+                        selected: root.accent == a.value;
+                        clicked => {
+                            root.changed("accent", a.value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

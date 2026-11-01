@@ -1,0 +1,205 @@
+import { Theme } from "theme.slint";
+import { Messages } from "messages.slint";
+import {
+    RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
+} from "types.slint";
+import { Welcome } from "welcome.slint";
+import { Downloads } from "downloads.slint";
+import { Add } from "add.slint";
+import { Settings } from "settings.slint";
+import { Banner } from "banner.slint";
+import { Countdown } from "countdown.slint";
+
+export { Theme, Messages }
+export {
+    RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
+} from "types.slint";
+
+// Navigation: the UI itself moves between Welcome, Downloads and Settings,
+// and leaves Add on Back/Cancel. The app moves to Add after
+// `link-entered` / `link-dropped` / `banner-download` and to Downloads
+// after `add-confirmed`.
+export component AppWindow inherits Window {
+    in property <string> window-title: @tr("Hyades");
+
+    in-out property <Screen> screen: Screen.welcome;
+    in property <[RowVm]> downloading-rows;
+    in property <[RowVm]> finished-rows;
+    // 0 Downloading, 1 Finished
+    in-out property <int> tab: 0;
+    in property <AddVm> add;
+    // Theme and accent follow `settings.theme` / `settings.accent`.
+    in property <SettingsVm> settings;
+    in property <SummaryVm> summary;
+    in property <CountdownVm> countdown;
+    in property <BannerVm> banner;
+    in property <bool> has-tray;
+    // Window (and taskbar) icon, drawn by the app.
+    in property <image> app-icon;
+
+    callback link-entered(string);
+    callback add-confirmed();
+    callback add-cancelled();
+    callback choose-folder();
+    // Row actions take RowVm.id.
+    callback pause(int);
+    callback resume(int);
+    callback retry(int);
+    callback stop-recording(int);
+    callback open-file(int);
+    callback reveal(int);
+    callback remove(int);
+    callback pause-all();
+    callback resume-all();
+    callback banner-download();
+    callback banner-dismiss();
+    // key = SettingsVm field name; value as documented on SettingsVm.
+    callback setting-changed(string, string);
+    callback cancel-countdown();
+    callback link-dropped(string);
+
+    property <bool> has-rows: downloading-rows.length + finished-rows.length > 0;
+
+    function home() {
+        root.screen = root.has-rows ? Screen.downloads : Screen.welcome;
+    }
+
+    function apply-look() {
+        Theme.scheme = root.settings.theme != "" ? root.settings.theme.to-lowercase() : "system";
+        Theme.accent = root.settings.accent != "" ? root.settings.accent.to-lowercase() : "aldebaran";
+    }
+
+    changed settings => {
+        root.apply-look();
+    }
+
+    title: window-title;
+    icon: app-icon;
+    preferred-width: 420px;
+    preferred-height: 640px;
+    min-width: 360px;
+    min-height: 480px;
+    background: Theme.bg;
+    default-font-size: 14px;
+
+    // Simple screen: one centered column, at most 640px wide.
+    Rectangle {
+        width: min(root.width, 640px);
+        height: root.height;
+        x: (root.width - self.width) / 2;
+        y: 0;
+
+        VerticalLayout {
+            if root.banner.visible && root.screen != Screen.add: HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 12px;
+                Banner {
+                    banner: root.banner;
+                    download => {
+                        root.banner-download();
+                    }
+                    dismiss => {
+                        root.banner-dismiss();
+                    }
+                }
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+
+                if root.screen == Screen.welcome: Welcome {
+                    offer-copied-links: root.settings.offer-copied-links;
+                    link-entered(link) => {
+                        root.link-entered(link);
+                    }
+                    open-settings => {
+                        root.screen = Screen.settings;
+                    }
+                }
+
+                if root.screen == Screen.downloads: Downloads {
+                    downloading-rows: root.downloading-rows;
+                    finished-rows: root.finished-rows;
+                    summary: root.summary;
+                    tab <=> root.tab;
+                    link-entered(link) => {
+                        root.link-entered(link);
+                    }
+                    open-settings => {
+                        root.screen = Screen.settings;
+                    }
+                    pause(id) => {
+                        root.pause(id);
+                    }
+                    resume(id) => {
+                        root.resume(id);
+                    }
+                    retry(id) => {
+                        root.retry(id);
+                    }
+                    stop-recording(id) => {
+                        root.stop-recording(id);
+                    }
+                    open-file(id) => {
+                        root.open-file(id);
+                    }
+                    reveal(id) => {
+                        root.reveal(id);
+                    }
+                    remove(id) => {
+                        root.remove(id);
+                    }
+                    pause-all => {
+                        root.pause-all();
+                    }
+                    resume-all => {
+                        root.resume-all();
+                    }
+                }
+
+                if root.screen == Screen.add: Add {
+                    add: root.add;
+                    confirmed => {
+                        root.add-confirmed();
+                    }
+                    cancelled => {
+                        root.add-cancelled();
+                        root.home();
+                    }
+                    show-list => {
+                        root.add-cancelled();
+                        root.screen = Screen.downloads;
+                    }
+                    choose-folder => {
+                        root.choose-folder();
+                    }
+                }
+
+                if root.screen == Screen.settings: Settings {
+                    settings: root.settings;
+                    changed(key, value) => {
+                        root.setting-changed(key, value);
+                    }
+                    choose-folder => {
+                        root.choose-folder();
+                    }
+                    back => {
+                        root.home();
+                    }
+                }
+            }
+
+            if root.countdown.visible: HorizontalLayout {
+                padding: 16px;
+                padding-top: 0;
+                Countdown {
+                    countdown: root.countdown;
+                    cancel => {
+                        root.cancel-countdown();
+                    }
+                }
+            }
+        }
+    }
+}

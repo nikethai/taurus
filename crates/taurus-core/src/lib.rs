@@ -15,9 +15,13 @@ pub mod timing;
 pub mod torrent;
 mod when_done;
 
-pub use engine::{AddRequest, Engine, EngineConfig, Event, JobView, TorrentView, WhenDoneHold};
+pub use engine::{
+    AddRequest, Engine, EngineConfig, Event, JobView, LinkInfo, TorrentView, WhenDoneHold,
+};
 pub use errors::{CoreError, ErrorKind};
-pub use settings::{PowerMode, Settings, SpeedLimit, TorrentSettings, WhenDone};
+pub use settings::{
+    PowerMode, Settings, SpeedLimit, ThemeChoice, TorrentSettings, UiMode, UiSettings, WhenDone,
+};
 pub use store::{JobId, JobKind, JobState};
 pub use timing::Timing;
 
