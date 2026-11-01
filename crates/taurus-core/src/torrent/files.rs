@@ -5,9 +5,8 @@ use std::path::{Path, PathBuf};
 
 use super::{TorrentFile, TorrentInfo};
 use crate::errors::{CoreError, ErrorKind};
-use crate::filename::{PARTIAL_EXT, sanitize};
+use crate::filename::{MAX_CANDIDATE_BYTES, is_taken, sanitize};
 
-const MAX_NAME_BYTES: usize = 255;
 const RESERVED_STEMS: [&str; 22] = [
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
@@ -46,15 +45,20 @@ fn unsafe_reason(path: &str, windows: bool) -> Option<&'static str> {
         if part.contains('\\') {
             return Some("path separator in a name");
         }
+        if part.chars().any(|c| c.is_ascii_control()) {
+            return Some("control character in a name");
+        }
         let b = part.as_bytes();
         if i == 0 && b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
             return Some("drive prefix");
         }
         if windows {
-            if part.chars().any(|c| {
-                matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') || c.is_ascii_control()
-            }) {
+            if part.contains(['<', '>', ':', '"', '|', '?', '*']) {
                 return Some("character not allowed on Windows");
+            }
+            // Win32 strips these, so `CON ` or `a.` alias other names.
+            if part.ends_with(['.', ' ']) {
+                return Some("name ends with a dot or space");
             }
             let stem = part.split('.').next().unwrap_or("");
             if RESERVED_STEMS.iter().any(|r| r.eq_ignore_ascii_case(stem)) {
@@ -66,31 +70,32 @@ fn unsafe_reason(path: &str, windows: bool) -> Option<&'static str> {
 }
 
 /// Where the torrent's files go. A multi-file torrent gets its own folder
-/// `dest/<name>` (suffixed ` (n)` if taken); a single-file one is saved
-/// straight into `dest` unless that name is taken, then into `dest/<stem> (n)`
-/// so two torrents never mix. `reserved` holds names other jobs have claimed
-/// in `dest`.
+/// `dest/<name>` (suffixed ` (n)` if taken). A single-file one is saved
+/// straight into `dest` unless what librqbit would write there (its raw,
+/// unsanitized path, whose first component is `dest/<file>` or, for a nested
+/// path, `dest/<dir>`) is taken; then it goes into `dest/<name> (n)` so two
+/// torrents never mix. `reserved` holds names other jobs have claimed in
+/// `dest`.
 pub fn output_dir(dest: &Path, info: &TorrentInfo, reserved: &HashSet<String>) -> PathBuf {
-    let reserved: HashSet<String> = reserved.iter().map(|n| n.to_lowercase()).collect();
-    let taken = |name: &str| {
-        reserved.contains(&name.to_lowercase())
-            || dest.join(name).symlink_metadata().is_ok()
-            || dest
-                .join(format!("{name}.{PARTIAL_EXT}"))
-                .symlink_metadata()
-                .is_ok()
-    };
+    let taken = |name: &str| is_taken(dest, name, reserved);
 
     if let [file] = info.files.as_slice() {
-        let name = sanitize(file.path.rsplit('/').next().unwrap_or(""));
-        if !taken(&name) {
+        let top = file.path.split('/').next().unwrap_or("");
+        let safe_top = sanitize(top);
+        if !taken(top) && !taken(&safe_top) {
             return dest.to_path_buf();
         }
-        let stem = Path::new(&name)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&name);
-        return first_free(dest, stem, 1, &taken);
+        // A nested path keeps its directory name whole; a bare file name
+        // loses its extension.
+        let base = if file.path.contains('/') {
+            safe_top.as_str()
+        } else {
+            Path::new(&safe_top)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&safe_top)
+        };
+        return first_free(dest, base, 1, &taken);
     }
     first_free(dest, &sanitize(&info.name), 0, &taken)
 }
@@ -99,14 +104,13 @@ pub fn output_dir(dest: &Path, info: &TorrentInfo, reserved: &HashSet<String>) -
 /// `first.max(1)`; `base` is cut so `<name>.tapa` stays within 255 bytes.
 /// Folder names keep any dots (`Show.S01.1080p`), unlike file names.
 fn first_free(dest: &Path, base: &str, first: u32, taken: &dyn Fn(&str) -> bool) -> PathBuf {
-    let budget = MAX_NAME_BYTES - (PARTIAL_EXT.len() + 1);
     let candidate = |n: u32| {
         let suffix = if n == 0 {
             String::new()
         } else {
             format!(" ({n})")
         };
-        let mut end = base.len().min(budget - suffix.len());
+        let mut end = base.len().min(MAX_CANDIDATE_BYTES - suffix.len());
         while !base.is_char_boundary(end) {
             end -= 1;
         }
@@ -159,7 +163,7 @@ mod tests {
     fn rejects_parent_and_absolute() {
         for path in [
             "../a", "a/../b", "/etc/x", "a//b", "a/", "", ".", "a/./b", "\\x", "a\\b", "C:",
-            "C:/x", "c:x",
+            "C:/x", "c:x", "a\u{0}b", "a/b\nc", "\u{7f}x",
         ] {
             assert!(unsafe_path(path, false), "{path:?}");
             assert!(check_paths(&[file(0, path, 1)]).is_err(), "{path:?}");
@@ -183,9 +187,12 @@ mod tests {
             "a/b?c",
             "a/b*",
             "d\"e",
+            "CON ",
+            "a/b.",
+            "a/b ",
         ] {
             assert!(unsafe_path(path, true), "{path:?}");
-            if path != "a:b" && !path.contains(['?', '*', '"']) {
+            if path != "a:b" && !path.contains(['?', '*', '"']) && !path.ends_with(['.', ' ']) {
                 assert!(!unsafe_path(path, false), "{path:?} is fine off Windows");
             }
         }
@@ -260,6 +267,38 @@ mod tests {
         assert_eq!(
             output_dir(d3.path(), &single, &reserved),
             d3.path().join("movie (1)")
+        );
+    }
+
+    // Where librqbit writes the raw name, not the sanitized one.
+    #[cfg(unix)]
+    #[test]
+    fn single_file_checks_the_raw_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let single = info("Movie: x.mkv", vec![file(0, "Movie: x.mkv", 5)]);
+        assert_eq!(output_dir(d, &single, &HashSet::new()), d);
+        fs::write(d.join("Movie: x.mkv"), b"x").unwrap();
+        assert_eq!(
+            output_dir(d, &single, &HashSet::new()),
+            d.join("Movie_ x (1)")
+        );
+    }
+
+    #[test]
+    fn single_file_nested_path_checks_its_top_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let single = info("sub", vec![file(0, "sub/x.mkv", 5)]);
+        assert_eq!(output_dir(d, &single, &HashSet::new()), d);
+        fs::create_dir(d.join("sub")).unwrap();
+        fs::write(d.join("sub/x.mkv"), b"x").unwrap();
+        assert_eq!(output_dir(d, &single, &HashSet::new()), d.join("sub (1)"));
+        let reserved: HashSet<String> = ["SUB".to_string()].into();
+        let other = tempfile::tempdir().unwrap();
+        assert_eq!(
+            output_dir(other.path(), &single, &reserved),
+            other.path().join("sub (1)")
         );
     }
 
