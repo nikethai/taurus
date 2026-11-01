@@ -13,10 +13,14 @@ bytes.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 librqbit.workspace = true
+lzma-rust2 = { workspace = true, features = ["encoder"] }
 sha1.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
+tar.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["net"] }
+zip.workspace = true
 
 [dev-dependencies]
 reqwest.workspace = true

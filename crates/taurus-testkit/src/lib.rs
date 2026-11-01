@@ -1,7 +1,12 @@
 //! Test support for Taurus: a local HTTP server with scriptable behavior.
 
+mod tools;
 mod torrent;
 
+pub use tools::{
+    ArgsLogEntry, FakeToolHost, ToolRelease, fake_tool_bytes, fake_tool_release, read_args_log,
+    write_fake_tool,
+};
 pub use torrent::{TorrentLeecher, TorrentSeeder, make_torrent_bytes, test_session_options};
 
 use std::collections::HashMap;

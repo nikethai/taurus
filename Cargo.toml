@@ -59,6 +59,11 @@ keepawake = "0.6"
 # release would silently bypass it.
 librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls"] }
 
+# Tool archives (M5): reading in core, writing in the testkit's fake host.
+zip = { version = "9.2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+
 # Tests only
 axum = "0.8"
 tempfile = "3"
@@ -69,3 +74,12 @@ sha1 = "0.11"
 [patch.crates-io]
 librqbit = { path = "third_party/librqbit" }
 librqbit-tracker-comms = { path = "third_party/librqbit-tracker-comms" }
+
+# Tool archives are built, unpacked and hashed in tests; unoptimized
+# xz, deflate and SHA-256 take seconds there.
+[profile.dev.package.lzma-rust2]
+opt-level = 3
+[profile.dev.package.zlib-rs]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
