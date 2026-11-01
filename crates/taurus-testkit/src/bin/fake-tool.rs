@@ -169,27 +169,44 @@ fn json_string(s: &str) -> String {
 
 // ---------------------------------------------------------------- ffmpeg
 
-/// `ffmpeg [-y] -i <in> -c copy <out>` copies `<in>` to `<out>`; anything
-/// else exits 0 without doing anything.
+/// `ffmpeg [-y] -i <in> [-i <in> ...] [-map N ...] -c copy <out>` writes
+/// the inputs, one after the other, to `<out>` (one input: a plain copy;
+/// several: what a real remux joining a video and an audio stream would
+/// hold, for a test's purposes); anything else exits 0 without doing
+/// anything.
 fn ffmpeg(args: &[String]) -> i32 {
-    let input = args.windows(2).find(|w| w[0] == "-i").map(|w| &w[1]);
+    let inputs: Vec<&String> = args
+        .windows(2)
+        .filter(|w| w[0] == "-i")
+        .map(|w| &w[1])
+        .collect();
     let copy = args
         .windows(2)
         .any(|w| (w[0] == "-c" || w[0] == "-codec") && w[1] == "copy");
-    let (Some(input), true, Some(output)) = (input, copy, args.last()) else {
+    let (false, true, Some(output)) = (inputs.is_empty(), copy, args.last()) else {
         return 0;
     };
-    if output == input {
+    if inputs.contains(&output) {
         return 0;
     }
     if Path::new(output).exists() && !args.iter().any(|a| a == "-y") {
         eprintln!("File '{output}' already exists. Exiting.");
         return 1;
     }
-    match fs::copy(input, output) {
-        Ok(_) => 0,
+    let mut joined = Vec::new();
+    for input in &inputs {
+        match fs::read(input) {
+            Ok(bytes) => joined.extend_from_slice(&bytes),
+            Err(e) => {
+                eprintln!("{input}: {e}");
+                return 1;
+            }
+        }
+    }
+    match fs::write(output, joined) {
+        Ok(()) => 0,
         Err(e) => {
-            eprintln!("{input}: {e}");
+            eprintln!("{output}: {e}");
             1
         }
     }

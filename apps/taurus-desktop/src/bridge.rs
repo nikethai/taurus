@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use taurus_core::tools::{ToolKind, ToolState, ToolStatus};
-use taurus_core::{Engine, Event, JobId, JobState, JobView, Settings, WhenDone};
+use taurus_core::{Engine, Event, JobId, JobKind, JobState, JobView, Settings, WhenDone};
 use tokio::sync::broadcast::error::RecvError;
 
 /// Feeds the engine's events into `coalescer` on the runtime until the
@@ -83,7 +83,10 @@ pub enum ToolsBanner {
     Installing {
         percent: Option<u8>,
     },
-    /// The last attempt for a tool failed and none is being fetched.
+    /// The last attempt for a tool failed and none is being fetched. Shown
+    /// until a fetch starts, or until no media job waits for the tools any
+    /// more (the one that failed was removed, or it moved on): nothing
+    /// would try again then.
     Failed,
 }
 
@@ -148,6 +151,9 @@ pub struct Coalescer {
     when_done: Option<WhenDoneUi>,
     /// Each tool's newest state.
     tools: HashMap<ToolKind, ToolState>,
+    /// A tool failure no media job waits on any more: not shown (until the
+    /// next failure).
+    failure_dismissed: bool,
     /// The banner as last flushed (or about to be).
     banner: ToolsBanner,
     banner_changed: bool,
@@ -164,6 +170,7 @@ impl Coalescer {
             settings: None,
             when_done: None,
             tools: HashMap::new(),
+            failure_dismissed: false,
             banner: ToolsBanner::Hidden,
             banner_changed: false,
             last_flush: None,
@@ -178,11 +185,32 @@ impl Coalescer {
     }
 
     fn update_banner(&mut self) {
-        let banner = tools_banner(self.tools.values());
+        let banner = match tools_banner(self.tools.values()) {
+            ToolsBanner::Failed if self.failure_dismissed => ToolsBanner::Hidden,
+            banner => banner,
+        };
         if banner != self.banner {
             self.banner = banner;
             self.banner_changed = true;
             self.dirty = true;
+        }
+    }
+
+    /// How many media jobs wait (for a retry: after the tools could not be
+    /// fetched, among others).
+    fn media_waiting(&self) -> usize {
+        self.views
+            .values()
+            .filter(|v| v.kind == JobKind::Media && v.state == JobState::Waiting)
+            .count()
+    }
+
+    /// After the jobs changed: once the last waiting media job stops
+    /// waiting, a tool failure is no longer shown.
+    fn jobs_changed(&mut self, waiting_before: usize) {
+        if waiting_before > 0 && self.media_waiting() == 0 {
+            self.failure_dismissed = true;
+            self.update_banner();
         }
     }
 
@@ -213,12 +241,14 @@ impl Coalescer {
     /// next event for that job corrects it), and again after missing
     /// events. The next flush carries them all and is structural.
     pub fn seed(&mut self, views: Vec<JobView>) {
+        let waiting = self.media_waiting();
         self.views.clear();
         for v in views {
             self.views.insert(v.id, v);
         }
         self.dirty = true;
         self.structural = true;
+        self.jobs_changed(waiting);
     }
 
     pub fn push(&mut self, event: Event) {
@@ -226,7 +256,9 @@ impl Coalescer {
             Event::JobAdded(v) | Event::JobUpdated(v) => {
                 let changed_state = self.views.get(&v.id).is_none_or(|old| old.state != v.state);
                 self.structural |= changed_state;
+                let waiting = self.media_waiting();
                 self.views.insert(v.id, v);
+                self.jobs_changed(waiting);
             }
             // A Progress for an unknown job is dropped, not kept: the
             // JobAdded / JobUpdated view that follows (or the seed) already
@@ -245,13 +277,18 @@ impl Coalescer {
                 v.speed_bps = speed_bps;
             }
             Event::JobRemoved(id) => {
+                let waiting = self.media_waiting();
                 if self.views.remove(&id).is_none() {
                     return;
                 }
                 self.structural = true;
+                self.jobs_changed(waiting);
             }
             Event::SettingsChanged(s) => self.settings = Some(s),
             Event::ToolStatus(status) => {
+                if matches!(status.state, ToolState::Failed(_)) {
+                    self.failure_dismissed = false;
+                }
                 self.tools.insert(status.kind, status.state);
                 return self.update_banner();
             }
@@ -493,6 +530,54 @@ mod tests {
         assert_eq!(
             c.take_if_due(t0 + Duration::from_secs(5)).unwrap().tools,
             None
+        );
+    }
+
+    #[test]
+    fn a_tool_failure_shows_while_a_media_job_waits_on_it() {
+        let t0 = Instant::now();
+        let mut c = Coalescer::new(Duration::ZERO);
+        let failed = || {
+            tool(
+                ToolKind::YtDlp,
+                ToolState::Failed(taurus_core::ErrorKind::ConnectionLost),
+            )
+        };
+        let media = |id, state| JobView {
+            kind: JobKind::Media,
+            ..view(id, "v", state)
+        };
+        // A failure seen on the Add screen, no job yet: shown.
+        c.push(failed());
+        assert_eq!(c.take_if_due(t0).unwrap().tools, Some(ToolsBanner::Failed));
+        // A media job waits on the tools; the failure stays shown while an
+        // unrelated job comes and goes.
+        c.push(Event::JobAdded(media(1, JobState::Waiting)));
+        c.push(Event::JobAdded(view(2, "a", JobState::Downloading)));
+        c.push(Event::JobRemoved(JobId(2)));
+        assert_eq!(c.take_if_due(t0).unwrap().tools, None);
+        // The waiting job is removed: nothing will try again, so the
+        // banner goes.
+        c.push(Event::JobRemoved(JobId(1)));
+        assert_eq!(c.take_if_due(t0).unwrap().tools, Some(ToolsBanner::Hidden));
+        // The next failure shows again; a waiting job that moves on (it
+        // was paused) hides it too.
+        c.push(Event::JobAdded(media(3, JobState::Waiting)));
+        c.push(failed());
+        assert_eq!(c.take_if_due(t0).unwrap().tools, Some(ToolsBanner::Failed));
+        c.push(Event::JobUpdated(media(3, JobState::Paused)));
+        assert_eq!(c.take_if_due(t0).unwrap().tools, Some(ToolsBanner::Hidden));
+        // A fetch starting shows progress whatever was dismissed.
+        c.push(tool(
+            ToolKind::YtDlp,
+            ToolState::Installing {
+                downloaded: 1,
+                total: Some(2),
+            },
+        ));
+        assert_eq!(
+            c.take_if_due(t0).unwrap().tools,
+            Some(ToolsBanner::Installing { percent: Some(50) })
         );
     }
 

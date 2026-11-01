@@ -468,6 +468,28 @@ async fn remove_if_unfinished_deletes_partial() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_if_unfinished_deletes_a_running_downloads_partial() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let url = fx.server.serve(PATH, throttled(20 * MIB));
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while view(&engine, id).downloaded == 0 || !fx.tapa().exists() {
+        assert!(std::time::Instant::now() < deadline, "no progress");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(view(&engine, id).state, JobState::Downloading);
+
+    engine
+        .remove_with(id, RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    assert!(!fx.tapa().exists(), "the partial file is gone");
+    assert!(!fx.dest.join("x.bin").exists());
+    assert!(engine.snapshot().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remove_keep_leaves_partial() {
     let fx = Fixture::new().await;
     let engine = fx.engine().await;

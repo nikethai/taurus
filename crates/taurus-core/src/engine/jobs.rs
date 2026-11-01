@@ -738,4 +738,53 @@ mod tests {
         assert!(!actor.running.contains_key(&id));
         assert_eq!(actor.state_of(id), Some(JobState::Failed));
     }
+
+    /// The decision of `RemoveFiles::IfUnfinished` is the actor's, made
+    /// after the run stopped: a download that finished a moment before the
+    /// remove was handled (its last message still queued) keeps its file.
+    /// Done on the actor itself: through the engine, which of the two comes
+    /// first cannot be arranged.
+    #[tokio::test]
+    async fn a_download_finishing_as_it_is_removed_keeps_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut actor, id) =
+            actor_stopping_a_run(dir.path(), JobState::Downloading).await;
+        let file = dir.path().join("x.bin");
+        std::fs::write(&file, b"done").unwrap();
+        // The run recorded Completed, then reported it.
+        actor.store.set_state(id, JobState::Completed).unwrap();
+        actor
+            .job_tx
+            .send(JobMsg::Finished {
+                id,
+                outcome: JobOutcome::Completed(file.clone()),
+            })
+            .unwrap();
+
+        actor.remove(id, RemoveFiles::IfUnfinished).await.unwrap();
+        assert!(file.is_file(), "a finished file is the user's");
+        assert!(actor.store.get_job(id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_download_stopped_by_the_remove_loses_its_partial_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut actor, id) =
+            actor_stopping_a_run(dir.path(), JobState::Downloading).await;
+        let partial = dir.path().join(format!("x.bin.{PARTIAL_EXT}"));
+        std::fs::write(&partial, b"half").unwrap();
+        // Stopped by the remove: the run saved its progress and paused.
+        actor.store.set_state(id, JobState::Paused).unwrap();
+        actor
+            .job_tx
+            .send(JobMsg::Finished {
+                id,
+                outcome: JobOutcome::Paused,
+            })
+            .unwrap();
+
+        actor.remove(id, RemoveFiles::IfUnfinished).await.unwrap();
+        assert!(!partial.exists());
+        assert!(actor.store.get_job(id).unwrap().is_none());
+    }
 }

@@ -17,6 +17,7 @@ mod settings;
 mod stop_requests;
 mod tool_ops;
 mod torrent;
+mod types;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,12 +31,11 @@ use crate::checksum;
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::http::resolve;
 use crate::media::fast_path_host;
-use crate::settings::{PowerMode, Settings, WhenDone};
+use crate::settings::Settings;
 use crate::store::{JobId, JobKind, JobState, Store};
-use crate::system::{SpaceSource, available_space};
-use crate::timing::Timing;
-use crate::tools::{ToolManager, ToolSources, ToolStatus};
-use crate::torrent::hub::{TorrentHub, TorrentTestNet};
+use crate::system::SpaceSource;
+use crate::tools::{ToolManager, ToolStatus};
+use crate::torrent::hub::TorrentHub;
 use crate::torrent::source::{Source, classify};
 
 use actor::Command;
@@ -47,6 +47,7 @@ pub use media::{MediaChoice, MediaView};
 use open::assemble;
 pub use remove::RemoveFiles;
 use schedule::check_space;
+pub use types::{AddRequest, EngineConfig, Event, JobView, TorrentView};
 
 const COMMAND_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 1024;
@@ -55,160 +56,6 @@ const LOCK_FILE: &str = "taurus.lock";
 /// Start of the detail of the error `Engine::open` returns when another
 /// engine holds the data dir.
 const IN_USE: &str = "another taurus instance is using";
-
-pub struct EngineConfig {
-    /// Holds the database, `taurus.db`, and the lock file, `taurus.lock`.
-    /// Created if missing.
-    pub data_dir: PathBuf,
-    /// Retry and countdown delays.
-    pub timing: Timing,
-    /// Whether when-done actions that touch the OS really run.
-    pub power: PowerMode,
-    /// Whether the queue runs on its own. Without it, no job starts or is
-    /// retried unless `start_now` starts it, and Waiting jobs stay Waiting
-    /// on open: for short-lived front ends that only look at or edit the
-    /// jobs.
-    pub autostart: bool,
-    /// Where yt-dlp, ffmpeg and Deno are downloaded from; the real
-    /// publishers by default.
-    pub tool_sources: ToolSources,
-    /// Test-only: where free space is read from, so tests need not fill a
-    /// disk. Not for front ends.
-    #[doc(hidden)]
-    pub available_space: SpaceSource,
-    /// Test-only torrent networking; front ends leave this None.
-    #[doc(hidden)]
-    pub torrent_test: Option<TorrentTestNet>,
-}
-
-impl EngineConfig {
-    /// Default timing; when-done actions run for real.
-    pub fn new(data_dir: impl Into<PathBuf>) -> EngineConfig {
-        EngineConfig {
-            data_dir: data_dir.into(),
-            timing: Timing::default(),
-            power: PowerMode::Execute,
-            autostart: true,
-            tool_sources: ToolSources::default(),
-            available_space,
-            torrent_test: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct AddRequest {
-    pub url: String,
-    pub dest_dir: PathBuf,
-    /// Overrides the name the server suggests; sanitized before use. Web
-    /// downloads only: a torrent is named after itself.
-    pub file_name: Option<String>,
-    /// Defaults to `DEFAULT_CONNECTIONS`. Web downloads only.
-    pub connections: Option<u32>,
-    /// Other URLs serving the same file. Each is checked at `add`; one that
-    /// fails to resolve, serves another size or another version (by its
-    /// validators) is dropped.
-    pub mirrors: Vec<String>,
-    /// The file's expected checksum, stored with the job.
-    pub checksum: Option<String>,
-    /// Sent as `Referer` with every request of the job.
-    pub referer: Option<String>,
-    /// Torrents only: the indices of the files to download; `None` is all.
-    pub only_files: Option<Vec<usize>>,
-    /// Video, audio and playlist links only: the quality and conversion.
-    /// `None` is the Simple default (`best`, no conversion) for a link to
-    /// a well-known video site; for any other link, `Some` asks for it to
-    /// be read by yt-dlp when the web server answers with a page.
-    pub media: Option<MediaChoice>,
-    /// Allows adding a playlist of more than 50 entries (otherwise
-    /// `NeedsConfirmation`).
-    pub confirm_large_playlist: bool,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct JobView {
-    pub id: JobId,
-    /// The link requested for the file (after link fixups and any confirm
-    /// form).
-    pub url: String,
-    /// The link as it was added.
-    pub source_url: String,
-    pub file_name: String,
-    pub dest_dir: PathBuf,
-    pub state: JobState,
-    pub total: Option<u64>,
-    pub downloaded: u64,
-    /// 0 unless the job is running.
-    pub speed_bps: u64,
-    pub resumable: bool,
-    pub error: Option<(ErrorKind, String)>,
-    pub kind: JobKind,
-    /// `None` for an HTTP job.
-    pub torrent: Option<TorrentView>,
-    /// Unix seconds of the next retry of a Waiting job; `None` otherwise.
-    pub retry_at: Option<i64>,
-    /// Unix seconds at which a Completed job finished; `None` otherwise.
-    /// For a torrent this is when seeding ended (the download itself
-    /// finished when seeding started, which the view does not carry).
-    pub finished_at: Option<i64>,
-    /// Lowercase hex info-hash of a torrent; `None` for an HTTP job.
-    pub info_hash: Option<String>,
-    /// `None` unless the job is a media job.
-    pub media: Option<MediaView>,
-}
-
-/// What only a torrent has.
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct TorrentView {
-    /// Peers connected now; 0 unless the torrent runs.
-    pub peers: u32,
-    /// Bytes uploaded in all, across restarts.
-    pub uploaded: u64,
-    pub upload_bps: u64,
-    /// Uploaded bytes over the size of the selected files.
-    pub ratio: f64,
-    pub files_selected: u32,
-    pub files_total: u32,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub enum Event {
-    JobAdded(JobView),
-    JobUpdated(JobView),
-    Progress {
-        id: JobId,
-        downloaded: u64,
-        total: Option<u64>,
-        speed_bps: u64,
-    },
-    JobRemoved(JobId),
-    SettingsChanged(Settings),
-    /// Nothing is Downloading, Queued or Waiting any more. Sent once each
-    /// time the last such job leaves those states. The when-done action
-    /// follows only when a job finishing (Completed or Failed) made the
-    /// queue idle, not a pause or a removal.
-    QueueIdle,
-    /// A Sleep or Shutdown runs in `seconds_left` (rounded up). Sent as the
-    /// countdown starts and then every second.
-    WhenDoneCountdown {
-        action: WhenDone,
-        seconds_left: u64,
-    },
-    /// The countdown stopped before it ran out.
-    WhenDoneCancelled,
-    /// The when-done action is due: front ends carry out Notify and Quit
-    /// (`command` is `None`); for Sleep and Shutdown, `command` is the
-    /// command line that ran (or would have, in `PowerMode::DryRun`). Sleep
-    /// and Shutdown are one-shot: `when_done` is then set back to Nothing
-    /// (saved, and announced with `SettingsChanged`).
-    WhenDoneFired {
-        action: WhenDone,
-        command: Option<String>,
-    },
-    /// A tool's status changed while it was installed, updated or rolled
-    /// back (see `Engine::install_tools`).
-    ToolStatus(ToolStatus),
-}
 
 type Views = Arc<RwLock<HashMap<JobId, JobView>>>;
 
@@ -266,12 +113,7 @@ impl Engine {
     /// data dir. Every tool is Ready or Missing: an install in progress in
     /// another process is not visible.
     pub fn read_tools_status(config: &EngineConfig) -> Vec<ToolStatus> {
-        ToolManager::new(
-            &config.data_dir,
-            config.tool_sources.clone(),
-            reqwest::Client::new(),
-        )
-        .status()
+        ToolManager::read_status(&config.data_dir)
     }
 
     /// Every stored job, ordered by id, read without opening an engine or
@@ -311,8 +153,10 @@ impl Engine {
     /// media job named after the video (or playlist), with `req.media`'s
     /// quality and conversion (`best` and none by default). A playlist of
     /// more than 50 entries is refused with `NeedsConfirmation` and the
-    /// detail `playlist:<count>` unless `confirm_large_playlist`; mirrors
-    /// and a checksum are refused. It counts toward `max_active` like a web
+    /// detail `playlist:<count>` unless `confirm_large_playlist`; a single
+    /// video whose estimated size does not fit fails like a file; mirrors
+    /// and a checksum are refused. With `req.media_info` the link is taken
+    /// as the media it describes, and not read again. It counts toward `max_active` like a web
     /// download; see `stop_recording` for live streams.
     pub async fn add(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         self.check_running()?;
@@ -359,7 +203,7 @@ impl Engine {
             });
         }
         let referer = req.referer.clone();
-        if fast_path_host(&req.url) {
+        if fast_path_host(&req.url) || req.media_info.is_some() {
             return Box::pin(self.add_media(req)).await;
         }
         let url = fixed_url(&req.url);
@@ -450,7 +294,9 @@ impl Engine {
     /// has changed. A torrent leaves the torrent session; with
     /// `delete_files` its own files go (those whose size is still the
     /// torrent's), then the folders they leave empty, and the folder it was
-    /// given if that is empty.
+    /// given if that is empty. A media job with `delete_files` loses its
+    /// finished files and yt-dlp's partial files of its videos (named with
+    /// their ids; never another job's), but not a playlist's folder.
     pub async fn remove(&self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
         let files = if delete_files {
             RemoveFiles::All

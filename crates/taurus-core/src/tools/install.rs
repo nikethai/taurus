@@ -52,7 +52,7 @@ impl Install<'_> {
         let first = &self.assets[0];
         let hash = match &first.checksum {
             ChecksumSource::SidecarOfResolved => {
-                let resolved = get(self.client, first.url.clone()).await?.url().clone();
+                let resolved = resolved_url(self.client, first.url.clone()).await?;
                 sidecar_hash(self.client, sidecar_of(&resolved)).await?
             }
             source => published_hash(self.client, source).await?,
@@ -341,6 +341,20 @@ pub(super) async fn latest_tag(client: &reqwest::Client, url: Url) -> Result<Str
 
 async fn get(client: &reqwest::Client, url: Url) -> Result<reqwest::Response, CoreError> {
     checked(client.get(url).send().await.map_err(network_error)?)
+}
+
+/// Where `url` redirects to, learned with `HEAD` so that no download
+/// starts (a `GET` if the server refuses `HEAD`).
+async fn resolved_url(client: &reqwest::Client, url: Url) -> Result<Url, CoreError> {
+    let response = client
+        .head(url.clone())
+        .send()
+        .await
+        .map_err(network_error)?;
+    if matches!(response.status().as_u16(), 405 | 501) {
+        return Ok(get(client, url).await?.url().clone());
+    }
+    Ok(checked(response)?.url().clone())
 }
 
 async fn get_text(client: &reqwest::Client, url: Url) -> Result<String, CoreError> {

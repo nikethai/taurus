@@ -7,6 +7,7 @@
 mod errors;
 mod inspect;
 mod process;
+pub(crate) mod remux;
 pub(crate) mod run;
 #[cfg(test)]
 mod tests;
@@ -71,6 +72,11 @@ pub struct MediaOptions {
     /// The link was live or upcoming when inspected: it is recorded from
     /// its start, waiting for an upcoming stream to begin.
     pub live_from_start: bool,
+    /// The ids of the videos its runs began (yt-dlp's `%(id)s`, which its
+    /// file names carry as `[<id>]`), so that removing the job can find its
+    /// partial files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub video_ids: Vec<String>,
 }
 
 /// A conversion after the download.

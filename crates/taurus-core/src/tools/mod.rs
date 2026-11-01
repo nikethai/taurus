@@ -7,7 +7,7 @@
 //! older ones are deleted; `tools/<tool>/.incoming/` holds a download in
 //! progress. A download is accepted only if its SHA-256 matches the
 //! publisher's checksum file and the installed binaries then answer their
-//! version command within 10 s; otherwise it is deleted and the previous
+//! version command within 10 s (30 s on Windows); otherwise it is deleted and the previous
 //! version stays active. yt-dlp's own `-U` self-update is never used.
 
 pub mod catalog;
@@ -34,7 +34,12 @@ const DAY_SECS: i64 = 24 * 60 * 60;
 const CURRENT_FILE: &str = "current";
 /// Names the version a rollback left, which updates then skip.
 const SKIP_FILE: &str = "rolled-back-from";
-/// How long a binary may take to answer its version command.
+/// How long a binary may take to answer its version command: longer on
+/// Windows, where a PyInstaller one-file build's first run (unpacking,
+/// scanned by Defender) can take well over 10 s.
+#[cfg(windows)]
+const VERSION_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(windows))]
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// After an update check that failed on the network (it is not recorded as
 /// a check), unforced updates wait this long before asking again, so a
@@ -186,7 +191,8 @@ impl ToolManager {
         }
     }
 
-    /// Test-only: a shorter limit than 10 s for the version command.
+    /// Test-only: a shorter limit than `VERSION_TIMEOUT` for the version
+    /// command.
     #[cfg(test)]
     fn with_version_timeout(mut self, timeout: Duration) -> ToolManager {
         self.version_timeout = timeout;
@@ -204,6 +210,31 @@ impl ToolManager {
     /// The folder holding all of the tool's versions (it may not exist).
     pub fn tool_dir(&self, kind: ToolKind) -> PathBuf {
         self.root.join(kind.name())
+    }
+
+    /// Every tool as installed under `data_dir/tools`, in `ToolKind::ALL`
+    /// order, read from the files alone (no manager, no network client):
+    /// each is Ready or Missing.
+    pub fn read_status(data_dir: &Path) -> Vec<ToolStatus> {
+        let root = data_dir.join("tools");
+        ToolKind::ALL
+            .iter()
+            .map(|&kind| {
+                let installed = installed_in(&root, kind);
+                let state = if installed.is_some() {
+                    ToolState::Ready
+                } else {
+                    ToolState::Missing
+                };
+                let (version, path) = installed.unzip();
+                ToolStatus {
+                    kind,
+                    version,
+                    path,
+                    state,
+                }
+            })
+            .collect()
     }
 
     /// Every tool, in `ToolKind::ALL` order.
@@ -394,6 +425,12 @@ impl ToolManager {
         }
 
         let before = self.status_of(kind);
+        // However this ends (done, failed, or dropped when the job that
+        // asked is paused), the tool is no longer being installed.
+        let _installing = InstallingGuard {
+            states: &self.states,
+            kind,
+        };
         let report = |downloaded, total| {
             let state = ToolState::Installing { downloaded, total };
             lock(&self.states).insert(kind, state.clone());
@@ -421,10 +458,7 @@ impl ToolManager {
 
     /// The active version and its main binary, if that binary exists.
     fn installed(&self, kind: ToolKind) -> Option<(String, PathBuf)> {
-        let dir = self.tool_dir(kind);
-        let version = install::read_current(&dir)?;
-        let path = dir.join(&version).join(main_binary(kind));
-        path.is_file().then_some((version, path))
+        installed_in(&self.root, kind)
     }
 
     fn checked_at(&self, kind: ToolKind) -> Option<i64> {
@@ -447,6 +481,31 @@ impl ToolManager {
             tracing::warn!("could not save the check time of {}: {e}", kind.name());
         }
     }
+}
+
+/// Clears a tool's `Installing` state when dropped, so a cancelled or
+/// failed install does not leave the tool shown as installing.
+struct InstallingGuard<'a> {
+    states: &'a Mutex<HashMap<ToolKind, ToolState>>,
+    kind: ToolKind,
+}
+
+impl Drop for InstallingGuard<'_> {
+    fn drop(&mut self) {
+        let mut states = lock(self.states);
+        if matches!(states.get(&self.kind), Some(ToolState::Installing { .. })) {
+            states.remove(&self.kind);
+        }
+    }
+}
+
+/// The active version under `root` (`data_dir/tools`) and its main binary,
+/// if that binary exists.
+fn installed_in(root: &Path, kind: ToolKind) -> Option<(String, PathBuf)> {
+    let dir = root.join(kind.name());
+    let version = install::read_current(&dir)?;
+    let path = dir.join(&version).join(main_binary(kind));
+    path.is_file().then_some((version, path))
 }
 
 /// Whether an unforced update of `kind` last checked at `last` (unix secs)

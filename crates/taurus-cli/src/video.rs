@@ -116,6 +116,8 @@ pub async fn add(
                     eprintln!("{note}");
                 }
                 req.media = Some(choice);
+                // The engine need not read the link again.
+                req.media_info = Some(info);
             }
             _ => eprintln!(
                 "note: {}: not a video link; ignoring --audio, --quality and --convert",
@@ -130,6 +132,7 @@ pub async fn add(
         Err(e) if e.kind == ErrorKind::SiteNotSupported => match engine.inspect(&req.url).await {
             Ok(LinkInfo::Media(info)) => {
                 req.media = Some(flags.choice(&info).0);
+                req.media_info = Some(info);
                 engine.add(req).await
             }
             _ => Err(e),

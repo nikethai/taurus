@@ -450,6 +450,7 @@ mod tests {
             convert: Some(crate::media::ConvertPreset::Mp3),
             playlist: false,
             live_from_start: true,
+            video_ids: vec!["abc".into()],
         };
         let id = store
             .insert_job(&crate::store::NewJob {
@@ -468,8 +469,27 @@ mod tests {
         store.update_job(&job).unwrap();
         drop(store);
         let store = Store::open(&path).unwrap();
-        assert_eq!(store.get_job(id).unwrap().unwrap().media, Some(options));
+        assert_eq!(
+            store.get_job(id).unwrap().unwrap().media,
+            Some(options.clone())
+        );
         assert_eq!(store.list_jobs().unwrap().len(), 2);
+        // Only the media options change; options stored before the video
+        // ids were kept read without them.
+        let more = crate::media::MediaOptions {
+            video_ids: vec!["abc".into(), "def".into()],
+            ..options
+        };
+        store.set_media(id, &more).unwrap();
+        let stored = store.get_job(id).unwrap().unwrap();
+        assert_eq!(stored.media, Some(more));
+        assert_eq!(stored.state, JobState::Recording);
+        let old: crate::media::MediaOptions = serde_json::from_str(
+            r#"{"quality":"best","selector":"b","audio_only":false,"convert":null,
+                "playlist":false,"live_from_start":false}"#,
+        )
+        .unwrap();
+        assert!(old.video_ids.is_empty());
     }
 
     #[test]

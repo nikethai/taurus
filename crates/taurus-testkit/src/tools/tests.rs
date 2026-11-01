@@ -205,6 +205,21 @@ fn fake_ffmpeg_copy_mode() {
         .arg(&output));
     assert!(out.status.success(), "{out:?}");
     assert_eq!(std::fs::read(&output).unwrap(), b"stream bytes");
+
+    // Several inputs (a video and an audio part): joined in order.
+    let audio = dir.path().join("live.m4a.part");
+    std::fs::write(&audio, b" + audio").unwrap();
+    let joined = dir.path().join("joined.mp4");
+    let out = run(Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-i")
+        .arg(&input)
+        .arg("-i")
+        .arg(&audio)
+        .args(["-map", "0", "-map", "1", "-c", "copy"])
+        .arg(&joined));
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(std::fs::read(&joined).unwrap(), b"stream bytes + audio");
 }
 
 #[cfg(unix)]

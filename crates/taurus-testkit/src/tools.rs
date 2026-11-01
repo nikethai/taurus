@@ -16,9 +16,11 @@
 //!    `<v>`; deno `deno <v> (stable, release, <arch>-<os>)` plus two lines;
 //!    ffmpeg/ffprobe `<tool> version <v> Copyright (c) 2000-2026 the FFmpeg developers`
 //!    plus one line;
-//! 4. otherwise: yt-dlp replays a scenario (below); `ffmpeg [-y] -i <in> -c copy <out>`
-//!    copies `<in>` to `<out>` (exit 1 if `<in>` is unreadable, or `<out>`
-//!    exists without `-y`); every other call exits 0 silently.
+//! 4. otherwise: yt-dlp replays a scenario (below); `ffmpeg [-y] -i <in>
+//!    [-i <in> ...] [-map N ...] -c copy <out>` writes the inputs one after
+//!    the other to `<out>` (one input: a copy; exit 1 if an input is
+//!    unreadable, or `<out>` exists without `-y`); every other call exits 0
+//!    silently.
 //!
 //! Version and broken flag come from a trailer appended to the binary
 //! ([`fake_tool_release`]): `<binary><payload><u32 LE payload length><"HYADES-FAKETOOL1">`
@@ -67,7 +69,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{Response, StatusCode, Uri, header};
+use axum::http::{Method, Response, StatusCode, Uri, header};
 use bytes::Bytes;
 
 use package::{
@@ -195,6 +197,8 @@ struct HostState {
     cache: HashMap<String, Bytes>,
     /// Paths of every request received, without the leading `/`.
     requests: Vec<String>,
+    /// The paths of the `HEAD` requests among them.
+    heads: Vec<String>,
 }
 
 type Shared = Arc<Mutex<HostState>>;
@@ -249,6 +253,7 @@ impl FakeToolHost {
             deno,
             cache: HashMap::new(),
             requests: Vec::new(),
+            heads: Vec::new(),
         }));
         let (addr, server) = spawn_server(SocketAddr::from(([127, 0, 0, 1], 0)), state.clone());
         FakeToolHost {
@@ -281,6 +286,15 @@ impl FakeToolHost {
     pub fn requests(&self, path_prefix: &str) -> usize {
         lock(&self.state)
             .requests
+            .iter()
+            .filter(|p| p.starts_with(path_prefix))
+            .count()
+    }
+
+    /// Like [`FakeToolHost::requests`], counting only `HEAD` requests.
+    pub fn head_requests(&self, path_prefix: &str) -> usize {
+        lock(&self.state)
+            .heads
             .iter()
             .filter(|p| p.starts_with(path_prefix))
             .count()
@@ -359,11 +373,14 @@ enum Reply {
     NotFound,
 }
 
-async fn handle(State(state): State<Shared>, uri: Uri) -> Response<Body> {
+async fn handle(State(state): State<Shared>, method: Method, uri: Uri) -> Response<Body> {
     let path = uri.path().trim_start_matches('/').to_owned();
     let reply = {
         let mut state = lock(&state);
         state.requests.push(path.clone());
+        if method == Method::HEAD {
+            state.heads.push(path.clone());
+        }
         reply(&mut state, &path)
     };
     let builder = Response::builder().header(header::CONNECTION, "close");

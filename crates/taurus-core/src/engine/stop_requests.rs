@@ -67,7 +67,7 @@ pub(super) fn watch(data_dir: &Path, commands: &mpsc::Sender<Command>) {
             let Some(commands) = commands.upgrade().filter(|c| !c.is_closed()) else {
                 return;
             };
-            for id in take(&dir).await {
+            for id in take(&dir) {
                 let (reply, response) = tokio::sync::oneshot::channel();
                 if commands
                     .send(Command::StopRecording { id, reply })
@@ -86,13 +86,14 @@ pub(super) fn watch(data_dir: &Path, commands: &mpsc::Sender<Command>) {
 }
 
 /// The requests in `dir`, each one's file deleted. Names that are not a job
-/// id are left alone.
-async fn take(dir: &Path) -> Vec<JobId> {
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+/// id are left alone. Read inline, not on the blocking pool: the folder is
+/// tiny, and usually missing.
+fn take(dir: &Path) -> Vec<JobId> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut ids = Vec::new();
-    while let Ok(Some(entry)) = entries.next_entry().await {
+    for entry in entries.flatten() {
         let Some(id) = entry
             .file_name()
             .to_str()
@@ -100,7 +101,7 @@ async fn take(dir: &Path) -> Vec<JobId> {
         else {
             continue;
         };
-        if tokio::fs::remove_file(entry.path()).await.is_ok() {
+        if std::fs::remove_file(entry.path()).is_ok() {
             ids.push(JobId(id));
         }
     }
@@ -127,21 +128,21 @@ fn forget_stale(dir: &Path) {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn requests_are_taken_once_and_odd_names_left() {
+    #[test]
+    fn requests_are_taken_once_and_odd_names_left() {
         let tmp = tempfile::tempdir().unwrap();
         let config = EngineConfig::new(tmp.path().to_path_buf());
         let d = dir(tmp.path());
         Engine::request_stop(&config, JobId(7)).unwrap();
         assert!(Engine::stop_request_pending(&config, JobId(7)));
         std::fs::write(d.join("not-an-id"), b"").unwrap();
-        assert_eq!(take(&d).await, vec![JobId(7)]);
+        assert_eq!(take(&d), vec![JobId(7)]);
         assert!(!Engine::stop_request_pending(&config, JobId(7)));
-        assert!(take(&d).await.is_empty());
+        assert!(take(&d).is_empty());
         assert!(d.join("not-an-id").exists());
         Engine::request_stop(&config, JobId(9)).unwrap();
         Engine::withdraw_stop_request(&config, JobId(9));
-        assert!(take(&d).await.is_empty());
+        assert!(take(&d).is_empty());
     }
 
     #[test]

@@ -8,6 +8,7 @@ fn options(quality: &str, selector: &str, audio_only: bool) -> MediaOptions {
         convert: None,
         playlist: false,
         live_from_start: false,
+        video_ids: Vec::new(),
     }
 }
 
@@ -24,6 +25,7 @@ fn video_args_in_order() {
         &options("best", "bv*+ba/b", false),
         dest,
         "https://v",
+        None,
     ));
     let template = dest.join(SINGLE_TEMPLATE).to_string_lossy().into_owned();
     let expected = [
@@ -59,6 +61,7 @@ fn audio_playlist_live_and_conversions() {
         &options("audio-best", "ba/b", true),
         dest,
         "u",
+        None,
     ));
     assert_eq!(&audio[..3], ["-f", "ba/b", "-x"]);
     assert!(!audio.iter().any(|a| a == "--merge-output-format"));
@@ -67,6 +70,7 @@ fn audio_playlist_live_and_conversions() {
         &options("audio-small", "ba/b", true),
         dest,
         "u",
+        None,
     ));
     assert_eq!(
         &small[..7],
@@ -90,7 +94,7 @@ fn audio_playlist_live_and_conversions() {
             convert: Some(ConvertPreset::Mp3),
             ..quality
         };
-        let args = strings(&download_args(&mp3, dest, "u"));
+        let args = strings(&download_args(&mp3, dest, "u", None));
         assert_eq!(
             &args[2..7],
             ["-x", "--audio-format", "mp3", "--audio-quality", "2"]
@@ -101,7 +105,7 @@ fn audio_playlist_live_and_conversions() {
         convert: Some(ConvertPreset::SmallerMp4),
         ..options("720p", "bv*[height<=720]+ba/b[height<=720]", false)
     };
-    let args = strings(&download_args(&smaller, dest, "u"));
+    let args = strings(&download_args(&smaller, dest, "u", None));
     assert_eq!(
         &args[2..8],
         [
@@ -119,7 +123,7 @@ fn audio_playlist_live_and_conversions() {
         live_from_start: true,
         ..options("best", "bv*+ba/b", false)
     };
-    let args = strings(&download_args(&live_list, dest, "u"));
+    let args = strings(&download_args(&live_list, dest, "u", None));
     assert!(!args.iter().any(|a| a == "--no-playlist"));
     let at = args.iter().position(|a| a == "--live-from-start").unwrap();
     assert_eq!(
@@ -128,6 +132,18 @@ fn audio_playlist_live_and_conversions() {
     );
     let at = args.iter().position(|a| a == "-o").unwrap();
     assert_eq!(args[at + 1], dest.join(PLAYLIST_TEMPLATE).to_string_lossy());
+}
+
+#[test]
+fn a_speed_limit_becomes_limit_rate() {
+    let dest = Path::new("/dl");
+    let best = options("best", "bv*+ba/b", false);
+    let limited = strings(&download_args(&best, dest, "u", Some(250_000)));
+    let at = limited.iter().position(|a| a == "--limit-rate").unwrap();
+    assert_eq!(limited[at + 1], "250000");
+    assert!(at < limited.iter().position(|a| a == "--").unwrap());
+    let fastest = strings(&download_args(&best, dest, "u", None));
+    assert!(!fastest.iter().any(|a| a == "--limit-rate"));
 }
 
 fn progress(json: serde_json::Value) -> String {
@@ -167,8 +183,20 @@ fn tracker_follows_a_video_and_its_audio() {
         t.apply(&format!("{POSTPROCESS}EmbedThumbnail started")),
         Change::default()
     );
-    t.apply(&format!("{POSTPROCESS}FFmpegExtractAudio started"));
-    assert_eq!(t.phase, MediaPhase::Converting);
+    // yt-dlp's real keys (`pp_key()` drops the `FFmpeg` prefix).
+    for (key, phase) in [
+        ("ExtractAudio", MediaPhase::Converting),
+        ("Merger", MediaPhase::Merging),
+        ("VideoConvertor", MediaPhase::Converting),
+        ("Merger", MediaPhase::Merging),
+        ("VideoRemuxer", MediaPhase::Converting),
+        ("FFmpegMerger", MediaPhase::Merging),
+        ("FFmpegExtractAudio", MediaPhase::Converting),
+    ] {
+        let c = t.apply(&format!("{POSTPROCESS}{key} processing"));
+        assert!(c.view, "{key}");
+        assert_eq!(t.phase, phase, "{key}");
+    }
     let c = t.apply(&format!("{FILE}\"/elsewhere/v.mp4\""));
     assert!(c.view);
     t.apply(&format!("{FILE}\"v2.mp4\""));
@@ -198,6 +226,8 @@ fn tracker_counts_playlist_entries() {
     t.apply(&format!("{FILE}\"L/001 - One.mp4\""));
     t.apply(&format!("{ENTRY}2 4 \"b2\" \"Two\""));
     assert_eq!(t.video_id.as_deref(), Some("b2"));
+    t.apply(&format!("{ENTRY}2 4 \"b2\" \"Two\""));
+    assert_eq!(t.video_ids, ["id 1", "b2"]);
     assert_eq!(t.entries_done, 1);
     let c = t.apply(&progress(serde_json::json!({
         "status": "downloading", "downloaded_bytes": 30
@@ -246,52 +276,6 @@ fn printed_paths_get_one_spelling() {
             r"C:\dl\x.mp4"
         );
     }
-}
-
-#[test]
-fn remuxed_names() {
-    for (part, mp4) in [
-        ("/d/live.mp4.part", "/d/live.mp4"),
-        ("/d/Stream [x].ts", "/d/Stream [x].mp4"),
-        ("/d/Stream [x].f299.mp4.part", "/d/Stream [x].f299.mp4"),
-        ("/d/odd.part", "/d/odd.mp4"),
-    ] {
-        assert_eq!(remuxed_name(Path::new(part)), PathBuf::from(mp4), "{part}");
-    }
-}
-
-#[test]
-fn the_recorded_part_is_found() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path();
-    let before = SystemTime::now() - Duration::from_secs(60);
-    let mut t = Tracker::new(dir, MediaPhase::WaitingForStream);
-    t.apply(&format!("{ENTRY}0 1 \"abc\" \"Live\""));
-    std::fs::write(dir.join("Live [abc].mp4.part"), b"x").unwrap();
-    // Nothing recorded yet (no progress): nothing is taken.
-    assert_eq!(recorded_part(dir, &t, before), None);
-    t.apply(&progress(
-        serde_json::json!({"status": "downloading", "downloaded_bytes": 9}),
-    ));
-    // Another job's partial files in the same folder are never taken.
-    std::fs::write(dir.join("Other [zzz].mp4.part"), b"x").unwrap();
-    std::fs::write(dir.join("other.ts"), b"x").unwrap();
-    std::fs::write(dir.join("notes [abc].txt"), b"x").unwrap();
-    assert_eq!(
-        recorded_part(dir, &t, before),
-        Some(dir.join("Live [abc].mp4.part"))
-    );
-    // Without the video's id, the folder is not searched at all.
-    let mut unknown = t.clone();
-    unknown.video_id = None;
-    assert_eq!(recorded_part(dir, &unknown, before), None);
-    // Parts older than the run are another run's.
-    let later = SystemTime::now() + Duration::from_secs(60);
-    assert_eq!(recorded_part(dir, &t, later), None);
-    // One the run reported wins; a reported one that is gone does not.
-    std::fs::write(dir.join("named.ts"), b"x").unwrap();
-    t.parts = vec![dir.join("named.ts"), dir.join("gone.part")];
-    assert_eq!(recorded_part(dir, &t, later), Some(dir.join("named.ts")));
 }
 
 #[cfg(unix)]
@@ -400,17 +384,29 @@ mod process {
     }
 
     #[tokio::test]
-    async fn a_failed_remux_keeps_the_part() {
-        let tmp = tempfile::tempdir().unwrap();
-        let part = tmp.path().join("x.mp4.part");
-        std::fs::write(&part, b"data").unwrap();
-        let err = remux_part(Path::new("false"), &part).await.unwrap_err();
-        assert_eq!(err.kind, ErrorKind::ToolFailed);
-        assert!(part.is_file());
-        // A tool that "works": the part goes.
-        let ok = remux_part(Path::new("true"), &part).await;
-        // `true` writes no output file, so this is a failure too.
-        assert!(ok.is_err());
-        assert!(part.is_file());
+    async fn our_lines_on_stderr_are_read_too() {
+        // yt-dlp prints the postprocessing template to stderr under the
+        // `--quiet` that `--print` implies.
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "echo 'TAURUS-PROGRESS {}'; echo 'TAURUS-PP ExtractAudio started' >&2; \
+                 echo 'ERROR: bad' >&2; exit 1",
+            ])
+            .stdin(std::process::Stdio::null());
+        let never = CancellationToken::new();
+        let mut lines = Vec::new();
+        let ended = run_process(command, &never, &never, Duration::from_secs(1), |l| {
+            lines.push(l.to_owned());
+        })
+        .await
+        .unwrap();
+        lines.sort();
+        assert_eq!(
+            lines,
+            ["TAURUS-PP ExtractAudio started", "TAURUS-PROGRESS {}"]
+        );
+        assert_eq!(ended.stderr.trim(), "ERROR: bad");
     }
 }

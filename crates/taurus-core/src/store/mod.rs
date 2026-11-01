@@ -388,6 +388,19 @@ impl Store {
         Ok(())
     }
 
+    /// Sets only the job's media options. A job that no longer exists is a
+    /// no-op.
+    pub fn set_media(&self, id: JobId, media: &MediaOptions) -> Result<(), CoreError> {
+        let media = media_json(Some(media))?;
+        self.lock()
+            .execute(
+                "UPDATE jobs SET media_options = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id.0, media, now_secs()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     /// Puts the job back in the queue (Queued) and clears its error.
     pub fn requeue(&self, id: JobId) -> Result<(), CoreError> {
         self.lock()

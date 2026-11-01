@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use slint::ComponentHandle;
-use taurus_core::media::{ConvertPreset, LiveStatus, MediaInfo};
+use taurus_core::media::{LiveStatus, MediaInfo};
 use taurus_core::{CoreError, ErrorKind, JobView, MediaChoice};
 
 use crate::add_flow::{PendingAdd, add_job};
@@ -100,12 +100,20 @@ impl MediaPick {
         if self.audio { "music" } else { "media" }
     }
 
-    /// The engine's choice. "Smaller file" is an MP3.
+    /// The engine's choice. "Smaller file" is the `audio-small` quality,
+    /// whose own arguments make a small MP3: no conversion on top (the MP3
+    /// conversion's higher quality would win and make it larger).
     pub(crate) fn choice(&self) -> MediaChoice {
         MediaChoice {
             quality: self.quality.clone(),
-            convert: (self.quality == "audio-small").then_some(ConvertPreset::Mp3),
+            convert: None,
         }
+    }
+
+    /// What `Engine::inspect` found, so the engine need not read the link
+    /// again.
+    pub(crate) fn info(&self) -> &MediaInfo {
+        &self.info
     }
 
     fn large(&self) -> bool {
@@ -381,7 +389,7 @@ mod tests {
             pick.choice(),
             MediaChoice {
                 quality: "audio-small".into(),
-                convert: Some(ConvertPreset::Mp3)
+                convert: None
             }
         );
         pick.cycle();

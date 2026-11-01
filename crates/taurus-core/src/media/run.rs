@@ -1,5 +1,6 @@
-//! One yt-dlp download run: its arguments, reading what it prints, stopping
-//! it gracefully, and keeping what a stopped live recording left behind.
+//! One yt-dlp download run: its arguments, reading what it prints, and
+//! stopping it gracefully. What a stopped live recording left behind is
+//! kept by `remux`.
 //!
 //! The engine's media job (`engine::media`) decides when to run, retry or
 //! give up; this module only knows yt-dlp.
@@ -7,7 +8,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
@@ -30,8 +31,10 @@ const PROGRESS: &str = "TAURUS-PROGRESS ";
 const POSTPROCESS: &str = "TAURUS-PP ";
 const FILE: &str = "TAURUS-FILE ";
 const ENTRY: &str = "TAURUS-ENTRY ";
+/// What every line of ours starts with, on either stream.
+const OURS: &str = "TAURUS-";
 
-/// The most of one stdout line kept; the rest of a longer line is dropped.
+/// The most of one output line kept; the rest of a longer line is dropped.
 const MAX_LINE: usize = 64 * 1024;
 /// The most of stderr kept: its end, where the errors are.
 const MAX_STDERR: usize = 256 * 1024;
@@ -53,8 +56,14 @@ pub enum MediaPhase {
     Converting,
 }
 
-/// yt-dlp's arguments after the global flags, ending with the link.
-pub(crate) fn download_args(options: &MediaOptions, dest_dir: &Path, url: &str) -> Vec<OsString> {
+/// yt-dlp's arguments after the global flags, ending with the link;
+/// `limit_rate` (bytes per second) caps the download speed.
+pub(crate) fn download_args(
+    options: &MediaOptions,
+    dest_dir: &Path,
+    url: &str,
+    limit_rate: Option<u64>,
+) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["-f".into(), options.selector.clone().into()];
     let audio = options.audio_only || options.convert == Some(ConvertPreset::Mp3);
     if audio {
@@ -76,6 +85,10 @@ pub(crate) fn download_args(options: &MediaOptions, dest_dir: &Path, url: &str) 
     }
     if options.live_from_start {
         args.extend(["--live-from-start", "--wait-for-video", "30-600"].map(OsString::from));
+    }
+    if let Some(rate) = limit_rate {
+        args.push("--limit-rate".into());
+        args.push(rate.max(1).to_string().into());
     }
     let template = if options.playlist {
         PLAYLIST_TEMPLATE
@@ -126,6 +139,8 @@ pub(crate) struct Tracker {
     /// The id of the video downloading now (yt-dlp's `%(id)s`, which the
     /// output names carry as `[<id>]`).
     pub video_id: Option<String>,
+    /// Every video id the run began, in order (a playlist has several).
+    pub video_ids: Vec<String>,
     /// Bytes of the entries before the current one.
     before_entry: u64,
     /// Bytes of the current entry's finished streams (video, then audio).
@@ -157,6 +172,7 @@ impl Tracker {
             parts: Vec::new(),
             progressed: false,
             video_id: None,
+            video_ids: Vec::new(),
             before_entry: 0,
             entry_finished: 0,
             stream: None,
@@ -166,8 +182,8 @@ impl Tracker {
         }
     }
 
-    /// Reads one stdout line of yt-dlp; lines that are not ours change
-    /// nothing.
+    /// Reads one line yt-dlp printed (on stdout or stderr); lines that are
+    /// not ours change nothing.
     pub(crate) fn apply(&mut self, line: &str) -> Change {
         let line = line.trim_end();
         if let Some(json) = line.strip_prefix(PROGRESS) {
@@ -179,11 +195,11 @@ impl Tracker {
         if let Some(rest) = line.strip_prefix(POSTPROCESS) {
             let mut words = rest.split_whitespace();
             let (pp, status) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
-            let phase = match pp {
+            // yt-dlp's `pp_key()`: the class name without `FFmpeg` and `PP`
+            // (the prefixed spellings are kept, in case that ever changes).
+            let phase = match pp.strip_prefix("FFmpeg").unwrap_or(pp) {
                 "Merger" => MediaPhase::Merging,
-                "FFmpegExtractAudio" | "FFmpegVideoConvertor" | "FFmpegVideoRemuxer" => {
-                    MediaPhase::Converting
-                }
+                "ExtractAudio" | "VideoConvertor" | "VideoRemuxer" => MediaPhase::Converting,
                 _ => return Change::default(),
             };
             if status == "finished" {
@@ -219,6 +235,11 @@ impl Tracker {
                 .next()
                 .and_then(Result::ok)
                 .filter(|id| !id.is_empty());
+            if let Some(id) = &self.video_id
+                && !self.video_ids.contains(id)
+            {
+                self.video_ids.push(id.clone());
+            }
             self.before_entry += self.entry_finished + self.stream_done;
             self.entry_finished = 0;
             self.stream = None;
@@ -347,7 +368,7 @@ pub(crate) struct Ended {
     /// `None` if it was killed.
     pub status: Option<ExitStatus>,
     pub stopped: Option<Stop>,
-    /// The end of what it printed to stderr.
+    /// The end of what it printed to stderr, without the lines of ours.
     pub stderr: String,
 }
 
@@ -358,10 +379,12 @@ impl Ended {
 }
 
 /// Starts `command` (yt-dlp with all its arguments) as a process tree and
-/// hands each stdout line to `on_line` until it exits. When `pause` or
-/// `finish` is cancelled, the tree gets the graceful interrupt (Ctrl+C;
-/// Ctrl+Break on Windows), and is killed if it has not exited `grace`
-/// later, or at once if the interrupt cannot be sent.
+/// hands each line of ours to `on_line` until it exits: from stdout, and
+/// from stderr too, where yt-dlp prints the postprocessing template under
+/// the `--quiet` that `--print` implies (the rest of stderr is kept as the
+/// error tail). When `pause` or `finish` is cancelled, the tree gets the
+/// graceful interrupt (Ctrl+C; Ctrl+Break on Windows), and is killed if it
+/// has not exited `grace` later, or at once if the interrupt cannot be sent.
 pub(crate) async fn run_process(
     mut command: Command,
     pause: &CancellationToken,
@@ -378,12 +401,9 @@ pub(crate) async fn run_process(
             kind: ErrorKind::ToolFailed,
             detail: format!("could not run yt-dlp: {e}"),
         })?;
-    let stdout = run.child.stdout.take().expect("stdout is piped");
-    let stderr = run.child.stderr.take().expect("stderr is piped");
-    let stderr = tokio::spawn(read_tail(stderr, MAX_STDERR));
-    let mut stdout = BufReader::new(stdout);
-    let mut line = Vec::new();
-    let mut out_open = true;
+    let mut out = Stream::new(run.child.stdout.take().expect("stdout is piped"));
+    let mut err = Stream::new(run.child.stderr.take().expect("stderr is piped"));
+    let mut tail = Vec::new();
     let mut stopped = None;
     let mut deadline: Option<Instant> = None;
     let status = loop {
@@ -407,11 +427,16 @@ pub(crate) async fn run_process(
                 }
                 break None;
             }
-            read = read_line(&mut stdout, &mut line), if out_open => match read {
-                Ok(true) => on_line(&take_line(&mut line)),
-                // A read error is the end too: nothing more can come.
-                Ok(false) | Err(_) => out_open = false,
-            },
+            line = out.next(), if out.open => {
+                if let Some(text) = line {
+                    on_line(&text);
+                }
+            }
+            line = err.next(), if err.open => {
+                if let Some(text) = line {
+                    from_stderr(&text, &mut on_line, &mut tail);
+                }
+            }
             status = run.child.wait() => break Some(status),
         }
     };
@@ -419,23 +444,72 @@ pub(crate) async fn run_process(
         kind: ErrorKind::ToolFailed,
         detail: format!("could not wait for yt-dlp: {e}"),
     })?;
-    if out_open {
-        let _ = tokio::time::timeout(DRAIN, async {
-            while let Ok(true) = read_line(&mut stdout, &mut line).await {
-                on_line(&take_line(&mut line));
+    // What is still in the pipes.
+    let _ = tokio::time::timeout(DRAIN, async {
+        while out.open || err.open {
+            tokio::select! {
+                line = out.next(), if out.open => {
+                    if let Some(text) = line {
+                        on_line(&text);
+                    }
+                }
+                line = err.next(), if err.open => {
+                    if let Some(text) = line {
+                        from_stderr(&text, &mut on_line, &mut tail);
+                    }
+                }
             }
-        })
-        .await;
-    }
-    let stderr = match tokio::time::timeout(DRAIN, stderr).await {
-        Ok(Ok(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
-        _ => String::new(),
-    };
+        }
+    })
+    .await;
     Ok(Ended {
         status,
         stopped,
-        stderr,
+        stderr: String::from_utf8_lossy(&tail).into_owned(),
     })
+}
+
+/// One of yt-dlp's output pipes, read line by line.
+struct Stream<R> {
+    reader: BufReader<R>,
+    line: Vec<u8>,
+    open: bool,
+}
+
+impl<R: AsyncRead + Unpin> Stream<R> {
+    fn new(reader: R) -> Stream<R> {
+        Stream {
+            reader: BufReader::new(reader),
+            line: Vec::new(),
+            open: true,
+        }
+    }
+
+    /// The next line; `None` at the end, or on a read error (nothing more
+    /// can come), after which `open` is false. Cancel-safe.
+    async fn next(&mut self) -> Option<String> {
+        match read_line(&mut self.reader, &mut self.line).await {
+            Ok(true) => Some(take_line(&mut self.line)),
+            Ok(false) | Err(_) => {
+                self.open = false;
+                None
+            }
+        }
+    }
+}
+
+/// A stderr line: ours goes to `on_line`, the rest to the error tail, of
+/// which the last `MAX_STDERR` bytes or so are kept.
+fn from_stderr(line: &str, on_line: &mut impl FnMut(&str), tail: &mut Vec<u8>) {
+    if line.starts_with(OURS) {
+        on_line(line);
+        return;
+    }
+    tail.extend_from_slice(line.as_bytes());
+    tail.push(b'\n');
+    if tail.len() > 2 * MAX_STDERR {
+        tail.drain(..tail.len() - MAX_STDERR);
+    }
 }
 
 /// Reads the rest of a line into `line` (without the newline), keeping at
@@ -486,7 +560,7 @@ fn interrupt(run: &TreeChild, grace: Duration) -> Instant {
 }
 
 /// Reads to the end, keeping the last `cap` bytes or so.
-async fn read_tail(mut reader: impl AsyncRead + Unpin, cap: usize) -> Vec<u8> {
+pub(super) async fn read_tail(mut reader: impl AsyncRead + Unpin, cap: usize) -> Vec<u8> {
     let mut kept = Vec::new();
     // On the heap: a future holding it inline would be 16 KiB larger.
     let mut buf = vec![0u8; 16 * 1024];
@@ -500,91 +574,6 @@ async fn read_tail(mut reader: impl AsyncRead + Unpin, cap: usize) -> Vec<u8> {
                 }
             }
         }
-    }
-}
-
-/// The partial file a stopped recording left: nothing if the run never
-/// reported progress; else the newest one it reported that still exists,
-/// else the newest `.part` or `.ts` file in `dir` changed since `since`
-/// whose name carries the video's id as `[<id>]` (yt-dlp's output name),
-/// so another job's file in the same folder is never taken.
-pub(crate) fn recorded_part(dir: &Path, tracker: &Tracker, since: SystemTime) -> Option<PathBuf> {
-    if !tracker.progressed {
-        return None;
-    }
-    if let Some(part) = tracker.parts.iter().rev().find(|p| p.is_file()) {
-        return Some(part.clone());
-    }
-    let tag = format!("[{}]", tracker.video_id.as_deref()?);
-    let since = since.checked_sub(Duration::from_secs(2)).unwrap_or(since);
-    std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .filter(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let lower = name.to_ascii_lowercase();
-            name.contains(&tag) && (lower.ends_with(".part") || lower.ends_with(".ts"))
-        })
-        .filter_map(|e| {
-            let meta = e.metadata().ok()?;
-            let modified = meta.modified().ok()?;
-            (meta.is_file() && modified >= since).then(|| (modified, e.path()))
-        })
-        .max_by_key(|(modified, _)| *modified)
-        .map(|(_, path)| path)
-}
-
-/// Where a partial recording goes once remuxed: its name without `.part`
-/// and without its own extension, as `.mp4`.
-pub(crate) fn remuxed_name(part: &Path) -> PathBuf {
-    let name = part
-        .file_name()
-        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-    let name = name.strip_suffix(".part").unwrap_or(&name);
-    let stem = Path::new(name)
-        .file_stem()
-        .map_or_else(|| name.to_owned(), |s| s.to_string_lossy().into_owned());
-    part.with_file_name(format!("{stem}.mp4"))
-}
-
-/// Copies the streams of a partial recording into a playable MP4 with
-/// ffmpeg (`ffmpeg -y -i <part> -c copy <final>.mp4`) and deletes the part
-/// only if that worked. Returns the MP4.
-pub(crate) async fn remux_part(ffmpeg: &Path, part: &Path) -> Result<PathBuf, CoreError> {
-    let out = remuxed_name(part);
-    let mut command = Command::new(ffmpeg);
-    command
-        .arg("-y")
-        .arg("-i")
-        .arg(part)
-        .args(["-c", "copy"])
-        .arg(&out)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
-    let mut run = TreeChild::spawn(&mut command)
-        .await
-        .map_err(|e| tool_failed(format!("could not run ffmpeg: {e}")))?;
-    let mut stderr = run.child.stderr.take().expect("stderr is piped");
-    let (tail, status) = tokio::join!(read_tail(&mut stderr, 16 * 1024), run.child.wait());
-    let status = status.map_err(|e| tool_failed(format!("could not wait for ffmpeg: {e}")))?;
-    if !status.success() || !out.is_file() {
-        let tail = String::from_utf8_lossy(&tail);
-        let last = tail.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("");
-        return Err(tool_failed(format!(
-            "ffmpeg could not finish the recording ({status}): {last}"
-        )));
-    }
-    if let Err(e) = std::fs::remove_file(part) {
-        tracing::warn!("could not remove {}: {e}", part.display());
-    }
-    Ok(out)
-}
-
-fn tool_failed(detail: String) -> CoreError {
-    CoreError {
-        kind: ErrorKind::ToolFailed,
-        detail,
     }
 }
 

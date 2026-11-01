@@ -11,10 +11,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::http::JobOutcome;
-use crate::media::run::{
-    Ended, MediaPhase, Stop, Tracker, download_args, recorded_part, remux_part, remuxed_name,
-    run_process,
-};
+use crate::media::remux::{RemuxPlan, recorded_parts, remux_parts};
+use crate::media::run::{Ended, MediaPhase, Stop, Tracker, download_args, run_process};
 use crate::media::{YtDlp, classify_stderr_with, failure_detail, standard_quality};
 use crate::plan::Segment;
 use crate::store::{JobRecord, JobState, Store};
@@ -32,6 +30,9 @@ pub(super) struct MediaJob {
     pub(super) store: Store,
     /// How long yt-dlp may take to stop after the interrupt.
     pub(super) grace: Duration,
+    /// The job's share of the speed limit (bytes per second), as it
+    /// started; `None` without a limit.
+    pub(super) limit_rate: Option<u64>,
     /// For `Event::ToolStatus` while the tools are installed.
     pub(super) events: broadcast::Sender<Event>,
     /// Pause, removal or shutdown.
@@ -43,7 +44,8 @@ pub(super) struct MediaJob {
 
 /// Runs the job and records how it ended in the store (Completed with the
 /// finished file's name, Paused, or Failed with its error), as `run_job`
-/// does for a web download.
+/// does for a web download. A job stopped (`finish`) before anything was
+/// recorded is Paused without an error.
 pub(super) async fn run_media_job(ctx: MediaJob) -> JobOutcome {
     let outcome = match drive(&ctx).await {
         Ok(outcome) => outcome,
@@ -52,6 +54,16 @@ pub(super) async fn run_media_job(ctx: MediaJob) -> JobOutcome {
     let id = ctx.job.id;
     let recorded = match &outcome {
         JobOutcome::Completed(_) => Ok(()),
+        JobOutcome::Paused if ctx.finish.is_cancelled() => {
+            ctx.store.get_job(id).and_then(|job| match job {
+                Some(mut job) => {
+                    job.state = JobState::Paused;
+                    job.error = None;
+                    ctx.store.update_job(&job)
+                }
+                None => Ok(()),
+            })
+        }
         JobOutcome::Paused => ctx.store.set_state(id, JobState::Paused),
         JobOutcome::Failed(e) => ctx.store.get_job(id).and_then(|job| match job {
             Some(mut job) => {
@@ -90,14 +102,21 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
         let yt_dlp = YtDlp::prepare(&ctx.tools).await?;
         let mut command = yt_dlp.command();
         command
-            .args(download_args(options, &job.dest_dir, &job.url))
+            .args(download_args(
+                options,
+                &job.dest_dir,
+                &job.url,
+                ctx.limit_rate,
+            ))
             .current_dir(&job.dest_dir);
         let mut tracker = Tracker::new(&job.dest_dir, first_phase);
         let started = SystemTime::now();
         let mut live_since = None;
+        let mut video_ids = options.video_ids.clone();
         ctx.update(&tracker, None, true);
         let ended = run_process(command, &ctx.cancel, &ctx.finish, ctx.grace, |line| {
             let change = tracker.apply(line);
+            ctx.remember_ids(&tracker, &mut video_ids);
             if let Some((downloaded, total, speed_bps)) = change.progress {
                 let _ = ctx.msgs.send(JobMsg::Progress {
                     id: job.id,
@@ -141,6 +160,8 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
                             }
                         }
                         () = ctx.cancel.cancelled() => return Ok(JobOutcome::Paused),
+                        // Nothing was recorded: stopping ends it cleanly.
+                        () = ctx.finish.cancelled() => return Ok(JobOutcome::Paused),
                     }
                 }
                 return Err(CoreError {
@@ -209,8 +230,10 @@ async fn update_after_break(ctx: &MediaJob, ended: &Ended, used: &Path) -> bool 
     other
 }
 
-/// The recording was stopped: keeps what yt-dlp finished, else makes its
-/// partial file playable with ffmpeg.
+/// The recording was stopped: keeps what yt-dlp finished, else joins its
+/// partial files (video and audio) into one playable file with ffmpeg.
+/// Nothing recorded yet (the stream had not begun) is Paused: nothing to
+/// keep, and nothing went wrong.
 async fn finish_recording(
     ctx: &MediaJob,
     tracker: &mut Tracker,
@@ -219,16 +242,16 @@ async fn finish_recording(
 ) -> Result<JobOutcome, CoreError> {
     tracker.files.retain(|f| f.is_file());
     if tracker.files.is_empty() {
-        let part = recorded_part(&ctx.job.dest_dir, tracker, started).ok_or_else(|| CoreError {
-            kind: ErrorKind::Unknown,
-            detail: "the recording was stopped before anything was recorded".to_string(),
-        })?;
+        let parts = recorded_parts(&ctx.job.dest_dir, tracker, started);
+        let Some(plan) = RemuxPlan::new(parts) else {
+            return Ok(JobOutcome::Paused);
+        };
         // A long recording takes a while: pausing, removing or shutting
-        // down stops ffmpeg (dropping it kills it) and keeps the part.
+        // down stops ffmpeg (dropping it kills it) and keeps the parts.
         let file = tokio::select! {
-            file = remux_part(ffmpeg, &part) => file?,
+            file = remux_parts(ffmpeg, &plan) => file?,
             () = ctx.cancel.cancelled() => {
-                let _ = std::fs::remove_file(remuxed_name(&part));
+                let _ = std::fs::remove_file(&plan.out);
                 return Ok(JobOutcome::Paused);
             }
         };
@@ -299,6 +322,28 @@ fn name_of(dest_dir: &Path, file: &Path, playlist: bool) -> Option<String> {
 }
 
 impl MediaJob {
+    /// Stores the ids of the videos the run began that `known` lacks, so
+    /// that removing the job finds their partial files, even after a
+    /// restart.
+    fn remember_ids(&self, tracker: &Tracker, known: &mut Vec<String>) {
+        let new: Vec<&String> = tracker
+            .video_ids
+            .iter()
+            .filter(|id| !known.contains(id))
+            .collect();
+        if new.is_empty() {
+            return;
+        }
+        known.extend(new.into_iter().cloned());
+        let Some(mut options) = self.job.media.clone() else {
+            return;
+        };
+        options.video_ids = known.clone();
+        if let Err(e) = self.store.set_media(self.job.id, &options) {
+            tracing::warn!(job = self.job.id.0, "could not store the video ids: {e}");
+        }
+    }
+
     /// Sends the tracker's state as the job's media view.
     fn update(&self, tracker: &Tracker, live_elapsed_secs: Option<u64>, announce: bool) {
         let _ = self.msgs.send(JobMsg::Media {

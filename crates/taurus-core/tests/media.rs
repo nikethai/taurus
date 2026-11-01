@@ -391,6 +391,15 @@ struct MediaRig {
 
 impl MediaRig {
     async fn new(info: &Value, download: Value) -> MediaRig {
+        MediaRig::with_config(info, download, |_| {}).await
+    }
+
+    /// `new`, with `tweak` applied to the engine's config.
+    async fn with_config(
+        info: &Value,
+        download: Value,
+        tweak: impl FnOnce(&mut EngineConfig),
+    ) -> MediaRig {
         let version = unique_version();
         set_ytdlp_scenario(&version, &media_scenario(info, download).to_string());
         let host = FakeToolHost::start(
@@ -407,6 +416,7 @@ impl MediaRig {
         let mut config = EngineConfig::new(tmp.path().join("data"));
         config.tool_sources = sources(&host);
         config.timing = Timing::fast_for_tests();
+        tweak(&mut config);
         let engine = Engine::open(config).await.unwrap();
         MediaRig {
             host,
@@ -539,13 +549,10 @@ async fn downloads_single_video() {
     info["thumbnail"] = json!(thumb);
     let name = "A Fine Video [abc123].mp4";
     let download = json!({
-        "stdout": [
-            progress(500, 1000),
-            progress(1000, 1000),
-            "TAURUS-PP Merger started",
-            "TAURUS-PP Merger finished",
-            file_line(name),
-        ],
+        "stdout": [progress(500, 1000), progress(1000, 1000), file_line(name)],
+        // As real yt-dlp prints them: on stderr, under the `--quiet` that
+        // `--print` implies, with `pp_key()` names.
+        "stderr": ["TAURUS-PP Merger started", "TAURUS-PP Merger finished"],
         "delay_ms_per_line": 30,
         "write_files": [[name, 1000]],
     });
@@ -622,7 +629,18 @@ async fn downloads_single_video() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn audio_only_mp3_args() {
-    let rig = MediaRig::new(&video_info(), downloads("song.mp3", 300)).await;
+    let download = json!({
+        "stdout": [progress(150, 300), progress(300, 300), file_line("song.mp3")],
+        "stderr": [
+            "TAURUS-PP ExtractAudio started",
+            "TAURUS-PP ExtractAudio processing",
+            "TAURUS-PP ExtractAudio finished",
+        ],
+        "delay_ms_per_line": 30,
+        "write_files": [["song.mp3", 300]],
+    });
+    let rig = MediaRig::new(&video_info(), download).await;
+    let mut events = rig.engine.subscribe();
     let link = "https://www.youtube.com/watch?v=audio_only_mp3_args";
     let mut req = rig.request(link);
     req.media = Some(MediaChoice {
@@ -631,6 +649,16 @@ async fn audio_only_mp3_args() {
     });
     let id = rig.engine.add(req).await.unwrap();
     assert_eq!(rig.wait(id).await, JobState::Completed);
+    // "Finishing up…": the conversion yt-dlp reports on stderr is seen.
+    let mut converting = false;
+    while let Ok(event) = events.try_recv() {
+        if let Event::JobUpdated(v) = event
+            && v.id == id
+        {
+            converting |= media(&v).phase == MediaPhase::Converting;
+        }
+    }
+    assert!(converting, "no Converting phase");
     assert_eq!(rig.view(id).file_name, "song.mp3");
     let calls = download_calls(link);
     let argv = &calls[0].argv;
@@ -1238,4 +1266,324 @@ async fn engine_futures_stay_small() {
     for (name, size) in sizes {
         assert!(size < limit, "Engine::{name} is a {size}-byte future");
     }
+}
+
+// ---- Final wave: two-stream recordings, clean stops, removal, limits ----
+
+/// A live stream recorded from its start: yt-dlp downloads the video and
+/// the audio side by side, into two partial files it reports in turn.
+fn live_two_streams() -> Value {
+    let video = "Live Now [live1].f137.mp4.part";
+    let audio = "Live Now [live1].f140.m4a.part";
+    let line = |part: &str, done: u64| {
+        let progress = json!({
+            "status": "downloading",
+            "downloaded_bytes": done,
+            "speed": 2000.0,
+            "filename": part.trim_end_matches(".part"),
+            "tmpfilename": part,
+        });
+        format!("TAURUS-PROGRESS {progress}")
+    };
+    json!({
+        "stdout": [
+            format!("TAURUS-ENTRY 0 1 {} {}", json!("live1"), json!("Live Now")),
+            line(video, 4096),
+            line(audio, 1024),
+        ],
+        "start_files": [[video, 4096], [audio, 1024]],
+        "wait_for_interrupt": true,
+        "on_interrupt": { "exit": 1 },
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stopped_recording_joins_its_video_and_audio() {
+    let rig = MediaRig::new(&fixture("live.json"), live_two_streams()).await;
+    // A file of the name the recording would take is someone else's.
+    let theirs = rig.dest.join("Live Now [live1].mp4");
+    std::fs::write(&theirs, b"not the recording").unwrap();
+    let link = "https://www.twitch.tv/joins_video_and_audio";
+    let id = recording(&rig, link).await;
+
+    tokio::time::timeout(Duration::from_secs(30), rig.engine.stop_recording(id))
+        .await
+        .unwrap()
+        .unwrap();
+    let view = rig.view(id);
+    assert_eq!(view.state, JobState::Completed, "{view:?}");
+    let file = rig.dest.join("Live Now [live1] (2).mp4");
+    // The fake ffmpeg joins its inputs: both streams are in the file.
+    assert_eq!(std::fs::metadata(&file).unwrap().len(), 4096 + 1024);
+    assert_eq!(view.file_name, "Live Now [live1] (2).mp4");
+    assert_same_paths(&media(&view).files, &[file]);
+    assert_eq!(std::fs::read(&theirs).unwrap(), b"not the recording");
+    let video = rig.dest.join("Live Now [live1].f137.mp4.part");
+    let audio = rig.dest.join("Live Now [live1].f140.m4a.part");
+    assert!(!video.exists() && !audio.exists(), "the parts are gone");
+    let remux = process_args_log()
+        .into_iter()
+        // This test's own run (the log is shared): by its folder.
+        .find(|e| e.tool == "ffmpeg" && e.argv.iter().any(|a| a == video.to_str().unwrap()))
+        .expect("ffmpeg ran");
+    for run in [
+        &["-i", video.to_str().unwrap()][..],
+        &["-i", audio.to_str().unwrap()],
+        &["-map", "0", "-map", "1", "-c", "copy"],
+    ] {
+        assert!(has_run(&remux.argv, run), "{run:?} in {:?}", remux.argv);
+    }
+}
+
+/// An upcoming stream that sends nothing until stopped.
+fn upcoming_stream() -> Value {
+    json!({
+        "stdout": [format!("TAURUS-ENTRY 0 1 {} {}", json!("soon1"), json!("Soon"))],
+        "wait_for_interrupt": true,
+        "on_interrupt": { "exit": 1 },
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stopping_before_the_stream_begins_pauses_cleanly() {
+    let rig = MediaRig::new(&fixture("live.json"), upcoming_stream()).await;
+    let link = "https://www.twitch.tv/stop_before_the_stream";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    rig.until(id, "waiting for the stream", |v| {
+        v.state == JobState::Recording
+            && media(v).phase == MediaPhase::WaitingForStream
+            && !download_calls(link).is_empty()
+    })
+    .await;
+
+    tokio::time::timeout(Duration::from_secs(30), rig.engine.stop_recording(id))
+        .await
+        .unwrap()
+        .unwrap();
+    let view = rig.view(id);
+    assert_eq!(view.state, JobState::Paused, "{view:?}");
+    assert_eq!(view.error, None, "an ordinary stop is no failure");
+    // Kept, as stored: it can be started again or removed.
+    let stored = Engine::read_snapshot(&EngineConfig::new(rig.tmp.path().join("data"))).unwrap();
+    let stored = stored.iter().find(|v| v.id == id).unwrap();
+    assert_eq!((stored.state, &stored.error), (JobState::Paused, &None));
+    rig.engine.resume(id).await.unwrap();
+    rig.until(id, "recording again", |v| v.state == JobState::Recording)
+        .await;
+    rig.engine.remove(id, true).await.unwrap();
+    assert!(rig.engine.snapshot().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stopping_during_the_update_after_a_break_pauses_cleanly() {
+    let broken = json!({
+        "stderr": ["ERROR: [youtube] x: Signature extraction failed: Some exception"],
+        "exit": 1,
+    });
+    let rig = MediaRig::new(&video_info(), broken).await;
+    rig.engine.install_tools().await.unwrap();
+    // The newer yt-dlp hangs on its version check: the update takes long.
+    let hanging = unique_version();
+    rig.host.set_release(
+        "yt-dlp",
+        ToolRelease {
+            hang: true,
+            ..ToolRelease::new(&hanging)
+        },
+    );
+    let pid_file = taurus_testkit::hang_pid_file(&hanging);
+    let link = "https://www.youtube.com/watch?v=stop_during_update";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !pid_file.exists() {
+        assert!(std::time::Instant::now() < deadline, "no update started");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let started = std::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(30), rig.engine.stop_recording(id))
+        .await
+        .unwrap()
+        .unwrap();
+    // Not after the 10 s the version check may take.
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let view = rig.view(id);
+    assert_eq!(view.state, JobState::Paused, "{view:?}");
+    assert_eq!(view.error, None);
+    assert_eq!(download_calls(link).len(), 1);
+    // The update was dropped: the tool is not left "installing".
+    let tools = rig.engine.tools_status();
+    let yt_dlp = tools.iter().find(|s| s.kind == ToolKind::YtDlp).unwrap();
+    assert_eq!(yt_dlp.state, ToolState::Ready);
+    let _ = std::fs::remove_file(pid_file);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn removing_an_unfinished_media_job_deletes_only_its_own_partial_files() {
+    let own = [
+        "Vid [vid1].f137.mp4.part",
+        "Vid [vid1].f137.mp4.ytdl",
+        "Vid [vid1].f137.mp4.part-Frag3",
+        "Vid [vid1].f140.m4a",
+        "Vid [vid1].temp.mp4",
+        "Sub/Vid [vid1].f137.mp4.part",
+    ];
+    let download = json!({
+        "stdout": [
+            format!("TAURUS-ENTRY 0 1 {} {}", json!("vid1"), json!("Vid")),
+            progress(100, 1000),
+            progress(200, 1000),
+            progress(300, 1000),
+            file_line("Vid [vid1].mp4"),
+        ],
+        "delay_ms_per_line": 400,
+        "start_files": own.iter().map(|f| json!([f, 3])).collect::<Vec<_>>(),
+        "write_files": [["Vid [vid1].mp4", 1000]],
+        "on_interrupt": { "exit": 1 },
+    });
+    let rig = MediaRig::new(&video_info(), download).await;
+    // Another job's partial file, and the user's files that share the id
+    // but are not partial downloads.
+    let decoys = [
+        "Other [zzz].f137.mp4.part",
+        "Notes [vid1].txt",
+        "Song [vid1].flac",
+        "Sub/Other [zzz].mp4.ytdl",
+    ];
+    std::fs::create_dir_all(rig.dest.join("Sub")).unwrap();
+    for decoy in decoys {
+        std::fs::write(rig.dest.join(decoy), b"keep").unwrap();
+    }
+    let link = "https://www.youtube.com/watch?v=remove_partial_files";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    rig.until(id, "progress", |v| v.downloaded > 0).await;
+    rig.engine.pause(id).await.unwrap();
+    for file in own {
+        assert!(rig.dest.join(file).is_file(), "{file} written");
+    }
+
+    rig.engine
+        .remove_with(id, taurus_core::RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    for file in own {
+        assert!(!rig.dest.join(file).exists(), "{file} left behind");
+    }
+    for decoy in decoys {
+        assert_eq!(
+            std::fs::read(rig.dest.join(decoy)).unwrap(),
+            b"keep",
+            "{decoy}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn removing_a_finished_media_job_keeps_its_file_unless_asked() {
+    let rig = MediaRig::new(&video_info(), downloads("Done [d1].mp4", 100)).await;
+    let link = "https://www.youtube.com/watch?v=remove_finished_media";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let file = rig.dest.join("Done [d1].mp4");
+    rig.engine
+        .remove_with(id, taurus_core::RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    assert!(file.is_file(), "a finished file is the user's");
+
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    rig.engine
+        .remove_with(id, taurus_core::RemoveFiles::All)
+        .await
+        .unwrap();
+    assert!(!file.exists(), "asked to delete it");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_speed_limit_reaches_yt_dlp() {
+    let rig = MediaRig::new(&video_info(), downloads("limited.mp4", 10)).await;
+    let mut settings = rig.engine.settings();
+    settings.speed = taurus_core::SpeedLimit::Custom {
+        bytes_per_sec: 300_000,
+    };
+    rig.engine.set_settings(settings).await.unwrap();
+    let link = "https://www.youtube.com/watch?v=speed_limit";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let argv = &download_calls(link)[0].argv;
+    assert!(has_run(argv, &["--limit-rate", "300000"]), "{argv:?}");
+
+    let mut settings = rig.engine.settings();
+    settings.speed = taurus_core::SpeedLimit::Fastest;
+    rig.engine.set_settings(settings).await.unwrap();
+    std::fs::remove_file(rig.dest.join("limited.mp4")).unwrap();
+    let link = "https://www.youtube.com/watch?v=speed_fastest";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let argv = &download_calls(link)[0].argv;
+    assert!(!argv.iter().any(|a| a == "--limit-rate"), "{argv:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_inspected_link_is_not_read_again_on_add() {
+    let rig = MediaRig::new(&video_info(), downloads("once.mp4", 10)).await;
+    let link = "https://www.youtube.com/watch?v=inspected_once";
+    let reads = || {
+        calls_with(link)
+            .iter()
+            .filter(|e| e.argv.iter().any(|a| a == "-J"))
+            .count()
+    };
+    let LinkInfo::Media(info) = rig.engine.inspect(link).await.unwrap() else {
+        panic!("not media");
+    };
+    assert_eq!(reads(), 1);
+    let mut req = rig.request(link);
+    req.media_info = Some(info);
+    let id = rig.engine.add(req).await.unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    assert_eq!(reads(), 1, "read once");
+    // Without it, the link is read.
+    std::fs::remove_file(rig.dest.join("once.mp4")).unwrap();
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    assert_eq!(reads(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_video_too_big_for_the_disk_is_refused_on_add() {
+    fn little_room(_: &std::path::Path) -> std::io::Result<u64> {
+        Ok(1_000)
+    }
+    let mut info = video_info();
+    // Every format sized: the estimate is known.
+    for format in info["formats"].as_array_mut().unwrap() {
+        format["filesize"] = json!(10_000_000);
+    }
+    let rig = MediaRig::with_config(&info, downloads("big.mp4", 10), |config| {
+        config.available_space = little_room;
+    })
+    .await;
+    let link = "https://www.youtube.com/watch?v=too_big";
+    let err = rig.engine.add(rig.request(link)).await.unwrap_err();
+    assert!(
+        matches!(
+            err.kind,
+            ErrorKind::DiskFull | ErrorKind::FileTooLargeForDisk
+        ),
+        "{err}"
+    );
+    assert!(rig.engine.snapshot().is_empty(), "nothing added");
+    // Size unknown (a live stream): no check.
+    let rig = MediaRig::with_config(&fixture("live.json"), upcoming_stream(), |config| {
+        config.available_space = little_room
+    })
+    .await;
+    let id = rig
+        .engine
+        .add(rig.request("https://www.twitch.tv/size_unknown"))
+        .await
+        .unwrap();
+    rig.engine.remove(id, false).await.unwrap();
 }

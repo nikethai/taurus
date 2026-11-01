@@ -17,7 +17,10 @@ use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob};
 use super::actor::{Actor, Command, JobMsg, Run};
 use super::jobs::view_of;
 use super::media_job::{MediaJob, run_media_job};
+use super::schedule::check_space;
+use super::settings::speed_limit;
 use super::{AddRequest, Engine, Event, JobView, no_such_job, read, write};
+use crate::torrent::policy::split_rate;
 
 /// Playlists longer than this need `AddRequest::confirm_large_playlist`.
 const LARGE_PLAYLIST: u32 = 50;
@@ -76,14 +79,18 @@ pub(super) struct MediaAdd {
 
 impl Engine {
     /// `add` for a media link, once `req.dest_dir` is checked.
-    pub(super) async fn add_media(&self, req: AddRequest) -> Result<JobId, CoreError> {
+    pub(super) async fn add_media(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         if !req.mirrors.is_empty() || req.checksum.is_some() {
             return Err(CoreError {
                 kind: ErrorKind::Unknown,
                 detail: "mirrors and checksum apply only to web downloads".to_string(),
             });
         }
-        let info = self.media_info(req.url.trim()).await?;
+        // Read once: the front end usually inspected the link already.
+        let info = match req.media_info.take() {
+            Some(info) => info,
+            None => self.media_info(req.url.trim()).await?,
+        };
         if let Some(playlist) = &info.playlist
             && playlist.count > LARGE_PLAYLIST
             && !req.confirm_large_playlist
@@ -94,6 +101,23 @@ impl Engine {
             });
         }
         let options = media_options(&info, req.media.as_ref())?;
+        // A single video's estimated size must fit, as a file's must.
+        let est_size = info
+            .qualities
+            .iter()
+            .find(|q| q.id == options.quality)
+            .and_then(|q| q.est_size)
+            .filter(|_| !options.playlist && !options.live_from_start);
+        if let Some(size) = est_size {
+            check_space(
+                &self.views,
+                self.space,
+                &req.dest_dir,
+                size,
+                Some(size),
+                None,
+            )?;
+        }
         let starts_at = match info.live {
             LiveStatus::IsUpcoming { starts_at } => starts_at,
             _ => None,
@@ -125,9 +149,12 @@ impl Engine {
     /// Stops a live recording (or any running media download) gracefully
     /// and returns once it is Completed with what was recorded: yt-dlp is
     /// interrupted as by Ctrl+C (killed if it has not stopped within
-    /// 10 s), and a recording it left unfinished is made playable with
-    /// ffmpeg. One stopped while its tools are still being installed, before
-    /// anything was recorded, is Paused instead. A media job that is not
+    /// `Timing::media_stop_grace`: 10 s, 1 s on Windows), and a recording
+    /// it left unfinished is made playable with ffmpeg (its video and audio
+    /// parts joined into one MP4). One stopped before anything was
+    /// recorded (its tools still being installed, the stream not begun, or
+    /// yt-dlp being updated after the site broke) is Paused instead, without
+    /// an error, to be started again or removed. A media job that is not
     /// running is left as it is; any other job is refused.
     pub async fn stop_recording(&self, id: JobId) -> Result<(), CoreError> {
         // The actor only asks the run to stop; the end is waited for here,
@@ -173,6 +200,7 @@ fn media_options(
             info.live,
             LiveStatus::IsLive | LiveStatus::IsUpcoming { .. }
         ),
+        video_ids: Vec::new(),
     })
 }
 
@@ -254,6 +282,7 @@ impl Actor {
             tools: self.tools.clone(),
             store: self.store.clone(),
             grace: self.timing.media_stop_grace,
+            limit_rate: self.media_rate(),
             events: self.events.clone(),
             cancel: cancel.clone(),
             finish: finish.clone(),
@@ -280,6 +309,16 @@ impl Actor {
             },
         );
         self.set_view_state(id, state);
+    }
+
+    /// The share of the speed limit for a media job about to start: yt-dlp
+    /// takes a fixed `--limit-rate`, so it gets its part of the web
+    /// downloads' rate as the jobs running now (and it) split it.
+    fn media_rate(&self) -> Option<u64> {
+        let (http, torrents) = self.active();
+        let global = speed_limit(&self.settings, self.measured_peak);
+        let (http_rate, _) = split_rate(global, true, torrents > 0);
+        http_rate.map(|rate| rate / (http as u64 + 1))
     }
 
     /// Asks the running media job to stop as a finished recording; true if
@@ -358,18 +397,29 @@ impl Actor {
     }
 
     /// Deletes what the removed media job leaves: its thumbnail, and with
-    /// `delete_files` its finished file (a single video's; a playlist's
-    /// folder is kept, as are partial files, whose names only yt-dlp knows).
+    /// `delete_files` its files: those it finished (its view's, a single
+    /// video's file once Completed) and yt-dlp's partial files of its
+    /// videos (see `own_partial_files`). A playlist's folder is kept.
     pub(super) fn delete_media(&self, job: &JobRecord, delete_files: bool) {
-        let thumbnail = read(&self.views)
+        let (thumbnail, mut files) = read(&self.views)
             .get(&job.id)
-            .and_then(|v| v.media.as_ref()?.thumbnail.clone());
+            .and_then(|v| v.media.as_ref())
+            .map(|m| (m.thumbnail.clone(), m.files.clone()))
+            .unwrap_or_default();
         if let Some(path) = thumbnail {
             let _ = std::fs::remove_file(path);
         }
+        if !delete_files {
+            return;
+        }
         let single = job.media.as_ref().is_some_and(|m| !m.playlist);
-        if delete_files && single && job.state == JobState::Completed {
-            let path = job.dest_dir.join(&job.file_name);
+        if single && job.state == JobState::Completed {
+            files.push(job.dest_dir.join(&job.file_name));
+        }
+        if let Some(options) = &job.media {
+            files.extend(own_partial_files(&job.dest_dir, &options.video_ids));
+        }
+        for path in files {
             if path.is_file()
                 && let Err(e) = std::fs::remove_file(&path)
             {
@@ -377,6 +427,65 @@ impl Actor {
             }
         }
     }
+}
+
+/// yt-dlp's partial files of the videos `ids`, in `dest_dir` and the
+/// folders directly in it (a playlist's): names carrying a video's
+/// `[<id>]`, as its output names do, that are a partial download (`.part`,
+/// its fragments, `.ytdl`, `.temp`) or one stream of a video not yet
+/// merged (`[<id>].f<format>.<ext>`). Nothing without such a name is taken,
+/// so other jobs' and the user's files stay.
+pub(super) fn own_partial_files(dest_dir: &Path, ids: &[String]) -> Vec<PathBuf> {
+    let tags: Vec<String> = ids
+        .iter()
+        .filter(|id| !id.is_empty())
+        .map(|id| format!("[{id}]"))
+        .collect();
+    if tags.is_empty() {
+        return Vec::new();
+    }
+    let partial = |name: &str| {
+        let lower = name.to_ascii_lowercase();
+        tags.iter().any(|tag| {
+            let Some(at) = name.find(tag.as_str()) else {
+                return false;
+            };
+            let after = &lower[at + tag.len()..];
+            // `.f137.mp4`, not a finished `.flac`.
+            let stream = after
+                .strip_prefix(".f")
+                .is_some_and(|rest| rest.find('.').is_some_and(|dot| dot > 0));
+            stream
+                || after.starts_with(".temp")
+                || lower.ends_with(".part")
+                || lower.ends_with(".ytdl")
+                || lower.contains(".part-frag")
+        })
+    };
+    let mut found = Vec::new();
+    let mut dirs = vec![dest_dir.to_path_buf()];
+    let mut depth = 0;
+    while depth < 2 && !dirs.is_empty() {
+        let mut next = Vec::new();
+        for dir in dirs {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
+                    next.push(entry.path());
+                } else if kind.is_file() && partial(&entry.file_name().to_string_lossy()) {
+                    found.push(entry.path());
+                }
+            }
+        }
+        dirs = next;
+        depth += 1;
+    }
+    found
 }
 
 /// What only a media job's view has, as stored: its phase as it would

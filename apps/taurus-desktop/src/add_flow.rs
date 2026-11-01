@@ -255,6 +255,7 @@ impl App {
             url: p.url.clone(),
             dest_dir,
             media: p.media.as_ref().map(MediaPick::choice),
+            media_info: p.media.as_ref().map(|m| m.info().clone()),
             confirm_large_playlist,
             ..Default::default()
         };

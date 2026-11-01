@@ -540,7 +540,18 @@ async fn every_platform_layout_installs() {
             version_arg: version_arg(kind),
             version_timeout: std::time::Duration::from_secs(10),
         };
+        let count = |host: &FakeToolHost| {
+            let files = "ffmpeg-macos-files/";
+            (host.requests(files), host.head_requests(files))
+        };
+        let before = count(&f.host);
         let expected = install.expected_version().await.unwrap();
+        if kind == ToolKind::Ffmpeg && os == "macos" {
+            // The redirect is followed with HEAD, then the sidecar is read:
+            // the archive itself is not fetched.
+            let after = count(&f.host);
+            assert_eq!((after.0 - before.0, after.1 - before.1), (2, 1), "{label}");
+        }
         let tag = (kind != ToolKind::Ffmpeg).then(|| "1.0".to_owned());
         let version = install.run(tag, None, &|_, _| {}).await.unwrap();
         if kind == ToolKind::Ffmpeg {
@@ -553,4 +564,66 @@ async fn every_platform_layout_installs() {
             assert!(!version_output(&path, arg).is_empty(), "{label}: {name}");
         }
     }
+}
+
+/// An install dropped half-way (its media job paused, the app quitting)
+/// leaves the tool as it was, not "installing" for the rest of the session.
+#[tokio::test]
+async fn a_cancelled_install_is_not_left_installing() {
+    let f = Fixture::new().await;
+    let started = tokio::sync::Notify::new();
+    let report = |s: ToolStatus| {
+        if matches!(s.state, ToolState::Installing { .. }) {
+            started.notify_one();
+        }
+    };
+    tokio::select! {
+        biased;
+        () = started.notified() => {}
+        _ = f.manager.ensure(ToolKind::YtDlp, &report) => panic!("finished before it was dropped"),
+    }
+    assert_eq!(f.status_of(ToolKind::YtDlp).state, ToolState::Missing);
+
+    // An update of an installed tool, dropped likewise: Ready again.
+    f.ensure(ToolKind::Ffmpeg).await;
+    f.host.set_release("ffmpeg", ToolRelease::new("7.2"));
+    let updating = tokio::sync::Notify::new();
+    let report = |s: ToolStatus| {
+        if matches!(s.state, ToolState::Installing { .. }) {
+            updating.notify_one();
+        }
+    };
+    tokio::select! {
+        biased;
+        () = updating.notified() => {}
+        _ = f.manager.update(ToolKind::Ffmpeg, true, &report) => panic!("finished before it was dropped"),
+    }
+    assert_eq!(f.status_of(ToolKind::Ffmpeg).state, ToolState::Ready);
+}
+
+#[tokio::test]
+async fn status_is_readable_without_a_manager() {
+    let f = Fixture::new().await;
+    let yt = f.ensure(ToolKind::YtDlp).await;
+    let status = ToolManager::read_status(f.tmp.path());
+    assert_eq!(status.len(), 3);
+    assert_eq!(status[0].kind, ToolKind::YtDlp);
+    assert_eq!(status[0].state, ToolState::Ready);
+    assert_eq!(status[0].path.as_ref(), Some(&yt));
+    assert_eq!(status[0].version.as_deref(), Some(YT1));
+    for other in &status[1..] {
+        assert_eq!(other.state, ToolState::Missing, "{:?}", other.kind);
+        assert_eq!(other.version, None);
+    }
+}
+
+#[test]
+fn version_timeout_is_longer_on_windows() {
+    let manager = ToolManager::new(
+        Path::new("unused"),
+        ToolSources::default(),
+        reqwest::Client::new(),
+    );
+    let want = if cfg!(windows) { 30 } else { 10 };
+    assert_eq!(manager.version_timeout, Duration::from_secs(want));
 }
