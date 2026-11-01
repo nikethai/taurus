@@ -39,7 +39,7 @@ Rejected: Tauri (webview performance and compatibility on Linux), iced (pre-1.0 
 ## 3. Scope
 
 **v1.0**
-- Engines: segmented HTTP(S) with mirrors and resume; torrents (file picker, download in order, seeding rules); yt-dlp media (formats, playlists, live recording, convert presets).
+- Engines: segmented HTTP(S) with mirrors and resume; torrents (file picker, seeding rules); yt-dlp media (formats, playlists, live recording, convert presets).
 - Adding: paste, drag and drop, clipboard watcher, add several links at once, grab links from a page (one level + folder listings), small link fixes for Google Drive / Dropbox / GitHub.
 - Control: queue with max active downloads, speed presets and limits, when-done actions (notify, sleep, shut down, quit), notifications, resume after restart, keep computer awake while downloading.
 - App: Simple mode (default) and Advanced mode, compact window with a wide layout in Advanced, light/dark themes, per-file-type colors, six accent colors, tray icon, open at login, single instance, system proxy support, OS "downloaded from the internet" marks.
@@ -145,9 +145,9 @@ Code carried over from 2022: retry strategy, error-to-category mapping idea, dis
 - Corrupt database -> moved aside, new database created, `.tapa` files left in place.
 
 ### 6.3 Errors and retries (`errors`)
-`ErrorKind`: ConnectionLost, Timeout, LinkExpired (401/403/404/410 after success), NeedsSignIn, BlockedByBotCheck (Cloudflare `cf-mitigated: challenge` or challenge HTML), CaptivePortal (HTML where binary expected), RateLimited, QuotaExceeded, DiskFull, FolderUnavailable, NoPermission, FileTooLargeForDisk (FAT32 4 GB), FileChangedOnServer, ToolMissing, ToolFailed, SiteNotSupported, Unknown.
+`ErrorKind`: ConnectionLost, Timeout, LinkExpired (401/403/404/410 after success), NeedsSignIn, BlockedByBotCheck (Cloudflare `cf-mitigated: challenge` or challenge HTML), CaptivePortal (HTML where binary expected), RateLimited, QuotaExceeded, DiskFull, FolderUnavailable, NoPermission, FileTooLargeForDisk (FAT32 4 GB), FileChangedOnServer, ToolMissing, ToolFailed, SiteNotSupported, NoPeers, UnsafeTorrent, AlreadyAdded, Unknown.
 
-- Transient (ConnectionLost, Timeout, RateLimited): exponential backoff with jitter; after the retry budget the job shows "Waiting for connection" and keeps retrying slowly.
+- Transient (ConnectionLost, Timeout, RateLimited, NoPeers): exponential backoff with jitter; after the retry budget the job shows "Waiting for connection" and keeps retrying slowly.
 - LinkExpired: re-resolve from the original link once; if that fails, mark failed with "get a fresh link".
 - BlockedByBotCheck / NeedsSignIn: never attempt to bypass; tell the user to start the download in the browser (extension handoff).
 - Everything else: fail with the mapped message.
@@ -155,8 +155,9 @@ Code carried over from 2022: retry strategy, error-to-category mapping idea, dis
 ### 6.4 Torrents (`torrent`)
 - One librqbit session inside the engine.
 - Magnet / `.torrent` -> fetch metadata -> file list to UI (Advanced: picker; Simple: all files).
-- Options: download in order, seeding rules.
-- Torrent settings (Advanced): stop sharing at ratio (default 1.0; 0.5 / 2.0 / never stop / don't share), stop after time, upload limit, torrent-only download limit, max active torrents, max peers per torrent, listening port, UPnP on/off, DHT on/off, default "download in order".
+- Adding a torrent that is already in the list fails with `AlreadyAdded`.
+- Options: seeding rules. librqbit downloads pieces in order; there is no separate setting.
+- Torrent settings (Advanced): stop sharing at ratio (default 1.0; 0.5 / 2.0 / never stop / don't share), stop after time, upload limit, torrent-only download limit, max active torrents, max peers per torrent, listening port, UPnP on/off, DHT on/off.
 - Settings librqbit lacks are implemented on top (e.g. ratio stop = watch uploaded bytes, then pause).
 
 ### 6.5 Media (`media`, `tools`)
@@ -176,9 +177,9 @@ Code carried over from 2022: retry strategy, error-to-category mapping idea, dis
 - Pasting a page URL in the normal add box routes here.
 
 ### 6.7 Queue and system (`queue`, `system`)
-- Max active downloads default 3; FIFO; "Start now" jumps the queue.
+- Max active downloads default 3; FIFO; "Start now" jumps the queue. Seeding torrents do not count toward download limits.
 - Shared speed limiter; changes apply live. Presets are relative to the connection's recently measured peak speed, so they work on slow and fast lines alike: Gentle (~25%), Balanced (~60%), Fastest (no limit). Advanced adds Custom (absolute MB/s). Both modes use the same preset names.
-- When done: runs when no job is active (paused/failed don't block). 60 s cancellable countdown for sleep/shutdown; new downloads cancel it.
+- When done: runs when no job is active (paused/failed don't block; Seeding torrents don't either, and reaching Seeding counts as a download finishing). 60 s cancellable countdown for sleep/shutdown; new downloads cancel it.
 - Keep computer awake while jobs run (default on).
 - System proxy on Windows/macOS, env vars on Linux; manual proxy in Advanced.
 
@@ -194,7 +195,7 @@ Code carried over from 2022: retry strategy, error-to-category mapping idea, dis
 
 **Hosts:** Google Drive virus-scan confirm page and quota error; Dropbox `?dl=0`; GitHub `blob/`; file hosts that expire links and then show a Cloudflare challenge (AkiraBox-style) -> LinkExpired then BlockedByBotCheck with browser handoff advice.
 
-**Torrents:** magnet with no peers or metadata never arriving; unsafe file paths in torrents; all files deselected; 10k+ files (virtualized list); blocked listening port; free space counted for selected files only.
+**Torrents:** magnet with no peers or metadata never arriving; unsafe file paths in torrents (refused as `UnsafeTorrent`); all files deselected; 10k+ files (virtualized list); blocked listening port; free space counted for selected files only.
 
 **Media:** large playlists; private / region / age / members-only; tool install while offline; broken yt-dlp update (rollback); live stream ends during recording; scheduled stream not started; ffmpeg merge failure; graceful stop on Windows.
 

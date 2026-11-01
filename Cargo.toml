@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = ["third_party"]
 
 [workspace.package]
 edition = "2024"
@@ -38,7 +39,17 @@ libc = "0.2"
 windows-sys = "0.61"
 dunce = "1"
 keepawake = "0.6"
+# Exact: the [patch.crates-io] below replaces 9.1.0 only, and a newer
+# release would silently bypass it.
+librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls"] }
 
 # Tests only
 axum = "0.8"
 tempfile = "3"
+sha1 = "0.11"
+
+# Patched librqbit crates; see PATCH.txt in each directory: an IPv4 fallback
+# for the UDP tracker socket, and a race in the initial file check.
+[patch.crates-io]
+librqbit = { path = "third_party/librqbit" }
+librqbit-tracker-comms = { path = "third_party/librqbit-tracker-comms" }

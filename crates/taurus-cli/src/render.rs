@@ -3,7 +3,10 @@
 use std::fmt::Write;
 use std::time::Duration;
 
-use taurus_core::{JobId, JobState, JobView, WhenDone};
+use taurus_core::torrent::TorrentInfo;
+use taurus_core::{JobId, JobKind, JobState, JobView, TorrentSettings, WhenDone};
+
+use crate::config;
 
 const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
 
@@ -59,6 +62,10 @@ pub fn outcome_line(view: &JobView) -> String {
                 view.dest_dir.join(&view.file_name).display()
             )
         }
+        JobState::Seeding => format!(
+            "Seeding, sharing with peers: {}",
+            view.dest_dir.join(&view.file_name).display()
+        ),
         JobState::Paused => format!("Paused (continue with: taurus resume {})", view.id.0),
         JobState::Failed => match &view.error {
             Some((kind, detail)) => format!("Failed: {kind:?}: {detail}"),
@@ -132,38 +139,114 @@ fn when_done_name(action: WhenDone) -> &'static str {
     }
 }
 
-/// One row per job: id, state, percent, size, name.
+/// What a torrent row says besides its state: peers while downloading, the
+/// ratio while sharing; empty for the rest.
+fn torrent_info(view: &JobView) -> String {
+    match (&view.torrent, view.state) {
+        (Some(t), JobState::Downloading) => format!("peers {}", t.peers),
+        (Some(t), JobState::Seeding) => format!("sharing \u{b7} ratio {:.2}", t.ratio),
+        _ => String::new(),
+    }
+}
+
+/// One row per job: id, state, kind, percent, size, name; an INFO column
+/// before the name when some torrent has something to say.
 pub fn job_table(views: &[JobView]) -> String {
     if views.is_empty() {
         return "No downloads.\n".to_string();
     }
+    let infos: Vec<String> = views.iter().map(torrent_info).collect();
+    let info_width = infos.iter().map(|i| i.chars().count()).max().unwrap_or(0);
+    let info_column = |info: &str| match info_width {
+        0 => String::new(),
+        w => format!("{info:<w$}  ", w = w.max(4)),
+    };
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "{:>4}  {:<11}  {:>7}  {:>10}  NAME",
-        "ID", "STATE", "PERCENT", "SIZE"
+        "{:>4}  {:<11}  {:<7}  {:>7}  {:>10}  {}NAME",
+        "ID",
+        "STATE",
+        "KIND",
+        "PERCENT",
+        "SIZE",
+        info_column("INFO")
     );
-    for view in views {
+    for (view, info) in views.iter().zip(&infos) {
         let (percent, size) = match view.total {
             Some(total) => (percent(view.downloaded, total), bytes(total)),
             None => ("-".to_string(), "-".to_string()),
         };
+        let kind = match view.kind {
+            JobKind::Http => "http",
+            JobKind::Torrent => "torrent",
+        };
         let _ = writeln!(
             out,
-            "{:>4}  {:<11}  {percent:>7}  {size:>10}  {}",
+            "{:>4}  {:<11}  {kind:<7}  {percent:>7}  {size:>10}  {}{}",
             view.id.0,
             format!("{:?}", view.state),
+            info_column(info),
             view.file_name
         );
     }
     out
 }
 
+/// A header with the torrent's name, file count and size, then one line per
+/// file: index, size, path. Control characters (the torrent's peers chose
+/// these names) are left out.
+pub fn torrent_files(info: &TorrentInfo) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{}  {} files  {}",
+        printable(&info.name),
+        info.files.len(),
+        bytes(info.total)
+    );
+    for file in &info.files {
+        let _ = writeln!(
+            out,
+            "{:>5}  {:>10}  {}",
+            file.index,
+            bytes(file.size),
+            printable(&file.path)
+        );
+    }
+    out
+}
+
+fn printable(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// Said once when a run ends with torrents still Seeding: `run` exits once
+/// nothing downloads, and sharing goes on only while Taurus runs. `None`
+/// when nothing seeds (ratio 0).
+pub fn sharing_note(settings: &TorrentSettings) -> Option<String> {
+    let limit = match (settings.stop_ratio, settings.stop_after_secs) {
+        (Some(ratio), _) if ratio <= 0.0 => return None,
+        (Some(ratio), None) => format!("up to ratio {ratio:?}"),
+        (Some(ratio), Some(secs)) => {
+            format!(
+                "up to ratio {ratio:?} or for {}",
+                config::format_duration(secs)
+            )
+        }
+        (None, Some(secs)) => format!("for {}", config::format_duration(secs)),
+        (None, None) => "with no limit".to_string(),
+    };
+    Some(format!(
+        "Sharing pauses when Taurus exits; it continues the next time Taurus runs ({limit})."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use taurus_core::ErrorKind;
+    use taurus_core::{ErrorKind, JobKind};
 
     use super::*;
 
@@ -182,6 +265,8 @@ mod tests {
             speed_bps: 0,
             resumable: true,
             error: None,
+            kind: JobKind::Http,
+            torrent: None,
         }
     }
 
@@ -240,6 +325,10 @@ mod tests {
         let mut failed = view(JobState::Failed);
         failed.error = Some((ErrorKind::LinkExpired, "HTTP 404".to_string()));
         assert_eq!(outcome_line(&failed), "Failed: LinkExpired: HTTP 404");
+        assert_eq!(
+            outcome_line(&view(JobState::Seeding)),
+            format!("Seeding, sharing with peers: {}", path.display())
+        );
         assert_eq!(
             outcome_line(&view(JobState::Queued)),
             "Queued (continue with: taurus run)"
@@ -309,12 +398,127 @@ mod tests {
         let table = job_table(&[view(JobState::Paused), unknown]);
         let lines: Vec<&str> = table.lines().collect();
         assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], "  ID  STATE        PERCENT        SIZE  NAME");
-        assert_eq!(lines[1], "   7  Paused         25.0%     2.0 KiB  x.bin");
+        assert_eq!(
+            lines[0],
+            "  ID  STATE        KIND     PERCENT        SIZE  NAME"
+        );
+        assert_eq!(
+            lines[1],
+            "   7  Paused       http       25.0%     2.0 KiB  x.bin"
+        );
         assert_eq!(
             lines[2],
-            "  12  Downloading        -           -  stream.ts"
+            "  12  Downloading  http           -           -  stream.ts"
         );
+    }
+
+    fn torrent_view(state: JobState, peers: u32, ratio: f64) -> JobView {
+        JobView {
+            kind: JobKind::Torrent,
+            file_name: "pack".to_string(),
+            torrent: Some(taurus_core::TorrentView {
+                peers,
+                uploaded: 0,
+                upload_bps: 0,
+                ratio,
+                files_selected: 2,
+                files_total: 2,
+            }),
+            ..view(state)
+        }
+    }
+
+    #[test]
+    fn job_table_shows_torrent_peers_and_ratio() {
+        let table = job_table(&[
+            view(JobState::Paused),
+            torrent_view(JobState::Downloading, 4, 0.0),
+            torrent_view(JobState::Seeding, 0, 0.4219),
+            torrent_view(JobState::Queued, 0, 0.0),
+        ]);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(
+            lines[0],
+            "  ID  STATE        KIND     PERCENT        SIZE  INFO                  NAME"
+        );
+        assert_eq!(
+            lines[1],
+            "   7  Paused       http       25.0%     2.0 KiB                        x.bin"
+        );
+        assert_eq!(
+            lines[2],
+            "   7  Downloading  torrent    25.0%     2.0 KiB  peers 4               pack"
+        );
+        assert_eq!(
+            lines[3],
+            "   7  Seeding      torrent    25.0%     2.0 KiB  sharing \u{b7} ratio 0.42  pack"
+        );
+        assert!(lines[4].ends_with("2.0 KiB                        pack"));
+    }
+
+    #[test]
+    fn torrent_files_lines() {
+        use taurus_core::torrent::TorrentFile;
+        let info = TorrentInfo {
+            info_hash: "0".repeat(40),
+            name: "pack".to_string(),
+            files: vec![
+                TorrentFile {
+                    index: 0,
+                    path: "a.bin".to_string(),
+                    size: 307_200,
+                },
+                TorrentFile {
+                    index: 1,
+                    path: "dir/b.bin".to_string(),
+                    size: 100,
+                },
+            ],
+            total: 307_300,
+        };
+        assert_eq!(
+            torrent_files(&info),
+            "pack  2 files  300.1 KiB\n    0   300.0 KiB  a.bin\n    1       100 B  dir/b.bin\n"
+        );
+        // A name from a peer cannot drive the terminal.
+        let odd = TorrentInfo {
+            name: "pa\u{1b}[2Jck\u{7}\u{9b}".to_string(),
+            files: vec![TorrentFile {
+                index: 0,
+                path: "x\u{85}.bin".to_string(),
+                size: 1,
+            }],
+            ..info
+        };
+        assert_eq!(
+            torrent_files(&odd),
+            "pa[2Jck  1 files  300.1 KiB\n    0         1 B  x.bin\n"
+        );
+    }
+
+    #[test]
+    fn sharing_notes() {
+        let with = |stop_ratio, stop_after_secs| TorrentSettings {
+            stop_ratio,
+            stop_after_secs,
+            ..TorrentSettings::default()
+        };
+        let note = |s: &TorrentSettings| sharing_note(s).unwrap();
+        let pauses = "Sharing pauses when Taurus exits; it continues the next time Taurus runs";
+        assert_eq!(
+            note(&TorrentSettings::default()),
+            format!("{pauses} (up to ratio 1.0).")
+        );
+        assert_eq!(note(&with(None, Some(7200))), format!("{pauses} (for 2h)."));
+        assert_eq!(
+            note(&with(Some(1.5), Some(60))),
+            format!("{pauses} (up to ratio 1.5 or for 1m).")
+        );
+        assert_eq!(
+            note(&with(None, None)),
+            format!("{pauses} (with no limit).")
+        );
+        assert_eq!(sharing_note(&with(Some(0.0), None)), None);
     }
 
     #[test]

@@ -15,6 +15,10 @@ pub struct Timing {
     pub waiting_retry_cap: Duration,
     /// Notice period before a when-done action runs.
     pub when_done_countdown: Duration,
+    /// How long a magnet link may take to get its torrent's metadata.
+    pub torrent_metadata_timeout: Duration,
+    /// How often a running torrent's stats are read and reported.
+    pub torrent_poll: Duration,
 }
 
 impl Default for Timing {
@@ -26,6 +30,8 @@ impl Default for Timing {
             waiting_retry_first: Duration::from_secs(60),
             waiting_retry_cap: Duration::from_secs(600),
             when_done_countdown: Duration::from_secs(60),
+            torrent_metadata_timeout: Duration::from_secs(120),
+            torrent_poll: Duration::from_millis(250),
         }
     }
 }
@@ -40,6 +46,10 @@ impl Timing {
             waiting_retry_first: Duration::from_millis(100),
             waiting_retry_cap: Duration::from_millis(400),
             when_done_countdown: Duration::from_millis(300),
+            // Test magnets come from real local sessions: a shorter wait
+            // times out on a loaded machine.
+            torrent_metadata_timeout: Duration::from_secs(5),
+            torrent_poll: Duration::from_millis(250),
         }
     }
 }
@@ -57,6 +67,8 @@ mod tests {
         assert_eq!(t.waiting_retry_first, Duration::from_secs(60));
         assert_eq!(t.waiting_retry_cap, Duration::from_secs(600));
         assert_eq!(t.when_done_countdown, Duration::from_secs(60));
+        assert_eq!(t.torrent_metadata_timeout, Duration::from_secs(120));
+        assert_eq!(t.torrent_poll, Duration::from_millis(250));
 
         let f = Timing::fast_for_tests();
         assert_eq!(f.backoff_base, Duration::from_millis(10));
@@ -65,5 +77,7 @@ mod tests {
         assert_eq!(f.waiting_retry_first, Duration::from_millis(100));
         assert_eq!(f.waiting_retry_cap, Duration::from_millis(400));
         assert_eq!(f.when_done_countdown, Duration::from_millis(300));
+        assert_eq!(f.torrent_metadata_timeout, Duration::from_secs(5));
+        assert_eq!(f.torrent_poll, Duration::from_millis(250));
     }
 }

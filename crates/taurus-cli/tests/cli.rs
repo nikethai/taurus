@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use taurus_core::WhenDone;
 use taurus_core::system::command_for;
-use taurus_testkit::{FileSpec, TestServer, content, sha256_hex};
+use taurus_testkit::{FileSpec, TestServer, TorrentSeeder, content, sha256_hex};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -469,4 +469,217 @@ async fn when_done_dry_run_prints_command() {
         String::from_utf8_lossy(&get.stdout),
         "when_done = nothing\n"
     );
+}
+
+/// Two small files in a folder torrent named `pack`, seeded locally.
+async fn pack_seeder() -> (TorrentSeeder, Vec<u8>, Vec<u8>) {
+    let spec = |size, seed| {
+        content(&FileSpec {
+            seed,
+            ..FileSpec::new(size)
+        })
+    };
+    let (a, b) = (spec(300 * 1024, 1), spec(100 * 1024, 2));
+    let seeder = TorrentSeeder::start(
+        "pack",
+        &[("a.bin", a.clone()), ("dir/b.bin", b.clone())],
+        None,
+    )
+    .await;
+    (seeder, a, b)
+}
+
+impl Fixture {
+    /// Like `taurus`, with the test-only switch that gives every torrent the
+    /// seeder as its one peer.
+    fn taurus_with_peer(&self, seeder: &TorrentSeeder) -> Command {
+        let mut cmd = self.taurus();
+        cmd.env("TAURUS_TORRENT_TEST_PEERS", seeder.addr.to_string())
+            .env("TAURUS_FAST_TIMING", "1");
+        cmd
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_magnet_downloads() {
+    let fx = Fixture::new().await;
+    let (seeder, a, b) = pack_seeder().await;
+    assert_exit(&fx.run(&["config", "set", "torrent.ratio", "0"]).await, 0);
+
+    let mut cmd = fx.taurus_with_peer(&seeder);
+    cmd.args(["add", &seeder.magnet, "--dir", fx.out.to_str().unwrap()]);
+    let output = output(cmd).await;
+
+    assert_exit(&output, 0);
+    assert_eq!(fs::read(fx.out.join("pack/a.bin")).unwrap(), a);
+    assert_eq!(fs::read(fx.out.join("pack/dir/b.bin")).unwrap(), b);
+    let list = fx.run(&["list"]).await;
+    let text = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        text.contains("torrent") && text.contains("Completed"),
+        "{text}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_torrent_file_with_files_and_seeding_note() {
+    let fx = Fixture::new().await;
+    let (seeder, a, _) = pack_seeder().await;
+    let torrent = fx.tmp.path().join("pack.torrent");
+    fs::write(&torrent, &seeder.torrent_bytes).unwrap();
+
+    let mut cmd = fx.taurus_with_peer(&seeder);
+    cmd.args(["add", torrent.to_str().unwrap(), "--files", "0"])
+        .args(["--dir", fx.out.to_str().unwrap()]);
+    let output = output(cmd).await;
+
+    assert_exit(&output, 0);
+    assert_eq!(fs::read(fx.out.join("pack/a.bin")).unwrap(), a);
+    // Not downloaded: at most the few bytes of a piece shared with a.bin.
+    let b_len = fs::metadata(fx.out.join("pack/dir/b.bin")).map_or(0, |m| m.len());
+    assert!(
+        b_len < 100 * 1024,
+        "dir/b.bin was downloaded ({b_len} bytes)"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(
+            "Sharing pauses when Taurus exits; it continues the next time Taurus runs \
+             (up to ratio 1.0)."
+        ),
+        "stdout: {stdout}"
+    );
+    let list = fx.run(&["list"]).await;
+    let text = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        text.contains("Queued") && text.contains("torrent"),
+        "{text}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn torrent_files_lists_json() {
+    let fx = Fixture::new().await;
+    let (seeder, _, _) = pack_seeder().await;
+    let torrent = fx.tmp.path().join("pack.torrent");
+    fs::write(&torrent, &seeder.torrent_bytes).unwrap();
+
+    let output = fx
+        .run(&["--json", "torrent-files", torrent.to_str().unwrap()])
+        .await;
+
+    assert_exit(&output, 0);
+    let info: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(info["name"], "pack");
+    assert_eq!(info["info_hash"], seeder.info_hash.as_str());
+    assert_eq!(info["total"], 400 * 1024);
+    let files = info["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["path"], "a.bin");
+    assert_eq!(files[1]["path"], "dir/b.bin");
+    assert_eq!(files[1]["size"], 100 * 1024);
+
+    let output = fx.run(&["torrent-files", torrent.to_str().unwrap()]).await;
+    assert_exit(&output, 0);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("pack"), "{text}");
+    assert!(text.contains("300.0 KiB  a.bin"), "{text}");
+    assert!(text.contains("100.0 KiB  dir/b.bin"), "{text}");
+    // Looking never adds a job.
+    let list = fx.run(&["list"]).await;
+    assert_eq!(String::from_utf8_lossy(&list.stdout), "No downloads.\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_option_requires_single_torrent() {
+    let fx = Fixture::new().await;
+    let magnet = "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a";
+    let other = "magnet:?xt=urn:btih:d12fe1c06bba254a9dc9f519b335aa7c1367a88a";
+
+    let two = fx.run(&["add", magnet, other, "--files", "0"]).await;
+    assert_exit(&two, 1);
+    assert!(String::from_utf8_lossy(&two.stderr).contains("--files"));
+    let http = fx
+        .run(&["add", "http://127.0.0.1:9/x.bin", "--files", "0"])
+        .await;
+    assert_exit(&http, 1);
+    assert!(String::from_utf8_lossy(&http.stderr).contains("--files"));
+    for bad in ["", "a", "3-1", "1,,2", "-2"] {
+        let output = fx.run(&["add", magnet, "--files", bad]).await;
+        assert_exit(&output, 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_torrent_roundtrip() {
+    let fx = Fixture::new().await;
+
+    assert_exit(
+        &fx.run(&["config", "set", "torrent.ratio", "never"]).await,
+        0,
+    );
+    assert_exit(
+        &fx.run(&["config", "set", "torrent.seed_time", "2h"]).await,
+        0,
+    );
+    assert_exit(
+        &fx.run(&["config", "set", "torrent.upload_limit", "1MB/s"])
+            .await,
+        0,
+    );
+    let port = fx.run(&["config", "set", "torrent.port", "51413"]).await;
+    assert_exit(&port, 0);
+    assert!(
+        String::from_utf8_lossy(&port.stdout).contains("applies next time Taurus starts"),
+        "stdout: {}",
+        String::from_utf8_lossy(&port.stdout)
+    );
+
+    let peers = fx.run(&["config", "set", "torrent.peers", "80"]).await;
+    assert_exit(&peers, 0);
+    assert!(String::from_utf8_lossy(&peers.stdout).contains("applies next time Taurus starts"));
+
+    let output = fx.run(&["--json", "config", "get"]).await;
+    assert_exit(&output, 0);
+    let settings: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let torrent = &settings["torrent"];
+    assert_eq!(torrent["stop_ratio"], serde_json::Value::Null);
+    assert_eq!(torrent["stop_after_secs"], 7200);
+    assert_eq!(torrent["upload_limit_bps"], 1_000_000);
+    assert_eq!(torrent["listen_port"], 51413);
+
+    let output = fx.run(&["config", "get", "torrent.seed_time"]).await;
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "torrent.seed_time = 2h\n"
+    );
+    let output = fx.run(&["--json", "config", "get", "torrent.ratio"]).await;
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        r#"{"torrent.ratio":null}"#
+    );
+    let output = fx.run(&["config", "get"]).await;
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("torrent.upload_limit = 1MB/s\n"), "{text}");
+    assert!(text.contains("torrent.port = 51413\n"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_torrent_config_exits_1() {
+    let fx = Fixture::new().await;
+
+    assert_exit(
+        &fx.run(&["config", "set", "torrent.max_active", "0"]).await,
+        1,
+    );
+    for (key, bad) in [
+        ("torrent.ratio", "-1"),
+        ("torrent.seed_time", "soon"),
+        ("torrent.upload_limit", "fast"),
+        ("torrent.port", "80"),
+        ("torrent.upnp", "maybe"),
+        ("torrent.peers", "0"),
+    ] {
+        assert_exit(&fx.run(&["config", "set", key, bad]).await, 1);
+    }
 }

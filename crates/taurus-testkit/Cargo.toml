@@ -12,7 +12,10 @@ axum.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 hex.workspace = true
+librqbit.workspace = true
+sha1.workspace = true
 sha2.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]

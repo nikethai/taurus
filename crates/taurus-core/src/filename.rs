@@ -210,25 +210,29 @@ fn floor_boundary(s: &str, max: usize) -> usize {
         .unwrap_or(0)
 }
 
-/// First free `dir/<name>` (then `name (1).ext`, `name (2).ext`, ...). A
-/// candidate is taken if the file or its `.tapa` partial exists, or it is in
-/// `reserved`, ignoring case (macOS and Windows folders do). Every candidate
-/// is cut (stem only, extension kept) so that `<candidate>.tapa` stays within
-/// 255 bytes.
+/// Longest candidate name (bytes) that still leaves room for `.tapa`.
+pub(crate) const MAX_CANDIDATE_BYTES: usize = MAX_NAME_BYTES - (PARTIAL_EXT.len() + 1);
+
+/// Whether `dir/<name>` is unavailable: the file or its `.tapa` partial
+/// exists, or `name` is in `reserved`, ignoring case (macOS and Windows
+/// folders do).
+pub(crate) fn is_taken(dir: &Path, name: &str, reserved: &HashSet<String>) -> bool {
+    let lower = name.to_lowercase();
+    reserved.iter().any(|r| r.to_lowercase() == lower)
+        || dir.join(name).symlink_metadata().is_ok()
+        || dir
+            .join(format!("{name}.{PARTIAL_EXT}"))
+            .symlink_metadata()
+            .is_ok()
+}
+
+/// First free `dir/<name>` (then `name (1).ext`, `name (2).ext`, ...), per
+/// [`is_taken`]. Every candidate is cut (stem only, extension kept) so that
+/// `<candidate>.tapa` stays within 255 bytes.
 pub fn unique_path(dir: &Path, name: &str, reserved: &HashSet<String>) -> PathBuf {
-    let reserved: HashSet<String> = reserved.iter().map(|n| n.to_lowercase()).collect();
-    let taken = |candidate: &str| {
-        reserved.contains(&candidate.to_lowercase())
-            || dir.join(candidate).symlink_metadata().is_ok()
-            || dir
-                .join(format!("{candidate}.{PARTIAL_EXT}"))
-                .symlink_metadata()
-                .is_ok()
-    };
-    let max = MAX_NAME_BYTES - (PARTIAL_EXT.len() + 1);
-    std::iter::once(fit_name(name, "", max))
-        .chain((1..).map(|n| fit_name(name, &format!(" ({n})"), max)))
-        .find(|candidate| !taken(candidate))
+    std::iter::once(fit_name(name, "", MAX_CANDIDATE_BYTES))
+        .chain((1..).map(|n| fit_name(name, &format!(" ({n})"), MAX_CANDIDATE_BYTES)))
+        .find(|candidate| !is_taken(dir, candidate, reserved))
         .map(|candidate| dir.join(candidate))
         .expect("unbounded counter yields a free name")
 }

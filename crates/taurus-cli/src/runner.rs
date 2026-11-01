@@ -258,6 +258,13 @@ impl<'a> Runner<'a> {
         if unfinished {
             self.out.line(render::STOPPED)?;
         }
+        // Ctrl-C stored the Seeding ones Queued, so only a finished run says
+        // sharing ends with it.
+        if views.iter().any(|v| v.state == JobState::Seeding)
+            && let Some(note) = render::sharing_note(&self.engine.settings().torrent)
+        {
+            self.out.line(&note)?;
+        }
         if self.notify && !interrupted {
             self.out.line(render::ALL_FINISHED)?;
         }
@@ -271,9 +278,12 @@ fn exit_code(interrupted: bool, failed: bool, states: &[JobState]) -> ExitCode {
     if interrupted {
         ExitCode::from(2)
     } else if failed
-        || states
-            .iter()
-            .any(|s| *s != JobState::Completed && *s != JobState::Paused)
+        || states.iter().any(|s| {
+            !matches!(
+                s,
+                JobState::Completed | JobState::Seeding | JobState::Paused
+            )
+        })
     {
         ExitCode::FAILURE
     } else if states.contains(&JobState::Paused) {
@@ -381,7 +391,10 @@ impl Output {
                         self.show(view.id, Status::Waiting { retry_at })?;
                     }
                     JobState::Queued => self.hide(view.id)?,
-                    JobState::Completed | JobState::Paused | JobState::Failed => {
+                    JobState::Completed
+                    | JobState::Seeding
+                    | JobState::Paused
+                    | JobState::Failed => {
                         self.waits.remove(&view.id);
                         self.hide(view.id)?;
                         if before.is_some_and(is_busy) {
@@ -572,6 +585,9 @@ mod tests {
             code(false, false, &[Completed, Completed]),
             ExitCode::SUCCESS
         );
+        assert_eq!(code(false, false, &[Completed, Seeding]), ExitCode::SUCCESS);
+        assert_eq!(code(false, false, &[Seeding, Paused]), ExitCode::from(2));
+        assert_eq!(code(false, false, &[Seeding, Failed]), ExitCode::FAILURE);
         assert_eq!(code(false, false, &[Completed, Failed]), ExitCode::FAILURE);
         assert_eq!(code(false, true, &[Completed]), ExitCode::FAILURE);
         assert_eq!(code(false, false, &[Completed, Paused]), ExitCode::from(2));

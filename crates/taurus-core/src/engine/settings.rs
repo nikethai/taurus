@@ -1,10 +1,12 @@
 //! Applying settings in the actor, and the speed limit's glue: the
-//! limiter's rate and the measured peak speed it is a share of.
+//! limiter's rate, the torrent session's limits and the measured peak speed
+//! they are a share of.
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::settings::{Settings, SpeedLimit, WhenDone};
+use crate::torrent::policy::{split_rate, torrent_rate};
 
 use super::actor::Actor;
 use super::{Event, write};
@@ -16,19 +18,24 @@ const PEAK_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
 impl Actor {
     pub(super) fn set_settings(&mut self, settings: Settings) -> Result<(), CoreError> {
         // Queued jobs, and their waiters, would wait for ever.
-        if settings.max_active == 0 {
-            return Err(CoreError {
-                kind: ErrorKind::Unknown,
-                detail: "max_active must be at least 1".to_string(),
-            });
+        for (value, name) in [
+            (settings.max_active, "max_active"),
+            (settings.torrent.max_active, "torrent.max_active"),
+        ] {
+            if value == 0 {
+                return Err(CoreError {
+                    kind: ErrorKind::Unknown,
+                    detail: format!("{name} must be at least 1"),
+                });
+            }
         }
         self.store.save_settings(&settings)?;
         if settings.when_done != self.settings.when_done {
             self.when_done.cancel();
         }
-        self.limiter
-            .set_rate(speed_limit(&settings, self.measured_peak));
         *write(&self.shared_settings) = settings.clone();
+        // Running torrents follow the new seeding policy at once.
+        self.torrent_settings.send_replace(settings.torrent.clone());
         self.settings = settings.clone();
         self.emit(Event::SettingsChanged(settings));
         self.after_change();
@@ -48,6 +55,27 @@ impl Actor {
         if let Err(e) = self.set_settings(settings) {
             tracing::warn!("could not turn off the when-done action: {e}");
         }
+    }
+
+    /// Splits the speed limit between HTTP jobs and torrents while both
+    /// download (a torrent-only limit caps the torrent side further), and
+    /// applies it, with the upload limit, if anything changed.
+    pub(super) fn apply_limits(&mut self) {
+        let (http, torrents) = self.active();
+        let global = speed_limit(&self.settings, self.measured_peak);
+        let (http_rate, torrent_share) = split_rate(global, http > 0, torrents > 0);
+        let torrent_rate = torrent_rate(torrent_share, self.settings.torrent.download_limit_bps);
+        let rates = (
+            http_rate,
+            torrent_rate,
+            self.settings.torrent.upload_limit_bps,
+        );
+        if self.rates == Some(rates) {
+            return;
+        }
+        self.rates = Some(rates);
+        self.limiter.set_rate(http_rate);
+        self.hub.set_limits(torrent_rate, rates.2);
     }
 
     /// Counts newly downloaded bytes and, while unlimited, saves a new peak.
@@ -92,6 +120,82 @@ pub(super) fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::actor::Run;
+    use crate::engine::{EngineConfig, assemble};
+    use crate::store::{JobId, JobKind, JobState, NewJob, Store};
+    use tokio_util::sync::CancellationToken;
+
+    fn job(kind: JobKind, name: &str) -> NewJob {
+        NewJob {
+            url: format!("http://127.0.0.1:9/{name}"),
+            source_url: format!("http://127.0.0.1:9/{name}"),
+            dest_dir: "/nowhere".into(),
+            file_name: name.into(),
+            connections: 1,
+            mirrors: Vec::new(),
+            checksum: None,
+            referer: None,
+            queue_pos: 0,
+            kind,
+            info_hash: None,
+            torrent_meta: None,
+            only_files: None,
+        }
+    }
+
+    fn run(actor: &mut Actor, id: JobId, state: JobState) {
+        let run = Run {
+            cancel: CancellationToken::new(),
+            downloaded_at_start: 0,
+        };
+        actor.running.insert(id, run);
+        actor.set_view_state(id, state);
+    }
+
+    #[tokio::test]
+    async fn the_limit_is_split_while_both_kinds_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let store = Store::open(&data.join("taurus.db")).unwrap();
+        let http = store.insert_job(&job(JobKind::Http, "a.bin")).unwrap();
+        let torrent = store.insert_job(&job(JobKind::Torrent, "t")).unwrap();
+        drop(store);
+        let mut config = EngineConfig::new(data);
+        config.autostart = false;
+        let (_engine, mut actor, _commands) = assemble(config).await.unwrap();
+        actor.settings.speed = SpeedLimit::Custom {
+            bytes_per_sec: 1_000_000,
+        };
+        actor.settings.torrent.download_limit_bps = Some(300_000);
+        actor.settings.torrent.upload_limit_bps = Some(50_000);
+
+        actor.apply_limits();
+        assert_eq!(
+            actor.rates,
+            Some((Some(1_000_000), Some(300_000), Some(50_000)))
+        );
+        run(&mut actor, http, JobState::Downloading);
+        run(&mut actor, torrent, JobState::Downloading);
+        actor.apply_limits();
+        assert_eq!(
+            actor.rates,
+            Some((Some(500_000), Some(300_000), Some(50_000)))
+        );
+        actor.settings.torrent.download_limit_bps = None;
+        actor.apply_limits();
+        assert_eq!(
+            actor.rates,
+            Some((Some(500_000), Some(500_000), Some(50_000)))
+        );
+        // A seeding torrent downloads nothing: HTTP gets it all.
+        actor.set_view_state(torrent, JobState::Seeding);
+        actor.apply_limits();
+        assert_eq!(
+            actor.rates,
+            Some((Some(1_000_000), Some(1_000_000), Some(50_000)))
+        );
+    }
 
     #[test]
     fn a_peak_older_than_seven_days_is_not_fresh() {

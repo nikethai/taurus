@@ -12,12 +12,13 @@ pub mod settings;
 pub mod store;
 pub mod system;
 pub mod timing;
+pub mod torrent;
 mod when_done;
 
-pub use engine::{AddRequest, Engine, EngineConfig, Event, JobView, WhenDoneHold};
+pub use engine::{AddRequest, Engine, EngineConfig, Event, JobView, TorrentView, WhenDoneHold};
 pub use errors::{CoreError, ErrorKind};
-pub use settings::{PowerMode, Settings, SpeedLimit, WhenDone};
-pub use store::{JobId, JobState};
+pub use settings::{PowerMode, Settings, SpeedLimit, TorrentSettings, WhenDone};
+pub use store::{JobId, JobKind, JobState};
 pub use timing::Timing;
 
 /// Crate version, as declared in `Cargo.toml`.

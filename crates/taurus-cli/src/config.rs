@@ -5,16 +5,55 @@ use std::fmt::Write;
 
 use taurus_core::{Settings, SpeedLimit, WhenDone};
 
-pub const KEYS: [&str; 5] = [
+pub const KEYS: [&str; 14] = [
     "max_active",
     "speed",
     "when_done",
     "auto_checksum",
     "keep_awake",
+    "torrent.ratio",
+    "torrent.seed_time",
+    "torrent.upload_limit",
+    "torrent.download_limit",
+    "torrent.max_active",
+    "torrent.peers",
+    "torrent.port",
+    "torrent.upnp",
+    "torrent.dht",
 ];
+
+/// The settings that apply only when the torrent session next starts: the
+/// peer limit, port, UPnP and DHT.
+pub const RESTART_KEYS: [&str; 4] = [
+    "torrent.peers",
+    "torrent.port",
+    "torrent.upnp",
+    "torrent.dht",
+];
+/// Printed after one of those is set.
+pub const RESTART_NOTE: &str = "applies next time Taurus starts";
 
 const SPEED_VALUES: &str = "fastest, balanced, gentle, <N>KB/s or <N>MB/s";
 const WHEN_DONE_VALUES: &str = "nothing, notify, sleep, shutdown or quit";
+const RATE_VALUES: &str = "off, <N>KB/s or <N>MB/s";
+const DURATION_VALUES: &str = "off, or a duration such as 30m, 2h or 1d";
+const MIN_PORT: u16 = 1024;
+
+/// A `torrent.*` key's field in the settings JSON.
+pub fn json_field(key: &str) -> Option<(&'static str, &'static str)> {
+    Some(match key {
+        "torrent.ratio" => ("torrent", "stop_ratio"),
+        "torrent.seed_time" => ("torrent", "stop_after_secs"),
+        "torrent.upload_limit" => ("torrent", "upload_limit_bps"),
+        "torrent.download_limit" => ("torrent", "download_limit_bps"),
+        "torrent.max_active" => ("torrent", "max_active"),
+        "torrent.peers" => ("torrent", "peer_limit"),
+        "torrent.port" => ("torrent", "listen_port"),
+        "torrent.upnp" => ("torrent", "upnp"),
+        "torrent.dht" => ("torrent", "dht"),
+        _ => return None,
+    })
+}
 
 /// The value of `key` as `config set` takes it.
 pub fn get(settings: &Settings, key: &str) -> Result<String, String> {
@@ -24,6 +63,27 @@ pub fn get(settings: &Settings, key: &str) -> Result<String, String> {
         "when_done" => format_when_done(settings.when_done).to_string(),
         "auto_checksum" => on_off(settings.auto_checksum).to_string(),
         "keep_awake" => on_off(settings.keep_awake).to_string(),
+        "torrent.ratio" => settings
+            .torrent
+            .stop_ratio
+            .map_or("never".to_string(), |r| format!("{r:?}")),
+        "torrent.seed_time" => settings
+            .torrent
+            .stop_after_secs
+            .map_or("off".to_string(), format_duration),
+        "torrent.upload_limit" => format_limit(settings.torrent.upload_limit_bps),
+        "torrent.download_limit" => format_limit(settings.torrent.download_limit_bps),
+        "torrent.max_active" => settings.torrent.max_active.to_string(),
+        "torrent.peers" => settings
+            .torrent
+            .peer_limit
+            .map_or("default".to_string(), |n| n.to_string()),
+        "torrent.port" => settings
+            .torrent
+            .listen_port
+            .map_or("random".to_string(), |p| p.to_string()),
+        "torrent.upnp" => on_off(settings.torrent.upnp).to_string(),
+        "torrent.dht" => on_off(settings.torrent.dht).to_string(),
         _ => return Err(unknown_key(key)),
     })
 }
@@ -41,6 +101,40 @@ pub fn set(settings: &mut Settings, key: &str, value: &str) -> Result<(), String
         "when_done" => settings.when_done = parse_when_done(value)?,
         "auto_checksum" => settings.auto_checksum = parse_on_off(key, value)?,
         "keep_awake" => settings.keep_awake = parse_on_off(key, value)?,
+        "torrent.ratio" => settings.torrent.stop_ratio = parse_ratio(value)?,
+        "torrent.seed_time" => settings.torrent.stop_after_secs = parse_duration(value)?,
+        "torrent.upload_limit" => settings.torrent.upload_limit_bps = parse_limit(value)?,
+        "torrent.download_limit" => settings.torrent.download_limit_bps = parse_limit(value)?,
+        "torrent.max_active" => {
+            settings.torrent.max_active = value
+                .trim()
+                .parse()
+                .ok()
+                .filter(|&n| n >= 1)
+                .ok_or_else(|| {
+                    format!("invalid {key} '{value}': use a whole number, at least 1")
+                })?;
+        }
+        "torrent.peers" => {
+            settings.torrent.peer_limit = match value.trim().to_ascii_lowercase().as_str() {
+                "default" => None,
+                n => Some(n.parse().ok().filter(|&n| n >= 1).ok_or_else(|| {
+                    format!("invalid {key} '{value}': use default, or a whole number, at least 1")
+                })?),
+            };
+        }
+        "torrent.port" => {
+            settings.torrent.listen_port = match value.trim().to_ascii_lowercase().as_str() {
+                "random" => None,
+                p => Some(p.parse().ok().filter(|&p| p >= MIN_PORT).ok_or_else(|| {
+                    format!(
+                        "invalid {key} '{value}': use random, or a port from {MIN_PORT} to 65535"
+                    )
+                })?),
+            };
+        }
+        "torrent.upnp" => settings.torrent.upnp = parse_on_off(key, value)?,
+        "torrent.dht" => settings.torrent.dht = parse_on_off(key, value)?,
         _ => return Err(unknown_key(key)),
     }
     Ok(())
@@ -68,21 +162,25 @@ pub fn parse_speed(value: &str) -> Result<SpeedLimit, String> {
         "gentle" => return Ok(SpeedLimit::Gentle),
         _ => {}
     }
-    let (number, unit) = if let Some(n) = lower.strip_suffix("kb/s") {
-        (n, 1_000)
-    } else if let Some(n) = lower.strip_suffix("mb/s") {
-        (n, 1_000_000)
-    } else {
-        return Err(invalid());
-    };
-    let bytes_per_sec = number
+    parse_rate(&lower)
+        .map(|bytes_per_sec| SpeedLimit::Custom { bytes_per_sec })
+        .ok_or_else(invalid)
+}
+
+/// `<N>KB/s` or `<N>MB/s` in bytes per second, ignoring case and spaces;
+/// above 0.
+fn parse_rate(value: &str) -> Option<u64> {
+    let lower = value.trim().to_ascii_lowercase();
+    let (number, unit) = lower
+        .strip_suffix("kb/s")
+        .map(|n| (n, 1_000))
+        .or_else(|| lower.strip_suffix("mb/s").map(|n| (n, 1_000_000)))?;
+    number
         .trim()
         .parse::<u64>()
         .ok()
         .and_then(|n| n.checked_mul(unit))
         .filter(|&bps| bps > 0)
-        .ok_or_else(invalid)?;
-    Ok(SpeedLimit::Custom { bytes_per_sec })
 }
 
 /// The `config set` spelling; a custom speed in the largest unit that
@@ -92,14 +190,79 @@ pub fn format_speed(speed: &SpeedLimit) -> String {
         SpeedLimit::Fastest => "fastest".to_string(),
         SpeedLimit::Balanced => "balanced".to_string(),
         SpeedLimit::Gentle => "gentle".to_string(),
-        SpeedLimit::Custom { bytes_per_sec: bps } if bps % 1_000_000 == 0 => {
-            format!("{}MB/s", bps / 1_000_000)
-        }
-        SpeedLimit::Custom { bytes_per_sec: bps } if bps % 1_000 == 0 => {
-            format!("{}KB/s", bps / 1_000)
-        }
-        SpeedLimit::Custom { bytes_per_sec: bps } => format!("{bps}B/s"),
+        SpeedLimit::Custom { bytes_per_sec } => format_rate(*bytes_per_sec),
     }
+}
+
+fn format_rate(bps: u64) -> String {
+    if bps.is_multiple_of(1_000_000) {
+        format!("{}MB/s", bps / 1_000_000)
+    } else if bps.is_multiple_of(1_000) {
+        format!("{}KB/s", bps / 1_000)
+    } else {
+        format!("{bps}B/s")
+    }
+}
+
+/// `off`, or a rate.
+fn parse_limit(value: &str) -> Result<Option<u64>, String> {
+    if value.trim().eq_ignore_ascii_case("off") {
+        return Ok(None);
+    }
+    parse_rate(value)
+        .map(Some)
+        .ok_or_else(|| format!("invalid limit '{value}': use {RATE_VALUES}"))
+}
+
+fn format_limit(limit: Option<u64>) -> String {
+    limit.map_or("off".to_string(), format_rate)
+}
+
+/// A decimal number from 0 up, or `never` (`None`).
+fn parse_ratio(value: &str) -> Result<Option<f64>, String> {
+    let text = value.trim();
+    if text.eq_ignore_ascii_case("never") {
+        return Ok(None);
+    }
+    text.parse::<f64>()
+        .ok()
+        .filter(|r| r.is_finite() && *r >= 0.0)
+        .map(Some)
+        .ok_or_else(|| format!("invalid ratio '{value}': use never, or a number from 0"))
+}
+
+/// `off`, or `<N>s|m|h|d` above 0.
+fn parse_duration(value: &str) -> Result<Option<u64>, String> {
+    let lower = value.trim().to_ascii_lowercase();
+    if lower == "off" {
+        return Ok(None);
+    }
+    let invalid = || format!("invalid duration '{value}': use {DURATION_VALUES}");
+    let unit: u64 = match lower.chars().last() {
+        Some('s') => 1,
+        Some('m') => 60,
+        Some('h') => 3_600,
+        Some('d') => 86_400,
+        _ => return Err(invalid()),
+    };
+    lower[..lower.len() - 1]
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(unit))
+        .filter(|&secs| secs > 0)
+        .map(Some)
+        .ok_or_else(invalid)
+}
+
+/// The largest unit that divides the seconds: `2h`, `90s`.
+pub fn format_duration(secs: u64) -> String {
+    for (unit, name) in [(86_400, "d"), (3_600, "h"), (60, "m")] {
+        if secs.is_multiple_of(unit) {
+            return format!("{}{name}", secs / unit);
+        }
+    }
+    format!("{secs}s")
 }
 
 fn parse_when_done(value: &str) -> Result<WhenDone, String> {
@@ -147,6 +310,10 @@ fn unknown_key(key: &str) -> String {
 mod tests {
     use super::*;
 
+    const DEFAULT_TORRENT_LINES: &str = "torrent.ratio = 1.0\ntorrent.seed_time = off\n\
+         torrent.upload_limit = off\ntorrent.download_limit = off\ntorrent.max_active = 3\n\
+         torrent.peers = default\ntorrent.port = random\ntorrent.upnp = on\ntorrent.dht = on\n";
+
     fn custom(bytes_per_sec: u64) -> SpeedLimit {
         SpeedLimit::Custom { bytes_per_sec }
     }
@@ -190,6 +357,8 @@ mod tests {
             lines(&s),
             "max_active = 2\nspeed = gentle\nwhen_done = shutdown\n\
              auto_checksum = off\nkeep_awake = off\n"
+                .to_string()
+                + DEFAULT_TORRENT_LINES
         );
         assert_eq!(get(&s, "when_done").unwrap(), "shutdown");
     }
@@ -200,6 +369,8 @@ mod tests {
             lines(&Settings::default()),
             "max_active = 3\nspeed = fastest\nwhen_done = nothing\n\
              auto_checksum = on\nkeep_awake = on\n"
+                .to_string()
+                + DEFAULT_TORRENT_LINES
         );
     }
 
@@ -224,5 +395,93 @@ mod tests {
         );
         assert!(get(&s, "colour").is_err());
         assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn torrent_keys_roundtrip() {
+        let mut s = Settings::default();
+        set(&mut s, "torrent.ratio", "0").unwrap();
+        assert_eq!(s.torrent.stop_ratio, Some(0.0));
+        set(&mut s, "torrent.ratio", "1.5").unwrap();
+        assert_eq!(get(&s, "torrent.ratio").unwrap(), "1.5");
+        set(&mut s, "torrent.ratio", "Never").unwrap();
+        assert_eq!(s.torrent.stop_ratio, None);
+        assert_eq!(get(&s, "torrent.ratio").unwrap(), "never");
+        set(&mut s, "torrent.seed_time", "2h").unwrap();
+        assert_eq!(s.torrent.stop_after_secs, Some(7200));
+        set(&mut s, "torrent.seed_time", "90s").unwrap();
+        assert_eq!(get(&s, "torrent.seed_time").unwrap(), "90s");
+        set(&mut s, "torrent.seed_time", "1d").unwrap();
+        assert_eq!(get(&s, "torrent.seed_time").unwrap(), "1d");
+        set(&mut s, "torrent.seed_time", "30m").unwrap();
+        assert_eq!(get(&s, "torrent.seed_time").unwrap(), "30m");
+        set(&mut s, "torrent.seed_time", "off").unwrap();
+        assert_eq!(s.torrent.stop_after_secs, None);
+        set(&mut s, "torrent.upload_limit", "500 kb/s").unwrap();
+        assert_eq!(s.torrent.upload_limit_bps, Some(500_000));
+        set(&mut s, "torrent.download_limit", "2MB/s").unwrap();
+        assert_eq!(get(&s, "torrent.download_limit").unwrap(), "2MB/s");
+        set(&mut s, "torrent.upload_limit", "OFF").unwrap();
+        assert_eq!(s.torrent.upload_limit_bps, None);
+        set(&mut s, "torrent.max_active", "5").unwrap();
+        set(&mut s, "torrent.peers", "80").unwrap();
+        assert_eq!(s.torrent.peer_limit, Some(80));
+        set(&mut s, "torrent.peers", "default").unwrap();
+        assert_eq!(s.torrent.peer_limit, None);
+        set(&mut s, "torrent.port", "51413").unwrap();
+        assert_eq!(s.torrent.listen_port, Some(51413));
+        set(&mut s, "torrent.port", "random").unwrap();
+        assert_eq!(s.torrent.listen_port, None);
+        set(&mut s, "torrent.upnp", "off").unwrap();
+        set(&mut s, "torrent.dht", "off").unwrap();
+        assert!(!s.torrent.upnp && !s.torrent.dht);
+    }
+
+    #[test]
+    fn invalid_torrent_values_leave_settings_alone() {
+        let mut s = Settings::default();
+        for (key, bad) in [
+            ("torrent.ratio", "-1"),
+            ("torrent.ratio", "nan"),
+            ("torrent.ratio", "inf"),
+            ("torrent.ratio", "lots"),
+            ("torrent.seed_time", "0m"),
+            ("torrent.seed_time", "5"),
+            ("torrent.seed_time", "h"),
+            ("torrent.seed_time", "-2h"),
+            ("torrent.upload_limit", "0KB/s"),
+            ("torrent.download_limit", "fast"),
+            ("torrent.max_active", "0"),
+            ("torrent.max_active", "-1"),
+            ("torrent.peers", "0"),
+            ("torrent.port", "1023"),
+            ("torrent.port", "65536"),
+            ("torrent.upnp", "yes"),
+            ("torrent.dht", "1"),
+        ] {
+            assert!(set(&mut s, key, bad).is_err(), "{key} {bad}");
+        }
+        assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn restart_keys_are_the_session_settings() {
+        for key in [
+            "torrent.peers",
+            "torrent.port",
+            "torrent.upnp",
+            "torrent.dht",
+        ] {
+            assert!(RESTART_KEYS.contains(&key), "{key}");
+        }
+        assert_eq!(RESTART_KEYS.len(), 4);
+    }
+
+    #[test]
+    fn durations_format_in_the_largest_unit() {
+        assert_eq!(format_duration(7200), "2h");
+        assert_eq!(format_duration(5400), "90m");
+        assert_eq!(format_duration(86_400 * 3), "3d");
+        assert_eq!(format_duration(61), "61s");
     }
 }

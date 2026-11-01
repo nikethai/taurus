@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use taurus_core::store::{NewJob, Store};
+use taurus_core::store::{JobKind, NewJob, Store};
 use taurus_core::system::command_for;
 use taurus_core::system::space::SPACE_MARGIN;
 use taurus_core::{
@@ -421,6 +421,10 @@ fn seed_jobs(fx: &Fixture, spec: &FileSpec, jobs: &[(&str, JobState)]) -> Vec<Jo
                     checksum: None,
                     referer: None,
                     queue_pos: 0,
+                    kind: JobKind::Http,
+                    info_hash: None,
+                    torrent_meta: None,
+                    only_files: None,
                 })
                 .unwrap();
             let mut job = store.get_job(id).unwrap().unwrap();
@@ -529,6 +533,53 @@ async fn without_autostart_an_interrupted_job_reopens_queued() {
         store.get_job(ids[0]).unwrap().unwrap().state,
         JobState::Queued
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_seeding_torrent_reopens_queued_without_the_http_check() {
+    let fx = Fixture::new().await;
+    let http = seed_jobs(
+        &fx,
+        &FileSpec::new(MIB),
+        &[("a.bin", JobState::Downloading)],
+    )[0];
+    let torrent = {
+        let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
+        let id = store
+            .insert_job(&NewJob {
+                url: String::new(),
+                source_url: String::new(),
+                dest_dir: fx.dest.clone(),
+                file_name: "t".into(),
+                connections: 1,
+                mirrors: Vec::new(),
+                checksum: None,
+                referer: None,
+                queue_pos: 0,
+                kind: JobKind::Torrent,
+                info_hash: Some("0123456789abcdef0123456789abcdef01234567".into()),
+                torrent_meta: None,
+                only_files: None,
+            })
+            .unwrap();
+        store.set_state(id, JobState::Seeding).unwrap();
+        id
+    };
+    let mut config = fx.config();
+    config.autostart = false;
+    let engine = Engine::open(config).await.unwrap();
+
+    // Interrupted sharing is queued again like an interrupted download.
+    assert_eq!(view(&engine, http).state, JobState::Queued);
+    assert_eq!(view(&engine, torrent).state, JobState::Queued);
+    assert_eq!(view(&engine, http).kind, JobKind::Http);
+    assert!(view(&engine, http).torrent.is_none());
+    assert_eq!(view(&engine, torrent).kind, JobKind::Torrent);
+    engine.shutdown().await.unwrap();
+
+    let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
+    assert!(store.needs_revalidation(http).unwrap());
+    assert!(!store.needs_revalidation(torrent).unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

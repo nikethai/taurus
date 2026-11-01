@@ -5,20 +5,22 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::errors::CoreError;
 use crate::http::{JobOutcome, Probe};
 use crate::limit::{Limiter, PeakTracker};
-use crate::settings::{Settings, WhenDone};
-use crate::store::{JobId, JobRecord, JobState, Store};
+use crate::settings::{Settings, TorrentSettings, WhenDone};
+use crate::store::{JobId, JobKind, JobRecord, JobState, Store};
 use crate::system::{AwakeGuard, SpaceSource};
 use crate::timing::Timing;
+use crate::torrent::hub::TorrentHub;
 use crate::when_done::WhenDoneRunner;
 
-use super::{AddRequest, Event, Views, no_such_job, read, write};
+use super::torrent::TorrentInput;
+use super::{AddRequest, Event, TorrentView, Views, no_such_job, read, write};
 
 pub(super) type Reply<T> = oneshot::Sender<Result<T, CoreError>>;
 
@@ -28,13 +30,19 @@ pub(super) enum Command {
         probe: Probe,
         reply: Reply<JobId>,
     },
+    AddTorrent {
+        req: AddRequest,
+        input: TorrentInput,
+        reply: Reply<JobId>,
+    },
     Pause {
         id: JobId,
         reply: Reply<()>,
     },
+    /// `probe` is `None` for a torrent.
     Resume {
         id: JobId,
-        probe: Probe,
+        probe: Option<Probe>,
         reply: Reply<()>,
     },
     StartNow {
@@ -67,8 +75,10 @@ pub(super) enum Command {
 }
 
 /// Sent by a job's task (all of a run's progress precedes its `Finished`),
-/// or by a Waiting job's retry timer.
-pub(super) enum JobMsg {
+/// or by a Waiting job's retry timer. Public only for the torrent runner's
+/// tests; not for front ends.
+#[doc(hidden)]
+pub enum JobMsg {
     Progress {
         id: JobId,
         downloaded: u64,
@@ -78,6 +88,20 @@ pub(super) enum JobMsg {
     Finished {
         id: JobId,
         outcome: JobOutcome,
+    },
+    /// The torrent finished downloading and is sharing (sent once per run,
+    /// never when the seeding policy stops it as soon as it finishes).
+    /// `finished_now`: the download finished in this run, rather than in an
+    /// earlier one (it shares again after a restart).
+    Seeding {
+        id: JobId,
+        finished_now: bool,
+    },
+    /// A running torrent's peers, uploads and file selection, with each
+    /// `Progress`.
+    TorrentStats {
+        id: JobId,
+        view: TorrentView,
     },
     /// Timer `seq` of the job ran out.
     RetryDue {
@@ -139,14 +163,23 @@ pub(super) struct Actor {
     pub(super) timing: Timing,
     pub(super) settings: Settings,
     pub(super) shared_settings: Arc<RwLock<Settings>>,
-    /// Shared by every job's workers.
+    /// Shared by every HTTP job's workers.
     pub(super) limiter: Limiter,
+    /// The engine's torrent session (started on first use).
+    pub(super) hub: Arc<TorrentHub>,
+    /// The torrent settings each torrent runner reads its seeding policy
+    /// from.
+    pub(super) torrent_settings: watch::Sender<TorrentSettings>,
+    /// The rates last applied: HTTP download, torrent download and upload.
+    pub(super) rates: Option<Rates>,
     /// The saved peak speed (bytes/s) and when it was measured (unix secs).
     pub(super) measured_peak: Option<(u64, i64)>,
     pub(super) peak: PeakTracker,
     /// Bytes downloaded by all jobs since the engine opened.
     pub(super) transferred: u64,
 }
+
+pub(super) type Rates = (Option<u64>, Option<u64>, Option<u64>);
 
 pub(super) struct Run {
     pub(super) cancel: CancellationToken,
@@ -191,6 +224,7 @@ impl Actor {
         }
         // Running jobs end Queued too: see `on_finished`.
         self.stop_all().await;
+        self.hub.shutdown().await;
         // Closes the database before anyone hears that the engine stopped.
         drop(self);
         drop(commands);
@@ -204,7 +238,10 @@ impl Actor {
         // New work stops the when-done countdown.
         if matches!(
             command,
-            Command::Add { .. } | Command::Resume { .. } | Command::StartNow { .. }
+            Command::Add { .. }
+                | Command::AddTorrent { .. }
+                | Command::Resume { .. }
+                | Command::StartNow { .. }
         ) {
             self.when_done.cancel();
         }
@@ -212,11 +249,14 @@ impl Actor {
             Command::Add { req, probe, reply } => {
                 let _ = reply.send(self.add(req, &probe));
             }
+            Command::AddTorrent { req, input, reply } => {
+                let _ = reply.send(self.add_torrent(req, input));
+            }
             Command::Pause { id, reply } => {
                 let _ = reply.send(self.pause(id).await);
             }
             Command::Resume { id, probe, reply } => {
-                let _ = reply.send(self.resume(id, &probe));
+                let _ = reply.send(self.resume(id, probe.as_ref()));
             }
             Command::StartNow { id, reply } => {
                 let _ = reply.send(self.start_now(id));
@@ -302,9 +342,12 @@ impl Actor {
                 let before = write(&self.views).get_mut(&id).map(|view| {
                     view.total = total;
                     view.speed_bps = speed_bps;
-                    std::mem::replace(&mut view.downloaded, downloaded)
+                    let before = std::mem::replace(&mut view.downloaded, downloaded);
+                    (view.kind, before)
                 });
-                if let Some(before) = before {
+                // The peak is the connection's: a torrent's speed is its
+                // peers', and its first progress is what is already on disk.
+                if let Some((JobKind::Http, before)) = before {
                     // A drop (a restarted stream) downloaded nothing.
                     self.measure(downloaded.saturating_sub(before));
                 }
@@ -316,6 +359,8 @@ impl Actor {
                 });
             }
             JobMsg::Finished { id, outcome } => self.on_finished(id, outcome),
+            JobMsg::Seeding { id, finished_now } => self.on_seeding(id, finished_now),
+            JobMsg::TorrentStats { id, view } => self.on_torrent_stats(id, view),
             JobMsg::RetryDue { id, seq } => self.on_retry_due(id, seq),
             JobMsg::WhenDoneFired(action) => self.on_when_done_fired(action),
             JobMsg::Resolved { id, probe } => self.on_resolved(id, probe),
@@ -336,7 +381,7 @@ impl Actor {
 }
 
 /// Whether a job in `state` is done until someone acts on it: nothing will
-/// run it on its own.
+/// run it on its own. Seeding is not final: the job is still sharing.
 pub(super) fn is_final(state: JobState) -> bool {
     matches!(
         state,

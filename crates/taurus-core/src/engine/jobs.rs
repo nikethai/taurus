@@ -12,12 +12,13 @@ use crate::fixups;
 use crate::http::probe::validator_change;
 use crate::http::{JobOutcome, Probe, resolve};
 use crate::plan::DEFAULT_CONNECTIONS;
-use crate::store::{JobId, JobRecord, JobState, NewJob, Store};
+use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob, Store};
 use crate::system::marks::loggable;
-use crate::system::{SpaceSource, check_fits, same_volume};
 
 use super::actor::{Actor, JobMsg, Run};
-use super::{AddRequest, Event, JobView, Views, io_error, no_such_job, read, write};
+use super::schedule::check_space;
+use super::torrent::{stored_downloaded, stored_torrent_view};
+use super::{AddRequest, Event, JobView, io_error, no_such_job, read, write};
 
 impl Actor {
     pub(super) fn add(&mut self, req: AddRequest, probe: &Probe) -> Result<JobId, CoreError> {
@@ -25,7 +26,10 @@ impl Actor {
             Some(name) => sanitize(name),
             None => probe.file_name.clone(),
         };
-        // Reserving here, in the single actor, keeps concurrent adds apart.
+        // Reserving here, in the single actor, keeps concurrent adds apart;
+        // the placement lock keeps torrents being placed apart from them.
+        let hub = self.hub.clone();
+        let placing = hub.placement_lock();
         let reserved = self.store.reserved_names(&req.dest_dir)?;
         let path = unique_path(&req.dest_dir, &name, &reserved);
         let file_name = path
@@ -45,7 +49,12 @@ impl Actor {
             checksum: req.checksum.clone(),
             referer: req.referer.clone(),
             queue_pos: 0,
+            kind: JobKind::Http,
+            info_hash: None,
+            torrent_meta: None,
+            only_files: None,
         })?;
+        drop(placing);
         let mut job = JobRecord {
             id,
             url,
@@ -64,6 +73,12 @@ impl Actor {
             checksum: req.checksum,
             referer: req.referer,
             queue_pos: id.0,
+            kind: JobKind::Http,
+            info_hash: None,
+            torrent_meta: None,
+            only_files: None,
+            uploaded: 0,
+            seed_started_at: None,
         };
         apply_probe(&mut job, probe);
         if let Err(e) = self.store.update_job(&job) {
@@ -104,7 +119,8 @@ impl Actor {
         result
     }
 
-    pub(super) fn resume(&mut self, id: JobId, probe: &Probe) -> Result<(), CoreError> {
+    /// `probe` is `None` for a torrent, which is simply queued again.
+    pub(super) fn resume(&mut self, id: JobId, probe: Option<&Probe>) -> Result<(), CoreError> {
         let job = self.store.get_job(id)?.ok_or_else(no_such_job)?;
         if self.running.contains_key(&id)
             || !matches!(job.state, JobState::Paused | JobState::Failed)
@@ -112,7 +128,13 @@ impl Actor {
             return Ok(());
         }
         self.resolved_again.remove(&id);
-        self.requeue_resolved(job, probe)?;
+        match probe {
+            Some(probe) => self.requeue_resolved(job, probe)?,
+            None => {
+                self.requeue(id)?;
+                self.retry_counts.remove(&id);
+            }
+        }
         self.after_change();
         Ok(())
     }
@@ -178,14 +200,18 @@ impl Actor {
         self.cancel_retry(id);
         self.retry_counts.remove(&id);
         self.resolved_again.remove(&id);
-        let removed = self.delete(id, delete_files);
+        let removed = self.delete(id, delete_files).await;
         self.after_change();
         removed
     }
 
-    fn delete(&mut self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
-        if delete_files && let Some(job) = self.store.get_job(id)? {
-            delete_job_files(&self.store, &job)?;
+    async fn delete(&mut self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
+        match self.store.get_job(id)? {
+            Some(job) if job.kind == JobKind::Torrent => {
+                self.delete_torrent(&job, delete_files).await?;
+            }
+            Some(job) if delete_files => delete_job_files(&self.store, &job)?,
+            _ => {}
         }
         self.store.delete_job(id)?;
         write(&self.views).remove(&id);
@@ -201,14 +227,19 @@ impl Actor {
         let run = self.running.remove(&id);
         // Pause, remove or shutdown is waiting for this run to end.
         let told_to_stop = run.as_ref().is_some_and(|run| run.cancel.is_cancelled());
-        let mut view = load_view(&self.store, id).unwrap_or_else(|e| {
+        let known = read(&self.views).get(&id).cloned();
+        let mut view = load_view(&self.store, id, known.as_ref()).unwrap_or_else(|e| {
             tracing::warn!(job = id.0, "could not reload the finished job: {e}");
-            read(&self.views).get(&id).cloned()
+            known.clone()
         });
+        if let Some(view) = &mut view {
+            self.keep_torrent_progress(view);
+        }
         if let JobOutcome::Failed(e) = &outcome
             && !told_to_stop
             && e.kind == ErrorKind::LinkExpired
             && let Some(view) = &view
+            && view.kind == JobKind::Http
             && self.resolve_again(id, view.downloaded)
         {
             return;
@@ -424,33 +455,6 @@ impl Actor {
     }
 }
 
-/// The pre-flight check: `remaining` more bytes of a `total`-byte file
-/// must fit in `dir` beside what every Downloading job on the same disk
-/// (other than `except`) still has to download. Nothing left to download
-/// (a job stopped while its file was checked) needs no space.
-pub(super) fn check_space(
-    views: &Views,
-    space: SpaceSource,
-    dir: &Path,
-    remaining: u64,
-    total: Option<u64>,
-    except: Option<JobId>,
-) -> Result<(), CoreError> {
-    if remaining == 0 {
-        return Ok(());
-    }
-    let running: Vec<(PathBuf, u64)> = read(views)
-        .values()
-        .filter(|v| v.state == JobState::Downloading && Some(v.id) != except)
-        .filter_map(|v| Some((v.dest_dir.clone(), v.total?.saturating_sub(v.downloaded))))
-        .collect();
-    let reserved = running
-        .iter()
-        .filter(|(other, _)| same_volume(other, dir))
-        .fold(0u64, |sum, (_, left)| sum.saturating_add(*left));
-    check_fits(space, dir, reserved, remaining, total)
-}
-
 /// The URL after the host's link fixups; an unparseable URL as is, for
 /// `resolve` to report.
 pub(super) fn fixed_url(url: &str) -> String {
@@ -532,7 +536,15 @@ fn describe_size(size: Option<u64>) -> String {
     size.map_or_else(|| "unknown".to_string(), |s| format!("{s} bytes"))
 }
 
+/// `downloaded` is the durable progress (see `stored_downloaded` for a
+/// torrent's).
 pub(super) fn view_of(job: &JobRecord, downloaded: u64) -> JobView {
+    view_with(job, downloaded, None)
+}
+
+/// [`view_of`], reusing what `known` (the job's view so far) has that only
+/// the stored metadata could tell otherwise.
+fn view_with(job: &JobRecord, downloaded: u64, known: Option<&JobView>) -> JobView {
     JobView {
         id: job.id,
         url: job.url.clone(),
@@ -541,18 +553,24 @@ pub(super) fn view_of(job: &JobRecord, downloaded: u64) -> JobView {
         dest_dir: job.dest_dir.clone(),
         state: job.state,
         total: job.total,
-        downloaded,
+        downloaded: stored_downloaded(job, downloaded),
         speed_bps: 0,
         resumable: job.resumable,
         error: job.error.clone(),
+        kind: job.kind,
+        torrent: stored_torrent_view(job, known.and_then(|v| v.torrent.as_ref())),
     }
 }
 
-fn load_view(store: &Store, id: JobId) -> Result<Option<JobView>, CoreError> {
+fn load_view(
+    store: &Store,
+    id: JobId,
+    known: Option<&JobView>,
+) -> Result<Option<JobView>, CoreError> {
     let Some(job) = store.get_job(id)? else {
         return Ok(None);
     };
-    Ok(Some(view_of(&job, downloaded(store, id)?)))
+    Ok(Some(view_with(&job, downloaded(store, id)?, known)))
 }
 
 /// Durable progress: the sum of the stored segments' `done`.
@@ -584,7 +602,7 @@ fn delete_job_files(store: &Store, job: &JobRecord) -> Result<(), CoreError> {
     Ok(())
 }
 
-fn remove_if_exists(path: &Path) -> Result<(), CoreError> {
+pub(super) fn remove_if_exists(path: &Path) -> Result<(), CoreError> {
     match std::fs::remove_file(path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io_error(e)),
         _ => Ok(()),
@@ -614,6 +632,10 @@ mod tests {
                 checksum: None,
                 referer: None,
                 queue_pos: 0,
+                kind: JobKind::Http,
+                info_hash: None,
+                torrent_meta: None,
+                only_files: None,
             })
             .unwrap();
         store.set_state(id, state).unwrap();

@@ -1,5 +1,9 @@
 //! Test support for Taurus: a local HTTP server with scriptable behavior.
 
+mod torrent;
+
+pub use torrent::{TorrentLeecher, TorrentSeeder, make_torrent_bytes, test_session_options};
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -140,7 +144,7 @@ struct FileEntry {
 struct Page {
     status: u16,
     headers: Vec<(String, String)>,
-    html: String,
+    body: Bytes,
 }
 
 /// Bodies currently being sent for a path, and the most seen at once.
@@ -296,7 +300,21 @@ impl TestServer {
             Kind::Page(Page {
                 status,
                 headers,
-                html: html.to_owned(),
+                body: Bytes::from(html.to_owned()),
+            }),
+        )
+    }
+
+    /// Registers `body` at `path`, answered 200 with `content-type`, and
+    /// returns the full URL. Range is ignored.
+    pub fn serve_bytes(&self, path: &str, content_type: &str, body: &[u8]) -> String {
+        HeaderValue::from_str(content_type).expect("content type is not a valid HTTP header");
+        self.register(
+            path,
+            Kind::Page(Page {
+                status: 200,
+                headers: vec![("content-type".to_owned(), content_type.to_owned())],
+                body: Bytes::copy_from_slice(body),
             }),
         )
     }
@@ -410,13 +428,13 @@ fn empty(status: StatusCode) -> Response<Body> {
 }
 
 /// A whole HTML answer: `headers` are applied over the default content type.
-fn html_response(status: u16, headers: &[(String, String)], html: &str) -> Response<Body> {
-    let mut resp = Response::new(Body::from(html.to_owned()));
+fn page_response(status: u16, headers: &[(String, String)], body: &Bytes) -> Response<Body> {
+    let mut resp = Response::new(Body::from(body.clone()));
     *resp.status_mut() = StatusCode::from_u16(status).expect("validated on registration");
     let h = resp.headers_mut();
     h.insert(CONTENT_TYPE, HeaderValue::from_static(HTML));
     apply_headers(h, headers);
-    h.insert(CONTENT_LENGTH, HeaderValue::from(html.len()));
+    h.insert(CONTENT_LENGTH, HeaderValue::from(body.len()));
     resp
 }
 
@@ -442,7 +460,7 @@ async fn handle(
         .collect();
     match &mut entry.kind {
         Kind::File(file) => file_response(file, number, &headers),
-        Kind::Page(page) => html_response(page.status, &page.headers, &page.html),
+        Kind::Page(page) => page_response(page.status, &page.headers, &page.body),
         Kind::Redirect(targets) => {
             let mut resp = empty(StatusCode::FOUND);
             let target = &targets[(number - 1) % targets.len()];
@@ -467,7 +485,11 @@ fn file_response(entry: &mut FileEntry, number: usize, headers: &HeaderMap) -> R
     if let Some(fail) = &spec.fail_after
         && number > fail.after_requests
     {
-        return html_response(fail.status, &fail.headers, BLOCKED_BODY);
+        return page_response(
+            fail.status,
+            &fail.headers,
+            &Bytes::from_static(BLOCKED_BODY.as_bytes()),
+        );
     }
     if let Some(max) = spec.max_concurrent
         && entry.flight.current.load(Ordering::SeqCst) >= max

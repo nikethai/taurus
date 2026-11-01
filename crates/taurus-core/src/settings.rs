@@ -38,6 +38,46 @@ pub enum WhenDone {
     Quit,
 }
 
+/// Torrent-only settings. `None` limits are unlimited (or, for `peer_limit`,
+/// the library's default).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct TorrentSettings {
+    /// Stop sharing at this uploaded/size ratio; `Some(0.0)` stops as soon as
+    /// the download finishes, `None` never stops.
+    pub stop_ratio: Option<f64>,
+    /// Stop sharing this long after the download finished.
+    pub stop_after_secs: Option<u64>,
+    pub upload_limit_bps: Option<u64>,
+    /// Caps the torrent side of the download speed.
+    pub download_limit_bps: Option<u64>,
+    /// Torrents downloading at once; seeding ones do not count.
+    pub max_active: u32,
+    pub peer_limit: Option<u32>,
+    /// `None` picks a random port. Applies when the session next starts.
+    pub listen_port: Option<u16>,
+    /// Applies when the session next starts.
+    pub upnp: bool,
+    /// Applies when the session next starts.
+    pub dht: bool,
+}
+
+impl Default for TorrentSettings {
+    fn default() -> TorrentSettings {
+        TorrentSettings {
+            stop_ratio: Some(1.0),
+            stop_after_secs: None,
+            upload_limit_bps: None,
+            download_limit_bps: None,
+            max_active: 3,
+            peer_limit: None,
+            listen_port: None,
+            upnp: true,
+            dht: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -46,6 +86,7 @@ pub struct Settings {
     pub when_done: WhenDone,
     pub auto_checksum: bool,
     pub keep_awake: bool,
+    pub torrent: TorrentSettings,
 }
 
 impl Default for Settings {
@@ -56,6 +97,7 @@ impl Default for Settings {
             when_done: WhenDone::Nothing,
             auto_checksum: true,
             keep_awake: true,
+            torrent: TorrentSettings::default(),
         }
     }
 }
@@ -84,6 +126,31 @@ mod tests {
         assert_eq!(custom.bytes_per_sec(peak), Some(123));
         // Huge peaks saturate instead of overflowing.
         assert!(SpeedLimit::Balanced.bytes_per_sec(Some(u64::MAX)).is_some());
+    }
+
+    #[test]
+    fn torrent_settings_defaults_and_partial_json() {
+        let d = TorrentSettings::default();
+        assert_eq!(d.stop_ratio, Some(1.0));
+        assert_eq!(d.stop_after_secs, None);
+        assert_eq!((d.upload_limit_bps, d.download_limit_bps), (None, None));
+        assert_eq!(d.max_active, 3);
+        assert_eq!((d.peer_limit, d.listen_port), (None, None));
+        assert!(d.upnp && d.dht);
+        assert_eq!(Settings::default().torrent, d);
+
+        let s: Settings = serde_json::from_str(r#"{"torrent":{"stop_ratio":null}}"#).unwrap();
+        assert_eq!(s.torrent.stop_ratio, None);
+        assert_eq!(
+            s.torrent,
+            TorrentSettings {
+                stop_ratio: None,
+                ..TorrentSettings::default()
+            }
+        );
+        // Settings saved before M3 have no torrent section.
+        let old: Settings = serde_json::from_str(r#"{"max_active":5}"#).unwrap();
+        assert_eq!(old.torrent, d);
     }
 
     #[test]

@@ -1,0 +1,23 @@
+Patched copy of librqbit-tracker-comms
+======================================
+
+Upstream: librqbit-tracker-comms 9.1.0 from crates.io (rqbit repo
+crates/tracker_comms, commit 4309d38769ef93f6ee4f01a1ab147009a197fa8f; see
+.cargo_vcs_info.json). Files are as published, except:
+
+- src/tracker_comms_udp.rs, UdpTrackerClient::new: if binding the UDP
+  tracker socket on [::]:0 fails, log a warning and retry on 0.0.0.0:0;
+  error only if both binds fail.
+- LICENSE and PATCH.txt added; the registry's .cargo-ok marker removed.
+
+Why: upstream binds the UDP tracker socket on [::]:0 with no IPv4 fallback,
+and librqbit's Session::new_with_opts always creates this client (even with
+trackers disabled). On hosts without an IPv6 stack (kernels booted with
+ipv6.disable=1, some containers and sandboxes) session creation fails with
+"error creating UDP socket at [::]:0: Address family not supported by
+protocol (os error 97)" (EAFNOSUPPORT), so no torrent can start.
+
+Wired in by [patch.crates-io] in the workspace Cargo.toml; the directory is
+excluded from the workspace, so our fmt/clippy gates do not apply to it.
+
+Drop this patch when upstream falls back to IPv4.

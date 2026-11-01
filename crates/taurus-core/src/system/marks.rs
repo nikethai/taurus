@@ -58,9 +58,22 @@ fn write_mark(_path: &Path, _url: Option<&str>, _referer: Option<&str>) -> std::
 }
 
 /// `url` without user name and password, as browsers write it into these
-/// marks; `None` if it does not parse.
+/// marks; a magnet link keeps only its `xt` and `dn` (its trackers' URLs
+/// can carry a passkey). `None` if it does not parse.
 pub(crate) fn without_credentials(url: &str) -> Option<String> {
     let mut url = url::Url::parse(url).ok()?;
+    if url.scheme() == "magnet" {
+        let kept: Vec<&str> = url
+            .query()
+            .unwrap_or("")
+            .split('&')
+            .filter(|param| matches!(param.split('=').next(), Some("xt" | "dn")))
+            .collect();
+        let query = kept.join("&");
+        url.set_query(Some(&query));
+        url.set_fragment(None);
+        return Some(url.into());
+    }
     // Both fail only for URLs that cannot carry credentials anyway.
     let _ = url.set_username("");
     let _ = url.set_password(None);
@@ -187,6 +200,22 @@ mod tests {
         );
         assert_eq!(without_credentials(URL).as_deref(), Some(URL));
         assert_eq!(without_credentials("not a url"), None);
+        // A magnet link keeps only what names the torrent: its trackers'
+        // URLs can carry a passkey.
+        let hash = "c12fe1c06bba254a9dc9f519b335aa7c1367a88a";
+        assert_eq!(
+            without_credentials(&format!(
+                "magnet:?xt=urn:btih:{hash}&tr=https%3A%2F%2Ft.example%2Fpasskey%2Fs3cr3t\
+                 &dn=Ubuntu%2024.04&x.pe=10.0.0.1:6881&tr=udp://t2.example:1337"
+            ))
+            .as_deref(),
+            Some(format!("magnet:?xt=urn:btih:{hash}&dn=Ubuntu%2024.04").as_str())
+        );
+        assert_eq!(
+            without_credentials(&format!("magnet:?tr=udp://t.example/k&xt=urn:btih:{hash}"))
+                .as_deref(),
+            Some(format!("magnet:?xt=urn:btih:{hash}").as_str())
+        );
     }
 
     #[test]

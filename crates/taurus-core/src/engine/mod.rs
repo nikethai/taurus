@@ -7,29 +7,35 @@
 
 mod actor;
 mod jobs;
+mod open;
 mod schedule;
 mod settings;
+mod torrent;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::checksum;
 use crate::errors::{CoreError, ErrorKind, classify_io};
-use crate::http::{build_client, resolve};
-use crate::limit::{Limiter, PeakTracker};
+use crate::http::resolve;
 use crate::settings::{PowerMode, Settings, WhenDone};
-use crate::store::{JobId, JobState, Store};
-use crate::system::{AwakeGuard, SpaceSource, available_space};
+use crate::store::{JobId, JobKind, JobState, Store};
+use crate::system::{SpaceSource, available_space};
 use crate::timing::Timing;
-use crate::when_done::{EngineLink, WhenDoneRunner};
+use crate::torrent::hub::{TorrentHub, TorrentTestNet};
+use crate::torrent::source::{Source, classify};
 
-use actor::{Actor, Command, JobMsg};
-use jobs::{check_space, downloaded, fixed_url, vet_mirrors, view_of};
-use settings::{fresh_peak, speed_limit, unix_now};
+use actor::Command;
+#[doc(hidden)]
+pub use actor::JobMsg;
+use jobs::{downloaded, fixed_url, vet_mirrors, view_of};
+use open::assemble;
+use schedule::check_space;
 
 const COMMAND_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 1024;
@@ -56,6 +62,9 @@ pub struct EngineConfig {
     /// disk. Not for front ends.
     #[doc(hidden)]
     pub available_space: SpaceSource,
+    /// Test-only torrent networking; front ends leave this None.
+    #[doc(hidden)]
+    pub torrent_test: Option<TorrentTestNet>,
 }
 
 impl EngineConfig {
@@ -67,6 +76,7 @@ impl EngineConfig {
             power: PowerMode::Execute,
             autostart: true,
             available_space,
+            torrent_test: None,
         }
     }
 }
@@ -75,9 +85,10 @@ impl EngineConfig {
 pub struct AddRequest {
     pub url: String,
     pub dest_dir: PathBuf,
-    /// Overrides the name the server suggests; sanitized before use.
+    /// Overrides the name the server suggests; sanitized before use. Web
+    /// downloads only: a torrent is named after itself.
     pub file_name: Option<String>,
-    /// Defaults to `DEFAULT_CONNECTIONS`.
+    /// Defaults to `DEFAULT_CONNECTIONS`. Web downloads only.
     pub connections: Option<u32>,
     /// Other URLs serving the same file. Each is checked at `add`; one that
     /// fails to resolve, serves another size or another version (by its
@@ -87,6 +98,8 @@ pub struct AddRequest {
     pub checksum: Option<String>,
     /// Sent as `Referer` with every request of the job.
     pub referer: Option<String>,
+    /// Torrents only: the indices of the files to download; `None` is all.
+    pub only_files: Option<Vec<usize>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -106,6 +119,23 @@ pub struct JobView {
     pub speed_bps: u64,
     pub resumable: bool,
     pub error: Option<(ErrorKind, String)>,
+    pub kind: JobKind,
+    /// `None` for an HTTP job.
+    pub torrent: Option<TorrentView>,
+}
+
+/// What only a torrent has.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct TorrentView {
+    /// Peers connected now; 0 unless the torrent runs.
+    pub peers: u32,
+    /// Bytes uploaded in all, across restarts.
+    pub uploaded: u64,
+    pub upload_bps: u64,
+    /// Uploaded bytes over the size of the selected files.
+    pub ratio: f64,
+    pub files_selected: u32,
+    pub files_total: u32,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -162,6 +192,10 @@ pub struct Engine {
     /// Tells the actor that `holds` changed.
     hold_tx: mpsc::UnboundedSender<JobMsg>,
     space: SpaceSource,
+    /// The engine's torrent session, shared with the actor.
+    hub: Arc<TorrentHub>,
+    /// How long a magnet link's metadata is waited for.
+    metadata_timeout: Duration,
 }
 
 impl Engine {
@@ -211,6 +245,12 @@ impl Engine {
     /// what the running jobs on that disk still download) with `DiskFull`
     /// or `FileTooLargeForDisk`, a checksum that is not a SHA-256
     /// with `Unknown`; nothing is recorded when `add` fails.
+    ///
+    /// A magnet link, `.torrent` URL (fetched with the job's Referer) or
+    /// local `.torrent` file is queued as a torrent job, named after the
+    /// torrent, unless a job already has that torrent (`AlreadyAdded`); it
+    /// starts once fewer than `torrent.max_active` torrents download.
+    /// `only_files` selects its files; mirrors and a checksum are refused.
     pub async fn add(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         self.check_running()?;
         // Resolving may take minutes: the machine must not sleep meanwhile.
@@ -230,6 +270,19 @@ impl Engine {
             kind: ErrorKind::FolderUnavailable,
             detail: format!("folder {} is not available: {e}", req.dest_dir.display()),
         })?;
+        match classify(&req.url) {
+            Ok(Source::Http(_)) => {}
+            Ok(source) => return self.add_torrent(req, source).await,
+            // A bad magnet link; anything else is for `resolve` to report.
+            Err(e) if e.kind == ErrorKind::SiteNotSupported => return Err(e),
+            Err(_) => {}
+        }
+        if req.only_files.is_some() {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: "file selection applies only to torrents".to_string(),
+            });
+        }
         if req
             .checksum
             .as_deref()
@@ -273,7 +326,8 @@ impl Engine {
     /// new one. Resuming a Queued, Waiting, running or completed job does
     /// nothing. A failed probe is returned and leaves the job as it was. If
     /// the rest of the file does not fit on its disk, the job is recorded as
-    /// Failed with that error, which is also returned.
+    /// Failed with that error, which is also returned. A Paused or Failed
+    /// torrent is simply queued again (its files are checked as it starts).
     pub async fn resume(&self, id: JobId) -> Result<(), CoreError> {
         self.check_running()?;
         let _hold = self.hold_when_done();
@@ -283,12 +337,17 @@ impl Engine {
         }
         // Mirrors are not checked again: one that fails is dropped while
         // the job runs.
-        let probe = resolve(
-            &self.client,
-            &fixed_url(&job.source_url),
-            job.referer.as_deref(),
-        )
-        .await?;
+        let probe = match job.kind {
+            JobKind::Torrent => None,
+            JobKind::Http => Some(
+                resolve(
+                    &self.client,
+                    &fixed_url(&job.source_url),
+                    job.referer.as_deref(),
+                )
+                .await?,
+            ),
+        };
         self.call(|reply| Command::Resume { id, probe, reply })
             .await?
     }
@@ -306,7 +365,10 @@ impl Engine {
     /// Stops the job if it runs and forgets it. With `delete_files`, also
     /// deletes its partial file, or the downloaded file of a completed job,
     /// unless another job uses the same name or the downloaded file's size
-    /// has changed.
+    /// has changed. A torrent leaves the torrent session; with
+    /// `delete_files` its own files go (those whose size is still the
+    /// torrent's), then the folders they leave empty, and the folder it was
+    /// given if that is empty.
     pub async fn remove(&self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
         self.call(|reply| Command::Remove {
             id,
@@ -334,8 +396,11 @@ impl Engine {
 
     /// Saves the settings and applies them at once, also to running jobs,
     /// then emits `SettingsChanged`. A higher `max_active` starts more
-    /// Queued jobs; a lower one lets running jobs finish. A `max_active` of
-    /// 0 is refused. Nothing changes if saving fails.
+    /// Queued jobs; a lower one lets running jobs finish (likewise
+    /// `torrent.max_active` for torrents). A `max_active` or
+    /// `torrent.max_active` of 0 is refused. The torrent port, DHT and UPnP
+    /// apply the next time the engine opens. Nothing changes if saving
+    /// fails.
     pub async fn set_settings(&self, settings: Settings) -> Result<(), CoreError> {
         self.call(|reply| Command::SetSettings { settings, reply })
             .await?
@@ -367,7 +432,8 @@ impl Engine {
     }
 
     /// Resolves once the job is Completed, Paused or Failed (at once if it
-    /// already is); a Queued or Waiting job is waited for until it has run.
+    /// already is); a Queued, Waiting or Seeding job is waited for until it
+    /// has run.
     /// An unknown job resolves to Failed immediately. If the engine stops
     /// first, resolves to the job's last state.
     pub async fn wait(&self, id: JobId) -> JobState {
@@ -412,114 +478,6 @@ impl Engine {
             .map_err(|_| stopped())?;
         response.await.map_err(|_| stopped())
     }
-}
-
-/// Everything `Engine::open` does but starting the actor.
-async fn assemble(
-    config: EngineConfig,
-) -> Result<(Engine, Actor, mpsc::Receiver<Command>), CoreError> {
-    tokio::fs::create_dir_all(&config.data_dir)
-        .await
-        .map_err(io_error)?;
-    let lock = lock_data_dir(&config.data_dir)?;
-    let store = Store::open(&config.data_dir.join(DB_FILE))?;
-    // Unreadable settings must not keep the user out, not even from
-    // fixing them.
-    let settings = store.load_settings_lenient()?;
-    // Only a measurement: an unreadable one is measured again.
-    let measured_peak = store.measured_peak().unwrap_or_else(|e| {
-        tracing::warn!("ignoring the saved peak speed: {e}");
-        None
-    });
-    let mut views = HashMap::new();
-    for mut job in store.list_jobs()? {
-        match job.state {
-            // Interrupted, not paused: it runs again, in its place, once
-            // checked against the server.
-            JobState::Downloading => {
-                store.requeue_interrupted(job.id)?;
-                job.state = JobState::Queued;
-            }
-            // The connection may well be back by now.
-            JobState::Waiting if config.autostart => {
-                store.requeue(job.id)?;
-                job.state = JobState::Queued;
-                job.error = None;
-            }
-            _ => {}
-        }
-        let downloaded = downloaded(&store, job.id)?;
-        views.insert(job.id, view_of(&job, downloaded));
-    }
-
-    let views = Arc::new(RwLock::new(views));
-    let shared_settings = Arc::new(RwLock::new(settings.clone()));
-    let keeping_awake = Arc::new(AtomicBool::new(false));
-    let limiter = Limiter::new(speed_limit(&settings, measured_peak));
-    let peak = PeakTracker::with_max(fresh_peak(measured_peak, unix_now()).unwrap_or(0));
-    let (commands, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
-    let (events, _) = broadcast::channel(EVENT_CAPACITY);
-    let (job_tx, job_rx) = mpsc::unbounded_channel();
-    let holds = Arc::new(AtomicUsize::new(0));
-    let on_fired = {
-        let job_tx: mpsc::UnboundedSender<JobMsg> = job_tx.clone();
-        Arc::new(move |action| {
-            let _ = job_tx.send(JobMsg::WhenDoneFired(action));
-        })
-    };
-    let client = build_client();
-    let actor = Actor {
-        _lock: lock,
-        store,
-        client: client.clone(),
-        views: views.clone(),
-        events: events.clone(),
-        running: HashMap::new(),
-        waiters: HashMap::new(),
-        retries: HashMap::new(),
-        retry_counts: HashMap::new(),
-        resolved_again: HashMap::new(),
-        next_retry_seq: 0,
-        busy: false,
-        job_ended: false,
-        idle_pending: false,
-        holds: holds.clone(),
-        stopping: false,
-        autostart: config.autostart,
-        space: config.available_space,
-        when_done: WhenDoneRunner::new(
-            events.clone(),
-            config.power,
-            config.timing.when_done_countdown,
-            EngineLink {
-                on_fired,
-                holds: holds.clone(),
-            },
-        ),
-        awake: AwakeGuard::new(),
-        keeping_awake: keeping_awake.clone(),
-        job_tx: job_tx.clone(),
-        job_rx,
-        timing: config.timing.clone(),
-        settings,
-        shared_settings: shared_settings.clone(),
-        limiter,
-        measured_peak,
-        peak,
-        transferred: 0,
-    };
-    let engine = Engine {
-        commands,
-        events,
-        views,
-        settings: shared_settings,
-        keeping_awake,
-        client,
-        holds,
-        hold_tx: job_tx,
-        space: config.available_space,
-    };
-    Ok((engine, actor, commands_rx))
 }
 
 /// Holds off the when-done action while alive; see `Engine::hold_when_done`.
@@ -568,25 +526,6 @@ impl CoreError {
     /// engine (in this or another process) holds.
     pub fn is_instance_locked(&self) -> bool {
         self.kind == ErrorKind::Unknown && self.detail.starts_with(IN_USE)
-    }
-}
-
-/// Takes the exclusive lock on `data_dir/taurus.lock` without waiting.
-fn lock_data_dir(data_dir: &Path) -> Result<std::fs::File, CoreError> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(data_dir.join(LOCK_FILE))
-        .map_err(io_error)?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(std::fs::TryLockError::WouldBlock) => Err(CoreError {
-            kind: ErrorKind::Unknown,
-            detail: format!("{IN_USE} {}", data_dir.display()),
-        }),
-        Err(std::fs::TryLockError::Error(e)) => Err(io_error(e)),
     }
 }
 

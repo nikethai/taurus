@@ -31,14 +31,50 @@ taurus run
 # Start download 4 now, even if max_active downloads are already running
 taurus start-now 4
 
-# Show every download: id, state, percent, size, name
+# Show every download: id, state, kind (http or torrent), percent, size, name
 taurus list
 
 # Forget download 1 and delete its partial or finished file
 taurus remove 1 --delete-files
 ```
 
-`--name`, `--mirror` (repeatable) and `--checksum` apply to a single download, so they need exactly one URL; `--dir`, `--connections` and `--referer` apply to every URL of the `add`.
+### Torrents
+
+`add` also takes magnet links, `.torrent` links and `.torrent` files, mixed freely with web links; `list` shows each download's kind (`http` or `torrent`), and a torrent row shows `peers N` while it downloads and `sharing · ratio 0.42` while it shares. A torrent is saved in a folder of its own name inside `--dir`; a second torrent with the same name gets `Name (1)`. A magnet link whose peers cannot be found within two minutes waits (state Waiting) and is retried. At most `torrent.max_active` torrents download at once, and sharing ones do not count.
+
+When a torrent finishes it keeps sharing (uploading to other peers) until its ratio, uploaded over downloaded size, reaches `torrent.ratio` (default 1.0), or for `torrent.seed_time` if set. Taurus shares only while it is running downloads; the CLI exits when downloads finish (`add` and `run` return once nothing is downloading, queued or waiting, even if torrents are still sharing) and says so with `Sharing pauses when Taurus exits; it continues the next time Taurus runs (up to ratio 1.0).` A torrent that has not reached its limit shares again whenever Taurus next runs downloads. Ctrl-C stops sharing too.
+
+```sh
+# A magnet link, a .torrent file and a .torrent link
+taurus add "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a&dn=ubuntu" --dir ~/Downloads
+taurus add ./ubuntu.torrent https://example.com/other.torrent
+
+# See a torrent's files (index, size, path) without adding it; --json prints them as JSON.
+# For a magnet link this first fetches the file list from its peers.
+taurus torrent-files ./ubuntu.torrent
+
+# Download only files 0, 2 and 5 to 7 (one torrent only; a range includes both ends)
+taurus add ./ubuntu.torrent --files 0,2,5-7
+
+```
+
+The torrent settings are changed like the others: `taurus config set torrent.ratio 2`.
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `torrent.ratio` | stop sharing at this uploaded/size ratio of the files you chose: a number such as `1.5`, `0` (stop as soon as the download finishes), or `never` | `1.0` |
+| `torrent.seed_time` | also stop sharing this long after the download finished: `30m`, `2h`, `1d` (or `90s`), or `off` | `off` |
+| `torrent.upload_limit` | upload speed cap: `off`, `500KB/s` or `2MB/s` | `off` |
+| `torrent.download_limit` | cap on the torrents' share of the download speed, same values | `off` |
+| `torrent.max_active` | how many torrents download at once, at least 1 | `3` |
+| `torrent.peers` | the most peers per torrent: a number, or `default` | `default` |
+| `torrent.port` | the port torrents listen on: `1024` to `65535`, or `random` | `random` |
+| `torrent.upnp` | `on` or `off`: ask the router to open the port | `on` |
+| `torrent.dht` | `on` or `off`: find peers through the distributed hash table | `on` |
+
+`torrent.peers`, `torrent.port`, `torrent.upnp` and `torrent.dht` apply the next time Taurus starts. The others take effect at once, also for torrents that are running. The overall `speed` is shared evenly between web downloads and torrents while both run. A torrent's pieces are always downloaded in order.
+
+`--name`, `--mirror` (repeatable) and `--checksum` apply to a single web download, so they need exactly one URL; `--files` needs exactly one torrent; `--dir`, `--connections` and `--referer` apply to every URL of the `add`.
 
 ### Settings
 
