@@ -163,6 +163,8 @@ async fn metadata(
             format!("this torrent is already added as job {}", other.0),
         ));
     }
+    // From choosing the folder until it is recorded, no other job chooses.
+    let placing = ctx.hub.placement_lock();
     // The job's own name is reserved too, unless another job shares it.
     let mut reserved = ctx.store.reserved_names(&job.dest_dir)?;
     if !ctx
@@ -179,6 +181,7 @@ async fn metadata(
     placed.total = Some(selected_total(&info, job.only_files.as_deref()));
     // Another job saving the same info hash first is `AlreadyAdded` here.
     ctx.store.update_job(&placed)?;
+    drop(placing);
     *job = placed;
     Ok(Some(info))
 }
@@ -242,6 +245,8 @@ async fn watch(
         // Not kept past this poll: see the module doc.
         let (torrent, stats) = match ctx.hub.handle(&info.info_hash) {
             Some(handle) => (handle.id(), handle.stats()),
+            // A removal or shutdown that took the torrent out first.
+            None if ctx.cancel.is_cancelled() => return Ok(End::Cancelled),
             None => {
                 return Err(error(
                     ErrorKind::Unknown,

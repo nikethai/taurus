@@ -215,6 +215,62 @@ async fn unpause_while_files_are_checked() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn unpause_after_a_pause_during_the_check() {
+    // All its data is already on disk, so checking it takes a while.
+    let big = data(32 * 1024 * 1024, 5);
+    let meta = make_torrent_bytes("big", &[("big.bin", &big)], 256 * 1024);
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out");
+    fs::create_dir_all(&out).unwrap();
+    fs::write(out.join("big.bin"), &big).unwrap();
+    let hash = hash_of(&meta);
+    let hub = hub(&tmp.path().join("data"), vec![]);
+    hub.add_bytes(&meta, &out, None, false).await.unwrap();
+    hub.pause(&hash).await.unwrap();
+    let handle = hub.handle(&hash).unwrap();
+    assert!(
+        matches!(
+            handle.stats().state,
+            librqbit::TorrentStatsState::Initializing { .. }
+        ),
+        "paused during the check"
+    );
+    drop(handle);
+    // The pause stops the check.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    tokio::time::timeout(TIMEOUT, hub.unpause(&hash))
+        .await
+        .expect("unpause returned")
+        .unwrap();
+    wait_finished(&hub, &hash).await;
+    assert!(hub.handle(&hash).unwrap().live().is_some());
+    hub.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_adds_get_their_own_torrents() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("out");
+    let hub = hub(&tmp.path().join("data"), vec![]);
+    let metas: Vec<Vec<u8>> = (0..8)
+        .map(|n| make_torrent_bytes(&format!("t{n}"), &[("x.bin", &data(1000, n))], 16_384))
+        .collect();
+    let (out_x, out_y) = (out.join("x"), out.join("y"));
+    for pair in metas.chunks(2) {
+        let (x, y) = tokio::join!(
+            hub.add_bytes(&pair[0], &out_x, None, true),
+            hub.add_bytes(&pair[1], &out_y, None, true),
+        );
+        assert_eq!(x.unwrap().info_hash().as_string(), hash_of(&pair[0]));
+        assert_eq!(y.unwrap().info_hash().as_string(), hash_of(&pair[1]));
+    }
+    let session = hub.session().await.unwrap();
+    assert_eq!(session.with_torrents(|it| it.count()), metas.len());
+    hub.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn add_magnet_source() {
     let (seeder, a, _) = seeder().await;
     let tmp = tempfile::tempdir().unwrap();
@@ -598,11 +654,15 @@ async fn runner_downloads_and_seeds_until_ratio() {
     let mut new = job_for(&rig.dest, &seeder.magnet, "pack", None);
     new.info_hash = Some(seeder.info_hash.clone());
     let id = rig.store.insert_job(&new).unwrap();
-    let (ctx, _rx, _cancel) = context(&rig, id, policy(Some(0.0), None), available_space);
+    let (ctx, mut rx, _cancel) = context(&rig, id, policy(Some(0.0), None), available_space);
 
     let JobOutcome::Completed(out) = run(ctx).await else {
         panic!("not completed");
     };
+    // Stopped as soon as it finished: it never turned Seeding.
+    let msgs = drain(&mut rx).await;
+    assert!(!msgs.iter().any(|m| matches!(m, JobMsg::Seeding { .. })));
+    assert!(msgs.iter().any(|m| matches!(m, JobMsg::Progress { .. })));
     assert_eq!(out, rig.dest.join("pack"));
     assert_eq!(fs::read(out.join("a.bin")).unwrap(), a);
     assert_eq!(fs::read(out.join("dir").join("b.bin")).unwrap(), b);
@@ -647,6 +707,70 @@ async fn runner_places_a_magnet_beside_a_taken_name() {
         rig.store.get_job(id).unwrap().unwrap().file_name,
         "pack (1)"
     );
+    rig.hub.shutdown().await;
+}
+
+// Four workers: the two runners block on the placement lock meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn runner_placement_is_serialized() {
+    let rig = rig(vec![]);
+    // Two torrents with the same name, from `.torrent` files not read yet:
+    // each runner reads its file and places its job.
+    let mut runs = Vec::new();
+    for n in 0..2 {
+        let a = data(20_000, 30 + n);
+        let meta = make_torrent_bytes("pack", &[("a.bin", &a), ("b.bin", b"b")], 16_384);
+        let file = rig.tmp.path().join(format!("{n}.torrent"));
+        fs::write(&file, &meta).unwrap();
+        let new = job_for(&rig.dest, file.to_str().unwrap(), "pack", None);
+        let id = rig.store.insert_job(&new).unwrap();
+        let (ctx, _, cancel) = context(&rig, id, policy(Some(0.0), None), available_space);
+        runs.push((id, cancel, ctx));
+    }
+
+    // While the lock is held, neither job records a folder.
+    let held = rig.hub.placement_lock();
+    let mut tasks = Vec::new();
+    for (id, cancel, ctx) in runs {
+        tasks.push((id, cancel, tokio::spawn(run(ctx))));
+    }
+    // Blocks only the test's own thread, not the runtime's workers.
+    std::thread::sleep(Duration::from_secs(1));
+    for (id, _, _) in &tasks {
+        assert!(
+            rig.store
+                .get_job(*id)
+                .unwrap()
+                .unwrap()
+                .torrent_meta
+                .is_none()
+        );
+    }
+    drop(held);
+
+    // Nobody seeds them: once both are placed, stop them.
+    let deadline = Instant::now() + TIMEOUT;
+    let placed = || {
+        tasks.iter().all(|(id, _, _)| {
+            let hash = rig.store.get_job(*id).unwrap().unwrap().info_hash;
+            hash.is_some_and(|h| rig.hub.handle(&h).is_some())
+        })
+    };
+    while !placed() {
+        assert!(Instant::now() < deadline, "jobs not placed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let mut names = Vec::new();
+    for (id, cancel, task) in tasks {
+        cancel.cancel();
+        assert!(matches!(task.await.unwrap(), JobOutcome::Paused));
+        let job = rig.store.get_job(id).unwrap().unwrap();
+        let handle = rig.hub.handle(job.info_hash.as_deref().unwrap()).unwrap();
+        assert_eq!(handle.output_folder(), rig.dest.join(&job.file_name));
+        names.push(job.file_name);
+    }
+    names.sort();
+    assert_eq!(names, ["pack", "pack (1)"]);
     rig.hub.shutdown().await;
 }
 

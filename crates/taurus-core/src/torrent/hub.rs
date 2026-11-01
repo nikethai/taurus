@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,6 +27,11 @@ use super::{TorrentFile, TorrentInfo};
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::settings::TorrentSettings;
 use crate::store::{JobKind, JobRecord, JobState, Store};
+
+/// Starts in a row `unpause` tries, each after the files are checked.
+const START_ATTEMPTS: usize = 3;
+/// How long `unpause` waits for a torrent's files to be checked.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// librqbit's torrent handle.
 pub type TorrentHandle = Arc<ManagedTorrent>;
@@ -54,6 +59,12 @@ pub struct TorrentHub {
     /// The latest `set_limits`, as librqbit takes them; a session starting
     /// later starts with these.
     limits: Mutex<LimitsConfig>,
+    /// See [`TorrentHub::placement_lock`].
+    placement: Mutex<()>,
+    /// The id the next add gives its torrent. librqbit's own pick (one past
+    /// the highest it saved) is the same for two adds at once, and the
+    /// second then gets the first's torrent back as "already managed".
+    next_id: AtomicUsize,
 }
 
 impl TorrentHub {
@@ -79,6 +90,8 @@ impl TorrentHub {
                 settings.download_limit_bps,
                 settings.upload_limit_bps,
             )),
+            placement: Mutex::new(()),
+            next_id: AtomicUsize::new(0),
         }
     }
 
@@ -133,6 +146,8 @@ impl TorrentHub {
             .await
             .map_err(lib_error)?;
         // librqbit has already restored, and started, what it persisted.
+        let restored = session.with_torrents(|it| it.map(|(id, _)| id + 1).max());
+        self.next_id.store(restored.unwrap_or(0), Ordering::SeqCst);
         if let Err(e) = self.reconcile_with(&session).await {
             session.cancellation_token().cancel();
             return Err(e);
@@ -199,6 +214,7 @@ impl TorrentHub {
             // Resuming or seeding needs the files already there.
             overwrite: true,
             output_folder: Some(output.to_string()),
+            preferred_id: Some(self.next_id.fetch_add(1, Ordering::SeqCst)),
             ..self.add_options()
         };
         match session
@@ -264,16 +280,53 @@ impl TorrentHub {
     }
 
     /// Restarts the torrent's transfers; a running torrent is left alone.
-    /// Waits until the torrent's files are checked: librqbit drops a start
-    /// that comes while they are.
+    /// A torrent whose files are being checked starts once they are; one
+    /// that is still being checked after `CHECK_TIMEOUT` is a `Timeout`.
     pub async fn unpause(&self, info_hash: &str) -> Result<(), CoreError> {
         let session = self.session().await?;
         let handle = find(&session, info_hash)?;
-        handle.wait_until_initialized().await.map_err(lib_error)?;
-        if handle.live().is_some() {
-            return Ok(());
+        // During a check, librqbit's start only clears a pause request: the
+        // running check then leaves the torrent paused (if it was added
+        // paused), so it is started again once checked. A check a pause
+        // stopped is restarted by the start, so the wait always ends; and a
+        // check that stopped just as the start came ends in Error, which the
+        // next start checks again.
+        let mut failure = None;
+        for _ in 0..START_ATTEMPTS {
+            if handle.live().is_some() {
+                return Ok(());
+            }
+            if let Err(e) = session.unpause(&handle).await {
+                failure = Some(lib_error(e));
+            }
+            match tokio::time::timeout(CHECK_TIMEOUT, handle.wait_until_initialized()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => failure = Some(lib_error(e)),
+                Err(_) => {
+                    return Err(CoreError {
+                        kind: ErrorKind::Timeout,
+                        detail: format!(
+                            "the torrent's files were still being checked after {CHECK_TIMEOUT:?}"
+                        ),
+                    });
+                }
+            }
         }
-        session.unpause(&handle).await.map_err(lib_error)
+        match failure {
+            _ if handle.live().is_some() => Ok(()),
+            Some(e) => Err(e),
+            None => Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: format!("torrent {info_hash} did not start"),
+            }),
+        }
+    }
+
+    /// Held while a job chooses its output folder and records it, so two
+    /// jobs (on any thread) never choose the same one. Never held across an
+    /// await.
+    pub fn placement_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        lock(&self.placement)
     }
 
     /// Removes the torrent from the session, and with `delete_files` its own
