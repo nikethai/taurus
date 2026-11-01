@@ -10,19 +10,23 @@
 use std::path::{Path, PathBuf};
 
 use slint::ComponentHandle;
-use taurus_core::{AddRequest, CoreError, ErrorKind, JobKind, LinkInfo};
+use taurus_core::{AddRequest, CoreError, Engine, ErrorKind, JobId, JobKind, LinkInfo};
 
 use crate::app::{App, UiMsg};
-use crate::{AddVm, BannerVm, Screen, format, rows};
+use crate::media_add::{self, MediaPick};
+use crate::{AddVm, AppWindow, BannerVm, Screen, format, rows};
 
 /// The link on the Add screen.
 pub(crate) struct PendingAdd {
-    seq: u64,
+    pub(crate) seq: u64,
     url: String,
-    /// The icon family, once the link was looked at without error.
-    kind: Option<&'static str>,
+    /// The kind the destination is sorted by, once the link was looked at
+    /// without error.
+    pub(crate) kind: Option<&'static str>,
     /// A folder picked on the Add screen for this download only.
     folder: Option<PathBuf>,
+    /// What is picked for a video or audio link.
+    pub(crate) media: Option<MediaPick>,
 }
 
 /// The type subfolder a kind is sorted into when "sort by type" is on;
@@ -72,8 +76,8 @@ fn folder_text(folder: Option<&Path>) -> slint::SharedString {
         .into()
 }
 
-/// What the Add screen shows for a looked-at link; `None` for a video link,
-/// which this screen does not handle yet (it is shown as unsupported).
+/// What the Add screen shows for a file or a torrent; `None` for a video
+/// link (see `media_add.rs`).
 fn add_vm(info: &LinkInfo) -> Option<(AddVm, &'static str)> {
     let shown = match info {
         LinkInfo::File { name, size, .. } => {
@@ -122,15 +126,14 @@ impl App {
             url: url.clone(),
             kind: None,
             folder: None,
+            media: None,
         });
         if let Some(id) = self.engine.find_by_url(&url) {
             let view = self.view.borrow();
             let existing = view.view(id);
-            ui.set_add(AddVm {
+            let vm = AddVm {
                 duplicate: true,
-                kind: existing
-                    .map_or("file", |v| rows::kind_for(&v.file_name, v.kind))
-                    .into(),
+                kind: existing.map_or("file", rows::row_kind).into(),
                 name: existing.map(|v| v.file_name.clone()).unwrap_or(url).into(),
                 size_text: existing
                     .and_then(|v| v.total)
@@ -141,6 +144,10 @@ impl App {
                     .map(|v| folder_text(Some(&v.dest_dir)))
                     .unwrap_or_default(),
                 ..Default::default()
+            };
+            ui.set_add(match existing {
+                Some(v) => media_add::duplicate_vm(v, vm),
+                None => vm,
             });
             ui.set_screen(Screen::Add);
             return;
@@ -167,6 +174,10 @@ impl App {
         let mut pending = self.pending.borrow_mut();
         let Some(p) = pending.as_mut().filter(|p| p.seq == seq) else {
             return;
+        };
+        let result = match result {
+            Ok(LinkInfo::Media(info)) => return self.media_inspected(&ui, p, info),
+            other => other,
         };
         let shown = result.and_then(|info| add_vm(&info).ok_or(ErrorKind::SiteNotSupported));
         let vm = match shown {
@@ -202,7 +213,7 @@ impl App {
     /// "Save to" on the Add screen: the real destination, type subfolder
     /// included; "" (the screen says "Downloads folder") when that is the
     /// OS Downloads folder itself.
-    fn destination_text(&self, p: &PendingAdd, kind: &str) -> slint::SharedString {
+    pub(crate) fn destination_text(&self, p: &PendingAdd, kind: &str) -> slint::SharedString {
         let (dest, sorted) = self.destination_of(p, kind);
         let plain_default =
             p.folder.is_none() && !sorted && self.settings.borrow().ui.folder.is_none();
@@ -225,23 +236,47 @@ impl App {
             *self.pending.borrow_mut() = Some(p);
             return;
         };
-        let (dest_dir, sorted) = self.destination_of(&p, kind);
+        if p.media.is_some() {
+            return self.media_confirmed(&ui, p, kind);
+        }
+        self.hand_over(&ui, p, kind, false);
+    }
+
+    /// The engine's request for the pending add of `kind`, and whether its
+    /// folder is a type subfolder. A media link carries its choice.
+    pub(crate) fn request_for(
+        &self,
+        p: &PendingAdd,
+        kind: &str,
+        confirm_large_playlist: bool,
+    ) -> (AddRequest, bool) {
+        let (dest_dir, sorted) = self.destination_of(p, kind);
+        let request = AddRequest {
+            url: p.url.clone(),
+            dest_dir,
+            media: p.media.as_ref().map(MediaPick::choice),
+            confirm_large_playlist,
+            ..Default::default()
+        };
+        (request, sorted)
+    }
+
+    /// Hands the pending add to the engine and shows the list; a refusal
+    /// comes back on the Add screen.
+    pub(crate) fn hand_over(
+        &self,
+        ui: &AppWindow,
+        p: PendingAdd,
+        kind: &str,
+        confirm_large_playlist: bool,
+    ) {
+        let (request, sorted) = self.request_for(&p, kind, confirm_large_playlist);
         ui.set_tab(0);
         ui.set_screen(Screen::Downloads);
         let engine = self.engine.clone();
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            // The type subfolder is made when missing, inside a folder that
-            // exists (a missing drive is reported, not created).
-            if sorted && dest_dir.parent().is_some_and(Path::is_dir) {
-                let _ = tokio::fs::create_dir_all(&dest_dir).await;
-            }
-            let request = AddRequest {
-                url: p.url,
-                dest_dir,
-                ..Default::default()
-            };
-            if let Err(CoreError { kind, detail }) = engine.add(request).await {
+            if let Err(CoreError { kind, detail }) = add_job(engine, request, sorted).await {
                 eprintln!("hyades: add failed: {detail}");
                 tx.send(UiMsg::AddFailed(kind));
             }
@@ -272,6 +307,7 @@ impl App {
             url: String::new(),
             kind: None,
             folder: None,
+            media: None,
         });
         ui.set_add(AddVm {
             error_kind: kind.as_str().into(),
@@ -282,7 +318,7 @@ impl App {
 
     /// The next queued link, on the next tick (after the window finished
     /// its own navigation for this click).
-    fn next_queued(&self) {
+    pub(crate) fn next_queued(&self) {
         if let Some(link) = self.queue.borrow_mut().pop_front() {
             self.tx.send(UiMsg::Link(link));
         }
@@ -374,6 +410,21 @@ impl App {
     }
 }
 
+/// Adds `request`; with `sorted`, its type subfolder is made first when
+/// missing, inside a folder that exists (a missing drive is reported, not
+/// created).
+pub(crate) async fn add_job(
+    engine: Engine,
+    request: AddRequest,
+    sorted: bool,
+) -> Result<JobId, CoreError> {
+    let dest_dir = &request.dest_dir;
+    if sorted && dest_dir.parent().is_some_and(Path::is_dir) {
+        let _ = tokio::fs::create_dir_all(dest_dir).await;
+    }
+    engine.add(request).await
+}
+
 /// The banner for a link: its host and the kind its file name suggests.
 fn banner_for(link: &str) -> BannerVm {
     let (host, kind) = match url::Url::parse(link) {
@@ -404,7 +455,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn video_links_are_not_shown_yet() {
+    fn video_links_are_shown_by_media_add() {
         let media = taurus_core::media::MediaInfo {
             url: "https://www.youtube.com/watch?v=x".into(),
             title: "t".into(),

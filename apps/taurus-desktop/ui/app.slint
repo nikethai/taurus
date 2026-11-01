@@ -33,6 +33,9 @@ export component AppWindow inherits Window {
     in property <SummaryVm> summary;
     in property <CountdownVm> countdown;
     in property <BannerVm> banner;
+    // Video tools: "" | "installing" | "failed"; percent -1 = unknown.
+    in property <string> tools-banner;
+    in property <int> tools-percent: -1;
     in property <bool> has-tray;
     // Window (and taskbar) icon, drawn by the app.
     in property <image> app-icon;
@@ -57,6 +60,11 @@ export component AppWindow inherits Window {
     callback setting-changed(string, string);
     callback cancel-countdown();
     callback link-dropped(string);
+    // Media links on the Add screen: "video" | "audio"; the next quality;
+    // Download of a large playlist after its confirmation.
+    callback media-mode-changed(string);
+    callback quality-cycled();
+    callback playlist-confirmed();
 
     property <bool> has-rows: downloading-rows.length + finished-rows.length > 0;
 
@@ -123,6 +131,8 @@ export component AppWindow inherits Window {
                     finished-rows: root.finished-rows;
                     summary: root.summary;
                     tab <=> root.tab;
+                    tools-banner: root.tools-banner;
+                    tools-percent: root.tools-percent;
                     link-entered(link) => {
                         root.link-entered(link);
                     }
@@ -173,6 +183,15 @@ export component AppWindow inherits Window {
                     }
                     choose-folder => {
                         root.choose-folder();
+                    }
+                    media-mode-changed(mode) => {
+                        root.media-mode-changed(mode);
+                    }
+                    quality-cycled => {
+                        root.quality-cycled();
+                    }
+                    playlist-confirmed => {
+                        root.playlist-confirmed();
                     }
                 }
 

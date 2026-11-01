@@ -2,10 +2,11 @@
 //! hands it out at most once per interval, so a burst of progress events
 //! costs the UI one refresh.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
-use taurus_core::{Engine, Event, JobId, JobView, Settings, WhenDone};
+use taurus_core::tools::{ToolKind, ToolState, ToolStatus};
+use taurus_core::{Engine, Event, JobId, JobState, JobView, Settings, WhenDone};
 use tokio::sync::broadcast::error::RecvError;
 
 /// Feeds the engine's events into `coalescer` on the runtime until the
@@ -19,12 +20,28 @@ pub fn spawn(
     coalescer: Arc<Mutex<Coalescer>>,
 ) -> tokio::task::JoinHandle<()> {
     let mut events = engine.subscribe();
-    lock(&coalescer).seed(engine.snapshot());
+    {
+        let mut c = lock(&coalescer);
+        c.seed(engine.snapshot());
+        c.seed_tools(engine.tools_status());
+    }
     let engine = engine.clone();
     rt.spawn(async move {
         loop {
             match events.recv().await {
-                Ok(event) => lock(&coalescer).push(event),
+                Ok(event) => {
+                    let mut c = lock(&coalescer);
+                    // A recording's elapsed time moves in the engine's view
+                    // with its progress, without an event of its own.
+                    let recording = match &event {
+                        Event::Progress { id, .. } => c.is_recording(*id).then_some(*id),
+                        _ => None,
+                    };
+                    c.push(event);
+                    if let Some(id) = recording {
+                        c.refresh_media(engine.snapshot().into_iter().find(|v| v.id == id));
+                    }
+                }
                 // Events were dropped: jobs and settings are read again.
                 // A dropped when-done event (countdown, fired Notify or
                 // Quit) is not recoverable this way: the engine keeps no
@@ -34,6 +51,7 @@ pub fn spawn(
                 Err(RecvError::Lagged(_)) => {
                     let mut c = lock(&coalescer);
                     c.seed(engine.snapshot());
+                    c.seed_tools(engine.tools_status());
                     c.push(Event::SettingsChanged(engine.settings()));
                 }
                 Err(RecvError::Closed) => break,
@@ -56,6 +74,52 @@ pub enum WhenDoneUi {
     Fired { action: WhenDone },
 }
 
+/// What the video tools banner on the Downloads screen shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolsBanner {
+    Hidden,
+    /// A tool is being fetched; the percent of all the fetches running,
+    /// when their sizes are known.
+    Installing {
+        percent: Option<u8>,
+    },
+    /// The last attempt for a tool failed and none is being fetched.
+    Failed,
+}
+
+/// The banner for the tools' latest states.
+pub fn tools_banner<'a>(states: impl IntoIterator<Item = &'a ToolState>) -> ToolsBanner {
+    let mut installing = false;
+    let mut failed = false;
+    let (mut done, mut total, mut sized) = (0u64, 0u64, true);
+    for state in states {
+        match state {
+            ToolState::Installing {
+                downloaded,
+                total: size,
+            } => {
+                installing = true;
+                done = done.saturating_add(*downloaded);
+                match size {
+                    Some(t) => total = total.saturating_add(*t),
+                    None => sized = false,
+                }
+            }
+            ToolState::Failed(_) => failed = true,
+            ToolState::Missing | ToolState::Ready => {}
+        }
+    }
+    if installing {
+        let percent = (sized && total > 0)
+            .then(|| (done.min(total) as f64 * 100.0 / total as f64).floor() as u8);
+        ToolsBanner::Installing { percent }
+    } else if failed {
+        ToolsBanner::Failed
+    } else {
+        ToolsBanner::Hidden
+    }
+}
+
 /// One refresh for the UI.
 #[derive(Clone, Debug)]
 pub struct Flush {
@@ -71,6 +135,8 @@ pub struct Flush {
     pub settings: Option<Settings>,
     /// The newest when-done event; the newest one wins within a flush.
     pub when_done: Option<WhenDoneUi>,
+    /// The tools banner, when it changed since the last flush.
+    pub tools: Option<ToolsBanner>,
 }
 
 pub struct Coalescer {
@@ -80,6 +146,11 @@ pub struct Coalescer {
     structural: bool,
     settings: Option<Settings>,
     when_done: Option<WhenDoneUi>,
+    /// Each tool's newest state.
+    tools: HashMap<ToolKind, ToolState>,
+    /// The banner as last flushed (or about to be).
+    banner: ToolsBanner,
+    banner_changed: bool,
     last_flush: Option<Instant>,
 }
 
@@ -92,7 +163,47 @@ impl Coalescer {
             structural: false,
             settings: None,
             when_done: None,
+            tools: HashMap::new(),
+            banner: ToolsBanner::Hidden,
+            banner_changed: false,
             last_flush: None,
+        }
+    }
+
+    /// Replaces the tools' states with `statuses`, from
+    /// `engine.tools_status()`.
+    pub fn seed_tools(&mut self, statuses: Vec<ToolStatus>) {
+        self.tools = statuses.into_iter().map(|s| (s.kind, s.state)).collect();
+        self.update_banner();
+    }
+
+    fn update_banner(&mut self) {
+        let banner = tools_banner(self.tools.values());
+        if banner != self.banner {
+            self.banner = banner;
+            self.banner_changed = true;
+            self.dirty = true;
+        }
+    }
+
+    /// The job is known and Recording.
+    pub fn is_recording(&self, id: JobId) -> bool {
+        self.views
+            .get(&id)
+            .is_some_and(|v| v.state == JobState::Recording)
+    }
+
+    /// Takes the media part (elapsed time, phase, entries) of `fresh`, the
+    /// engine's current view of a known job.
+    pub fn refresh_media(&mut self, fresh: Option<JobView>) {
+        let Some(fresh) = fresh else {
+            return;
+        };
+        if let Some(v) = self.views.get_mut(&fresh.id)
+            && v.media != fresh.media
+        {
+            v.media = fresh.media;
+            self.dirty = true;
         }
     }
 
@@ -140,8 +251,11 @@ impl Coalescer {
                 self.structural = true;
             }
             Event::SettingsChanged(s) => self.settings = Some(s),
-            // Tool statuses are not shown yet.
-            Event::QueueIdle | Event::ToolStatus(_) => return,
+            Event::ToolStatus(status) => {
+                self.tools.insert(status.kind, status.state);
+                return self.update_banner();
+            }
+            Event::QueueIdle => return,
             Event::WhenDoneCountdown {
                 action,
                 seconds_left,
@@ -177,6 +291,7 @@ impl Coalescer {
             structural: std::mem::take(&mut self.structural),
             settings: self.settings.take(),
             when_done: self.when_done.take(),
+            tools: std::mem::take(&mut self.banner_changed).then_some(self.banner),
         })
     }
 }
@@ -305,5 +420,110 @@ mod tests {
             })
         );
         assert!(f.settings.is_none());
+    }
+
+    fn tool(kind: ToolKind, state: ToolState) -> Event {
+        Event::ToolStatus(ToolStatus {
+            kind,
+            version: None,
+            path: None,
+            state,
+        })
+    }
+
+    #[test]
+    fn tools_banner_follows_the_newest_states() {
+        let installing = |downloaded, total| ToolState::Installing { downloaded, total };
+        assert_eq!(
+            tools_banner(&[ToolState::Ready, ToolState::Missing]),
+            ToolsBanner::Hidden
+        );
+        assert_eq!(
+            tools_banner(&[installing(42, Some(100)), ToolState::Ready]),
+            ToolsBanner::Installing { percent: Some(42) }
+        );
+        // Two fetches together: 30 + 12 of 50 + 50.
+        assert_eq!(
+            tools_banner(&[installing(30, Some(50)), installing(12, Some(50))]),
+            ToolsBanner::Installing { percent: Some(42) }
+        );
+        assert_eq!(
+            tools_banner(&[installing(30, None), installing(12, Some(50))]),
+            ToolsBanner::Installing { percent: None }
+        );
+        assert_eq!(
+            tools_banner(&[installing(0, Some(0))]),
+            ToolsBanner::Installing { percent: None }
+        );
+        let failed = ToolState::Failed(taurus_core::ErrorKind::ConnectionLost);
+        // A fetch running wins over an earlier failure.
+        assert_eq!(
+            tools_banner(&[failed.clone(), installing(1, Some(4))]),
+            ToolsBanner::Installing { percent: Some(25) }
+        );
+        assert_eq!(
+            tools_banner(&[failed, ToolState::Ready]),
+            ToolsBanner::Failed
+        );
+
+        let t0 = Instant::now();
+        let mut c = Coalescer::new(Duration::from_millis(100));
+        c.push(tool(ToolKind::YtDlp, installing(0, None)));
+        c.push(tool(ToolKind::YtDlp, installing(10, Some(100))));
+        let f = c.take_if_due(t0).unwrap();
+        assert_eq!(f.tools, Some(ToolsBanner::Installing { percent: Some(10) }));
+        // The same banner again flushes nothing.
+        c.push(tool(ToolKind::YtDlp, installing(10, Some(100))));
+        assert!(c.take_if_due(t0 + Duration::from_secs(1)).is_none());
+        c.push(tool(
+            ToolKind::YtDlp,
+            ToolState::Failed(taurus_core::ErrorKind::ConnectionLost),
+        ));
+        c.push(tool(ToolKind::Deno, installing(5, Some(10))));
+        let f = c.take_if_due(t0 + Duration::from_secs(2)).unwrap();
+        assert_eq!(f.tools, Some(ToolsBanner::Installing { percent: Some(50) }));
+        c.push(tool(ToolKind::Deno, ToolState::Ready));
+        let f = c.take_if_due(t0 + Duration::from_secs(3)).unwrap();
+        assert_eq!(f.tools, Some(ToolsBanner::Failed));
+        c.push(tool(ToolKind::YtDlp, ToolState::Ready));
+        let f = c.take_if_due(t0 + Duration::from_secs(4)).unwrap();
+        assert_eq!(f.tools, Some(ToolsBanner::Hidden));
+        // Other flushes carry no banner.
+        c.push(Event::SettingsChanged(Settings::default()));
+        assert_eq!(
+            c.take_if_due(t0 + Duration::from_secs(5)).unwrap().tools,
+            None
+        );
+    }
+
+    #[test]
+    fn recording_views_take_the_engines_media() {
+        let t0 = Instant::now();
+        let mut c = Coalescer::new(Duration::from_millis(100));
+        let mut rec = view(1, "live", JobState::Recording);
+        rec.media = Some(taurus_core::MediaView {
+            phase: taurus_core::media::MediaPhase::Downloading,
+            audio_only: false,
+            live: true,
+            entries_done: 0,
+            entries_total: 1,
+            live_elapsed_secs: Some(3),
+            starts_at: None,
+            thumbnail: None,
+            files: Vec::new(),
+        });
+        c.seed(vec![rec.clone(), view(2, "a", JobState::Downloading)]);
+        c.take_if_due(t0).unwrap();
+        assert!(c.is_recording(JobId(1)));
+        assert!(!c.is_recording(JobId(2)) && !c.is_recording(JobId(3)));
+        rec.media.as_mut().unwrap().live_elapsed_secs = Some(9);
+        c.refresh_media(Some(rec));
+        let f = c.take_if_due(t0 + Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            f.views[0].media.as_ref().unwrap().live_elapsed_secs,
+            Some(9)
+        );
+        c.refresh_media(None);
+        assert!(c.take_if_due(t0 + Duration::from_secs(2)).is_none());
     }
 }

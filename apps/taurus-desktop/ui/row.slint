@@ -21,6 +21,27 @@ export component Row inherits Rectangle {
         || item.state == "queued" || item.state == "recording") && (item.progress >= 0 || active);
 
     pure function status(r: RowVm) -> string {
+        if (r.state == "recording") {
+            if (r.phase == "getting-tools") {
+                return @tr("Getting video tools…");
+            } else if (r.phase == "waiting-for-stream") {
+                return @tr("Waiting for the stream to start");
+            } else if (r.live-elapsed == "") {
+                return @tr("Recording live");
+            }
+            return @tr("Recording live · {0}", r.live-elapsed);
+        } else if (r.state == "downloading" && r.phase == "getting-tools") {
+            return @tr("Getting video tools…");
+        } else if (r.state == "downloading" && (r.phase == "merging" || r.phase == "converting")) {
+            return @tr("Finishing up…");
+        } else if (r.state == "downloading" && r.entries-total > 1) {
+            return @tr("{0} of {1} videos", r.entries-done, r.entries-total);
+        } else if (r.state == "waiting" && r.phase == "getting-tools") {
+            if (r.retry-seconds < 1) {
+                return @tr("Getting video tools…");
+            }
+            return @tr("Getting video tools… Trying again in {0}.", Messages.retry-time(r.retry-seconds));
+        }
         if (r.state == "downloading") {
             if (r.total-text == "") {
                 return @tr("{0} so far", r.done-text);
@@ -45,8 +66,6 @@ export component Row inherits Rectangle {
             return @tr("Sharing · ratio {0}", r.ratio-text);
         } else if (r.state == "failed") {
             return Messages.simple(r.error-kind);
-        } else if (r.state == "recording") {
-            return @tr("Recording · {0}", r.done-text);
         }
         // done
         if (r.finished-month < 1 || r.finished-month > 12) {
@@ -154,7 +173,8 @@ export component Row inherits Rectangle {
             }
             Text {
                 text: root.status(root.item);
-                color: root.item.state == "failed" ? Theme.err : Theme.muted;
+                color: root.item.state == "failed" ? Theme.err
+                    : root.item.state == "recording" ? Theme.kind-fg("live") : Theme.muted;
                 font-size: 12px;
                 wrap: word-wrap;
                 accessible-role: text;
@@ -206,9 +226,8 @@ export component Row inherits Rectangle {
                         root.resume(root.item.id);
                     }
                 }
-                if root.item.state == "recording": IconButton {
-                    icon: "stop";
-                    label: @tr("Stop recording");
+                if root.item.state == "recording": TextButton {
+                    text: @tr("Stop");
                     clicked => {
                         root.stop-recording(root.item.id);
                     }

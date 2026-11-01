@@ -43,6 +43,20 @@ export global Messages {
         return @tr("Something went wrong. Try again.");
     }
 
+    // Name of a media quality (QualityOption id) on the Add screen.
+    public pure function quality(id: string) -> string {
+        if (id == "1080p") {
+            return @tr("1080p");
+        } else if (id == "720p") {
+            return @tr("720p");
+        } else if (id == "audio-best") {
+            return @tr("Best");
+        } else if (id == "audio-small") {
+            return @tr("Smaller file");
+        }
+        return @tr("Best available");
+    }
+
     // Time until the next attempt: "1:05" from a minute up, "45 s" below.
     public pure function retry-time(seconds: int) -> string {
         if (seconds >= 60) {

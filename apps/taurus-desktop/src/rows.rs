@@ -2,6 +2,7 @@
 
 use crate::format;
 use crate::{RowVm, SummaryVm};
+use taurus_core::media::MediaPhase;
 use taurus_core::{JobKind, JobState, JobView};
 
 const DISC: &[&str] = &["iso", "img", "dmg"];
@@ -48,7 +49,7 @@ pub fn kind_for(file_name: &str, job_kind: JobKind) -> &'static str {
 /// Icon family of a row: a media job is "live" while it records (or waits
 /// to record), "music" when only its audio is kept, else "media"; other
 /// jobs as `kind_for` says.
-fn row_kind(view: &JobView) -> &'static str {
+pub fn row_kind(view: &JobView) -> &'static str {
     match &view.media {
         Some(m)
             if view.state == JobState::Recording
@@ -72,6 +73,16 @@ fn state_name(state: JobState) -> &'static str {
         JobState::Failed => "failed",
         JobState::Completed => "done",
         JobState::Recording => "recording",
+    }
+}
+
+fn phase_name(phase: MediaPhase) -> &'static str {
+    match phase {
+        MediaPhase::GettingTools => "getting-tools",
+        MediaPhase::WaitingForStream => "waiting-for-stream",
+        MediaPhase::Downloading => "downloading",
+        MediaPhase::Merging => "merging",
+        MediaPhase::Converting => "converting",
     }
 }
 
@@ -137,6 +148,26 @@ pub fn row_in<Tz: chrono::TimeZone>(view: &JobView, now_unix: i64, tz: &Tz) -> R
             .torrent
             .as_ref()
             .map_or(0, |t| t.peers.min(i32::MAX as u32) as i32),
+        phase: view
+            .media
+            .as_ref()
+            .map_or("", |m| phase_name(m.phase))
+            .into(),
+        entries_done: view
+            .media
+            .as_ref()
+            .map_or(0, |m| m.entries_done.min(i32::MAX as u32) as i32),
+        entries_total: view
+            .media
+            .as_ref()
+            .map_or(0, |m| m.entries_total.min(i32::MAX as u32) as i32),
+        live_elapsed: view
+            .media
+            .as_ref()
+            .and_then(|m| m.live_elapsed_secs)
+            .map(format::duration)
+            .unwrap_or_default()
+            .into(),
     }
 }
 
@@ -246,6 +277,27 @@ mod tests {
         );
         assert_eq!(row(&media(JobState::Queued, false, true)).kind, "live");
         assert_eq!(row(&media(JobState::Completed, false, true)).kind, "media");
+        let mut v = media(JobState::Recording, false, true);
+        let m = v.media.as_mut().unwrap();
+        m.live_elapsed_secs = Some(65);
+        m.entries_done = 2;
+        m.entries_total = 5;
+        m.phase = taurus_core::media::MediaPhase::Merging;
+        let r = row(&v);
+        assert_eq!(
+            (
+                r.phase.as_str(),
+                r.live_elapsed.as_str(),
+                r.entries_done,
+                r.entries_total
+            ),
+            ("merging", "1:05", 2, 5)
+        );
+        let plain = row(&view(2, "a.bin", JobState::Downloading));
+        assert_eq!(
+            (plain.phase.as_str(), plain.live_elapsed.as_str()),
+            ("", "")
+        );
         assert_eq!(kind_for("A Video", JobKind::Media), "media");
         assert_eq!(kind_for("song.mp3", JobKind::Media), "music");
     }

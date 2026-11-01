@@ -11,6 +11,7 @@ pub mod icon;
 pub mod instance;
 pub mod links;
 pub mod login;
+mod media_add;
 pub mod notify;
 mod pump;
 pub mod rows;

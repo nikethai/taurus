@@ -63,3 +63,35 @@ export component Banner inherits Rectangle {
         }
     }
 }
+
+// Slim line on the Downloads screen while the video tools are fetched, or
+// after fetching them failed.
+export component ToolsBanner inherits Rectangle {
+    // "installing" | "failed"
+    in property <string> state;
+    // 0-100, -1 = unknown
+    in property <int> percent: -1;
+
+    background: state == "failed" ? Theme.kind-bg("live") : Theme.accent-soft;
+    border-radius: 10px;
+    accessible-role: AccessibleRole.banner;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        Text {
+            text: root.state == "failed" ? @tr("Couldn't get the video tools. Hyades will try again.")
+                : root.percent >= 0 ? @tr("Getting video tools… {0}%", root.percent)
+                : @tr("Getting video tools…");
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
+            font-size: 12px;
+            color: root.state == "failed" ? Theme.err : Theme.text;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+    }
+}

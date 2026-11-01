@@ -7,8 +7,9 @@
 //! `pump.rs`). No `invoke_from_event_loop`: tests drive the same timer with
 //! `slint::platform::update_timers_and_animations()`.
 //!
-//! The add flow lives in `add_flow.rs`, the Settings screen in
-//! `settings_flow.rs`, applying engine state to the window in `pump.rs`.
+//! The add flow lives in `add_flow.rs` (video links in `media_add.rs`),
+//! the Settings screen in `settings_flow.rs`, applying engine state to the
+//! window in `pump.rs`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -20,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use slint::{CloseRequestResponse, ComponentHandle, SharedPixelBuffer, Timer, TimerMode};
-use taurus_core::{Engine, ErrorKind, JobId, JobState, LinkInfo, RemoveFiles, Settings};
+use taurus_core::{CoreError, Engine, ErrorKind, JobId, JobState, LinkInfo, RemoveFiles, Settings};
 
 use crate::add_flow::PendingAdd;
 use crate::bridge::{self, Coalescer};
@@ -61,6 +62,12 @@ pub(crate) enum UiMsg {
     },
     /// `Engine::add` refused the confirmed add.
     AddFailed(ErrorKind),
+    /// `Engine::add` answered the unconfirmed add of a large playlist
+    /// (the add with this `seq`).
+    MediaAdded {
+        seq: u64,
+        result: Result<(), CoreError>,
+    },
     /// Saving the settings failed: show what the engine has.
     SettingsFailed,
     /// Links from a second launch; empty means "show the window".
@@ -209,9 +216,12 @@ impl App {
         on!(ui, self, on_resume, |a, id| a.job_call(id, Job::Resume));
         // Ruling R6: resuming a Failed job is the retry.
         on!(ui, self, on_retry, |a, id| a.job_call(id, Job::Resume));
-        // Recordings arrive with video sites (M5); stopping one is a pause.
         on!(ui, self, on_stop_recording, |a, id| a
-            .job_call(id, Job::Pause));
+            .job_call(id, Job::StopRecording));
+        on!(ui, self, on_media_mode_changed, |a, mode| a
+            .media_mode_changed(&mode));
+        on!(ui, self, on_quality_cycled, |a| a.quality_cycled());
+        on!(ui, self, on_playlist_confirmed, |a| a.playlist_confirmed());
         on!(ui, self, on_remove, |a, id| a.remove(id));
         on!(ui, self, on_open_file, |a, id| a.open_file(id, false));
         on!(ui, self, on_reveal, |a, id| a.open_file(id, true));
@@ -324,6 +334,8 @@ impl App {
             let result = match job {
                 Job::Pause => engine.pause(id).await,
                 Job::Resume => engine.resume(id).await,
+                // Keeps what was recorded.
+                Job::StopRecording => engine.stop_recording(id).await,
                 // The engine decides about the files as it removes the job.
                 Job::Remove => engine.remove_with(id, RemoveFiles::IfUnfinished).await,
             };
@@ -378,6 +390,7 @@ impl App {
         match msg {
             UiMsg::Inspected { seq, result } => self.inspected(seq, result),
             UiMsg::AddFailed(kind) => self.add_failed(kind),
+            UiMsg::MediaAdded { seq, result } => self.media_added(seq, result),
             UiMsg::SettingsFailed => self.engine_settings(self.engine.settings()),
             UiMsg::Forwarded(links) => self.forwarded(links),
             UiMsg::Clipboard(text) => self.clipboard_text(&text),
@@ -404,6 +417,7 @@ impl Drop for App {
 enum Job {
     Pause,
     Resume,
+    StopRecording,
     Remove,
 }
 

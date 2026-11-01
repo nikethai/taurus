@@ -8,8 +8,10 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
+use serde_json::{Value, json};
 use slint::platform::WindowEvent;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
+use taurus_core::tools::ToolSources;
 use taurus_core::torrent::hub::TorrentTestNet;
 use taurus_core::{
     AddRequest, Engine, EngineConfig, ErrorKind, Event, JobState, PowerMode, Settings, SpeedLimit,
@@ -18,7 +20,10 @@ use taurus_core::{
 use taurus_desktop::app::App;
 use taurus_desktop::shell_text::simple_message;
 use taurus_desktop::{AppWindow, BannerVm, Messages, RowVm, Screen, SettingsVm, Theme};
-use taurus_testkit::{FailAfter, FileSpec, TestServer, TorrentSeeder};
+use taurus_testkit::{
+    FailAfter, FakeToolHost, FileSpec, TestServer, ToolRelease, TorrentSeeder, process_args_log,
+    set_ytdlp_scenario, unique_version,
+};
 use tokio::sync::broadcast::error::TryRecvError;
 
 #[test]
@@ -31,6 +36,7 @@ fn ui_smoke() {
     downloads_rows_show_status_and_retry(&ui);
     rows_banner_and_tips_wording(&ui);
     shell_text_mirrors_messages(&ui);
+    media_rows_and_tools_banner_wording(&ui);
     let ctx = Ctx::start(&ui);
     add_flow_shows_file_and_finishes(&ui, &ctx);
     settings_change_is_saved_and_shown(&ui, &ctx);
@@ -41,6 +47,12 @@ fn ui_smoke() {
     waiting_row_counts_down();
     torrent_row_shows_sharing();
     countdown_cancel();
+    let media = MediaCtx::start();
+    tools_offline_shows_failed_banner(&media);
+    media_add_picks_quality_and_finishes(&media);
+    live_recording_shows_and_stops(&media);
+    large_playlist_asks_first(&media);
+    media.shutdown();
     quit_shuts_down_engine_cleanly(&ui, &ctx);
 }
 
@@ -855,4 +867,449 @@ fn countdown_cancel() {
     settle(Duration::from_millis(500));
     assert!(!ui.get_countdown().visible, "{WHAT}: shown again");
     ctx.shutdown(WHAT);
+}
+
+/// What media rows, the tools banner and the media Add screen say, from
+/// the numbers and flags the app hands them.
+fn media_rows_and_tools_banner_wording(ui: &AppWindow) {
+    const WHAT: &str = "media_rows_and_tools_banner_wording";
+    let visible = |label: &str| {
+        assert!(
+            labelled(ui, label).iter().any(|e| e.size().width > 0.0),
+            "{WHAT}: no visible text {label:?}"
+        );
+    };
+    let media = |id, state: &str, phase: &str| RowVm {
+        kind: "media".into(),
+        phase: phase.into(),
+        ..row(id, state)
+    };
+    let recording = RowVm {
+        kind: "live".into(),
+        live_elapsed: "1:05".into(),
+        ..media(10, "recording", "downloading")
+    };
+    let playlist = RowVm {
+        entries_done: 2,
+        entries_total: 5,
+        ..media(13, "downloading", "downloading")
+    };
+    let waiting_stream = RowVm {
+        kind: "live".into(),
+        ..media(14, "recording", "waiting-for-stream")
+    };
+    let rows = vec![
+        recording,
+        media(11, "downloading", "merging"),
+        media(12, "downloading", "getting-tools"),
+        playlist,
+    ];
+    ui.set_downloading_rows(ModelRc::new(VecModel::from(rows)));
+    ui.set_tab(0);
+    ui.set_screen(Screen::Downloads);
+    visible("Recording live · 1:05");
+    visible("Finishing up…");
+    visible("Getting video tools…");
+    visible("2 of 5 videos");
+    let stop = only_button(ui, "Stop", WHAT);
+    let stopped = Rc::new(RefCell::new(Vec::new()));
+    let sink = stopped.clone();
+    ui.on_stop_recording(move |id| sink.borrow_mut().push(id));
+    stop.invoke_accessible_default_action();
+    assert_eq!(*stopped.borrow(), vec![10], "{WHAT}: stop-recording(id)");
+    let tools_wait = RowVm {
+        retry_seconds: 45,
+        ..media(15, "waiting", "getting-tools")
+    };
+    ui.set_downloading_rows(ModelRc::new(VecModel::from(vec![
+        waiting_stream,
+        tools_wait,
+    ])));
+    visible("Waiting for the stream to start");
+    visible("Getting video tools… Trying again in 45 s.");
+
+    ui.set_tools_banner("installing".into());
+    ui.set_tools_percent(42);
+    visible("Getting video tools… 42%");
+    ui.set_tools_percent(-1);
+    assert!(
+        labelled(ui, "Getting video tools…")
+            .iter()
+            .any(|e| e.size().width > 0.0 && e.accessible_role() == Some(AccessibleRole::Text)),
+        "{WHAT}: banner without a percent"
+    );
+    ui.set_tools_banner("failed".into());
+    visible("Couldn't get the video tools. Hyades will try again.");
+    ui.set_tools_banner("".into());
+    ui.set_downloading_rows(ModelRc::default());
+
+    let video = taurus_desktop::AddVm {
+        is_media: true,
+        kind: "media".into(),
+        name: "A Fine Video".into(),
+        uploader: "Some Channel".into(),
+        duration_text: "3:32".into(),
+        media_mode: "video".into(),
+        quality_id: "best".into(),
+        quality_label: "Best available".into(),
+        size_text: "53 MB".into(),
+        ..Default::default()
+    };
+    ui.set_add(video.clone());
+    ui.set_screen(Screen::Add);
+    visible("Some Channel · 3:32");
+    visible("Best available");
+    visible("About 53 MB");
+    only_button(ui, "Download", WHAT);
+    ui.set_add(taurus_desktop::AddVm {
+        live: "live".into(),
+        ..video.clone()
+    });
+    visible("Live now");
+    only_button(ui, "Record", WHAT);
+    ui.set_add(taurus_desktop::AddVm {
+        live: "upcoming".into(),
+        starts_at: "14:05".into(),
+        ..video.clone()
+    });
+    visible("Starts at 14:05");
+    ui.set_add(taurus_desktop::AddVm {
+        playlist_count: 51,
+        ..video.clone()
+    });
+    visible("Playlist · 51 videos");
+    ui.set_add(taurus_desktop::AddVm {
+        playlist_count: 51,
+        needs_confirm: true,
+        ..video
+    });
+    visible("This playlist has 51 videos. Download all of them?");
+    only_button(ui, "Download all", WHAT);
+    ui.set_add(Default::default());
+    ui.set_screen(Screen::Welcome);
+}
+
+const VIDEO_LINK: &str = "https://www.youtube.com/watch?v=x";
+const LIVE_LINK: &str = "https://www.twitch.tv/hyades_live";
+const PLAYLIST_LINK: &str = "https://www.youtube.com/playlist?list=hyades51";
+
+/// The fake yt-dlp of the media checks. Inspections (`-J`) print the
+/// link's info; download runs are told apart by their arguments: a live
+/// recording (`--live-from-start`), a single video (`--no-playlist`), else
+/// a playlist.
+fn media_scenario() -> Value {
+    let video = json!({
+        "id": "abc123",
+        "title": "A Fine Video",
+        "webpage_url": VIDEO_LINK,
+        "extractor_key": "Youtube",
+        "uploader": "Some Channel",
+        "duration": 212.0,
+        "live_status": "not_live",
+        "formats": [
+            {"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "filesize": 3000000},
+            {"format_id": "247", "ext": "webm", "vcodec": "vp9", "acodec": "none", "height": 720, "filesize": 20000000},
+            {"format_id": "137", "ext": "mp4", "vcodec": "avc1", "acodec": "none", "height": 1080, "filesize": 50000000}
+        ]
+    });
+    let live = json!({
+        "id": "live1",
+        "title": "Live Now",
+        "webpage_url": LIVE_LINK,
+        "extractor_key": "TwitchStream",
+        "live_status": "is_live",
+        "is_live": true,
+        "formats": [
+            {"format_id": "720p60", "ext": "mp4", "vcodec": "avc1", "acodec": "mp4a.40.2", "height": 720}
+        ]
+    });
+    let entries: Vec<Value> = (0..51)
+        .map(|i| json!({"_type": "url", "id": format!("v{i}"), "title": format!("V{i}")}))
+        .collect();
+    let playlist = json!({
+        "_type": "playlist",
+        "id": "hyades51",
+        "title": "Big List",
+        "entries": entries,
+    });
+    let progress = |done: u64, total: u64| {
+        let p = json!({"status": "downloading", "downloaded_bytes": done, "total_bytes": total, "speed": 1000.0});
+        format!("TAURUS-PROGRESS {p}")
+    };
+    let file = |name: &str| format!("TAURUS-FILE {}", json!(name));
+    let song = "A Fine Video [abc123].mp3";
+    let first = "Big List/001 - V0 [v0].mp4";
+    // Written as the recording starts, so it is there on every platform
+    // (on Windows the stop kills the fake rather than interrupting it).
+    let part = "Live Now [live1].mp4.part";
+    let live_line = json!({
+        "status": "downloading",
+        "downloaded_bytes": 4096,
+        "fragment_index": 3,
+        "speed": 2000.0,
+        "tmpfilename": part,
+    });
+    json!([
+        {
+            "if_arg": "--live-from-start",
+            "stdout": [
+                format!("TAURUS-ENTRY 0 1 {} {}", json!("live1"), json!("Live Now")),
+                format!("TAURUS-PROGRESS {live_line}"),
+            ],
+            "start_files": [[part, 4096]],
+            "wait_for_interrupt": true,
+            "on_interrupt": {"stdout": ["bye"], "exit": 1},
+        },
+        {
+            "if_arg": "--no-playlist",
+            "stdout": [progress(150, 300), progress(300, 300), file(song)],
+            "delay_ms_per_line": 30,
+            "write_files": [[song, 300]],
+        },
+        {
+            "if_arg": "--progress",
+            "stdout": [progress(10, 10), file(first)],
+            "write_files": [[first, 10]],
+        },
+        {"if_arg": LIVE_LINK, "stdout": [live.to_string()]},
+        {"if_arg": PLAYLIST_LINK, "stdout": [playlist.to_string()]},
+        {"stdout": [video.to_string()]},
+    ])
+}
+
+/// An app whose engine gets its video tools from a local fake publisher.
+struct MediaCtx {
+    ui: AppWindow,
+    host: FakeToolHost,
+    ctx: Ctx,
+}
+
+impl MediaCtx {
+    fn start() -> MediaCtx {
+        let version = unique_version();
+        set_ytdlp_scenario(&version, &media_scenario().to_string());
+        let rt = runtime();
+        let host = rt.block_on(FakeToolHost::start(
+            ToolRelease::new(&version),
+            ToolRelease::new("7.1"),
+            ToolRelease::new("2.5.0"),
+        ));
+        let base = url::Url::parse(&host.base_url()).unwrap();
+        let ui = AppWindow::new().unwrap();
+        let ctx = Ctx::start_with(&ui, rt, |config, _| {
+            config.tool_sources = ToolSources::under(&base);
+            config.timing = Timing::fast_for_tests();
+        });
+        MediaCtx { ui, host, ctx }
+    }
+
+    fn shutdown(self) {
+        self.ctx.shutdown("media");
+        drop(self.host);
+    }
+
+    fn videos(&self) -> PathBuf {
+        self.ctx.out().join("Videos")
+    }
+
+    fn music(&self) -> PathBuf {
+        self.ctx.out().join("Music")
+    }
+}
+
+/// Installing tools takes a while on a slow machine.
+const TOOLS_WAIT: Duration = Duration::from_secs(60);
+
+/// No tools yet and their publisher unreachable: looking at a video link
+/// fails, and the banner says the tools could not be fetched.
+fn tools_offline_shows_failed_banner(m: &MediaCtx) {
+    const WHAT: &str = "tools_offline_shows_failed_banner";
+    let ui = &m.ui;
+    m.host.go_offline();
+    ui.invoke_link_entered(VIDEO_LINK.into());
+    assert_eq!(ui.get_screen(), Screen::Add, "{WHAT}: not on Add");
+    wait_for(TOOLS_WAIT, &format!("{WHAT}: banner says failed"), || {
+        ui.get_tools_banner() == "failed"
+    });
+    wait_until(&format!("{WHAT}: the Add screen gives up"), || {
+        let add = ui.get_add();
+        !add.loading && !add.error_kind.is_empty()
+    });
+    ui.invoke_add_cancelled();
+    m.host.go_online();
+}
+
+/// A video link: Video / Audio only, the quality picked by cycling, the
+/// "Save to" folder following the mode, and the download finishing.
+fn media_add_picks_quality_and_finishes(m: &MediaCtx) {
+    const WHAT: &str = "media_add_picks_quality_and_finishes";
+    let ui = &m.ui;
+    ui.invoke_link_entered(VIDEO_LINK.into());
+    assert_eq!(ui.get_screen(), Screen::Add, "{WHAT}: not on Add");
+    wait_for(
+        TOOLS_WAIT,
+        &format!("{WHAT}: Add screen shows the video"),
+        || {
+            let add = ui.get_add();
+            !add.loading && add.is_media
+        },
+    );
+    let add = ui.get_add();
+    assert_eq!(add.error_kind.as_str(), "", "{WHAT}: {add:?}");
+    assert_eq!(
+        (
+            add.name.as_str(),
+            add.kind.as_str(),
+            add.media_mode.as_str(),
+            add.quality_id.as_str(),
+            add.quality_label.as_str(),
+        ),
+        ("A Fine Video", "media", "video", "best", "Best available"),
+        "{WHAT}: {add:?}"
+    );
+    assert_eq!(
+        (add.uploader.as_str(), add.duration_text.as_str()),
+        ("Some Channel", "3:32"),
+        "{WHAT}"
+    );
+    assert_eq!(add.size_text.as_str(), "53 MB", "{WHAT}: estimate");
+    assert_eq!(PathBuf::from(add.folder.as_str()), m.videos(), "{WHAT}");
+    // The tools are in: the banner is gone.
+    wait_until(&format!("{WHAT}: banner cleared"), || {
+        ui.get_tools_banner() == ""
+    });
+    ui.invoke_quality_cycled();
+    assert_eq!(ui.get_add().quality_label.as_str(), "1080p", "{WHAT}");
+
+    ui.invoke_media_mode_changed("audio".into());
+    let add = ui.get_add();
+    assert_eq!(
+        (
+            add.media_mode.as_str(),
+            add.kind.as_str(),
+            add.quality_label.as_str()
+        ),
+        ("audio", "music", "Best"),
+        "{WHAT}: {add:?}"
+    );
+    assert_eq!(PathBuf::from(add.folder.as_str()), m.music(), "{WHAT}");
+    ui.invoke_quality_cycled();
+    assert_eq!(
+        ui.get_add().quality_label.as_str(),
+        "Smaller file",
+        "{WHAT}"
+    );
+    ui.invoke_add_confirmed();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Downloads,
+        "{WHAT}: not on Downloads"
+    );
+    wait_for(TOOLS_WAIT, &format!("{WHAT}: the song finished"), || {
+        ui.get_finished_rows()
+            .iter()
+            .any(|r| r.name == "A Fine Video [abc123].mp3" && r.state == "done")
+    });
+    let row = ui
+        .get_finished_rows()
+        .iter()
+        .find(|r| r.name == "A Fine Video [abc123].mp3")
+        .unwrap();
+    assert_eq!(row.kind.as_str(), "music", "{WHAT}: {row:?}");
+    assert!(
+        m.music().join("A Fine Video [abc123].mp3").is_file(),
+        "{WHAT}: not saved in Music"
+    );
+    // The smaller file is an MP3.
+    let runs: Vec<Vec<String>> = process_args_log()
+        .into_iter()
+        .filter(|e| e.tool == "yt-dlp" && e.argv.iter().any(|a| a == VIDEO_LINK))
+        .filter(|e| !e.argv.iter().any(|a| a == "-J"))
+        .map(|e| e.argv)
+        .collect();
+    assert_eq!(runs.len(), 1, "{WHAT}: {runs:?}");
+    assert!(
+        runs[0].windows(2).any(|w| w == ["--audio-format", "mp3"]),
+        "{WHAT}: {:?}",
+        runs[0]
+    );
+}
+
+/// A live stream: "Live now" and Record on the Add screen, a recording row
+/// that says so, and Stop keeping what was recorded.
+fn live_recording_shows_and_stops(m: &MediaCtx) {
+    const WHAT: &str = "live_recording_shows_and_stops";
+    let ui = &m.ui;
+    ui.invoke_link_entered(LIVE_LINK.into());
+    wait_until(&format!("{WHAT}: Add screen shows the stream"), || {
+        let add = ui.get_add();
+        !add.loading && add.is_media
+    });
+    let add = ui.get_add();
+    assert_eq!(
+        (add.live.as_str(), add.kind.as_str()),
+        ("live", "live"),
+        "{WHAT}: {add:?}"
+    );
+    assert_eq!(PathBuf::from(add.folder.as_str()), m.videos(), "{WHAT}");
+    only_button(ui, "Record", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Downloads,
+        "{WHAT}: not on Downloads"
+    );
+    wait_until(&format!("{WHAT}: recording row"), || {
+        ui.get_downloading_rows()
+            .iter()
+            .any(|r| r.state == "recording" && r.kind == "live")
+            && !texts_containing(ui, "Recording live").is_empty()
+    });
+    only_button(ui, "Stop", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: the recording finished"), || {
+        ui.get_finished_rows()
+            .iter()
+            .any(|r| r.name == "Live Now [live1].mp4" && r.state == "done")
+    });
+    assert!(
+        m.videos().join("Live Now [live1].mp4").is_file(),
+        "{WHAT}: the recording was not kept"
+    );
+}
+
+/// A playlist of more than 50 videos asks before downloading them all.
+fn large_playlist_asks_first(m: &MediaCtx) {
+    const WHAT: &str = "large_playlist_asks_first";
+    let ui = &m.ui;
+    ui.invoke_link_entered(PLAYLIST_LINK.into());
+    wait_until(&format!("{WHAT}: Add screen shows the playlist"), || {
+        let add = ui.get_add();
+        !add.loading && add.is_media
+    });
+    assert_eq!(ui.get_add().playlist_count, 51, "{WHAT}");
+    ui.invoke_add_confirmed();
+    wait_until(&format!("{WHAT}: asks first"), || {
+        ui.get_add().needs_confirm
+    });
+    assert_eq!(ui.get_screen(), Screen::Add, "{WHAT}: left Add");
+    let jobs = || {
+        m.ctx
+            .engine
+            .snapshot()
+            .iter()
+            .filter(|v| v.url == PLAYLIST_LINK)
+            .count()
+    };
+    assert_eq!(jobs(), 0, "{WHAT}: added without asking");
+    ui.invoke_playlist_confirmed();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Downloads,
+        "{WHAT}: not on Downloads"
+    );
+    wait_until(&format!("{WHAT}: the playlist finished"), || {
+        ui.get_finished_rows()
+            .iter()
+            .any(|r| r.name == "Big List" && r.state == "done")
+    });
+    assert_eq!(jobs(), 1, "{WHAT}");
 }
