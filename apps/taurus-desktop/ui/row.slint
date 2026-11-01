@@ -1,0 +1,184 @@
+// One download in the list: kind badge, name, progress, status line and
+// the action that fits the state.
+import { Theme } from "theme.slint";
+import { RowVm } from "types.slint";
+import { Messages } from "messages.slint";
+import { IconButton, TextButton, KindBadge, ProgressBar } from "widgets.slint";
+
+export component Row inherits Rectangle {
+    in property <RowVm> item;
+    callback pause(int);
+    callback resume(int);
+    callback retry(int);
+    callback stop-recording(int);
+    callback open-file(int);
+    callback reveal(int);
+    callback remove(int);
+
+    property <string> size: item.total-text != "" ? item.total-text : item.done-text;
+    property <bool> active: item.state == "downloading" || item.state == "recording";
+    property <bool> shows-bar: (item.state == "downloading" || item.state == "paused" || item.state == "waiting"
+        || item.state == "queued" || item.state == "recording") && (item.progress >= 0 || active);
+
+    pure function status(r: RowVm) -> string {
+        if (r.state == "downloading") {
+            if (r.total-text == "") {
+                return @tr("{0} so far", r.done-text);
+            } else if (r.eta-kind == "minutes") {
+                return @tr("{0} of {1} · About {2} min left", r.done-text, r.total-text, r.eta-value);
+            } else if (r.eta-kind == "under-minute") {
+                return @tr("{0} of {1} · Less than a minute left", r.done-text, r.total-text);
+            } else if (r.eta-kind == "hours") {
+                return @tr("{0} of {1} · About {2} h left", r.done-text, r.total-text, r.eta-value);
+            }
+            return @tr("{0} of {1}", r.done-text, r.total-text);
+        } else if (r.state == "paused") {
+            if (r.total-text == "") {
+                return @tr("Paused · {0}", r.done-text);
+            }
+            return @tr("Paused · {0} of {1}", r.done-text, r.total-text);
+        } else if (r.state == "queued") {
+            return @tr("Waiting to start");
+        } else if (r.state == "waiting") {
+            return Messages.waiting(r.retry-seconds);
+        } else if (r.state == "seeding") {
+            return @tr("Sharing · ratio {0}", r.ratio-text);
+        } else if (r.state == "failed") {
+            return Messages.simple(r.error-kind);
+        } else if (r.state == "recording") {
+            return @tr("Recording · {0}", r.done-text);
+        }
+        // done
+        if (r.when-text == "") {
+            return size;
+        }
+        return @tr("{0} · {1}", size, r.when-text);
+    }
+
+    min-height: layout.min-height;
+    preferred-height: layout.preferred-height;
+    border-radius: 12px;
+    background: hover.has-hover ? Theme.chip : transparent;
+    accessible-role: list-item;
+    accessible-label: item.name;
+
+    hover := TouchArea { }
+
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: @tr("Show in folder");
+                activated => {
+                    root.reveal(root.item.id);
+                }
+            }
+            MenuItem {
+                title: @tr("Remove from list");
+                activated => {
+                    root.remove(root.item.id);
+                }
+            }
+        }
+    }
+
+    layout := HorizontalLayout {
+        padding: 10px;
+        spacing: 12px;
+
+        VerticalLayout {
+            alignment: start;
+            horizontal-stretch: 0;
+            KindBadge {
+                kind: root.item.kind;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 6px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.name;
+                color: Theme.text;
+                font-size: 14px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            if root.shows-bar: ProgressBar {
+                progress: root.item.progress;
+                bar-color: root.item.state == "paused" ? Theme.muted : Theme.kind-fg(root.item.kind);
+                moving: root.active;
+            }
+            Text {
+                text: root.status(root.item);
+                color: root.item.state == "failed" ? Theme.err : Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            spacing: 4px;
+            VerticalLayout {
+                alignment: center;
+                if root.item.state == "done": IconButton {
+                    icon: "folder";
+                    label: @tr("Show in folder");
+                    size: 32px;
+                    clicked => {
+                        root.reveal(root.item.id);
+                    }
+                }
+                if root.item.state != "done": IconButton {
+                    icon: "close";
+                    label: @tr("Remove from list");
+                    size: 32px;
+                    clicked => {
+                        root.remove(root.item.id);
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                if root.item.state == "failed": TextButton {
+                    text: @tr("Try again");
+                    clicked => {
+                        root.retry(root.item.id);
+                    }
+                }
+                if root.item.state == "done": TextButton {
+                    text: @tr("Open");
+                    clicked => {
+                        root.open-file(root.item.id);
+                    }
+                }
+                if root.item.state == "paused": IconButton {
+                    icon: "play";
+                    label: @tr("Resume");
+                    clicked => {
+                        root.resume(root.item.id);
+                    }
+                }
+                if root.item.state == "recording": IconButton {
+                    icon: "stop";
+                    label: @tr("Stop recording");
+                    clicked => {
+                        root.stop-recording(root.item.id);
+                    }
+                }
+                if root.item.state == "downloading" || root.item.state == "waiting"
+                    || root.item.state == "queued" || root.item.state == "seeding": IconButton {
+                    icon: "pause";
+                    label: @tr("Pause");
+                    clicked => {
+                        root.pause(root.item.id);
+                    }
+                }
+            }
+        }
+    }
+}

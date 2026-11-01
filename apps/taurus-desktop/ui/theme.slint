@@ -8,8 +8,9 @@ import { Palette } from "std-widgets.slint";
 // kind variants) is DERIVED, pending the design canvas, and may be retuned
 // when it becomes available.
 export global Theme {
-    // Follows the OS color scheme until the app assigns it (user override).
-    in-out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    // system (default, follows the OS) | light | dark
+    in-out property <string> scheme: "system";
+    in-out property <bool> dark: scheme == "dark" || (scheme != "light" && Palette.color-scheme == ColorScheme.dark);
     // aldebaran (default) | cobalt | jade | grape | rose | sky
     in-out property <string> accent: "aldebaran";
 
@@ -22,13 +23,26 @@ export global Theme {
     out property <brush> track: dark ? #3A3A41 : #E8E8EC;
     out property <brush> ok: dark ? #4CC38A : #1E8E5A;
     out property <brush> err: dark ? #F2705F : #C02B1E;
+    // Soft shadow under floating cards (banner, countdown).
+    out property <color> shadow: dark ? #00000066 : #0000001F;
 
-    property <color> accent-raw: accent == "cobalt" ? #2F6FE4
-        : accent == "jade" ? #0E9F6E
-        : accent == "grape" ? #8B5CF6
-        : accent == "rose" ? #E11D74
-        : accent == "sky" ? #0EA5E9
-        : #E8590C;
+    // Swatch color of an accent by name; unknown names are Aldebaran.
+    public pure function accent-of(name: string) -> color {
+        if (name == "cobalt") {
+            return #2F6FE4;
+        } else if (name == "jade") {
+            return #0E9F6E;
+        } else if (name == "grape") {
+            return #8B5CF6;
+        } else if (name == "rose") {
+            return #E11D74;
+        } else if (name == "sky") {
+            return #0EA5E9;
+        }
+        return #E8590C;
+    }
+
+    property <color> accent-raw: accent-of(accent);
     property <color> accent-strong-raw: accent == "cobalt" ? #1D4FB8
         : accent == "jade" ? #047857
         : accent == "grape" ? #6D28D9
@@ -46,7 +60,7 @@ export global Theme {
 
     // Kinds: disc, media, torrent (also magnet), archive, music, image, live;
     // anything else is "file".
-    pure function kind-bg(kind: string) -> brush {
+    public pure function kind-bg(kind: string) -> brush {
         if (kind == "disc") {
             return dark ? #1E2C44 : #E1E9F6;
         } else if (kind == "media") {
@@ -65,7 +79,7 @@ export global Theme {
         return dark ? #262831 : #E6E7EB;
     }
 
-    pure function kind-fg(kind: string) -> brush {
+    public pure function kind-fg(kind: string) -> brush {
         if (kind == "disc") {
             return dark ? #87A9E1 : #2563C9;
         } else if (kind == "media") {

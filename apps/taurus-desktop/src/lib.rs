@@ -2,6 +2,7 @@
 
 slint::include_modules!();
 
+pub mod app;
 pub mod bridge;
 pub mod format;
 pub mod links;

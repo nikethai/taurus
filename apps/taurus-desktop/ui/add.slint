@@ -1,0 +1,205 @@
+// Add screen: what the link is, where it goes, and Download / Cancel.
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+import { AddVm } from "types.slint";
+import { Messages } from "messages.slint";
+import { IconButton, TextButton, KindBadge, LoadingDots, Card, SectionTitle } from "widgets.slint";
+
+export component Add inherits Rectangle {
+    in property <AddVm> add;
+    callback confirmed();
+    callback cancelled();
+    callback choose-folder();
+    // The duplicate's "Show it": leave and show the list.
+    callback show-list();
+
+    property <bool> failed: !add.loading && add.error-kind != "";
+    property <int> file-count: add.files-text.is-float() ? add.files-text.to-float() : -1;
+
+    VerticalLayout {
+        padding: 20px;
+        padding-top: 14px;
+        spacing: 16px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            IconButton {
+                icon: "back";
+                label: @tr("Back");
+                clicked => {
+                    root.cancelled();
+                }
+            }
+            Text {
+                text: @tr("New download");
+                vertical-alignment: center;
+                font-size: 20px;
+                font-weight: 700;
+                color: Theme.text;
+            }
+        }
+
+        if root.add.loading: Card {
+            VerticalLayout {
+                padding-top: 32px;
+                padding-bottom: 32px;
+                spacing: 16px;
+                LoadingDots { }
+                Text {
+                    text: @tr("Looking at the link…");
+                    horizontal-alignment: center;
+                    font-size: 14px;
+                    color: Theme.muted;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+            }
+        }
+
+        if root.failed: Card {
+            HorizontalLayout {
+                padding-top: 12px;
+                padding-bottom: 12px;
+                spacing: 12px;
+                KindBadge {
+                    kind: "file";
+                }
+                Text {
+                    text: Messages.simple(root.add.error-kind);
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                    font-size: 14px;
+                    color: Theme.err;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+            }
+        }
+
+        if !root.add.loading && !root.failed: VerticalLayout {
+            spacing: 16px;
+            Card {
+                HorizontalLayout {
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 14px;
+                    VerticalLayout {
+                        alignment: start;
+                        KindBadge {
+                            kind: root.add.kind;
+                            size: 48px;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: root.add.name;
+                            wrap: word-wrap;
+                            font-size: 15px;
+                            font-weight: 600;
+                            color: Theme.text;
+                        }
+                        Text {
+                            text: root.add.size-text != "" ? root.add.size-text : @tr("Size unknown");
+                            font-size: 13px;
+                            color: Theme.muted;
+                        }
+                        if root.add.is-torrent && root.file-count >= 0: Text {
+                            text: @tr("{n} file" | "{n} files" % root.file-count);
+                            font-size: 13px;
+                            color: Theme.muted;
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 8px;
+                SectionTitle {
+                    text: @tr("Save to");
+                }
+                Card {
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            alignment: center;
+                            Icon {
+                                name: "folder";
+                                width: 20px;
+                                height: 20px;
+                                stroke: Theme.muted;
+                            }
+                        }
+                        Text {
+                            text: root.add.folder != "" ? root.add.folder : @tr("Downloads folder");
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                            font-size: 14px;
+                            color: Theme.text;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            TextButton {
+                                text: @tr("Change");
+                                kind: "quiet";
+                                clicked => {
+                                    root.choose-folder();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.add.duplicate: Rectangle {
+                background: Theme.accent-soft;
+                border-radius: 12px;
+                HorizontalLayout {
+                    padding: 14px;
+                    Text {
+                        text: Messages.simple("already_added");
+                        wrap: word-wrap;
+                        font-size: 14px;
+                        color: Theme.text;
+                        accessible-role: text;
+                        accessible-label: self.text;
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: 10px;
+            TextButton {
+                text: root.failed ? @tr("Close") : @tr("Cancel");
+                clicked => {
+                    root.cancelled();
+                }
+            }
+            if !root.failed && root.add.duplicate: TextButton {
+                text: @tr("Show it");
+                kind: "primary";
+                clicked => {
+                    root.show-list();
+                }
+            }
+            if !root.failed && !root.add.duplicate: TextButton {
+                text: @tr("Download");
+                kind: "primary";
+                enabled: !root.add.loading;
+                clicked => {
+                    root.confirmed();
+                }
+            }
+        }
+    }
+}

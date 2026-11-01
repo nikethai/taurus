@@ -1,0 +1,291 @@
+// Small controls shared by the screens. Colors come from Theme only.
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+
+// Anything clickable: mouse, keyboard (Tab, then Space or Return) and
+// assistive technology (default action) all call `clicked`.
+export component Pressable inherits Rectangle {
+    in property <bool> enabled: true;
+    out property <bool> pressed: touch.pressed;
+    out property <bool> hovered: touch.has-hover;
+    callback clicked();
+
+    accessible-role: button;
+    accessible-enabled: enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    focus := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if focus.has-focus: Rectangle {
+        border-radius: root.border-radius;
+        border-width: 2px;
+        border-color: Theme.accent-base;
+    }
+}
+
+// Round icon-only button. Always set `label`: it is what screen readers say.
+export component IconButton inherits Pressable {
+    in property <string> icon;
+    in property <string> label;
+    // Accent fill instead of a quiet hover circle.
+    in property <bool> filled: false;
+    in property <length> size: 36px;
+
+    width: size;
+    height: size;
+    border-radius: self.height / 2;
+    opacity: root.enabled ? 1 : 0.45;
+    background: filled ? (root.pressed ? Theme.accent-strong : Theme.accent-base)
+        : root.pressed ? Theme.track : root.hovered ? Theme.chip : transparent;
+    accessible-label: label;
+
+    Icon {
+        name: root.icon;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.size * 0.5;
+        height: root.size * 0.5;
+        stroke: root.filled ? Theme.accent-text : Theme.text;
+    }
+}
+
+// Text button. kind: primary (accent fill) | secondary (outlined) | quiet.
+export component TextButton inherits Pressable {
+    in property <string> text;
+    in property <string> kind: "secondary";
+
+    height: 36px;
+    min-width: 72px;
+    border-radius: 10px;
+    opacity: root.enabled ? 1 : 0.45;
+    background: kind == "primary" ? (root.pressed ? Theme.accent-strong : Theme.accent-base)
+        : root.pressed ? Theme.track : root.hovered ? Theme.chip : kind == "quiet" ? transparent : Theme.panel;
+    border-width: kind == "secondary" ? 1px : 0;
+    border-color: Theme.line;
+    accessible-label: text;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        alignment: center;
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: 13px;
+            font-weight: 600;
+            color: root.kind == "primary" ? Theme.accent-text
+                : root.kind == "quiet" ? Theme.accent-strong : Theme.text;
+            accessible-role: none;
+        }
+    }
+}
+
+// On/off switch with a label and an optional hint under it.
+export component Toggle inherits Pressable {
+    in property <string> label;
+    in property <string> hint;
+    in property <bool> checked;
+
+    accessible-role: switch;
+    accessible-label: label;
+    accessible-checkable: true;
+    accessible-checked: checked;
+
+    HorizontalLayout {
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: 14px;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+            if root.hint != "": Text {
+                text: root.hint;
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                accessible-role: none;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 40px;
+                height: 24px;
+                border-radius: self.height / 2;
+                background: root.checked ? Theme.accent-base : Theme.track;
+                animate background { duration: 120ms; }
+                Rectangle {
+                    width: 18px;
+                    height: 18px;
+                    y: 3px;
+                    x: root.checked ? parent.width - self.width - 3px : 3px;
+                    border-radius: self.height / 2;
+                    background: root.checked ? Theme.accent-text : Theme.muted;
+                    animate x {
+                        duration: 120ms;
+                        easing: ease-out;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// One option of a Segmented group.
+export component Segment inherits Pressable {
+    in property <string> text;
+    in property <bool> selected;
+
+    height: 32px;
+    horizontal-stretch: 1;
+    border-radius: 8px;
+    background: selected ? Theme.panel : root.hovered ? Theme.track : transparent;
+    border-width: selected ? 1px : 0;
+    border-color: Theme.line;
+    accessible-role: radio-button;
+    accessible-label: text;
+    accessible-checkable: true;
+    accessible-checked: selected;
+
+    Text {
+        text: root.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-size: 13px;
+        font-weight: root.selected ? 600 : 400;
+        color: root.selected ? Theme.text : Theme.muted;
+        overflow: elide;
+        accessible-role: none;
+    }
+}
+
+// Track that holds Segments side by side.
+export component Segmented inherits Rectangle {
+    background: Theme.chip;
+    border-radius: 10px;
+    HorizontalLayout {
+        padding: 3px;
+        spacing: 3px;
+        @children
+    }
+}
+
+// Rounded square in the file kind's colors with its icon.
+export component KindBadge inherits Rectangle {
+    in property <string> kind;
+    in property <length> size: 40px;
+
+    width: size;
+    height: size;
+    border-radius: 10px;
+    background: Theme.kind-bg(kind);
+
+    Icon {
+        name: root.kind == "torrent" ? "magnet" : root.kind;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.size * 0.5;
+        height: root.size * 0.5;
+        stroke: Theme.kind-fg(root.kind);
+    }
+}
+
+// Thin progress bar. progress < 0 means the size is unknown: a short
+// segment slides along the track instead.
+export component ProgressBar inherits Rectangle {
+    in property <float> progress;
+    in property <brush> bar-color: Theme.accent-base;
+    in property <bool> moving: true;
+
+    height: 4px;
+    border-radius: 2px;
+    background: Theme.track;
+    clip: true;
+    accessible-role: progress-indicator;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 100;
+    accessible-value: progress < 0 ? "" : "\{round(clamp(progress, 0, 1) * 100)}";
+
+    if root.progress >= 0: Rectangle {
+        x: 0;
+        width: parent.width * clamp(root.progress, 0, 1);
+        border-radius: parent.border-radius;
+        background: root.bar-color;
+    }
+    if root.progress < 0: Rectangle {
+        property <float> phase: root.moving ? mod(animation-tick() / 1400ms, 1) : 0.35;
+        width: parent.width * 0.3;
+        x: (parent.width + self.width) * phase - self.width;
+        border-radius: parent.border-radius;
+        background: root.bar-color;
+    }
+}
+
+// Three dots that pulse while something loads.
+export component LoadingDots inherits HorizontalLayout {
+    spacing: 6px;
+    alignment: center;
+    for i in 3: Rectangle {
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: Theme.accent-base;
+        opacity: 0.25 + 0.75 * abs(sin((animation-tick() / 1ms) * 0.18deg - i * 50deg));
+    }
+}
+
+// Panel with rounded corners holding a group of controls.
+export component Card inherits Rectangle {
+    vertical-stretch: 0;
+    background: Theme.panel;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Theme.line;
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        @children
+    }
+}
+
+// Section title above a Card.
+export component SectionTitle inherits Text {
+    // Room above the title separates it from the previous group.
+    height: 30px;
+    vertical-alignment: bottom;
+    color: Theme.muted;
+    font-size: 12px;
+    font-weight: 600;
+    accessible-role: none;
+}

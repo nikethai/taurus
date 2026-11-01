@@ -29,3 +29,57 @@ export struct SummaryVm {
     eta-value: int,
     all-paused: bool,
 }
+
+export enum Screen { welcome, downloads, add, settings }
+
+// The Add screen: what the pasted link turned out to be.
+export struct AddVm {
+    // true while the link is being looked at
+    loading: bool,
+    // ErrorKind::as_str() when the link can't be added, else ""
+    error-kind: string,
+    kind: string,
+    name: string,
+    // formatted size, "" when unknown
+    size-text: string,
+    // destination folder path, "" = the OS Downloads folder
+    folder: string,
+    is-torrent: bool,
+    // number of files in the torrent, as digits (e.g. "12"); the screen words it
+    files-text: string,
+    // the link is already in the list
+    duplicate: bool,
+}
+
+// Settings screen values. Keys of `setting-changed` are these field names;
+// booleans are sent as "true" / "false".
+export struct SettingsVm {
+    // "" = the OS Downloads folder
+    folder: string,
+    sort-by-type: bool,
+    // gentle | balanced | fastest
+    speed: string,
+    // nothing | notify | sleep | shutdown
+    when-done: string,
+    offer-copied-links: bool,
+    open-at-login: bool,
+    // system | light | dark
+    theme: string,
+    // aldebaran | cobalt | jade | grape | rose | sky
+    accent: string,
+}
+
+// When-done countdown before the computer sleeps or shuts down.
+export struct CountdownVm {
+    visible: bool,
+    // sleep | shutdown
+    action: string,
+    seconds: int,
+}
+
+// Offer to download a link found on the clipboard.
+export struct BannerVm {
+    visible: bool,
+    host: string,
+    kind: string,
+}

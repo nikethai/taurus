@@ -1,0 +1,62 @@
+// Offer to download a link the user copied.
+import { Theme } from "theme.slint";
+import { BannerVm } from "types.slint";
+import { IconButton, TextButton, KindBadge } from "widgets.slint";
+
+export component Banner inherits Rectangle {
+    in property <BannerVm> banner;
+    callback download();
+    callback dismiss();
+
+    background: Theme.panel;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Theme.line;
+    drop-shadow-blur: 12px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-color: Theme.shadow;
+    accessible-role: AccessibleRole.banner;
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            KindBadge {
+                kind: root.banner.kind != "" ? root.banner.kind : "link";
+                size: 36px;
+            }
+        }
+        Text {
+            text: @tr("Download the link you copied from {0}?", root.banner.host);
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
+            font-size: 13px;
+            color: Theme.text;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+        VerticalLayout {
+            alignment: center;
+            TextButton {
+                text: @tr("Download");
+                kind: "primary";
+                clicked => {
+                    root.download();
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: "close";
+                label: @tr("Dismiss");
+                size: 32px;
+                clicked => {
+                    root.dismiss();
+                }
+            }
+        }
+    }
+}
