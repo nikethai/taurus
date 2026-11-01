@@ -258,6 +258,10 @@ async fn watch(
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut committed_at = Instant::now();
     let mut seeding = false;
+    // When this run found the download done, and how long it had been
+    // shared before (`seed_started_at` is in whole seconds: too coarse to
+    // time a short limit with).
+    let mut shared_since: Option<(Instant, Duration)> = None;
     loop {
         tokio::select! {
             biased;
@@ -288,6 +292,12 @@ async fn watch(
         if !stats.finished {
             continue;
         }
+        let (since, before) = *shared_since.get_or_insert_with(|| {
+            let before = job.seed_started_at.map_or(Duration::ZERO, |started| {
+                Duration::from_secs(u64::try_from(unix_now() - started).unwrap_or(0))
+            });
+            (Instant::now(), before)
+        });
         if !seeding {
             for file in selected(info, job) {
                 mark_downloaded(
@@ -298,8 +308,7 @@ async fn watch(
             }
             job.seed_started_at.get_or_insert_with(unix_now);
         }
-        let started = job.seed_started_at.unwrap_or_else(unix_now);
-        let seeding_for = Duration::from_secs(u64::try_from(unix_now() - started).unwrap_or(0));
+        let seeding_for = before + since.elapsed();
         if seed_policy(&ctx.settings.borrow()).should_stop(uploaded, total, seeding_for) {
             return Ok(End::Completed);
         }
