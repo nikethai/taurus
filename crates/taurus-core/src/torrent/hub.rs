@@ -14,17 +14,16 @@ use std::time::Duration;
 use librqbit::api::TorrentIdOrHash;
 use librqbit::dht::Id20;
 use librqbit::limits::LimitsConfig;
-use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session,
-    ValidatedTorrentMetaV1Info,
-};
+use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session};
 
+use super::TorrentInfo;
 use super::files::stored_output_dir;
+pub use super::meta::info_from_bytes;
+use super::meta::{add_torrent, hash_of, torrent_info};
 use super::options::{SESSION_DIR, ipv6_available, limits_config, session_options};
 use super::policy::classify_torrent_error;
 use super::source::Source;
-use super::{TorrentFile, TorrentInfo};
-use crate::errors::{CoreError, ErrorKind, classify_io};
+use crate::errors::{CoreError, ErrorKind};
 use crate::settings::TorrentSettings;
 use crate::store::{JobKind, JobRecord, JobState, Store};
 
@@ -166,9 +165,10 @@ impl TorrentHub {
         only_files: Option<Vec<usize>>,
         paused: bool,
     ) -> Result<TorrentHandle, CoreError> {
-        let add = add_torrent(source).await?;
+        let (add, info_hash) = add_torrent(source).await?;
         let session = self.session().await?;
-        self.add_in(&session, add, output, only_files, paused).await
+        self.add_in(&session, add, info_hash, output, only_files, paused)
+            .await
     }
 
     /// Adds a torrent from its metainfo (the bencoded `.torrent` file).
@@ -192,14 +192,19 @@ impl TorrentHub {
         only_files: Option<Vec<usize>>,
         paused: bool,
     ) -> Result<TorrentHandle, CoreError> {
+        let info_hash = hash_of(torrent_meta)?;
         let add = AddTorrent::from_bytes(torrent_meta.to_vec());
-        self.add_in(session, add, output, only_files, paused).await
+        self.add_in(session, add, info_hash, output, only_files, paused)
+            .await
     }
 
+    /// `info_hash` is the torrent `add` holds: what librqbit hands back must
+    /// be that torrent.
     async fn add_in(
         &self,
         session: &Arc<Session>,
         add: AddTorrent<'static>,
+        info_hash: Id20,
         output: &Path,
         only_files: Option<Vec<usize>>,
         paused: bool,
@@ -217,18 +222,32 @@ impl TorrentHub {
             preferred_id: Some(self.next_id.fetch_add(1, Ordering::SeqCst)),
             ..self.add_options()
         };
-        match session
+        let handle = match session
             .add_torrent(add, Some(opts))
             .await
             .map_err(lib_error)?
         {
             AddTorrentResponse::Added(_, handle)
-            | AddTorrentResponse::AlreadyManaged(_, handle) => Ok(handle),
-            AddTorrentResponse::ListOnly(_) => Err(CoreError {
+            | AddTorrentResponse::AlreadyManaged(_, handle) => handle,
+            AddTorrentResponse::ListOnly(_) => {
+                return Err(CoreError {
+                    kind: ErrorKind::Unknown,
+                    detail: "librqbit listed the torrent instead of adding it".to_string(),
+                });
+            }
+        };
+        // "Already managed" goes by torrent id as well as by info hash.
+        if handle.info_hash() != info_hash {
+            return Err(CoreError {
                 kind: ErrorKind::Unknown,
-                detail: "librqbit listed the torrent instead of adding it".to_string(),
-            }),
+                detail: format!(
+                    "adding torrent {} returned torrent {}",
+                    info_hash.as_string(),
+                    handle.info_hash().as_string()
+                ),
+            });
         }
+        Ok(handle)
     }
 
     fn add_options(&self) -> AddTorrentOptions {
@@ -246,7 +265,7 @@ impl TorrentHub {
         source: &Source,
         timeout: Duration,
     ) -> Result<(TorrentInfo, Vec<u8>), CoreError> {
-        let add = add_torrent(source).await?;
+        let (add, _) = add_torrent(source).await?;
         let opts = AddTorrentOptions {
             list_only: true,
             ..self.add_options()
@@ -543,7 +562,7 @@ fn find(session: &Session, info_hash: &str) -> Result<TorrentHandle, CoreError> 
         })
 }
 
-fn parse_hash(info_hash: &str) -> Result<Id20, CoreError> {
+pub(super) fn parse_hash(info_hash: &str) -> Result<Id20, CoreError> {
     Id20::from_str(info_hash).map_err(|e| CoreError {
         kind: ErrorKind::Unknown,
         detail: format!("bad info hash {info_hash:?}: {e:#}"),
@@ -552,72 +571,11 @@ fn parse_hash(info_hash: &str) -> Result<Id20, CoreError> {
 
 /// A librqbit error, with its whole cause chain: io errors are wrapped in
 /// context, so `os error N` is only in a cause.
-fn lib_error(e: impl std::fmt::Display) -> CoreError {
+pub(super) fn lib_error(e: impl std::fmt::Display) -> CoreError {
     let detail = format!("{e:#}");
     CoreError {
         kind: classify_torrent_error(&detail),
         detail,
-    }
-}
-
-async fn add_torrent(source: &Source) -> Result<AddTorrent<'static>, CoreError> {
-    Ok(match source {
-        Source::Magnet { uri, .. } => AddTorrent::from_url(uri.clone()),
-        Source::TorrentUrl(url) => {
-            return Err(CoreError {
-                kind: ErrorKind::Unknown,
-                detail: format!("fetch {url} first: the torrent session takes its bytes"),
-            });
-        }
-        Source::TorrentFile(path) => {
-            AddTorrent::from_bytes(tokio::fs::read(path).await.map_err(|e| CoreError {
-                kind: classify_io(&e),
-                detail: format!("cannot read {}: {e}", path.display()),
-            })?)
-        }
-        Source::Http(url) => {
-            return Err(CoreError {
-                kind: ErrorKind::Unknown,
-                detail: format!("{url} is not a torrent"),
-            });
-        }
-    })
-}
-
-/// Parses and validates metainfo bytes.
-pub fn info_from_bytes(bytes: &[u8]) -> Result<TorrentInfo, CoreError> {
-    let meta = librqbit::torrent_from_bytes(bytes).map_err(lib_error)?;
-    let info = meta.info.data.validate().map_err(lib_error)?;
-    Ok(torrent_info(meta.info_hash, &info, None))
-}
-
-/// `fallback` names a torrent whose metadata has none (else the info hash).
-fn torrent_info<B: AsRef<[u8]>>(
-    info_hash: Id20,
-    info: &ValidatedTorrentMetaV1Info<B>,
-    fallback: Option<String>,
-) -> TorrentInfo {
-    let info_hash = info_hash.as_string();
-    let name = info
-        .name()
-        .map(|n| n.into_owned())
-        .filter(|n| !n.is_empty())
-        .or(fallback)
-        .unwrap_or_else(|| info_hash.clone());
-    let files = info
-        .iter_file_details()
-        .enumerate()
-        .map(|(index, f)| TorrentFile {
-            index,
-            path: f.filename.to_vec().join("/"),
-            size: f.len,
-        })
-        .collect();
-    TorrentInfo {
-        info_hash,
-        name,
-        files,
-        total: info.lengths().total_length(),
     }
 }
 
@@ -633,30 +591,5 @@ mod tests {
         for good in ["Show (1)", "movie.mkv", "..a", "a.."] {
             assert!(is_single_name(good), "{good:?}");
         }
-    }
-
-    #[test]
-    fn info_from_bytes_lists_files() {
-        let bytes = taurus_testkit::make_torrent_bytes(
-            "set",
-            &[("a.bin", &[1; 40_000]), ("sub/b.bin", &[2; 5])],
-            16_384,
-        );
-        let info = info_from_bytes(&bytes).unwrap();
-        assert_eq!(info.name, "set");
-        assert_eq!(info.total, 40_005);
-        assert_eq!(info.info_hash.len(), 40);
-        let files: Vec<_> = info
-            .files
-            .iter()
-            .map(|f| (f.index, &*f.path, f.size))
-            .collect();
-        assert_eq!(files, [(0, "a.bin", 40_000), (1, "sub/b.bin", 5)]);
-
-        let evil = taurus_testkit::make_torrent_bytes("x", &[("../e", b"boo")], 16_384);
-        assert_eq!(
-            info_from_bytes(&evil).unwrap_err().kind,
-            ErrorKind::UnsafeTorrent
-        );
     }
 }

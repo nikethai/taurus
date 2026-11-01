@@ -5,6 +5,7 @@
 pub mod files;
 pub mod hub;
 pub mod job;
+mod meta;
 mod options;
 pub mod policy;
 pub mod source;

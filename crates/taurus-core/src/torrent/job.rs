@@ -100,18 +100,16 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
         .add_bytes(meta, &output, job.only_files.clone(), false)
         .await?;
     // Already in the session (restored by the hub, or left by an earlier
-    // run), it may be paused.
-    let was_paused = handle.is_paused();
+    // run), it may be paused; `is_paused` misses a start that librqbit
+    // dropped while the files were checked.
+    let stopped = handle.live().is_none();
     drop(handle);
-    if was_paused {
-        tokio::select! {
-            unpaused = ctx.hub.unpause(&info.info_hash) => unpaused?,
-            () = ctx.cancel.cancelled() => {}
-        }
-    }
 
     let mut uploads = Uploads::new(job.uploaded);
-    let end = watch(ctx, job, &info, &output, total, &mut uploads).await;
+    let end = match start(ctx, &info, stopped).await {
+        Ok(()) => watch(ctx, job, &info, &output, total, &mut uploads).await,
+        Err(e) => Err(e),
+    };
     // Whatever ended the run, sharing stops with it.
     if let Err(e) = ctx.hub.pause(&info.info_hash).await {
         tracing::warn!(job = job.id.0, "could not pause the torrent: {e}");
@@ -126,6 +124,21 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
             Ok(JobOutcome::Completed(output))
         }
         End::Cancelled => paused(ctx, job),
+    }
+}
+
+/// Starts the torrent if it is not running; a cancel stops the wait.
+async fn start(
+    ctx: &TorrentJobContext,
+    info: &TorrentInfo,
+    stopped: bool,
+) -> Result<(), CoreError> {
+    if !stopped {
+        return Ok(());
+    }
+    tokio::select! {
+        unpaused = ctx.hub.unpause(&info.info_hash) => unpaused,
+        () = ctx.cancel.cancelled() => Ok(()),
     }
 }
 
