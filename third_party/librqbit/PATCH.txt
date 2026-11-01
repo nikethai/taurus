@@ -1,0 +1,38 @@
+Patched copy of librqbit
+========================
+
+Upstream: librqbit 9.1.0 from crates.io (rqbit repo crates/librqbit, commit
+4309d38769ef93f6ee4f01a1ab147009a197fa8f; see .cargo_vcs_info.json). Files are
+as published, except:
+
+- src/torrent_state/mod.rs, ManagedTorrent::start, the initialize_and_start
+  task: the state lock is taken *before* init.finish_check() and held while
+  the check's result is put in the state (Paused, Error, or nothing if the
+  state already changed). Upstream clears the "check running" flag first and
+  only then locks the state.
+- LICENSE and PATCH.txt added; the registry's .cargo-ok marker removed.
+
+Why: TorrentStateInitializing::check() takes the initializer's file handles
+into the Paused state it returns (src/torrent_state/initializing.rs, `files:
+self.files.take()?`). Upstream, between finish_check() and taking the lock,
+a start() on the still-Initializing torrent (Session::unpause) sees no check
+running and spawns a second check of the same initializer. That check finds
+the first check's bitfield (stored in memory by store_initial_check), so it
+does not hash anything; it finishes in about a millisecond with file handles
+that are now empty. If the first check's thread is preempted in that window,
+which is common on a loaded machine, the second check puts its Paused state
+in and starts it Live. The first check then sees the state has changed and
+drops the real files. The Live torrent fails its first piece write with
+"error writing to file 0 ... file is None, torrent was probably paused", and
+the torrent goes to Error. Taurus starts torrents while librqbit checks
+their files whenever a job runs (a fresh add, or a torrent restored paused
+on restart), so the job failed.
+
+With the flag cleared under the lock, a concurrent start() either runs
+before (a check is running: it only clears the pause request) or after (the
+state is Paused or Error and the start proceeds from there).
+
+Wired in by [patch.crates-io] in the workspace Cargo.toml; the directory is
+excluded from the workspace, so our fmt/clippy gates do not apply to it.
+
+Drop this patch when upstream clears the check flag under the state lock.

@@ -1966,8 +1966,6 @@ dependencies = [
 [[package]]
 name = "librqbit"
 version = "9.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e35a06e481e854f69141928d067406397b3ad7a47bfdc095bc31325f44f5d13"
 dependencies = [
  "anyhow",
  "arc-swap",

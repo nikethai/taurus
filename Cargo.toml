@@ -46,6 +46,8 @@ axum = "0.8"
 tempfile = "3"
 sha1 = "0.11"
 
-# IPv4 fallback for librqbit's UDP tracker socket; see third_party/librqbit-tracker-comms/PATCH.txt.
+# Patched librqbit crates; see PATCH.txt in each directory: an IPv4 fallback
+# for the UDP tracker socket, and a race in the initial file check.
 [patch.crates-io]
+librqbit = { path = "third_party/librqbit" }
 librqbit-tracker-comms = { path = "third_party/librqbit-tracker-comms" }
