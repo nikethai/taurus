@@ -180,8 +180,14 @@ pub fn file_path(output: &Path, file: &TorrentFile) -> PathBuf {
 pub fn selected_total(info: &TorrentInfo, only_files: Option<&[usize]>) -> u64 {
     info.files
         .iter()
-        .filter(|f| only_files.is_none_or(|only| only.contains(&f.index)))
+        .filter(|f| is_selected(only_files, f.index))
         .fold(0u64, |sum, f| sum.saturating_add(f.size))
+}
+
+/// Whether file `index` is selected (`None` selects every file). A job's
+/// `only_files` is sorted, without duplicates: the engine stores it so.
+pub fn is_selected(only_files: Option<&[usize]>, index: usize) -> bool {
+    only_files.is_none_or(|only| only.binary_search(&index).is_ok())
 }
 
 #[cfg(test)]
@@ -422,5 +428,9 @@ mod tests {
         assert_eq!(selected_total(&t, Some(&[0, 2])), 40);
         assert_eq!(selected_total(&t, Some(&[])), 0);
         assert_eq!(selected_total(&t, Some(&[7])), 0);
+        assert!(is_selected(None, 5));
+        assert!(is_selected(Some(&[0, 2, 9]), 2));
+        assert!(!is_selected(Some(&[0, 2, 9]), 1));
+        assert!(!is_selected(Some(&[]), 0));
     }
 }

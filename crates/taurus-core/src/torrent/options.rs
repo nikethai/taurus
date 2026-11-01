@@ -1,16 +1,21 @@
-//! Options for the librqbit session: where it keeps its state, what it
-//! binds (IPv6 policy) and the rate-limit clamp.
+//! Options for the librqbit session, and starting it: where it keeps its
+//! state, what it binds (IPv6 policy, a taken port) and the rate-limit
+//! clamp.
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::num::NonZeroU32;
 use std::path::Path;
+use std::sync::Arc;
 
 use librqbit::dht::DhtPersistenceConfig;
 use librqbit::limits::LimitsConfig;
 use librqbit::{
-    DhtSessionConfig, ListenerMode, ListenerOptions, SessionOptions, SessionPersistenceConfig,
+    DhtSessionConfig, ListenerMode, ListenerOptions, Session, SessionOptions,
+    SessionPersistenceConfig,
 };
 
+use super::hub::lib_error;
+use crate::errors::CoreError;
 use crate::settings::TorrentSettings;
 
 /// Under `data_dir`: librqbit's torrent list and fastresume bitfields.
@@ -20,6 +25,40 @@ pub(super) const DHT_FILE: &str = "dht.json";
 /// librqbit moves data in 16 KiB blocks and its limiter's burst is one
 /// second of the limit, so a lower limit stalls the transfer.
 pub(super) const MIN_BPS: u64 = 16_384;
+
+/// Starts the librqbit session, which restores the torrents it saved. A
+/// listening port that is set but cannot be bound (another program has it)
+/// falls back to a random one.
+pub(super) async fn start_session(
+    data_dir: &Path,
+    settings: &TorrentSettings,
+    test: bool,
+    limits: LimitsConfig,
+) -> Result<Arc<Session>, CoreError> {
+    let ipv6 = ipv6_available();
+    let start = |settings: &TorrentSettings| {
+        let opts = session_options(data_dir, settings, test, ipv6, limits);
+        tracing::info!(
+            listen = ?opts.listen.as_ref().map(|l| l.listen_addr),
+            ipv6,
+            "starting the torrent session"
+        );
+        Session::new_with_opts(data_dir.join(SESSION_DIR), opts)
+    };
+    match (start(settings).await, settings.listen_port) {
+        (Ok(session), _) => Ok(session),
+        // librqbit 9.1's context for a listener that would not bind.
+        (Err(e), Some(port)) if format!("{e:#}").contains("error starting listeners") => {
+            tracing::warn!("could not listen on port {port} ({e:#}); using a random port");
+            let random = TorrentSettings {
+                listen_port: None,
+                ..settings.clone()
+            };
+            start(&random).await.map_err(lib_error)
+        }
+        (Err(e), _) => Err(lib_error(e)),
+    }
+}
 
 /// Whether this host can open IPv6 sockets at all.
 pub(super) fn ipv6_available() -> bool {
@@ -37,7 +76,7 @@ pub(super) fn session_options(
 ) -> SessionOptions {
     let port = settings.listen_port.unwrap_or(0);
     let listen_addr: SocketAddr = if test {
-        (Ipv4Addr::LOCALHOST, 0).into()
+        (Ipv4Addr::LOCALHOST, port).into()
     } else if ipv6 {
         (Ipv6Addr::UNSPECIFIED, port).into()
     } else {
@@ -166,7 +205,8 @@ mod tests {
         for ipv6 in [true, false] {
             let o = options(true, ipv6);
             let listen = o.listen.as_ref().unwrap();
-            assert_eq!(listen.listen_addr, "127.0.0.1:0".parse().unwrap());
+            // The port is the one set (else random), on loopback.
+            assert_eq!(listen.listen_addr, "127.0.0.1:6881".parse().unwrap());
             assert!(!listen.enable_upnp_port_forwarding);
             assert!(o.dht.is_none());
             assert!(o.disable_trackers && o.disable_local_service_discovery);

@@ -19,7 +19,7 @@ use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 
 use super::files::{
-    check_paths, check_selection, file_path, output_dir, selected_total, stored_name,
+    check_paths, check_selection, file_path, is_selected, output_dir, selected_total, stored_name,
     stored_output_dir,
 };
 use super::hub::{TorrentHub, info_from_bytes};
@@ -334,6 +334,9 @@ async fn watch(
     let mut tick = tokio::time::interval(ctx.timing.torrent_poll);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut committed_at = Instant::now();
+    let files = (count(selected(info, job).count()), count(info.files.len()));
+    // Finished in an earlier run: sharing again is not a download finishing.
+    let finished_before = job.seed_started_at.is_some();
     let mut seeding = false;
     // When this run found the download done, and how long it had been
     // shared before (`seed_started_at` is in whole seconds: too coarse to
@@ -364,7 +367,7 @@ async fn watch(
         if checked(&stats) {
             *downloaded = stats.progress_bytes;
         }
-        report(ctx, job, info, &stats, uploaded, total);
+        report(ctx, job.id, files, &stats, uploaded, total);
         if committed_at.elapsed() >= COMMIT_EVERY {
             ctx.store
                 .commit_torrent_progress(job.id, *downloaded, uploaded)?;
@@ -397,7 +400,10 @@ async fn watch(
             seeding = true;
             job.state = JobState::Seeding;
             ctx.store.update_job(job)?;
-            let _ = ctx.msgs.send(JobMsg::Seeding { id: job.id });
+            let _ = ctx.msgs.send(JobMsg::Seeding {
+                id: job.id,
+                finished_now: !finished_before,
+            });
         }
     }
 }
@@ -410,11 +416,12 @@ fn seed_policy(settings: &TorrentSettings) -> SeedPolicy {
 }
 
 /// Sends the torrent's progress (once librqbit has checked it, so that the
-/// numbers cover the selected files) and its stats.
+/// numbers cover the selected files) and its stats; `files` are the counts
+/// of selected files and of all files.
 fn report(
     ctx: &TorrentJobContext,
-    job: &JobRecord,
-    info: &TorrentInfo,
+    id: JobId,
+    files: (u32, u32),
     stats: &TorrentStats,
     uploaded: u64,
     total: u64,
@@ -422,7 +429,7 @@ fn report(
     let live = stats.live.as_ref();
     if checked(stats) {
         let _ = ctx.msgs.send(JobMsg::Progress {
-            id: job.id,
+            id,
             downloaded: stats.progress_bytes,
             total: Some(stats.total_bytes),
             speed_bps: live.map_or(0, |l| l.download_speed.as_bytes()),
@@ -437,10 +444,10 @@ fn report(
         } else {
             0.0
         },
-        files_selected: count(selected(info, job).count()),
-        files_total: count(info.files.len()),
+        files_selected: files.0,
+        files_total: files.1,
     };
-    let _ = ctx.msgs.send(JobMsg::TorrentStats { id: job.id, view });
+    let _ = ctx.msgs.send(JobMsg::TorrentStats { id, view });
 }
 
 /// Whether librqbit has checked the torrent's files: only then do its
@@ -457,11 +464,10 @@ fn selected<'a>(
     info: &'a TorrentInfo,
     job: &'a JobRecord,
 ) -> impl Iterator<Item = &'a TorrentFile> {
-    info.files.iter().filter(|f| {
-        job.only_files
-            .as_ref()
-            .is_none_or(|only| only.contains(&f.index))
-    })
+    let only = job.only_files.as_deref();
+    info.files
+        .iter()
+        .filter(move |f| is_selected(only, f.index))
 }
 
 fn count(n: usize) -> u32 {

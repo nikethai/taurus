@@ -227,9 +227,10 @@ impl Actor {
         let run = self.running.remove(&id);
         // Pause, remove or shutdown is waiting for this run to end.
         let told_to_stop = run.as_ref().is_some_and(|run| run.cancel.is_cancelled());
-        let mut view = load_view(&self.store, id).unwrap_or_else(|e| {
+        let known = read(&self.views).get(&id).cloned();
+        let mut view = load_view(&self.store, id, known.as_ref()).unwrap_or_else(|e| {
             tracing::warn!(job = id.0, "could not reload the finished job: {e}");
-            read(&self.views).get(&id).cloned()
+            known.clone()
         });
         if let Some(view) = &mut view {
             self.keep_torrent_progress(view);
@@ -538,6 +539,12 @@ fn describe_size(size: Option<u64>) -> String {
 /// `downloaded` is the durable progress (see `stored_downloaded` for a
 /// torrent's).
 pub(super) fn view_of(job: &JobRecord, downloaded: u64) -> JobView {
+    view_with(job, downloaded, None)
+}
+
+/// [`view_of`], reusing what `known` (the job's view so far) has that only
+/// the stored metadata could tell otherwise.
+fn view_with(job: &JobRecord, downloaded: u64, known: Option<&JobView>) -> JobView {
     JobView {
         id: job.id,
         url: job.url.clone(),
@@ -551,15 +558,19 @@ pub(super) fn view_of(job: &JobRecord, downloaded: u64) -> JobView {
         resumable: job.resumable,
         error: job.error.clone(),
         kind: job.kind,
-        torrent: stored_torrent_view(job),
+        torrent: stored_torrent_view(job, known.and_then(|v| v.torrent.as_ref())),
     }
 }
 
-fn load_view(store: &Store, id: JobId) -> Result<Option<JobView>, CoreError> {
+fn load_view(
+    store: &Store,
+    id: JobId,
+    known: Option<&JobView>,
+) -> Result<Option<JobView>, CoreError> {
     let Some(job) = store.get_job(id)? else {
         return Ok(None);
     };
-    Ok(Some(view_of(&job, downloaded(store, id)?)))
+    Ok(Some(view_with(&job, downloaded(store, id)?, known)))
 }
 
 /// Durable progress: the sum of the stored segments' `done`.

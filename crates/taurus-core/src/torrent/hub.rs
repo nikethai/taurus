@@ -20,7 +20,7 @@ use super::TorrentInfo;
 use super::files::stored_output_dir;
 pub use super::meta::info_from_bytes;
 use super::meta::{add_torrent, hash_of, torrent_info};
-use super::options::{SESSION_DIR, ipv6_available, limits_config, session_options};
+use super::options::{SESSION_DIR, limits_config, start_session};
 use super::persist::prune;
 use super::policy::classify_torrent_error;
 use super::source::Source;
@@ -38,7 +38,8 @@ pub type TorrentHandle = Arc<ManagedTorrent>;
 
 /// Test-only networking overrides; front ends leave this None. When set, the
 /// session has no DHT, trackers, local service discovery or UPnP, listens on
-/// `127.0.0.1:0`, and every torrent added gets `initial_peers`.
+/// `127.0.0.1` (on the port set, else a random one), and every torrent added
+/// gets `initial_peers`.
 #[derive(Clone, Debug, Default)]
 pub struct TorrentTestNet {
     pub initial_peers: Vec<SocketAddr>,
@@ -145,23 +146,9 @@ impl TorrentHub {
             kind: ErrorKind::Unknown,
             detail: format!("could not prune the torrent session's list: {e}"),
         })?;
-        let ipv6 = ipv6_available();
         let limits = *lock(&self.limits);
-        let opts = session_options(
-            &self.data_dir,
-            &self.settings,
-            self.test.is_some(),
-            ipv6,
-            limits,
-        );
-        tracing::info!(
-            listen = ?opts.listen.as_ref().map(|l| l.listen_addr),
-            ipv6,
-            "starting the torrent session"
-        );
-        let session = Session::new_with_opts(self.data_dir.join(SESSION_DIR), opts)
-            .await
-            .map_err(lib_error)?;
+        let session =
+            start_session(&self.data_dir, &self.settings, self.test.is_some(), limits).await?;
         // librqbit has already restored, and started, what it persisted.
         let restored = session.with_torrents(|it| it.map(|(id, _)| id + 1).max());
         self.next_id.store(restored.unwrap_or(0), Ordering::SeqCst);

@@ -194,13 +194,14 @@ pub fn job_table(views: &[JobView]) -> String {
 }
 
 /// A header with the torrent's name, file count and size, then one line per
-/// file: index, size, path.
+/// file: index, size, path. Control characters (the torrent's peers chose
+/// these names) are left out.
 pub fn torrent_files(info: &TorrentInfo) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
         "{}  {} files  {}",
-        info.name,
+        printable(&info.name),
         info.files.len(),
         bytes(info.total)
     );
@@ -210,10 +211,14 @@ pub fn torrent_files(info: &TorrentInfo) -> String {
             "{:>5}  {:>10}  {}",
             file.index,
             bytes(file.size),
-            file.path
+            printable(&file.path)
         );
     }
     out
+}
+
+fn printable(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Said once when a run ends with torrents still Seeding: `run` exits once
@@ -474,6 +479,20 @@ mod tests {
         assert_eq!(
             torrent_files(&info),
             "pack  2 files  300.1 KiB\n    0   300.0 KiB  a.bin\n    1       100 B  dir/b.bin\n"
+        );
+        // A name from a peer cannot drive the terminal.
+        let odd = TorrentInfo {
+            name: "pa\u{1b}[2Jck\u{7}\u{9b}".to_string(),
+            files: vec![TorrentFile {
+                index: 0,
+                path: "x\u{85}.bin".to_string(),
+                size: 1,
+            }],
+            ..info
+        };
+        assert_eq!(
+            torrent_files(&odd),
+            "pa[2Jck  1 files  300.1 KiB\n    0         1 B  x.bin\n"
         );
     }
 

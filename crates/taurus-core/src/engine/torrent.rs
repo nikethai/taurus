@@ -13,7 +13,7 @@ use crate::http::JobOutcome;
 use crate::http::client::{request_error, status_error};
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob};
 use crate::torrent::files::{
-    check_paths, check_selection, file_path, output_dir, selected_total, stored_name,
+    check_paths, check_selection, file_path, is_selected, output_dir, selected_total, stored_name,
     stored_output_dir,
 };
 use crate::torrent::hub::info_from_bytes;
@@ -259,14 +259,14 @@ impl Actor {
     }
 
     /// The torrent finished downloading and shares (the runner recorded
-    /// that): it leaves the torrent slots, and counts as a job finishing for
-    /// the when-done action.
-    pub(super) fn on_seeding(&mut self, id: JobId) {
+    /// that): it leaves the torrent slots and, if it finished in this run
+    /// (`finished_now`), counts as a job finishing for the when-done action.
+    pub(super) fn on_seeding(&mut self, id: JobId, finished_now: bool) {
         if !self.running.contains_key(&id) || self.state_of(id).is_none() {
             return;
         }
         self.set_view_state(id, JobState::Seeding);
-        self.job_ended = true;
+        self.job_ended |= finished_now;
         self.after_change();
     }
 
@@ -377,23 +377,28 @@ pub(super) fn stored_downloaded(job: &JobRecord, downloaded: u64) -> u64 {
     }
 }
 
-/// What only a torrent's view has, as stored: no peers, no speed.
-pub(super) fn stored_torrent_view(job: &JobRecord) -> Option<TorrentView> {
+/// What only a torrent's view has, as stored: no peers, no speed. The file
+/// counts come from `known` (the job's view so far) when it has them, so
+/// the metadata is not parsed again.
+pub(super) fn stored_torrent_view(
+    job: &JobRecord,
+    known: Option<&TorrentView>,
+) -> Option<TorrentView> {
     if job.kind != JobKind::Torrent {
         return None;
     }
-    let info = job
-        .torrent_meta
-        .as_deref()
-        .and_then(|m| info_from_bytes(m).ok());
-    let (files_selected, files_total) = info.map_or((0, 0), |info| {
-        let selected = info
-            .files
-            .iter()
-            .filter(|f| job.only_files.as_ref().is_none_or(|o| o.contains(&f.index)))
-            .count();
-        (selected, info.files.len())
-    });
+    let counts = match known {
+        Some(view) if view.files_total > 0 => (view.files_selected, view.files_total),
+        _ => job
+            .torrent_meta
+            .as_deref()
+            .and_then(|m| info_from_bytes(m).ok())
+            .map_or((0, 0), |info| {
+                let only = job.only_files.as_deref();
+                let selected = info.files.iter().filter(|f| is_selected(only, f.index));
+                (count(selected.count()), count(info.files.len()))
+            }),
+    };
     let total = job.total.unwrap_or(0);
     Some(TorrentView {
         peers: 0,
@@ -404,14 +409,70 @@ pub(super) fn stored_torrent_view(job: &JobRecord) -> Option<TorrentView> {
         } else {
             0.0
         },
-        files_selected: u32::try_from(files_selected).unwrap_or(u32::MAX),
-        files_total: u32::try_from(files_total).unwrap_or(u32::MAX),
+        files_selected: counts.0,
+        files_total: counts.1,
     })
+}
+
+fn count(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 fn error(detail: &str) -> CoreError {
     CoreError {
         kind: ErrorKind::Unknown,
         detail: detail.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::JobId;
+
+    fn torrent_job(meta: &[u8], only_files: Option<Vec<usize>>) -> JobRecord {
+        JobRecord {
+            id: JobId(1),
+            url: String::new(),
+            source_url: String::new(),
+            final_url: None,
+            dest_dir: "/d".into(),
+            file_name: "t".to_string(),
+            state: JobState::Queued,
+            total: Some(10),
+            resumable: false,
+            etag: None,
+            last_modified: None,
+            connections: 1,
+            error: None,
+            mirrors: Vec::new(),
+            checksum: None,
+            referer: None,
+            queue_pos: 0,
+            kind: JobKind::Torrent,
+            info_hash: None,
+            torrent_meta: Some(meta.to_vec()),
+            only_files,
+            uploaded: 0,
+            seed_started_at: None,
+        }
+    }
+
+    #[test]
+    fn a_known_torrent_view_is_not_parsed_again() {
+        let known = TorrentView {
+            peers: 0,
+            uploaded: 0,
+            upload_bps: 0,
+            ratio: 0.0,
+            files_selected: 1,
+            files_total: 2,
+        };
+        // Not metadata at all: only the known counts can give these.
+        let job = torrent_job(b"not a torrent", Some(vec![0]));
+        let view = stored_torrent_view(&job, Some(&known)).unwrap();
+        assert_eq!((view.files_selected, view.files_total), (1, 2));
+        let view = stored_torrent_view(&job, None).unwrap();
+        assert_eq!((view.files_selected, view.files_total), (0, 0));
     }
 }

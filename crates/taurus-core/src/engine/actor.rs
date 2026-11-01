@@ -91,8 +91,11 @@ pub enum JobMsg {
     },
     /// The torrent finished downloading and is sharing (sent once per run,
     /// never when the seeding policy stops it as soon as it finishes).
+    /// `finished_now`: the download finished in this run, rather than in an
+    /// earlier one (it shares again after a restart).
     Seeding {
         id: JobId,
+        finished_now: bool,
     },
     /// A running torrent's peers, uploads and file selection, with each
     /// `Progress`.
@@ -356,7 +359,7 @@ impl Actor {
                 });
             }
             JobMsg::Finished { id, outcome } => self.on_finished(id, outcome),
-            JobMsg::Seeding { id } => self.on_seeding(id),
+            JobMsg::Seeding { id, finished_now } => self.on_seeding(id, finished_now),
             JobMsg::TorrentStats { id, view } => self.on_torrent_stats(id, view),
             JobMsg::RetryDue { id, seq } => self.on_retry_due(id, seq),
             JobMsg::WhenDoneFired(action) => self.on_when_done_fired(action),

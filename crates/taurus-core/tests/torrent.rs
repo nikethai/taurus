@@ -807,7 +807,7 @@ async fn runner_reports_progress_and_seeding_phase() {
     let seeding: Vec<usize> = msgs
         .iter()
         .enumerate()
-        .filter(|(_, m)| matches!(m, JobMsg::Seeding { id: s } if *s == id))
+        .filter(|(_, m)| matches!(m, JobMsg::Seeding { id: s, finished_now: true } if *s == id))
         .map(|(i, _)| i)
         .collect();
     assert_eq!(seeding.len(), 1, "one Seeding message");
@@ -2176,4 +2176,76 @@ async fn seed_time_counts_across_a_restart() {
         "{after:?} after the restart"
     );
     engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sharing_again_after_a_restart_does_not_fire_the_when_done_action() {
+    let (seeder, _, _) = seeder().await;
+    let rs = Restarts::new(vec![seeder.addr]);
+    let engine = rs.open(true, policy(None, None)).await;
+    let mut settings = engine.settings();
+    settings.when_done = WhenDone::Notify;
+    engine.set_settings(settings).await.unwrap();
+    let mut events = engine.subscribe();
+    let id = engine.add(rs.request(&seeder.magnet)).await.unwrap();
+    // The download finishing fires it once.
+    events_until(&mut events, |e| matches!(e, Event::WhenDoneFired { .. })).await;
+    engine.shutdown().await.unwrap();
+    drop(engine);
+
+    // The same settings, as saved: it shares again at once.
+    let engine = Engine::open(engine_config(
+        rs.tmp.path(),
+        rs.peers.clone(),
+        available_space,
+    ))
+    .await
+    .unwrap();
+    let mut events = engine.subscribe();
+    let seen = events_until(&mut events, |e| matches!(e, Event::QueueIdle)).await;
+    assert_eq!(engine.settings().when_done, WhenDone::Notify);
+    assert!(
+        seen.iter().any(|e| updated_to(e, id, JobState::Seeding)) || {
+            let view = engine.snapshot().into_iter().find(|v| v.id == id).unwrap();
+            view.state == JobState::Seeding
+        }
+    );
+    // Past the countdown: nothing finished in this run.
+    tokio::time::sleep(Timing::fast_for_tests().when_done_countdown * 3).await;
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(
+                event,
+                Event::WhenDoneCountdown { .. } | Event::WhenDoneFired { .. }
+            ),
+            "{event:?}"
+        );
+    }
+    engine.shutdown().await.unwrap();
+}
+
+// Not on Windows: librqbit's listener sets SO_REUSEADDR, which there lets it
+// bind a port a plain socket already holds.
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_taken_port_falls_back_to_a_random_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let store = Store::open(&tmp.path().join("taurus.db")).unwrap();
+    let settings = TorrentSettings {
+        listen_port: Some(port),
+        ..TorrentSettings::default()
+    };
+    let hub = TorrentHub::new(
+        tmp.path(),
+        &settings,
+        Some(TorrentTestNet::default()),
+        store,
+    );
+    hub.session().await.unwrap();
+    let addr = hub.listen_addr().expect("listens");
+    assert_ne!(addr.port(), port);
+    assert_ne!(addr.port(), 0);
+    hub.shutdown().await;
 }
