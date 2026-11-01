@@ -22,8 +22,14 @@ pub const KEYS: [&str; 14] = [
     "torrent.dht",
 ];
 
-/// The settings that apply only when the torrent session next starts.
-pub const RESTART_KEYS: [&str; 3] = ["torrent.port", "torrent.upnp", "torrent.dht"];
+/// The settings that apply only when the torrent session next starts: the
+/// peer limit, port, UPnP and DHT.
+pub const RESTART_KEYS: [&str; 4] = [
+    "torrent.peers",
+    "torrent.port",
+    "torrent.upnp",
+    "torrent.dht",
+];
 /// Printed after one of those is set.
 pub const RESTART_NOTE: &str = "applies next time Taurus starts";
 
@@ -456,6 +462,19 @@ mod tests {
             assert!(set(&mut s, key, bad).is_err(), "{key} {bad}");
         }
         assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn restart_keys_are_the_session_settings() {
+        for key in [
+            "torrent.peers",
+            "torrent.port",
+            "torrent.upnp",
+            "torrent.dht",
+        ] {
+            assert!(RESTART_KEYS.contains(&key), "{key}");
+        }
+        assert_eq!(RESTART_KEYS.len(), 4);
     }
 
     #[test]

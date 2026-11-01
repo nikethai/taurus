@@ -632,6 +632,10 @@ async fn config_torrent_roundtrip() {
         String::from_utf8_lossy(&port.stdout)
     );
 
+    let peers = fx.run(&["config", "set", "torrent.peers", "80"]).await;
+    assert_exit(&peers, 0);
+    assert!(String::from_utf8_lossy(&peers.stdout).contains("applies next time Taurus starts"));
+
     let output = fx.run(&["--json", "config", "get"]).await;
     assert_exit(&output, 0);
     let settings: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();

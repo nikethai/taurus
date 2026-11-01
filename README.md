@@ -31,7 +31,7 @@ taurus run
 # Start download 4 now, even if max_active downloads are already running
 taurus start-now 4
 
-# Show every download: id, state, percent, size, name
+# Show every download: id, state, kind (http or torrent), percent, size, name
 taurus list
 
 # Forget download 1 and delete its partial or finished file
@@ -74,7 +74,7 @@ The torrent settings are changed like the others: `taurus config set torrent.rat
 | `torrent.upnp` | `on` or `off`: ask the router to open the port | `on` |
 | `torrent.dht` | `on` or `off`: find peers through the distributed hash table | `on` |
 
-`torrent.port`, `torrent.upnp` and `torrent.dht` apply the next time Taurus starts. The others take effect at once, also for torrents that are running. The overall `speed` is shared evenly between web downloads and torrents while both run. A torrent's pieces are always downloaded in order.
+`torrent.peers`, `torrent.port`, `torrent.upnp` and `torrent.dht` apply the next time Taurus starts. The others take effect at once, also for torrents that are running. The overall `speed` is shared evenly between web downloads and torrents while both run. A torrent's pieces are always downloaded in order.
 
 `--name`, `--mirror` (repeatable) and `--checksum` apply to a single web download, so they need exactly one URL; `--files` needs exactly one torrent; `--dir`, `--connections` and `--referer` apply to every URL of the `add`.
 
