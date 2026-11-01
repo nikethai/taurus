@@ -216,23 +216,24 @@ pub fn torrent_files(info: &TorrentInfo) -> String {
     out
 }
 
-/// Said once when a run ends with torrents still Seeding: sharing goes on
-/// only while Taurus runs. `None` when nothing seeds (ratio 0).
+/// Said once when a run ends with torrents still Seeding: `run` exits once
+/// nothing downloads, and sharing goes on only while Taurus runs. `None`
+/// when nothing seeds (ratio 0).
 pub fn sharing_note(settings: &TorrentSettings) -> Option<String> {
-    let when = match (settings.stop_ratio, settings.stop_after_secs) {
+    let limit = match (settings.stop_ratio, settings.stop_after_secs) {
         (Some(ratio), _) if ratio <= 0.0 => return None,
-        (Some(ratio), None) => format!("stops at ratio {ratio:?}"),
+        (Some(ratio), None) => format!("up to ratio {ratio:?}"),
         (Some(ratio), Some(secs)) => {
             format!(
-                "stops at ratio {ratio:?} or after {}",
+                "up to ratio {ratio:?} or for {}",
                 config::format_duration(secs)
             )
         }
-        (None, Some(secs)) => format!("stops after {}", config::format_duration(secs)),
-        (None, None) => "does not stop by itself".to_string(),
+        (None, Some(secs)) => format!("for {}", config::format_duration(secs)),
+        (None, None) => "with no limit".to_string(),
     };
     Some(format!(
-        "Sharing {when}; run \"taurus run\" to keep sharing."
+        "Sharing pauses when Taurus exits; it continues the next time Taurus runs ({limit})."
     ))
 }
 
@@ -484,21 +485,19 @@ mod tests {
             ..TorrentSettings::default()
         };
         let note = |s: &TorrentSettings| sharing_note(s).unwrap();
+        let pauses = "Sharing pauses when Taurus exits; it continues the next time Taurus runs";
         assert_eq!(
             note(&TorrentSettings::default()),
-            "Sharing stops at ratio 1.0; run \"taurus run\" to keep sharing."
+            format!("{pauses} (up to ratio 1.0).")
         );
-        assert_eq!(
-            note(&with(None, Some(7200))),
-            "Sharing stops after 2h; run \"taurus run\" to keep sharing."
-        );
+        assert_eq!(note(&with(None, Some(7200))), format!("{pauses} (for 2h)."));
         assert_eq!(
             note(&with(Some(1.5), Some(60))),
-            "Sharing stops at ratio 1.5 or after 1m; run \"taurus run\" to keep sharing."
+            format!("{pauses} (up to ratio 1.5 or for 1m).")
         );
         assert_eq!(
             note(&with(None, None)),
-            "Sharing does not stop by itself; run \"taurus run\" to keep sharing."
+            format!("{pauses} (with no limit).")
         );
         assert_eq!(sharing_note(&with(Some(0.0), None)), None);
     }

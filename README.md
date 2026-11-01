@@ -42,7 +42,7 @@ taurus remove 1 --delete-files
 
 `add` also takes magnet links, `.torrent` links and `.torrent` files, mixed freely with web links; `list` shows each download's kind (`http` or `torrent`), and a torrent row shows `peers N` while it downloads and `sharing · ratio 0.42` while it shares. A torrent is saved in a folder of its own name inside `--dir`; a second torrent with the same name gets `Name (1)`. A magnet link whose peers cannot be found within two minutes waits (state Waiting) and is retried. At most `torrent.max_active` torrents download at once, and sharing ones do not count.
 
-When a torrent finishes it keeps sharing (uploading to other peers) until its ratio, uploaded over downloaded size, reaches `torrent.ratio` (default 1.0), or for `torrent.seed_time` if set. Sharing happens only while Taurus runs: `add` and `run` return once nothing is downloading, say so with `Sharing stops at ratio 1.0; run "taurus run" to keep sharing.`, and the torrent continues sharing the next time you run `taurus run`. Ctrl-C stops sharing too.
+When a torrent finishes it keeps sharing (uploading to other peers) until its ratio, uploaded over downloaded size, reaches `torrent.ratio` (default 1.0), or for `torrent.seed_time` if set. Taurus shares only while it is running downloads; the CLI exits when downloads finish (`add` and `run` return once nothing is downloading, queued or waiting, even if torrents are still sharing) and says so with `Sharing pauses when Taurus exits; it continues the next time Taurus runs (up to ratio 1.0).` A torrent that has not reached its limit shares again whenever Taurus next runs downloads. Ctrl-C stops sharing too.
 
 ```sh
 # A magnet link, a .torrent file and a .torrent link
@@ -56,8 +56,6 @@ taurus torrent-files ./ubuntu.torrent
 # Download only files 0, 2 and 5 to 7 (one torrent only; a range includes both ends)
 taurus add ./ubuntu.torrent --files 0,2,5-7
 
-# Keep sharing until you stop Taurus
-taurus run
 ```
 
 The torrent settings are changed like the others: `taurus config set torrent.ratio 2`.

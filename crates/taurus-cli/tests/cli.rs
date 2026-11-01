@@ -543,7 +543,10 @@ async fn add_torrent_file_with_files_and_seeding_note() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Sharing stops at ratio 1.0; run \"taurus run\" to keep sharing."),
+        stdout.contains(
+            "Sharing pauses when Taurus exits; it continues the next time Taurus runs \
+             (up to ratio 1.0)."
+        ),
         "stdout: {stdout}"
     );
     let list = fx.run(&["list"]).await;
