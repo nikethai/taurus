@@ -367,6 +367,7 @@ fn printed_paths_get_one_spelling() {
 #[cfg(unix)]
 mod process {
     use super::*;
+    use crate::tools::tree::test_support::gone_soon;
 
     /// A shell that ignores Ctrl+C and has a grandchild that does too.
     fn stubborn() -> Command {
@@ -375,22 +376,6 @@ mod process {
             .args(["-c", "trap '' INT; sleep 300 & echo $!; wait"])
             .stdin(std::process::Stdio::null());
         command
-    }
-
-    fn alive(pid: libc::pid_t) -> bool {
-        // SAFETY: signal 0 only checks that the process exists.
-        if unsafe { libc::kill(pid, 0) } != 0 {
-            return false;
-        }
-        // A zombie nobody reaped (an orphan in a container) does not count.
-        std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
-            !stat
-                .rsplit(')')
-                .next()
-                .unwrap_or("")
-                .trim_start()
-                .starts_with('Z')
-        })
     }
 
     #[tokio::test]
@@ -414,16 +399,62 @@ mod process {
         )
         .await
         .unwrap();
+        let elapsed = started.elapsed();
+        // First, so that a failure leaves nothing running.
+        let gone = gone_soon(grandchild.unwrap()).await;
         assert_eq!(ended.stopped, Some(Stop::Pause));
         assert!(ended.status.is_none(), "killed, not exited: {ended:?}");
         assert!(!ended.success());
-        assert!(started.elapsed() >= Duration::from_millis(300));
-        let grandchild = grandchild.unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while alive(grandchild) && std::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(elapsed >= Duration::from_millis(300));
+        assert!(gone, "the grandchild survived");
+    }
+
+    /// A shell that ends on Ctrl+C, with a grandchild that ignores it: as
+    /// yt-dlp's bootloader ending while something it started does not.
+    fn leader_that_ends_first() -> Command {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "trap '' INT; sleep 300 & trap - INT; echo $!; wait"])
+            .stdin(std::process::Stdio::null());
+        // A test run started in the background of a non-interactive shell
+        // inherits SIGINT as ignored, which `trap -` could not undo.
+        // SAFETY: only `signal`, which is async-signal-safe, runs after fork.
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                Ok(())
+            });
         }
-        assert!(!alive(grandchild), "the grandchild survived");
+        command
+    }
+
+    #[tokio::test]
+    async fn a_leader_that_ends_on_the_interrupt_takes_its_tree_along() {
+        use std::os::unix::process::ExitStatusExt;
+        let pause = CancellationToken::new();
+        let never = CancellationToken::new();
+        let mut grandchild = None;
+        let stopper = pause.clone();
+        let ended = run_process(
+            leader_that_ends_first(),
+            &pause,
+            &never,
+            Duration::from_secs(30),
+            |out| {
+                if let Output::Line(line) = out {
+                    grandchild = line.trim().parse::<libc::pid_t>().ok();
+                    stopper.cancel();
+                }
+            },
+        )
+        .await
+        .unwrap();
+        let gone = gone_soon(grandchild.unwrap()).await;
+        assert_eq!(ended.stopped, Some(Stop::Pause));
+        // It ended by itself, long before the grace was over.
+        let status = ended.status.expect("exited, not killed");
+        assert_eq!(status.signal(), Some(libc::SIGINT), "{ended:?}");
+        assert!(gone, "the grandchild survived");
     }
 
     #[tokio::test]
@@ -467,7 +498,10 @@ mod process {
         // At least two whole seconds of ticks, however slow the start.
         let ticks = seen.iter().filter(|s| *s == "tick").count();
         assert!(ticks >= 2, "{seen:?}");
-        assert_eq!(seen.last().map(String::as_str), Some("done"), "{seen:?}");
+        // A tick can still come between the last line and the end being
+        // seen; no line is lost.
+        let lines: Vec<_> = seen.iter().filter(|s| *s != "tick").collect();
+        assert_eq!(lines, ["done"], "{seen:?}");
     }
 
     #[tokio::test]
