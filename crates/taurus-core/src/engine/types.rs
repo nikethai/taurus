@@ -13,6 +13,7 @@ use crate::system::{SpaceSource, available_space};
 use crate::timing::Timing;
 use crate::tools::{ToolSources, ToolStatus};
 use crate::torrent::hub::TorrentTestNet;
+use crate::torrent::policy::TorrentOverrides;
 
 use super::{MediaChoice, MediaView};
 
@@ -142,6 +143,8 @@ pub struct TorrentView {
     pub ratio: f64,
     pub files_selected: u32,
     pub files_total: u32,
+    /// The torrent's own sharing rules (see `Engine::set_torrent_overrides`).
+    pub overrides: TorrentOverrides,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]

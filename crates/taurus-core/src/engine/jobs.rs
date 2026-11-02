@@ -85,6 +85,7 @@ impl Actor {
             media: None,
             auth_user: None,
             convert: None,
+            torrent_overrides: Default::default(),
         };
         apply_probe(&mut job, probe);
         let stored = self.store.update_job(&job);

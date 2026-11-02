@@ -1,8 +1,12 @@
-//! Seeding policy, rate splitting and librqbit error mapping.
+//! Seeding policy (global, and per torrent), rate splitting and librqbit
+//! error mapping.
 
 use std::time::Duration;
 
+use serde::{Deserialize, Deserializer};
+
 use crate::errors::ErrorKind;
+use crate::settings::TorrentSettings;
 
 /// When to stop sharing a finished torrent. Either condition stops it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,6 +28,44 @@ impl SeedPolicy {
         });
         let time_reached = self.stop_after.is_some_and(|limit| seeding_for >= limit);
         ratio_reached || time_reached
+    }
+}
+
+/// One torrent's own sharing rules. Each field falls back to the global
+/// torrent setting on its own: outer `None` uses the global value, `Some`
+/// replaces it (`Some(None)`: never stop on that condition).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TorrentOverrides {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub stop_ratio: Option<Option<f64>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub stop_after_secs: Option<Option<u64>>,
+}
+
+/// A field that is there, even as `null`, is `Some`; a missing one is
+/// `None` (by `default`). Plain serde reads `null` as `None` too.
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// The seeding policy of a torrent with overrides `o`, field by field.
+pub fn effective_policy(global: &TorrentSettings, o: &TorrentOverrides) -> SeedPolicy {
+    SeedPolicy {
+        stop_ratio: o.stop_ratio.unwrap_or(global.stop_ratio),
+        stop_after: o
+            .stop_after_secs
+            .unwrap_or(global.stop_after_secs)
+            .map(Duration::from_secs),
     }
 }
 
@@ -146,6 +188,85 @@ mod tests {
         assert!(both.should_stop(1000, 1000, Duration::from_secs(1)));
         assert!(both.should_stop(0, 1000, Duration::from_secs(61)));
         assert!(!both.should_stop(10, 1000, Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn effective_policy_falls_back_per_field() {
+        let global = TorrentSettings {
+            stop_ratio: Some(2.0),
+            stop_after_secs: Some(60),
+            ..TorrentSettings::default()
+        };
+        let policy = |o: TorrentOverrides| effective_policy(&global, &o);
+        let minute = Some(Duration::from_secs(60));
+        // Nothing overridden: the global rules.
+        assert_eq!(
+            policy(TorrentOverrides::default()),
+            SeedPolicy {
+                stop_ratio: Some(2.0),
+                stop_after: minute,
+            }
+        );
+        // Only the ratio: the time limit stays the global one.
+        assert_eq!(
+            policy(TorrentOverrides {
+                stop_ratio: Some(Some(0.5)),
+                stop_after_secs: None,
+            }),
+            SeedPolicy {
+                stop_ratio: Some(0.5),
+                stop_after: minute,
+            }
+        );
+        // "Never" overrides a global limit; the ratio falls back.
+        assert_eq!(
+            policy(TorrentOverrides {
+                stop_ratio: None,
+                stop_after_secs: Some(None),
+            }),
+            SeedPolicy {
+                stop_ratio: Some(2.0),
+                stop_after: None,
+            }
+        );
+        let never = TorrentSettings {
+            stop_ratio: None,
+            stop_after_secs: None,
+            ..TorrentSettings::default()
+        };
+        let both = TorrentOverrides {
+            stop_ratio: Some(Some(0.0)),
+            stop_after_secs: Some(Some(5)),
+        };
+        assert_eq!(
+            effective_policy(&never, &both),
+            SeedPolicy {
+                stop_ratio: Some(0.0),
+                stop_after: Some(Duration::from_secs(5)),
+            }
+        );
+    }
+
+    #[test]
+    fn overrides_keep_never_apart_from_global() {
+        for o in [
+            TorrentOverrides::default(),
+            TorrentOverrides {
+                stop_ratio: Some(None),
+                stop_after_secs: Some(Some(30)),
+            },
+            TorrentOverrides {
+                stop_ratio: Some(Some(1.5)),
+                stop_after_secs: Some(None),
+            },
+        ] {
+            let json = serde_json::to_string(&o).unwrap();
+            assert_eq!(serde_json::from_str::<TorrentOverrides>(&json).unwrap(), o);
+        }
+        assert_eq!(
+            serde_json::to_string(&TorrentOverrides::default()).unwrap(),
+            "{}"
+        );
     }
 
     #[test]

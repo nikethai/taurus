@@ -381,6 +381,7 @@ mod tests {
             ratio: 0.42,
             files_selected: 1,
             files_total: 1,
+            overrides: Default::default(),
         });
         let r = row_of(&t, 0);
         assert_eq!(

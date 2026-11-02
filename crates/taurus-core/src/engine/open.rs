@@ -146,6 +146,7 @@ pub(super) async fn assemble(
         limiter,
         hub: hub.clone(),
         torrent_settings,
+        seed_rules: HashMap::new(),
         rates: None,
         measured_peak,
         peak,

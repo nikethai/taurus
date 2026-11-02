@@ -58,6 +58,8 @@ taurus add ./ubuntu.torrent --files 0,2,5-7
 
 ```
 
+When a torrent's file selection changes after it was added (even while it downloads or shares), files that stay selected keep what is downloaded, and newly selected files must fit on the disk. Files you deselect keep what they already downloaded on disk; delete them yourself if you no longer want them.
+
 The torrent settings are changed like the others: `taurus config set torrent.ratio 2`.
 
 | Key | Values | Default |

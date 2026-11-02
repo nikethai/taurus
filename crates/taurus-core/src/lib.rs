@@ -35,6 +35,7 @@ pub use settings::{
 };
 pub use store::{JobId, JobKind, JobState};
 pub use timing::Timing;
+pub use torrent::policy::TorrentOverrides;
 
 /// Crate version, as declared in `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

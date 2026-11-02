@@ -607,6 +607,7 @@ fn context(
         store: rig.store.clone(),
         timing: Timing::fast_for_tests(),
         settings: tokio::sync::watch::channel(settings).1,
+        overrides: tokio::sync::watch::channel(Default::default()).1,
         space,
         reserved: Arc::new(|_| 0),
         cancel: cancel.clone(),

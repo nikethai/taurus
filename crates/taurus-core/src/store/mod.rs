@@ -11,16 +11,18 @@ use crate::convert::ConvertSpec;
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::media::MediaOptions;
 use crate::plan::Segment;
+use crate::torrent::policy::TorrentOverrides;
 
 mod migrate;
 mod rows;
 mod settings;
 #[cfg(test)]
 mod test_support;
+mod torrent;
 
 use rows::{
     JOB_COLUMNS, col_u64, encode, job_from_row, media_json, mirrors_json, only_files_json,
-    opt_to_i64, to_i64,
+    opt_to_i64,
 };
 
 #[derive(
@@ -117,6 +119,9 @@ pub struct JobRecord {
     /// What a convert job converts; `None` for other jobs. Stored as JSON
     /// (`convert_source`). Written only by `set_convert`.
     pub convert: Option<ConvertSpec>,
+    /// A torrent's own sharing rules. Stored as JSON (`torrent_overrides`).
+    /// Written only by `set_torrent_overrides`.
+    pub torrent_overrides: TorrentOverrides,
 }
 
 pub struct NewJob {
@@ -370,35 +375,6 @@ impl Store {
             )
             .optional()
             .map_err(db_err)
-    }
-
-    /// Sets only a torrent's progress, in one transaction: the selected
-    /// bytes downloaded, as the `done` of its one segment (a torrent job has
-    /// one, `[0, selected total)`, once its runner has started; before, only
-    /// the uploads are set), and the bytes uploaded in all. So no other field
-    /// can be overwritten from a stale copy. Updating a job that no longer
-    /// exists is a no-op.
-    pub fn commit_torrent_progress(
-        &self,
-        id: JobId,
-        downloaded: u64,
-        uploaded: u64,
-    ) -> Result<(), CoreError> {
-        let downloaded = to_i64(downloaded, "downloaded bytes")?;
-        let uploaded = to_i64(uploaded, "uploaded bytes")?;
-        let mut conn = self.lock();
-        let tx = conn.transaction().map_err(db_err)?;
-        tx.execute(
-            "UPDATE segments SET done = ?2 WHERE job_id = ?1 AND idx = 0",
-            params![id.0, downloaded],
-        )
-        .map_err(db_err)?;
-        tx.execute(
-            "UPDATE jobs SET uploaded = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id.0, uploaded, now_secs()],
-        )
-        .map_err(db_err)?;
-        tx.commit().map_err(db_err)
     }
 
     /// Sets only the job's state, so no other field can be overwritten from
@@ -676,6 +652,7 @@ mod tests {
                 media: None,
                 auth_user: None,
                 convert: None,
+                torrent_overrides: TorrentOverrides::default(),
             }
         );
 

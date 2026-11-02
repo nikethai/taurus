@@ -24,6 +24,7 @@ mod sign_in;
 mod stop_requests;
 mod tool_ops;
 mod torrent;
+mod torrent_edit;
 mod types;
 
 use std::collections::HashMap;

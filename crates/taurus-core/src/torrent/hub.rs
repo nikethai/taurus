@@ -17,6 +17,7 @@ use librqbit::limits::LimitsConfig;
 use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session};
 
 mod reconcile;
+mod select;
 
 use super::TorrentInfo;
 pub use super::meta::info_from_bytes;

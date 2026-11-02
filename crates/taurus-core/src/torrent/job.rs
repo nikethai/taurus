@@ -23,7 +23,7 @@ use super::files::{
     stored_output_dir,
 };
 use super::hub::{TorrentHub, info_from_bytes};
-use super::policy::{SeedPolicy, classify_torrent_error};
+use super::policy::{TorrentOverrides, classify_torrent_error, effective_policy};
 use super::source::classify;
 use super::{TorrentFile, TorrentInfo};
 use crate::engine::{JobMsg, TorrentView};
@@ -50,6 +50,9 @@ pub struct TorrentJobContext {
     /// The seeding policy is read from here at every poll, so a change
     /// applies to a running (or sharing) torrent at once.
     pub settings: watch::Receiver<TorrentSettings>,
+    /// The torrent's own sharing rules, read like `settings`; each one set
+    /// replaces the global one.
+    pub overrides: watch::Receiver<TorrentOverrides>,
     /// Where free space is read from.
     pub space: SpaceSource,
     /// What other downloads to the disk holding a folder still need, so the
@@ -100,6 +103,11 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
     job.total = Some(total);
     ctx.store.update_job(job)?;
     let mut downloaded = stored_progress(ctx, job, total)?;
+    // A selection changed while the torrent was in the session (see
+    // `select_files`; one being checked takes it once started, below).
+    ctx.hub
+        .select_files(&info, job.only_files.as_deref())
+        .await?;
     preflight(ctx, job, &info, total, downloaded).await?;
     if ctx.cancel.is_cancelled() {
         return paused(ctx, job);
@@ -118,7 +126,11 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
     drop(handle);
 
     let mut uploads = Uploads::new(job.uploaded);
-    let end = match start(ctx, &info, stopped).await {
+    let started = match start(ctx, &info, stopped).await {
+        Ok(()) => ctx.hub.select_files(&info, job.only_files.as_deref()).await,
+        Err(e) => Err(e),
+    };
+    let end = match started {
         Ok(()) => {
             let counts = (&mut downloaded, &mut uploads);
             watch(ctx, job, &info, &output, total, counts).await
@@ -393,7 +405,8 @@ async fn watch(
             job.seed_started_at.get_or_insert_with(unix_now);
         }
         let seeding_for = before + since.elapsed();
-        if seed_policy(&ctx.settings.borrow()).should_stop(uploaded, total, seeding_for) {
+        let policy = effective_policy(&ctx.settings.borrow(), &ctx.overrides.borrow());
+        if policy.should_stop(uploaded, total, seeding_for) {
             return Ok(End::Completed);
         }
         if !seeding {
@@ -405,13 +418,6 @@ async fn watch(
                 finished_now: !finished_before,
             });
         }
-    }
-}
-
-fn seed_policy(settings: &TorrentSettings) -> SeedPolicy {
-    SeedPolicy {
-        stop_ratio: settings.stop_ratio,
-        stop_after: settings.stop_after_secs.map(Duration::from_secs),
     }
 }
 
@@ -446,6 +452,7 @@ fn report(
         },
         files_selected: files.0,
         files_total: files.1,
+        overrides: ctx.overrides.borrow().clone(),
     };
     let _ = ctx.msgs.send(JobMsg::TorrentStats { id, view });
 }

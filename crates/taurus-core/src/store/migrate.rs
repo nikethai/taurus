@@ -91,9 +91,12 @@ ALTER TABLE jobs ADD COLUMN media_options TEXT;
 /// the secret store, never here).
 /// `convert_source`: what a convert job (kind 'convert') converts, as JSON
 /// (source file, preset, and the partial output of its run).
+/// `torrent_overrides`: a torrent's own sharing rules, as JSON; NULL uses
+/// the global ones.
 const MIGRATE_V6_TO_V7: &str = "
 ALTER TABLE jobs ADD COLUMN auth_user TEXT;
 ALTER TABLE jobs ADD COLUMN convert_source TEXT;
+ALTER TABLE jobs ADD COLUMN torrent_overrides TEXT;
 ";
 
 fn is_corruption(e: &rusqlite::Error) -> bool {
@@ -234,6 +237,7 @@ mod tests {
     use crate::media::ConvertPreset;
     use crate::store::test_support::{new_job, open_temp};
     use crate::store::{JobKind, JobState, NewJob};
+    use crate::torrent::policy::TorrentOverrides;
 
     #[test]
     fn open_configures_wal_and_foreign_keys() {
@@ -592,6 +596,32 @@ mod tests {
             })
             .unwrap();
         assert_eq!(store.get_job(id).unwrap().unwrap().kind, JobKind::Convert);
+
+        // No job has sharing rules of its own yet; they are set on their own
+        // and survive a whole-record update and a reopen.
+        assert_eq!(stored.torrent_overrides, TorrentOverrides::default());
+        let rules = TorrentOverrides {
+            stop_ratio: Some(None),
+            stop_after_secs: Some(Some(90)),
+        };
+        store.set_torrent_overrides(job.id, &rules).unwrap();
+        store.update_job(&stored).unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let stored = store.get_job(job.id).unwrap().unwrap();
+        assert_eq!(stored.torrent_overrides, rules);
+        store
+            .set_torrent_overrides(job.id, &TorrentOverrides::default())
+            .unwrap();
+        let raw: Option<String> = store
+            .lock()
+            .query_row(
+                "SELECT torrent_overrides FROM jobs WHERE id = ?1",
+                [job.id.0],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, None);
     }
 
     #[test]

@@ -19,6 +19,7 @@ use crate::system::{AwakeGuard, SpaceSource};
 use crate::timing::Timing;
 use crate::tools::ToolManager;
 use crate::torrent::hub::TorrentHub;
+use crate::torrent::policy::TorrentOverrides;
 use crate::when_done::WhenDoneRunner;
 
 use super::keychain::Secrets;
@@ -93,6 +94,16 @@ pub(super) enum Command {
     Remove {
         id: JobId,
         files: RemoveFiles,
+        reply: Reply<()>,
+    },
+    SetTorrentFiles {
+        id: JobId,
+        only_files: Vec<usize>,
+        reply: Reply<()>,
+    },
+    SetTorrentOverrides {
+        id: JobId,
+        overrides: TorrentOverrides,
         reply: Reply<()>,
     },
     Wait {
@@ -217,6 +228,9 @@ pub(super) struct Actor {
     /// The torrent settings each torrent runner reads its seeding policy
     /// from.
     pub(super) torrent_settings: watch::Sender<TorrentSettings>,
+    /// The sharing rules each running torrent's runner reads (and some of
+    /// torrents that ran: `start_torrent` drops those).
+    pub(super) seed_rules: HashMap<JobId, watch::Sender<TorrentOverrides>>,
     /// The rates last applied: HTTP download, torrent download and upload.
     pub(super) rates: Option<Rates>,
     /// The saved peak speed (bytes/s) and when it was measured (unix secs).
@@ -298,6 +312,7 @@ impl Actor {
                 | Command::Resume { .. }
                 | Command::SetMediaCookies { .. }
                 | Command::StartNow { .. }
+                | Command::SetTorrentFiles { .. }
         ) {
             self.when_done.cancel();
         }
@@ -349,6 +364,20 @@ impl Actor {
             }
             Command::Remove { id, files, reply } => {
                 let _ = reply.send(self.remove(id, files).await);
+            }
+            Command::SetTorrentFiles {
+                id,
+                only_files,
+                reply,
+            } => {
+                let _ = reply.send(self.set_torrent_files(id, only_files).await);
+            }
+            Command::SetTorrentOverrides {
+                id,
+                overrides,
+                reply,
+            } => {
+                let _ = reply.send(self.set_torrent_overrides(id, overrides));
             }
             Command::Wait { id, reply } => self.wait(id, reply),
             Command::SetSettings { settings, reply } => {

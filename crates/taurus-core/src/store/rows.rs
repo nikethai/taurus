@@ -13,7 +13,7 @@ pub(super) const JOB_COLUMNS: &str = "id, url, final_url, dest_dir, file_name, s
                            etag, last_modified, connections, error_kind, error_detail, \
                            mirrors, checksum, referer, queue_pos, source_url, kind, info_hash, \
                            torrent_meta, only_files, uploaded, seed_started_at, media_options, \
-                           auth_user, convert_source";
+                           auth_user, convert_source, torrent_overrides";
 
 pub(super) fn only_files_json(only_files: Option<&[usize]>) -> Result<Option<String>, CoreError> {
     only_files
@@ -124,6 +124,19 @@ pub(super) fn job_from_row(row: &Row<'_>) -> rusqlite::Result<JobRecord> {
             })
         })
         .transpose()?;
+    let overrides: Option<String> = row.get(27)?;
+    let torrent_overrides = overrides
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    27,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
     Ok(JobRecord {
         id: JobId(row.get(0)?),
         source_url: source_url.unwrap_or_else(|| url.clone()),
@@ -151,6 +164,7 @@ pub(super) fn job_from_row(row: &Row<'_>) -> rusqlite::Result<JobRecord> {
         media,
         auth_user: row.get(25)?,
         convert,
+        torrent_overrides,
     })
 }
 

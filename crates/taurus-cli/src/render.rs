@@ -492,6 +492,7 @@ mod tests {
                 ratio,
                 files_selected: 2,
                 files_total: 2,
+                overrides: Default::default(),
             }),
             ..view(state)
         }

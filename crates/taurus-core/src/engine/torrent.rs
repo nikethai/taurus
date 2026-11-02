@@ -5,6 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::errors::{CoreError, ErrorKind};
@@ -18,6 +19,7 @@ use crate::torrent::files::{
 };
 use crate::torrent::hub::info_from_bytes;
 use crate::torrent::job::{TorrentJobContext, run_torrent_job};
+use crate::torrent::policy::TorrentOverrides;
 use crate::torrent::source::{Source, classify};
 use crate::torrent::{MAX_TORRENT_BYTES, TorrentInfo, read_torrent_file, too_large};
 
@@ -221,7 +223,18 @@ impl Actor {
         if let Err(e) = self.store.set_state(id, JobState::Downloading) {
             tracing::warn!(job = id.0, "could not record the start: {e}");
         }
-        let downloaded_at_start = read(&self.views).get(&id).map_or(0, |v| v.downloaded);
+        let (downloaded_at_start, overrides) = read(&self.views).get(&id).map_or_else(
+            || (0, TorrentOverrides::default()),
+            |v| {
+                let overrides = v.torrent.as_ref().map(|t| t.overrides.clone());
+                (v.downloaded, overrides.unwrap_or_default())
+            },
+        );
+        let (rules, overrides) = watch::channel(overrides);
+        // Only running torrents need theirs.
+        self.seed_rules
+            .retain(|other, _| self.running.contains_key(other));
+        self.seed_rules.insert(id, rules);
         let cancel = CancellationToken::new();
         let views = self.views.clone();
         let ctx = TorrentJobContext {
@@ -230,6 +243,7 @@ impl Actor {
             store: self.store.clone(),
             timing: self.timing.clone(),
             settings: self.torrent_settings.subscribe(),
+            overrides,
             space: self.space,
             reserved: Arc::new(move |dir: &Path| reserved_bytes(&views, dir, Some(id))),
             cancel: cancel.clone(),
@@ -289,8 +303,13 @@ impl Actor {
         }
     }
 
-    pub(super) fn on_torrent_stats(&mut self, id: JobId, stats: TorrentView) {
+    pub(super) fn on_torrent_stats(&mut self, id: JobId, mut stats: TorrentView) {
         if let Some(view) = write(&self.views).get_mut(&id) {
+            // The view's sharing rules are the latest: the runner's may
+            // predate a change.
+            if let Some(before) = view.torrent.take() {
+                stats.overrides = before.overrides;
+            }
             view.torrent = Some(stats);
         }
     }
@@ -412,6 +431,7 @@ pub(super) fn stored_torrent_view(
         },
         files_selected: counts.0,
         files_total: counts.1,
+        overrides: job.torrent_overrides.clone(),
     })
 }
 
@@ -459,6 +479,7 @@ mod tests {
             media: None,
             auth_user: None,
             convert: None,
+            torrent_overrides: Default::default(),
         }
     }
 
@@ -471,6 +492,7 @@ mod tests {
             ratio: 0.0,
             files_selected: 1,
             files_total: 2,
+            overrides: Default::default(),
         };
         // Not metadata at all: only the known counts can give these.
         let job = torrent_job(b"not a torrent", Some(vec![0]));
