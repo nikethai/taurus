@@ -176,9 +176,6 @@ pub(super) async fn run_restartable(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use tokio::sync::watch;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -303,6 +300,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_finished_run_is_not_restarted() {
+        use std::time::Duration;
+
+        use tokio::sync::watch;
+
         let (tx, rx) = watch::channel(Some(1));
         let mut command = tokio::process::Command::new("sh");
         // Ignores the interrupt; says when it does, then ends well.
