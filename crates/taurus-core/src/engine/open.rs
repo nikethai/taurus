@@ -177,6 +177,20 @@ pub(super) async fn assemble(
     Ok((engine, actor, commands_rx))
 }
 
+impl Engine {
+    /// Fails as `open` would (`is_instance_locked`) while another engine,
+    /// in any process, holds `config.data_dir`; opens nothing: the lock is
+    /// taken and given back at once. For a front end that asks the person
+    /// something (a password) before it opens the engine, so a held data
+    /// dir is reported first. A data dir that does not exist yet is free.
+    pub fn check_data_dir_free(config: &EngineConfig) -> Result<(), CoreError> {
+        if !config.data_dir.is_dir() {
+            return Ok(());
+        }
+        lock_data_dir(&config.data_dir).map(drop)
+    }
+}
+
 /// Takes the exclusive lock on `data_dir/taurus.lock` without waiting.
 fn lock_data_dir(data_dir: &Path) -> Result<std::fs::File, CoreError> {
     let file = std::fs::OpenOptions::new()

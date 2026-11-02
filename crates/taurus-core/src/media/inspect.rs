@@ -401,10 +401,12 @@ pub fn qualities(formats: &[Value]) -> Vec<QualityOption> {
     out
 }
 
-/// The quality option `id` names, as [`qualities`] builds it, without a
-/// size: for a link whose own list lacks it (a playlist lists only `best`
-/// and `audio-best`). `None` for an id that is not one of the five.
-pub(crate) fn standard_quality(id: &str) -> Option<QualityOption> {
+/// The quality option `id` names, as [`qualities`] and [`all_qualities`]
+/// build it, without a size: for a link whose own list lacks it (a playlist
+/// lists only `best` and `audio-best`). `None` for an id that is not
+/// `best`, `audio-best`, `audio-small` or `<height>p` (a height from 1 to
+/// 8640), so a front end can check a choice before anything is read.
+pub fn standard_quality(id: &str) -> Option<QualityOption> {
     match id {
         "best" => Some(option(id, BEST, false, None)),
         "audio-best" | "audio-small" => Some(option(id, AUDIO, true, None)),

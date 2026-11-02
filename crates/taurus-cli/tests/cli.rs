@@ -1518,8 +1518,10 @@ async fn login_resumes_a_job_that_needs_sign_in() {
 
 async fn login_after_restart() {
     let fx = Fixture::new().await;
-    let mut spec = FileSpec::new(16 * MIB);
-    spec.bytes_per_sec = Some(8 * MIB as u64);
+    // 64 MiB at 2 MiB/s: the download cannot finish in the ~30 s it would
+    // take, so the kill after 4 MiB always lands while it runs.
+    let mut spec = FileSpec::new(64 * MIB);
+    spec.bytes_per_sec = Some(2 * MIB as u64);
     let url = protected(&fx, spec.clone());
     let mut child = {
         let mut cmd = fx.taurus();
@@ -1547,6 +1549,22 @@ async fn login_after_restart() {
         }
     }
     child.kill().await.unwrap();
+    let list = fx.run(&["--json", "list"]).await;
+    let jobs: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_ne!(
+        jobs[0]["state"], "Completed",
+        "finished before the kill: {jobs}"
+    );
+    // The rest comes at full speed (same bytes, still protected), so the
+    // test stays short.
+    fx.server.replace(
+        PATH,
+        FileSpec {
+            basic_auth: Some(("bob".to_string(), SECRET.to_string())),
+            bytes_per_sec: None,
+            ..spec.clone()
+        },
+    );
 
     // The password lived in memory only: the next run cannot sign in.
     let output = fx.run(&["run"]).await;
@@ -1635,6 +1653,209 @@ async fn video_options_reach_yt_dlp() {
         "{}",
         stderr(&output)
     );
+}
+
+/// The video's info with a 480p format (not one of the usual qualities),
+/// subtitles and generated captions.
+fn video_with_languages() -> Value {
+    let mut info = video_info();
+    info["formats"].as_array_mut().unwrap().push(json!({
+        "format_id": "135", "ext": "mp4", "vcodec": "avc1.4d401e", "acodec": "none",
+        "height": 480
+    }));
+    info["subtitles"] = json!({
+        "vi": [{ "ext": "vtt", "url": "https://s/vi" }],
+        "en": [{ "ext": "vtt", "url": "https://s/en" }],
+    });
+    info["automatic_captions"] = json!({ "fr": [{ "ext": "vtt", "url": "https://s/fr" }] });
+    info
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inspect_lists_every_quality_and_language() {
+    let video = Video::new(&media_scenario(
+        &video_with_languages(),
+        downloads("v.mp4", 64),
+    ))
+    .await;
+    let link = "https://www.youtube.com/watch?v=cli_inspect";
+
+    let output = video.fx.run(&["inspect", link]).await;
+    assert_exit(&output, 0);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("Title: A Fine Video"), "{text}");
+    let qualities = text
+        .lines()
+        .find_map(|l| l.strip_prefix("Qualities: "))
+        .unwrap_or_else(|| panic!("no qualities line: {text}"));
+    let ids: Vec<&str> = qualities
+        .split(", ")
+        .map(|q| q.split(' ').next().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "best",
+            "2160p",
+            "1080p",
+            "720p",
+            "480p",
+            "audio-best",
+            "audio-small"
+        ],
+        "{text}"
+    );
+    assert!(text.contains("Subtitles: en, vi\n"), "{text}");
+    assert!(text.contains("Auto captions: fr\n"), "{text}");
+
+    let output = video
+        .fx
+        .run(&["--json", "inspect", link, "--cookies-from", "firefox"])
+        .await;
+    assert_exit(&output, 0);
+    let info: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let media = &info["Media"];
+    assert_eq!(media["title"], "A Fine Video", "{info}");
+    let heights: Vec<&str> = media["all_qualities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| q["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(heights, ["2160p", "1080p", "720p", "480p"]);
+    assert_eq!(media["subtitle_languages"], json!(["en", "vi"]));
+    assert_eq!(media["auto_caption_languages"], json!(["fr"]));
+    // The cookies reached the inspection.
+    let inspections: Vec<Vec<String>> = process_args_log()
+        .into_iter()
+        .filter(|e| e.tool == "yt-dlp" && e.argv.iter().any(|a| a == link))
+        .map(|e| e.argv)
+        .collect();
+    assert!(
+        inspections.iter().any(|argv| argv
+            .windows(2)
+            .any(|w| w == ["--cookies-from-browser", "firefox"])),
+        "{inspections:?}"
+    );
+
+    // Nothing was added, and nothing was downloaded.
+    let list = video.fx.run(&["--json", "list"]).await;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&list.stdout).unwrap(),
+        json!([])
+    );
+    assert!(download_argvs(link).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn any_height_reaches_yt_dlp() {
+    let name = "A Fine Video [abc123].mp4";
+    let video = Video::new(&media_scenario(
+        &video_with_languages(),
+        downloads(name, 64),
+    ))
+    .await;
+    let link = "https://www.youtube.com/watch?v=cli_quality_480p";
+    let dir = video.fx.out.to_str().unwrap();
+
+    let output = video
+        .fx
+        .run(&["add", link, "--quality", "480p", "--dir", dir])
+        .await;
+
+    assert_exit(&output, 0);
+    assert!(
+        !stderr(&output).contains("not available"),
+        "{}",
+        stderr(&output)
+    );
+    let runs = download_argvs(link);
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert!(
+        runs[0]
+            .windows(2)
+            .any(|w| w == ["-f", "bv*[height<=480]+ba/b[height<=480]"]),
+        "{:?}",
+        runs[0]
+    );
+    // A value that is not a quality exits 1 before anything runs.
+    for bad in ["480", "hd", "0p"] {
+        let output = video.fx.run(&["add", link, "--quality", bad]).await;
+        assert_exit(&output, 1);
+    }
+    assert_eq!(download_argvs(link).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn user_needs_exactly_one_url() {
+    let fx = Fixture::new().await;
+    let url = protected(&fx, FileSpec::new(5000));
+    let dir = fx.out.to_str().unwrap();
+    let list = fx.tmp.path().join("urls.txt");
+    fs::write(&list, format!("{url}\n")).unwrap();
+
+    for args in [
+        &["add", &url, &url, "--user", "bob", "--dir", dir][..],
+        &[
+            "add",
+            "--file",
+            list.to_str().unwrap(),
+            "--user",
+            "bob",
+            "--dir",
+            dir,
+        ],
+        &[
+            "add",
+            &url,
+            "--file",
+            list.to_str().unwrap(),
+            "--user",
+            "bob",
+            "--dir",
+            dir,
+        ],
+    ] {
+        let mut cmd = fx.taurus();
+        cmd.env("TAURUS_PASSWORD", SECRET).args(args);
+        let output = output_of(cmd).await;
+        assert_exit(&output, 1);
+        assert!(
+            stderr(&output).contains("--user can only be used with exactly one URL"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+    assert_eq!(fx.server.requests(PATH), 0);
+    assert!(!fx.tmp.path().join("data").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_data_dir_is_reported_before_the_password_is_asked() {
+    let fx = Fixture::new().await;
+    let url = protected(&fx, FileSpec::new(5000));
+    let _held = hold_lock(&fx);
+
+    // No terminal and no test password: asking would fail on the terminal,
+    // so the lock must be reported first.
+    let output = fx
+        .run(&[
+            "add",
+            &url,
+            "--user",
+            "bob",
+            "--dir",
+            fx.out.to_str().unwrap(),
+        ])
+        .await;
+    assert_exit(&output, 1);
+    let err = stderr(&output);
+    assert!(err.contains("another taurus instance"), "{err}");
+    assert!(!err.contains("terminal"), "{err}");
+    let output = fx.run(&["login", "1", "--user", "bob"]).await;
+    assert_exit(&output, 1);
+    let err = stderr(&output);
+    assert!(err.contains("another taurus instance"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

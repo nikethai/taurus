@@ -66,16 +66,23 @@ fn folder_in(dest_dir: &Path, folder: &str) -> std::result::Result<PathBuf, Stri
     }
 }
 
-/// Whether both links are on one host and port.
-fn same_host(a: &str, b: &str) -> bool {
-    match (url::Url::parse(a), url::Url::parse(b)) {
-        (Ok(a), Ok(b)) => {
-            a.host_str().is_some()
-                && a.host_str() == b.host_str()
-                && a.port_or_known_default() == b.port_or_known_default()
-        }
-        _ => false,
+/// The page's address as the Referer of `link`, when both are on one origin
+/// (scheme, host and port): what a browser sends when it follows the link,
+/// without the page's `#fragment`. `None` for any other link, so an https
+/// page's address (which may carry a token) never goes to a plain-http one.
+fn referer_for(page: &str, link: &str) -> Option<String> {
+    let (Ok(mut page), Ok(link)) = (url::Url::parse(page), url::Url::parse(link)) else {
+        return None;
+    };
+    let same_origin = page.host_str().is_some()
+        && page.scheme() == link.scheme()
+        && page.host_str() == link.host_str()
+        && page.port_or_known_default() == link.port_or_known_default();
+    if !same_origin {
+        return None;
     }
+    page.set_fragment(None);
+    Some(page.into())
 }
 
 pub async fn run(engine: &Engine, args: GrabArgs, options: Options) -> Result<ExitCode> {
@@ -160,7 +167,7 @@ pub async fn run(engine: &Engine, args: GrabArgs, options: Options) -> Result<Ex
                 dest_dir: folder,
                 // What a browser sends when it follows the link, for hosts
                 // that serve a file only from their own page.
-                referer: same_host(&page_url, &link.url).then(|| page_url.clone()),
+                referer: referer_for(&page_url, &link.url),
                 ..AddRequest::default()
             };
             match Box::pin(engine.add(req)).await {
@@ -213,13 +220,27 @@ mod tests {
     }
 
     #[test]
-    fn the_referer_is_for_the_pages_own_host() {
+    fn the_referer_is_for_the_pages_own_origin_without_its_fragment() {
         let page = "http://h.example/lst/";
-        assert!(same_host(page, "http://h.example/lst/a.pdf"));
-        assert!(same_host(page, "http://h.example:80/x.pdf"));
-        assert!(!same_host(page, "http://h.example:8080/x.pdf"));
-        assert!(!same_host(page, "http://cdn.example/x.pdf"));
-        assert!(!same_host(page, "not a url"));
+        let sent = |link: &str| referer_for(page, link);
+        assert_eq!(sent("http://h.example/lst/a.pdf").as_deref(), Some(page));
+        assert_eq!(sent("http://h.example:80/x.pdf").as_deref(), Some(page));
+        assert_eq!(sent("http://h.example:8080/x.pdf"), None);
+        assert_eq!(sent("http://cdn.example/x.pdf"), None);
+        assert_eq!(sent("not a url"), None);
+        // Another scheme on the same host and port is another origin: an
+        // https page's address never goes to a plain-http link.
+        let secure = "https://h.example:8443/lst/?token=abc";
+        assert_eq!(referer_for(secure, "http://h.example:8443/x.pdf"), None);
+        assert_eq!(
+            referer_for(secure, "https://h.example:8443/x.pdf").as_deref(),
+            Some(secure)
+        );
+        // Browsers never send the fragment.
+        assert_eq!(
+            referer_for("http://h.example/lst/#top", "http://h.example/a.pdf").as_deref(),
+            Some("http://h.example/lst/")
+        );
     }
 
     #[test]

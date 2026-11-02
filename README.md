@@ -57,7 +57,7 @@ taurus grab https://example.com/files/ --subfolders
 taurus grab https://example.com/papers/ --ext pdf --add --dir ~/Downloads
 ```
 
-`--json` prints the listing as one object, `{"links": [{"index", "url", "name", "folder", "extension", "size"}], "truncated": bool}`. Without `--add`, nothing is queued; with `--add`, `--json` goes on to print the usual event lines after that object, one JSON value per line. Folder names come from the page, so they are checked: a name that is empty, `.`, `..` or holds a backslash makes that one file fail (the others go on, exit 1), and nothing is ever written outside `--dir`. With `--add`, a file whose host is the page's own is requested with the page as its Referer, like a browser following the link.
+`--json` prints the listing as one object, `{"links": [{"index", "url", "name", "folder", "extension", "size"}], "truncated": bool}`. Without `--add`, nothing is queued; with `--add`, `--json` goes on to print the usual event lines after that object, one JSON value per line. Folder names come from the page, so they are checked: a name that is empty, `.`, `..` or holds a backslash makes that one file fail (the others go on, exit 1), and nothing is ever written outside `--dir`. With `--add`, a file on the page's own scheme, host and port is requested with the page (without its `#fragment`) as its Referer, like a browser following the link; a plain-http link on an https page gets none.
 
 ### Protected downloads
 
@@ -72,9 +72,11 @@ taurus add https://files.example.com/report.zip --user alice
 taurus login 3 --user alice
 ```
 
-- The user name cannot contain `:` (HTTP Basic sign-in has no room for it; `--user alice:secret` is refused, and nothing is stored). The password is asked for before anything else starts, so `taurus` holds no lock on its data while you type.
+- The user name cannot contain `:` (HTTP Basic sign-in has no room for it; `--user alice:secret` is refused, and nothing is stored). The password is asked for before anything else starts, so `taurus` holds no lock on its data while you type; if another `taurus` (or the desktop app) is using the data, that is said first, before you type anything. The prompt goes to stderr, so `--json` output stays clean.
+- `--user` takes exactly one URL (not several, nor `--file`): one password is sent to one link's host.
 - The password is never an option and is never read from the environment or a pipe: with no terminal, `taurus` exits 1 and says so.
 - It goes to the operating system's keychain (Keychain on macOS, Credential Manager on Windows, the Secret Service on Linux), filed under the service `dev.nikethai.taurus`. It is never written to the job database, the settings, the logs or the output, and it is sent only to the link's own host (mirrors on that host included).
+- On macOS the keychain may ask once for permission when the `taurus` command reads a password the desktop app saved, or the other way round; choose "Always Allow" so it does not ask again.
 - When there is no keychain (for example a Linux session without a Secret Service), the password is kept in memory only, until `taurus` exits. A download that needs it after a restart then fails with `NeedsSignIn: the server asks for a user name and password`: run `taurus login <ID> --user <NAME>` and type the password again.
 - Only web downloads can be protected, not torrents or video links. A proxy with a user name or password is not supported either (see Settings).
 
@@ -143,8 +145,15 @@ taurus add https://www.youtube.com/watch?v=VIDEO_ID
 taurus add https://www.youtube.com/watch?v=VIDEO_ID --audio
 taurus add https://www.youtube.com/watch?v=VIDEO_ID --audio --quality small
 
-# At most 720p (best, 1080p or 720p; a quality the video lacks falls back to best, with a note)
+# At most 720p: best, or any height the video has, such as 1080p, 720p or 480p (see
+# taurus inspect); a quality the video lacks falls back to best, with a note.
+# --quality audio is the same as --audio
 taurus add https://vimeo.com/VIDEO_ID --quality 720p
+
+# What a link offers, without adding it: the title, every quality, the subtitle
+# languages and the captions the site generates (--json prints it as one object)
+taurus inspect https://www.youtube.com/watch?v=VIDEO_ID
+taurus --json inspect https://www.youtube.com/watch?v=VIDEO_ID --cookies-from firefox
 
 # Convert the result: mp3, or smaller-mp4
 taurus add https://www.youtube.com/watch?v=VIDEO_ID --convert smaller-mp4

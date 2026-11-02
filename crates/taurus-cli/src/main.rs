@@ -2,6 +2,7 @@ mod config;
 mod edit;
 mod file_list;
 mod grab;
+mod inspect;
 mod password;
 mod render;
 mod runner;
@@ -22,6 +23,7 @@ use tokio::sync::broadcast::error::TryRecvError;
 use crate::edit::{ConvertArgs, JobAction, LoginArgs, SelectArgs};
 use crate::file_list::FileList;
 use crate::grab::GrabArgs;
+use crate::inspect::InspectArgs;
 use crate::runner::{Enqueued, Options, Runner};
 use crate::tools::ToolsAction;
 use crate::video::VideoFlags;
@@ -96,6 +98,9 @@ enum Command {
     },
     /// List the files a web page or folder listing links to, with sizes; --add downloads them
     Grab(GrabArgs),
+    /// Show what a link offers without adding it: a video's title, every quality, its
+    /// subtitle and caption languages; a file's name and size; a torrent's files
+    Inspect(InspectArgs),
     /// Give a download its user name and password (asked for on the terminal), then run it
     Login(LoginArgs),
     /// Convert a finished download, or a file, to mp3 or a smaller mp4, then run the queue
@@ -180,9 +185,11 @@ fn parse() -> std::result::Result<Cli, ExitCode> {
         checksum,
         files,
         video,
+        user,
         ..
     } = &mut cli.command
     {
+        let from_file = file.is_some();
         if let Some(file) = file.take() {
             match read_url_file(&file) {
                 Ok(more) => urls.extend(more),
@@ -203,6 +210,14 @@ fn parse() -> std::result::Result<Cli, ExitCode> {
             let e = Cli::command().error(
                 clap::error::ErrorKind::ArgumentConflict,
                 "--name, --mirror and --checksum can only be used with exactly one URL",
+            );
+            return Err(usage_error(&e));
+        }
+        // One password goes to one link, never to a list of hosts.
+        if user.is_some() && (urls.len() > 1 || from_file) {
+            let e = Cli::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--user can only be used with exactly one URL (not with --file)",
             );
             return Err(usage_error(&e));
         }
@@ -262,7 +277,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
     let data_dir = data_dir(cli.data_dir)?;
     // A password is asked for first: while a person types, no engine holds
     // the data dir or runs its tasks.
-    let credentials = ask_credentials(&cli.command, &data_dir)?;
+    let credentials = ask_credentials(&cli.command, &data_dir, cli.dry_run_power).await?;
     // Only the queue runners start jobs; the other commands look or edit.
     let autostart = match &cli.command {
         Command::Add { .. }
@@ -321,18 +336,26 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 /// The user name and password the command signs in with, asked for on the
-/// terminal: `add --user`, and `login` for a stored web download.
-fn ask_credentials(command: &Command, data_dir: &Path) -> Result<Option<Credentials>> {
-    match command {
+/// terminal: `add --user`, and `login` for a stored web download. Another
+/// taurus holding the data dir is reported before anything is asked.
+async fn ask_credentials(
+    command: &Command,
+    data_dir: &Path,
+    dry_run_power: bool,
+) -> Result<Option<Credentials>> {
+    let user = match command {
         Command::Add {
             user: Some(user), ..
-        } => password::credentials(user).map(Some),
-        Command::Login(args) => {
-            edit::check_login_target(&EngineConfig::new(data_dir), JobId(args.id))?;
-            password::credentials(&args.user).map(Some)
-        }
-        _ => Ok(None),
+        } => user,
+        Command::Login(args) => &args.user,
+        _ => return Ok(None),
+    };
+    let config = engine_config(data_dir.to_path_buf(), dry_run_power, false);
+    Engine::check_data_dir_free(&config)?;
+    if let Command::Login(args) = command {
+        edit::check_login_target(config, JobId(args.id)).await?;
     }
+    password::credentials(user).map(Some)
 }
 
 fn engine_config(data_dir: PathBuf, dry_run_power: bool, autostart: bool) -> EngineConfig {
@@ -489,6 +512,7 @@ async fn execute(
         Command::Tools { action } => tools::run(engine, action, json).await,
         Command::Config { action } => configure(engine, action, json).await,
         Command::Grab(args) => grab::run(engine, args, options).await,
+        Command::Inspect(args) => inspect::run(engine, args, json).await,
         Command::Login(args) => {
             let creds = credentials.ok_or("no password was asked for")?;
             edit::login(engine, args.id, creds, options).await

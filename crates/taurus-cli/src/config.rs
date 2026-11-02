@@ -35,7 +35,11 @@ pub const RESTART_KEYS: [&str; 4] = [
 /// torrent session next starts: the keys above, and a SOCKS proxy (torrents
 /// cannot use an HTTP one), set or left.
 pub fn needs_restart(key: &str, before: &Settings, after: &Settings) -> bool {
-    let socks = |s: &Settings| matches!(&s.network.proxy, ProxySetting::Manual { url } if url.starts_with("socks"));
+    // `set` keeps the URL as typed, so `SOCKS5H://` is SOCKS too.
+    let socks = |s: &Settings| {
+        matches!(&s.network.proxy, ProxySetting::Manual { url }
+            if url.get(..5).is_some_and(|scheme| scheme.eq_ignore_ascii_case("socks")))
+    };
     RESTART_KEYS.contains(&key) || (key == "network.proxy" && (socks(before) || socks(after)))
 }
 
@@ -565,5 +569,9 @@ mod tests {
         assert!(needs_restart("network.proxy", &socks, &http));
         assert!(!needs_restart("network.proxy", &system, &http));
         assert!(!needs_restart("network.proxy", &http, &system));
+        // The scheme is read ignoring case, as `set` accepts it.
+        let upper = with("SOCKS5H://p.example:1080");
+        assert!(needs_restart("network.proxy", &system, &upper));
+        assert!(needs_restart("network.proxy", &upper, &http));
     }
 }

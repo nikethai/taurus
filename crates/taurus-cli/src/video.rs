@@ -2,7 +2,9 @@
 //! yt-dlp reports for a link, and the plain-words error for a large playlist.
 
 use clap::{Args, ValueEnum};
-use taurus_core::media::{Container, ConvertPreset, MediaInfo, SubtitleChoice, validate_browser};
+use taurus_core::media::{
+    Container, ConvertPreset, MediaInfo, SubtitleChoice, standard_quality, validate_browser,
+};
 use taurus_core::{AddRequest, CoreError, Engine, ErrorKind, JobId, LinkInfo, MediaChoice};
 
 /// The flags that choose what to save of a video.
@@ -11,9 +13,10 @@ pub struct VideoFlags {
     /// Video links: save only the sound (best audio; with --quality small, a small MP3)
     #[arg(long)]
     pub audio: bool,
-    /// Video links: best, 1080p or 720p (small, with --audio, makes a small MP3);
-    /// one that the video lacks falls back to best [default: best]
-    #[arg(long, value_enum, value_name = "QUALITY")]
+    /// Video links: best, audio (as --audio), small (with --audio: a small MP3), or a
+    /// height such as 1080p, 720p or 480p (taurus inspect lists a video's); one that
+    /// the video lacks falls back to best [default: best]
+    #[arg(long, value_name = "QUALITY", value_parser = parse_quality)]
     pub quality: Option<Quality>,
     /// Video links: convert the result to an MP3 or a smaller MP4
     #[arg(long, value_enum, value_name = "FORMAT")]
@@ -39,14 +42,33 @@ pub struct VideoFlags {
     pub container: Option<ContainerFlag>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+/// What `--quality` takes.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Quality {
     Best,
-    #[value(name = "1080p")]
-    P1080,
-    #[value(name = "720p")]
-    P720,
+    /// The best sound only, as `--audio`.
+    Audio,
+    /// With `--audio`: a small MP3.
     Small,
+    /// Videos up to this height: `<N>p`, as the engine names it.
+    Height(String),
+}
+
+const QUALITY_VALUES: &str = "best, audio, small, or a height such as 1080p, 720p or 480p";
+
+/// `best`, `audio`, `small` or `<N>p`, ignoring case; a height is checked
+/// by the engine's own reading of quality names.
+fn parse_quality(value: &str) -> Result<Quality, String> {
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "best" => Ok(Quality::Best),
+        "audio" => Ok(Quality::Audio),
+        "small" => Ok(Quality::Small),
+        _ if value.ends_with('p') && standard_quality(&value).is_some() => {
+            Ok(Quality::Height(value))
+        }
+        _ => Err(format!("expected {QUALITY_VALUES}")),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -77,10 +99,12 @@ impl VideoFlags {
     /// plain words.
     pub fn conflict(&self) -> Option<String> {
         let say = |text: &str| Some(text.to_string());
-        match (self.audio, self.quality) {
+        match (self.audio, &self.quality) {
             (false, Some(Quality::Small)) => return say("--quality small needs --audio"),
-            (true, Some(Quality::P1080 | Quality::P720)) => {
-                return say("--audio cannot be combined with --quality 1080p or 720p");
+            (true, Some(Quality::Height(height))) => {
+                return Some(format!(
+                    "--audio cannot be combined with --quality {height}"
+                ));
             }
             _ => {}
         }
@@ -117,7 +141,7 @@ impl VideoFlags {
             Convert::Mp3 => ConvertPreset::Mp3,
             Convert::SmallerMp4 => ConvertPreset::SmallerMp4,
         });
-        let (quality, note) = if self.audio {
+        let (quality, note) = if self.audio || self.quality == Some(Quality::Audio) {
             let id = if self.quality == Some(Quality::Small) {
                 "audio-small"
             } else {
@@ -125,12 +149,17 @@ impl VideoFlags {
             };
             (id, None)
         } else {
-            let id = match self.quality {
-                Some(Quality::P1080) => "1080p",
-                Some(Quality::P720) => "720p",
+            let id = match &self.quality {
+                Some(Quality::Height(height)) => height.as_str(),
                 _ => "best",
             };
-            if id != "best" && !info.qualities.iter().any(|q| q.id == id) {
+            // Every height the video has, not only the usual ones.
+            let offered = info
+                .qualities
+                .iter()
+                .chain(&info.all_qualities)
+                .any(|q| q.id == id);
+            if id != "best" && !offered {
                 (
                     "best",
                     Some(format!(
@@ -226,6 +255,15 @@ mod tests {
     use super::*;
     use taurus_core::media::{LiveStatus, QualityOption};
 
+    fn option(id: &str) -> QualityOption {
+        QualityOption {
+            id: id.to_string(),
+            selector: String::new(),
+            audio_only: id.starts_with("audio"),
+            est_size: None,
+        }
+    }
+
     fn info(ids: &[&str]) -> MediaInfo {
         MediaInfo {
             url: String::new(),
@@ -236,19 +274,15 @@ mod tests {
             extractor: "Youtube".into(),
             live: LiveStatus::NotLive,
             playlist: None,
-            qualities: ids
-                .iter()
-                .map(|id| QualityOption {
-                    id: id.to_string(),
-                    selector: String::new(),
-                    audio_only: id.starts_with("audio"),
-                    est_size: None,
-                })
-                .collect(),
+            qualities: ids.iter().map(|id| option(id)).collect(),
             subtitle_languages: Vec::new(),
             auto_caption_languages: Vec::new(),
             all_qualities: Vec::new(),
         }
+    }
+
+    fn height(id: &str) -> Quality {
+        Quality::Height(id.to_string())
     }
 
     fn flags(audio: bool, quality: Option<Quality>, convert: Option<Convert>) -> VideoFlags {
@@ -274,7 +308,7 @@ mod tests {
             want("best", None, false)
         );
         assert_eq!(
-            pick(flags(false, Some(Quality::P720), None), &video),
+            pick(flags(false, Some(height("720p")), None), &video),
             want("720p", None, false)
         );
         assert_eq!(
@@ -300,14 +334,42 @@ mod tests {
         // A playlist offers only best and audio-best: 1080p falls back, with a note.
         let playlist = info(&["best", "audio-best"]);
         assert_eq!(
-            pick(flags(false, Some(Quality::P1080), None), &playlist),
+            pick(flags(false, Some(height("1080p")), None), &playlist),
             want("best", None, true)
         );
-        let (_, note) = flags(false, Some(Quality::P1080), None).choice(&playlist);
+        let (_, note) = flags(false, Some(height("1080p")), None).choice(&playlist);
         assert_eq!(
             note.unwrap(),
             "note: 1080p is not available; using the best quality"
         );
+        // A height only the full list has is chosen as it is, without a note.
+        let mut tall = info(&["best", "1080p", "720p", "audio-best"]);
+        tall.all_qualities = ["2160p", "1080p", "720p", "480p"].map(option).to_vec();
+        assert_eq!(
+            pick(flags(false, Some(height("480p")), None), &tall),
+            want("480p", None, false)
+        );
+        assert_eq!(
+            pick(flags(false, Some(height("360p")), None), &tall),
+            want("best", None, true)
+        );
+        // --quality audio is --audio.
+        assert_eq!(
+            pick(flags(false, Some(Quality::Audio), None), &video),
+            want("audio-best", None, false)
+        );
+    }
+
+    #[test]
+    fn quality_values() {
+        assert_eq!(parse_quality("best"), Ok(Quality::Best));
+        assert_eq!(parse_quality(" Audio "), Ok(Quality::Audio));
+        assert_eq!(parse_quality("small"), Ok(Quality::Small));
+        assert_eq!(parse_quality("480p"), Ok(height("480p")));
+        assert_eq!(parse_quality("1080P"), Ok(height("1080p")));
+        for bad in ["", "720", "p", "0p", "-1p", "99999p", "audio-best", "hd"] {
+            assert!(parse_quality(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -317,7 +379,10 @@ mod tests {
                 .conflict()
                 .is_some()
         );
-        assert!(flags(true, Some(Quality::P720), None).conflict().is_some());
+        assert_eq!(
+            flags(true, Some(height("480p")), None).conflict().unwrap(),
+            "--audio cannot be combined with --quality 480p"
+        );
         assert!(flags(true, Some(Quality::Small), None).conflict().is_none());
         assert!(flags(true, Some(Quality::Best), None).conflict().is_none());
         assert!(flags(false, Some(Quality::Best), None).conflict().is_none());

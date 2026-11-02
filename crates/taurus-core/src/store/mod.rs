@@ -14,6 +14,7 @@ use crate::plan::Segment;
 use crate::torrent::policy::TorrentOverrides;
 
 mod migrate;
+pub(crate) use migrate::OLDER_SCHEMA;
 mod rows;
 mod settings;
 #[cfg(test)]

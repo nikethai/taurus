@@ -69,9 +69,21 @@ fn find(engine: &Engine, id: JobId) -> Result<JobView> {
 }
 
 /// Fails, before anyone types a password, unless `id` is a stored web
-/// download. Reads the database without opening the engine.
-pub fn check_login_target(config: &EngineConfig, id: JobId) -> Result<()> {
-    let view = Engine::read_snapshot(config)?
+/// download. Reads the database without opening the engine, unless it was
+/// written by an older taurus: then the engine is opened (nothing starts),
+/// which upgrades it, and closed again.
+pub async fn check_login_target(config: EngineConfig, id: JobId) -> Result<()> {
+    let views = match Engine::read_snapshot(&config) {
+        Ok(views) => views,
+        Err(e) if e.is_older_schema() => {
+            let engine = Engine::open(config).await?;
+            let views = engine.snapshot();
+            engine.shutdown().await?;
+            views
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let view = views
         .into_iter()
         .find(|v| v.id == id)
         .ok_or_else(|| format!("download {} not found", id.0))?;

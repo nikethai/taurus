@@ -10,6 +10,9 @@ use crate::errors::{CoreError, ErrorKind};
 use super::{Store, db_err, io_err, now_secs};
 
 const SCHEMA_VERSION: i64 = 7;
+/// Start of the detail of the error a read-only open of an older database
+/// returns.
+pub(crate) const OLDER_SCHEMA: &str = "the database was written by an older taurus";
 
 const SCHEMA_V1: &str = "
 CREATE TABLE jobs (
@@ -191,6 +194,8 @@ impl Store {
 
     /// Opens an existing database for reading only: nothing is created,
     /// migrated or repaired. `None` if there is no database or no schema yet.
+    /// An older schema fails (`CoreError::is_older_schema`): only the engine
+    /// holding the data dir may migrate it.
     pub fn open_read_only(path: &Path) -> Result<Option<Store>, CoreError> {
         if !path.exists() {
             return Ok(None);
@@ -219,7 +224,7 @@ impl Store {
             return Err(CoreError {
                 kind: ErrorKind::Unknown,
                 detail: format!(
-                    "database schema version {version} is older than {SCHEMA_VERSION}; \
+                    "{OLDER_SCHEMA} (version {version}, this one reads {SCHEMA_VERSION}); \
                      start taurus once (with no other instance running) to upgrade it"
                 ),
             });
@@ -512,33 +517,54 @@ mod tests {
         assert!(old.partial_files.is_empty());
     }
 
+    /// An M5 (v6) database at `path` holding one paused media job.
+    fn v6_database(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        for step in [
+            SCHEMA_V1,
+            MIGRATE_V1_TO_V2,
+            MIGRATE_V2_TO_V3,
+            MIGRATE_V3_TO_V4,
+            MIGRATE_V4_TO_V5,
+            MIGRATE_V5_TO_V6,
+        ] {
+            conn.execute_batch(step).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        conn.execute(
+            "INSERT INTO jobs (url, source_url, dest_dir, file_name, state, connections, \
+             created_at, updated_at, kind, media_options) \
+             VALUES ('u', 'u', '/d', 'x', 'paused', 4, 1, 1, 'media', \
+             '{\"quality\":\"best\",\"selector\":\"b\",\"audio_only\":false,\
+             \"convert\":null,\"playlist\":false,\"live_from_start\":false}')",
+            [],
+        )
+        .unwrap();
+    }
+
+    /// A front end that reads the database before opening the engine (the
+    /// CLI's `login`) can tell an older schema from any other failure, and
+    /// reads it once the engine's open has upgraded it.
+    #[test]
+    fn a_v6_database_is_refused_read_only_until_upgraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taurus.db");
+        v6_database(&path);
+        let Err(e) = Store::open_read_only(&path) else {
+            panic!("a v6 database was read without an upgrade");
+        };
+        assert!(e.is_older_schema(), "{e}");
+        assert!(!e.is_instance_locked());
+        drop(Store::open(&path).unwrap());
+        let store = Store::open_read_only(&path).unwrap().expect("a database");
+        assert_eq!(store.list_jobs().unwrap().len(), 1);
+    }
+
     #[test]
     fn v6_database_migrates_to_v7() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("taurus.db");
-        {
-            let conn = Connection::open(&path).unwrap();
-            for step in [
-                SCHEMA_V1,
-                MIGRATE_V1_TO_V2,
-                MIGRATE_V2_TO_V3,
-                MIGRATE_V3_TO_V4,
-                MIGRATE_V4_TO_V5,
-                MIGRATE_V5_TO_V6,
-            ] {
-                conn.execute_batch(step).unwrap();
-            }
-            conn.pragma_update(None, "user_version", 6).unwrap();
-            conn.execute(
-                "INSERT INTO jobs (url, source_url, dest_dir, file_name, state, connections, \
-                 created_at, updated_at, kind, media_options) \
-                 VALUES ('u', 'u', '/d', 'x', 'paused', 4, 1, 1, 'media', \
-                 '{\"quality\":\"best\",\"selector\":\"b\",\"audio_only\":false,\
-                 \"convert\":null,\"playlist\":false,\"live_from_start\":false}')",
-                [],
-            )
-            .unwrap();
-        }
+        v6_database(&path);
 
         let store = Store::open(&path).unwrap();
         let jobs = store.list_jobs().unwrap();

@@ -524,6 +524,12 @@ impl CoreError {
     pub fn is_instance_locked(&self) -> bool {
         self.kind == ErrorKind::Unknown && self.detail.starts_with(IN_USE)
     }
+
+    /// Whether this is `read_snapshot` refusing a database of an older
+    /// schema, which only `Engine::open` (with the data dir free) upgrades.
+    pub fn is_older_schema(&self) -> bool {
+        self.kind == ErrorKind::Unknown && self.detail.starts_with(crate::store::OLDER_SCHEMA)
+    }
 }
 
 fn no_such_job() -> CoreError {

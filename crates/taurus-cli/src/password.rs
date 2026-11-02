@@ -3,7 +3,7 @@
 //! hook aside, see `test_hooks`), and is never printed, logged or put into
 //! an error message.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 
 use taurus_core::Credentials;
 
@@ -47,7 +47,7 @@ fn check_user(user: &str) -> Result<&str> {
     Ok(user)
 }
 
-/// Asks on the terminal. Stdin must be a terminal too: a script that pipes
+/// Asks on the terminal, the prompt on stderr. Stdin must be a terminal too: a script that pipes
 /// text must not be mistaken for a person typing, and rpassword reads the
 /// terminal device itself, which could wait on a person the script knows
 /// nothing about.
@@ -55,10 +55,12 @@ fn prompt(user: &str) -> Result<String> {
     if !std::io::stdin().is_terminal() {
         return Err(NO_TERMINAL.into());
     }
+    // On stderr: stdout carries only results (JSON lines with --json).
+    eprint!("Password for {user}: ");
+    let _ = std::io::stderr().flush();
     // The error of the terminal read names no password, but it is not
     // needed: the person is told what to do instead.
-    rpassword::prompt_password(format!("Password for {user}: "))
-        .map_err(|_| "could not read the password from the terminal".into())
+    rpassword::read_password().map_err(|_| "could not read the password from the terminal".into())
 }
 
 #[cfg(test)]
