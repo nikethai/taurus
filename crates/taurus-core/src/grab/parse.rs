@@ -79,7 +79,8 @@ pub fn is_folder_listing(html: &str) -> bool {
 }
 
 /// Whether `candidate` is below `page_dir` on the same host: same scheme,
-/// host and port, a path that starts with the directory's path and goes
+/// host and port, a path that starts with the directory's path (taken as
+/// ending in `/`) and goes
 /// further (the directory itself, with or without a query, is not inside),
 /// and no `..` segment.
 pub fn is_inside(page_dir: &url::Url, candidate: &url::Url) -> bool {
@@ -89,10 +90,14 @@ pub fn is_inside(page_dir: &url::Url, candidate: &url::Url) -> bool {
     {
         return false;
     }
-    let dir = page_dir.path();
+    // `/files` names the directory `/files/`, not `/files-old/`.
+    let dir = match page_dir.path() {
+        dir if dir.ends_with('/') => std::borrow::Cow::Borrowed(dir),
+        dir => std::borrow::Cow::Owned(format!("{dir}/")),
+    };
     let path = candidate.path();
     path.len() > dir.len()
-        && path.starts_with(dir)
+        && path.starts_with(dir.as_ref())
         && !path
             .split('/')
             .any(|segment| segment == ".." || segment.eq_ignore_ascii_case("%2e%2e"))
@@ -248,6 +253,12 @@ mod tests {
         assert!(!is_inside(&dir, &url("ftp://h.test/files/a.zip")));
         // A relative `sub/` resolved against the directory.
         assert!(is_inside(&dir, &dir.join("sub/").unwrap()));
+        // A directory given without its trailing slash is still a directory.
+        let bare = url("http://h.test/files");
+        assert!(is_inside(&bare, &url("http://h.test/files/a.zip")));
+        assert!(!is_inside(&bare, &url("http://h.test/files-old/a.zip")));
+        assert!(!is_inside(&bare, &url("http://h.test/files")));
+        assert!(!is_inside(&bare, &url("http://h.test/files/")));
         assert!(!is_inside(&dir, &dir.join("../up/").unwrap()));
         assert!(!is_inside(&dir, &dir.join("/").unwrap()));
     }

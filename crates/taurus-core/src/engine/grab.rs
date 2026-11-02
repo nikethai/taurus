@@ -28,6 +28,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const PROBE_CONCURRENCY: usize = 4;
 /// Subfolders read at once.
 const FOLDER_CONCURRENCY: usize = 4;
+/// The most subfolders read for one grab; more sets `truncated`.
+const MAX_SUBFOLDERS: usize = 200;
 
 impl Engine {
     /// Reads the web page at `page_url` and returns the files it links to:
@@ -54,7 +56,7 @@ impl Engine {
         self.check_running()?;
         let requested = parse_page_url(page_url)?;
         let page = read_page(&self.client, &requested).await?;
-        let page_dir = directory_of(&page.url);
+        let cut = page.cut;
         let page_url = page.url.clone();
         let want_listing = opts.subfolders;
         let (links, listing) = tokio::task::spawn_blocking(move || {
@@ -63,14 +65,18 @@ impl Engine {
         })
         .await
         .map_err(|e| error(format!("reading the page failed: {e}")))?;
-
-        let mut found = Found::new(page.cut);
+        let page_dir = page_directory(&page_url);
+        let mut found = Found::new(cut);
         for link in links.iter().filter(|l| looks_like_file(l)) {
             found.add(link, "/");
         }
         let mut subfolders_scanned = 0;
         if listing {
-            let folders = subfolders(&page_dir, &links);
+            let mut folders = subfolders(&page_dir, &links);
+            if folders.len() > MAX_SUBFOLDERS {
+                folders.truncate(MAX_SUBFOLDERS);
+                found.truncated = true;
+            }
             for batch in folders.chunks(FOLDER_CONCURRENCY) {
                 if found.full() {
                     // More to read, no room for it.
@@ -243,6 +249,25 @@ fn directory_of(page_url: &url::Url) -> url::Url {
     dir
 }
 
+/// The directory whose folders a listing at `page_url` may have: the URL
+/// itself when its last segment has no extension (a listing served at `/dir`
+/// without a redirect is `/dir/`, so its folders are not the root's),
+/// otherwise [`directory_of`] it (`/dir/index.html`).
+fn page_directory(page_url: &url::Url) -> url::Url {
+    let last = page_url.path().rsplit('/').next().unwrap_or_default();
+    if last.contains('.') {
+        return directory_of(page_url);
+    }
+    let mut dir = page_url.clone();
+    dir.set_query(None);
+    dir.set_fragment(None);
+    if !last.is_empty() {
+        let path = format!("{}/", dir.path());
+        dir.set_path(&path);
+    }
+    dir
+}
+
 /// The folders to read: links to a directory inside `page_dir`, without
 /// their query (listings link their sort orders as `sub/?C=N`), each once.
 fn subfolders(page_dir: &url::Url, links: &[url::Url]) -> Vec<url::Url> {
@@ -385,6 +410,16 @@ mod tests {
         assert_eq!(directory_of(&url("http://h/a/")).as_str(), "http://h/a/");
         assert_eq!(directory_of(&url("http://h/a")).as_str(), "http://h/");
         assert_eq!(directory_of(&url("http://h")).as_str(), "http://h/");
+    }
+
+    #[test]
+    fn page_directory_cases() {
+        let dir = |s| page_directory(&url(s)).to_string();
+        assert_eq!(dir("http://h/d?x=1"), "http://h/d/");
+        assert_eq!(dir("http://h/d/"), "http://h/d/");
+        assert_eq!(dir("http://h/d/?C=N;O=D"), "http://h/d/");
+        assert_eq!(dir("http://h/d/index.html"), "http://h/d/");
+        assert_eq!(dir("http://h"), "http://h/");
     }
 
     #[test]

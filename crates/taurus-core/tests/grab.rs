@@ -62,6 +62,24 @@ async fn subfolders_stay_inside() {
     let tmp = tempfile::tempdir().unwrap();
     let engine = engine(&tmp).await;
     let server = TestServer::start().await;
+    // Another host (another port): its folders must not be read either.
+    let other = TestServer::start().await;
+    let other_root = other.serve_page("/", 200, &[], &listing("Index of /", &["z.zip"]));
+    let other_files = other.serve_page(
+        "/files/",
+        200,
+        &[],
+        &listing("Index of /files/", &["z.zip"]),
+    );
+    // Everything a wrong crawl could reach, each with a file named z.zip.
+    server.serve_page("/", 200, &[], &listing("Index of /", &["z.zip"]));
+    server.serve_page("/up/", 200, &[], &listing("Index of /up/", &["z.zip"]));
+    server.serve_page(
+        "/files/sub/deeper/",
+        200,
+        &[],
+        &listing("Index of /", &["z.zip"]),
+    );
     let page = server.serve_page(
         "/files/",
         200,
@@ -74,7 +92,8 @@ async fn subfolders_stay_inside() {
                 "sub/",
                 "../up/",
                 "/",
-                "http://other.host/",
+                &other_root,
+                &other_files,
                 "/up/",
                 "?C=N;O=D",
                 "sub/?C=M;O=A",
@@ -93,15 +112,9 @@ async fn subfolders_stay_inside() {
                 "deeper/",
                 "../a.zip",
                 "http://other.host/x.zip",
+                &format!("{other_files}z.zip"),
             ],
         ),
-    );
-    server.serve_page("/up/", 200, &[], &listing("Index of /up/", &["z.zip"]));
-    server.serve_page(
-        "/files/sub/deeper/",
-        200,
-        &[],
-        &listing("Index of /", &["d.zip"]),
     );
     let result = engine.grab(&page, SUBFOLDERS).await.unwrap();
     assert_eq!(result.subfolders_scanned, 1);
@@ -112,10 +125,77 @@ async fn subfolders_stay_inside() {
             ("/sub/".to_string(), "b.zip".to_string()),
         ]
     );
+    assert!(result.links.iter().all(|l| l.name != "z.zip"));
     // Nothing outside the folder, and nothing below the first level, was fetched.
+    assert_eq!(server.requests("/"), 0);
     assert_eq!(server.requests("/up/"), 0);
     assert_eq!(server.requests("/files/sub/deeper/"), 0);
     assert_eq!(server.requests("/files/sub/"), 1);
+    assert_eq!(other.requests("/"), 0);
+    assert_eq!(other.requests("/files/"), 0);
+}
+
+#[tokio::test]
+async fn a_listing_without_its_final_slash_is_still_a_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = engine(&tmp).await;
+    let server = TestServer::start().await;
+    // Served at /dir (no redirect): `sub/` resolves to /sub/, a root folder.
+    let page = server.serve_page(
+        "/dir",
+        200,
+        &[],
+        &listing("Index of /dir", &["sub/", "/dir/inner/", "a.zip"]),
+    );
+    server.serve_page("/sub/", 200, &[], &listing("Index of /sub/", &["z.zip"]));
+    server.serve_page(
+        "/dir/inner/",
+        200,
+        &[],
+        &listing("Index of /dir/inner/", &["b.zip"]),
+    );
+    let result = engine.grab(&page, SUBFOLDERS).await.unwrap();
+    assert_eq!(result.subfolders_scanned, 1);
+    assert_eq!(
+        names(&result),
+        [
+            ("/".to_string(), "a.zip".to_string()),
+            ("/inner/".to_string(), "b.zip".to_string()),
+        ]
+    );
+    assert_eq!(server.requests("/sub/"), 0);
+}
+
+#[tokio::test]
+async fn at_most_200_subfolders_are_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = engine(&tmp).await;
+    let server = TestServer::start().await;
+    let subs: Vec<String> = (0..205).map(|i| format!("s{i}/")).collect();
+    let refs: Vec<&str> = subs.iter().map(String::as_str).collect();
+    let page = server.serve_page("/m/", 200, &[], &listing("Index of /m/", &refs));
+    for s in &subs {
+        server.serve_page(
+            &format!("/m/{s}"),
+            200,
+            &[],
+            &listing("Index of x", &["f.zip"]),
+        );
+    }
+    let result = engine.grab(&page, SUBFOLDERS).await.unwrap();
+    assert_eq!(result.subfolders_scanned, 200);
+    assert_eq!(result.links.len(), 200);
+    assert!(result.truncated);
+    assert_eq!(server.requests("/m/s199/"), 1);
+    assert_eq!(server.requests("/m/s200/"), 0);
+    // Exactly 200 folders is not a truncation.
+    let page = server.serve_page("/n/", 200, &[], &listing("Index of /n/", &refs[..200]));
+    for s in &subs[..200] {
+        server.serve_page(&format!("/n/{s}"), 200, &[], &listing("Index of x", &[]));
+    }
+    let result = engine.grab(&page, SUBFOLDERS).await.unwrap();
+    assert_eq!(result.subfolders_scanned, 200);
+    assert!(!result.truncated);
 }
 
 #[tokio::test]
