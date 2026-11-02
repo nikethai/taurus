@@ -83,7 +83,7 @@ enum Command {
         #[arg(long, value_name = "NAME")]
         user: Option<String>,
         #[command(flatten)]
-        video: VideoFlags,
+        video: Box<VideoFlags>,
     },
     /// Continue paused or failed downloads, then run the queue until it is idle; Ctrl-C stops (taurus run continues)
     Resume {
