@@ -1,0 +1,418 @@
+//! Passwords for protected (HTTP Basic auth) downloads: sent only where they
+//! belong, kept only in the secret store, never written or logged.
+
+use std::fmt::Debug;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+
+use base64::Engine as _;
+use taurus_core::secrets::{MemoryStore, SecretStore};
+use taurus_core::{
+    AddRequest, Credentials, Engine, EngineConfig, ErrorKind, JobId, JobState, RemoveFiles,
+};
+use taurus_testkit::{FileSpec, TestServer, content, sha256_hex};
+use tokio::sync::broadcast;
+
+const MIB: usize = 1024 * 1024;
+const USER: &str = "hyades-user-7";
+const PASSWORD: &str = "s3cr3t-Pa55";
+const TIMEOUT: Duration = Duration::from_secs(30);
+
+struct Fixture {
+    tmp: tempfile::TempDir,
+    dest: PathBuf,
+    server: TestServer,
+    secrets: Arc<MemoryStore>,
+}
+
+impl Fixture {
+    async fn new() -> Fixture {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out");
+        fs::create_dir(&dest).unwrap();
+        Fixture {
+            tmp,
+            dest,
+            server: TestServer::start().await,
+            secrets: Arc::new(MemoryStore::new()),
+        }
+    }
+
+    fn data_dir(&self) -> PathBuf {
+        self.tmp.path().join("data")
+    }
+
+    /// Never the real keychain: the fixture's memory store.
+    fn config(&self) -> EngineConfig {
+        let mut config = EngineConfig::new(self.data_dir());
+        config.secrets = self.secrets.clone();
+        config
+    }
+
+    async fn engine(&self) -> Engine {
+        Engine::open(self.config()).await.unwrap()
+    }
+
+    fn request(&self, url: &str, credentials: Option<Credentials>) -> AddRequest {
+        AddRequest {
+            url: url.to_string(),
+            dest_dir: self.dest.clone(),
+            credentials,
+            ..AddRequest::default()
+        }
+    }
+}
+
+fn creds(password: &str) -> Option<Credentials> {
+    Some(Credentials {
+        username: USER.into(),
+        password: password.into(),
+    })
+}
+
+fn protected(size: usize) -> FileSpec {
+    let mut spec = FileSpec::new(size);
+    spec.basic_auth = Some((USER.into(), PASSWORD.into()));
+    spec
+}
+
+async fn wait(engine: &Engine, id: JobId) -> JobState {
+    tokio::time::timeout(TIMEOUT, engine.wait(id))
+        .await
+        .expect("job did not settle in 30 s")
+}
+
+fn error_of(engine: &Engine, id: JobId) -> (ErrorKind, String) {
+    let view = engine.snapshot().into_iter().find(|v| v.id == id).unwrap();
+    view.error.expect("the job has an error")
+}
+
+fn assert_file(path: &Path, spec: &FileSpec) {
+    let got = fs::read(path).unwrap();
+    assert_eq!(sha256_hex(&got), sha256_hex(&content(spec)));
+}
+
+fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v.as_str())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn protected_file_without_credentials_needs_sign_in() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let url = fx.server.serve("/p.bin", protected(1000));
+    let err = engine.add(fx.request(&url, None)).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NeedsSignIn);
+    assert!(err.detail.contains("\"test\""), "{}", err.detail);
+    assert!(engine.snapshot().is_empty());
+    assert!(header(&fx.server.last_request_headers("/p.bin"), "authorization").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_credentials_downloads() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let mut spec = protected(3 * MIB);
+    spec.bytes_per_sec = Some(4 * MIB as u64);
+    let url = fx.server.serve("/p.bin", spec.clone());
+    let mut req = fx.request(&url, creds(PASSWORD));
+    req.connections = Some(4);
+    let id = engine.add(req).await.unwrap();
+    // Paused and resumed: the resume's check of the link signs in too.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    engine.pause(id).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Paused);
+    engine.resume(id).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("p.bin"), &spec);
+    // Every request was let in: the probe, the resume's and the segments'.
+    assert!(fx.server.requests("/p.bin") >= 4);
+    let headers = fx.server.last_request_headers("/p.bin");
+    assert!(header(&headers, "authorization").is_some_and(|v| v.starts_with("Basic ")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wrong_password_reports_clearly() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let url = fx.server.serve("/p.bin", protected(1000));
+    let err = engine
+        .add(fx.request(&url, creds("not-it")))
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NeedsSignIn);
+    assert_eq!(err.detail, "wrong user name or password");
+    assert!(engine.snapshot().is_empty());
+    assert_eq!(fx.secrets.get("job:1").unwrap(), None);
+}
+
+/// No keychain: the password lived in memory, so after a restart the job
+/// asks for it again; giving it resumes the job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn set_credentials_resumes_failed_job() {
+    let mut fx = Fixture::new().await;
+    let spec = protected(2 * MIB);
+    let url = fx.server.serve("/p.bin", spec.clone());
+    let mut config = fx.config();
+    config.autostart = false;
+    let engine = Engine::open(config).await.unwrap();
+    let id = engine.add(fx.request(&url, creds(PASSWORD))).await.unwrap();
+    engine.shutdown().await.unwrap();
+
+    // The next session has a store without the password.
+    fx.secrets = Arc::new(MemoryStore::new());
+    let engine = fx.engine().await;
+    assert_eq!(wait(&engine, id).await, JobState::Failed);
+    let (kind, detail) = error_of(&engine, id);
+    assert_eq!(kind, ErrorKind::NeedsSignIn);
+    assert!(detail.contains("\"test\""), "{detail}");
+
+    // A wrong one fails again, clearly; the right one finishes the job.
+    let err = engine
+        .set_credentials(id, creds("not-it").unwrap())
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NeedsSignIn);
+    assert_eq!(err.detail, "wrong user name or password");
+    engine
+        .set_credentials(id, creds(PASSWORD).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("p.bin"), &spec);
+    assert_eq!(
+        fx.secrets.get(&format!("job:{}", id.0)).unwrap().as_deref(),
+        Some(PASSWORD)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_deletes_secret() {
+    let fx = Fixture::new().await;
+    let mut config = fx.config();
+    config.autostart = false;
+    let engine = Engine::open(config).await.unwrap();
+    for (i, files) in [
+        RemoveFiles::Keep,
+        RemoveFiles::All,
+        RemoveFiles::IfUnfinished,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let url = fx.server.serve(&format!("/p{i}.bin"), protected(1000));
+        let id = engine.add(fx.request(&url, creds(PASSWORD))).await.unwrap();
+        let account = format!("job:{}", id.0);
+        assert_eq!(fx.secrets.get(&account).unwrap().as_deref(), Some(PASSWORD));
+        engine.remove_with(id, files).await.unwrap();
+        assert_eq!(fx.secrets.get(&account).unwrap(), None, "{files:?}");
+    }
+}
+
+/// Credentials go to the link's own host only: not to a host a redirect
+/// leads to, nor to a mirror elsewhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn credentials_stay_on_their_host() {
+    let fx = Fixture::new().await;
+    let other = TestServer::start().await;
+    let engine = fx.engine().await;
+    let spec = FileSpec::new(MIB);
+    let elsewhere = other.serve("/f.bin", spec.clone());
+    let link = fx.server.redirect_cycle("/r.bin", &[&elsewhere]);
+    let id = engine
+        .add(fx.request(&link, creds(PASSWORD)))
+        .await
+        .unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("f.bin"), &spec);
+    let sent = fx.server.last_request_headers("/r.bin");
+    assert!(header(&sent, "authorization").is_some(), "{sent:?}");
+    let received = other.last_request_headers("/f.bin");
+    assert!(other.requests("/f.bin") > 0);
+    assert!(header(&received, "authorization").is_none(), "{received:?}");
+
+    // A mirror on another host serves segments without them.
+    let mut big = protected(4 * MIB);
+    big.seed = 9;
+    let primary = fx.server.serve("/m.bin", big.clone());
+    let mut open = big.clone();
+    open.basic_auth = None;
+    let mirror = other.serve("/m.bin", open);
+    let mut req = fx.request(&primary, creds(PASSWORD));
+    req.mirrors = vec![mirror];
+    req.connections = Some(4);
+    let id = engine.add(req).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("m.bin"), &big);
+    assert!(other.requests("/m.bin") > 1, "the mirror served segments");
+    let received = other.last_request_headers("/m.bin");
+    assert!(header(&received, "authorization").is_none(), "{received:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn password_never_persisted_or_logged() {
+    let logs = capture_logs();
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let mut events = engine.subscribe();
+    let spec = protected(2 * MIB);
+    let url = fx.server.serve("/p.bin", spec.clone());
+    // The settings are saved during the run too.
+    let mut settings = engine.settings();
+    settings.auto_checksum = !settings.auto_checksum;
+    engine.set_settings(settings).await.unwrap();
+    // A wrong password first: its failure is reported and logged without it.
+    let wrong = "wrong-Pa55-xyz";
+    let err = engine
+        .add(fx.request(&url, creds(wrong)))
+        .await
+        .unwrap_err();
+    assert!(!format!("{err:?} {err}").contains(wrong));
+    let id = engine.add(fx.request(&url, creds(PASSWORD))).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+    assert_file(&fx.dest.join("p.bin"), &spec);
+
+    let secrets = [
+        PASSWORD.to_owned(),
+        wrong.to_owned(),
+        base64::engine::general_purpose::STANDARD.encode(format!("{USER}:{PASSWORD}")),
+        base64::engine::general_purpose::STANDARD.encode(format!("{USER}:{wrong}")),
+    ];
+    // While the engine runs, the WAL holds the latest writes.
+    let data = fx.data_dir();
+    assert!(data.join("taurus.db").exists() && data.join("taurus.db-wal").exists());
+    let mut scanned = scan_tree(&data, &secrets);
+    scan_tree(&fx.dest, &secrets);
+    engine.shutdown().await.unwrap();
+    // After the shutdown the WAL is folded into the database.
+    scanned.extend(scan_tree(&data, &secrets));
+    // The scan reads what is stored: the user name is there.
+    assert!(
+        scanned.iter().any(|bytes| find(bytes, USER.as_bytes())),
+        "the user name is stored"
+    );
+
+    let mut seen = 0;
+    loop {
+        match events.try_recv() {
+            Ok(event) => {
+                let json = serde_json::to_string(&event).unwrap();
+                let debug = format!("{event:?}");
+                for secret in &secrets {
+                    assert!(!json.contains(secret.as_str()), "event {json}");
+                    assert!(!debug.contains(secret.as_str()), "event {debug}");
+                }
+                seen += 1;
+            }
+            Err(broadcast::error::TryRecvError::Lagged(n)) => panic!("{n} events lost"),
+            Err(_) => break,
+        }
+    }
+    assert!(seen > 3, "events were captured ({seen})");
+
+    let logs = logs.lock().unwrap().clone();
+    assert!(
+        logs.contains(&format!("job={}", id.0)),
+        "logs were captured"
+    );
+    for secret in &secrets {
+        assert!(!logs.contains(secret.as_str()), "logged: {secret}");
+    }
+    #[cfg(target_os = "linux")]
+    for name in xattr::list(fx.dest.join("p.bin")).unwrap() {
+        if let Some(value) = xattr::get(fx.dest.join("p.bin"), &name).unwrap() {
+            for secret in &secrets {
+                assert!(!find(&value, secret.as_bytes()), "{name:?}");
+            }
+        }
+    }
+}
+
+/// Reads every file under `dir` and fails if one holds a secret; returns
+/// what it read.
+fn scan_tree(dir: &Path, secrets: &[String]) -> Vec<Vec<u8>> {
+    let mut read = Vec::new();
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            read.extend(scan_tree(&path, secrets));
+            continue;
+        }
+        let bytes = fs::read(&path).unwrap();
+        for secret in secrets {
+            assert!(
+                !find(&bytes, secret.as_bytes()),
+                "{} holds a secret",
+                path.display()
+            );
+        }
+        read.push(bytes);
+    }
+    read
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Everything traced in this test binary, at every level, from the moment
+/// this is first called.
+fn capture_logs() -> Arc<Mutex<String>> {
+    static LOGS: OnceLock<Arc<Mutex<String>>> = OnceLock::new();
+    LOGS.get_or_init(|| {
+        let logs = Arc::new(Mutex::new(String::new()));
+        tracing::subscriber::set_global_default(Capture {
+            logs: logs.clone(),
+            next_span: AtomicU64::new(1),
+        })
+        .expect("no other subscriber in this test binary");
+        logs
+    })
+    .clone()
+}
+
+struct Capture {
+    logs: Arc<Mutex<String>>,
+    next_span: AtomicU64,
+}
+
+struct Writer<'a>(&'a Mutex<String>);
+
+impl tracing::field::Visit for Writer<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn Debug) {
+        let line = format!("{}={value:?} ", field.name());
+        self.0.lock().unwrap().push_str(&line);
+    }
+}
+
+impl tracing::Subscriber for Capture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        span.record(&mut Writer(&self.logs));
+        tracing::span::Id::from_u64(self.next_span.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn record(&self, _: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+        values.record(&mut Writer(&self.logs));
+    }
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        event.record(&mut Writer(&self.logs));
+        self.logs.lock().unwrap().push('\n');
+    }
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
+}

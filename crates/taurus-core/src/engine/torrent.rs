@@ -456,6 +456,7 @@ mod tests {
             uploaded: 0,
             seed_started_at: None,
             media: None,
+            auth_user: None,
         }
     }
 

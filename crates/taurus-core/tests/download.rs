@@ -102,6 +102,7 @@ impl Fixture {
             limiter: Limiter::new(None),
             timing,
             auto_checksum,
+            auth: None,
         };
         tokio::time::timeout(Duration::from_secs(30), run_job(ctx))
             .await

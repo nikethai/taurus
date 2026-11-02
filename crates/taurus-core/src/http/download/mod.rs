@@ -57,6 +57,9 @@ pub struct JobContext {
     /// Look for the file's sum in a `SHA256SUMS` file next to it when the
     /// job names none.
     pub auto_checksum: bool,
+    /// The job's credentials, if it has any: sent with each request to its
+    /// link's origin (the `SHA256SUMS` file's included).
+    pub auth: Option<crate::http::Auth>,
 }
 
 /// The key a host's learned connection limit is stored under: the host,

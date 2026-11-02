@@ -6,6 +6,7 @@ use reqwest::header::{
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::filename::choose_name;
+use crate::http::auth::{Auth, authorize, unauthorized};
 use crate::http::client::{bot_check_error, request_error, status_error};
 use crate::page::{self, MAX_HTML_BYTES, PageVerdict};
 
@@ -30,7 +31,7 @@ pub struct Probe {
 /// `GET` with `Range: bytes=0-0` (never HEAD). Only headers are read.
 pub async fn probe(client: &reqwest::Client, url: &str) -> Result<Probe, CoreError> {
     let url = parse_url(url)?;
-    let response = send(client, &url, None, true).await?;
+    let response = send(client, &url, None, None, true).await?;
     let final_url = response.url().clone();
     from_headers(url, final_url, response.status(), response.headers())
 }
@@ -44,10 +45,22 @@ pub async fn resolve(
     url: &str,
     referer: Option<&str>,
 ) -> Result<Probe, CoreError> {
+    resolve_with(client, url, referer, None).await
+}
+
+/// [`resolve`] signing in with `auth` wherever it applies (the link's own
+/// origin). A 401 fails with `NeedsSignIn`: "wrong user name or password"
+/// if the request carried credentials, else naming the server's realm.
+pub async fn resolve_with(
+    client: &reqwest::Client,
+    url: &str,
+    referer: Option<&str>,
+    auth: Option<&Auth>,
+) -> Result<Probe, CoreError> {
     let mut requested = parse_url(url)?;
     let mut followed_form = false;
     loop {
-        let mut response = send(client, &requested, referer, true).await?;
+        let mut response = send(client, &requested, referer, auth, true).await?;
         let content_type = header(response.headers(), CONTENT_TYPE);
         if !page::is_html(content_type.as_deref()) {
             let status = response.status();
@@ -59,7 +72,7 @@ pub async fn resolve(
         }
         if response.status() == StatusCode::PARTIAL_CONTENT {
             // One byte of HTML cannot be judged: read the page without a range.
-            response = send(client, &requested, referer, false).await?;
+            response = send(client, &requested, referer, auth, false).await?;
         }
         let status = response.status();
         let headers = response.headers().clone();
@@ -106,20 +119,30 @@ fn parse_url(url: &str) -> Result<url::Url, CoreError> {
     url::Url::parse(url).map_err(|e| error(ErrorKind::Unknown, format!("invalid URL {url:?}: {e}")))
 }
 
+/// The answer to a GET of `url`; a 401 is an error (see `unauthorized`).
 async fn send(
     client: &reqwest::Client,
     url: &url::Url,
     referer: Option<&str>,
+    auth: Option<&Auth>,
     ranged: bool,
 ) -> Result<reqwest::Response, CoreError> {
-    let mut request = client.get(url.clone()).header(ACCEPT_ENCODING, "identity");
+    let request = client.get(url.clone()).header(ACCEPT_ENCODING, "identity");
+    let (mut request, signed_in) = authorize(request, auth, url.as_str());
     if ranged {
         request = request.header(RANGE, "bytes=0-0");
     }
     if let Some(referer) = referer {
         request = request.header(REFERER, referer);
     }
-    request.send().await.map_err(request_error)
+    let response = request.send().await.map_err(request_error)?;
+    if response.status() == StatusCode::UNAUTHORIZED {
+        // Signed in only if no redirect led elsewhere (reqwest then drops
+        // the credentials).
+        let sent = signed_in && response.url().origin() == url.origin();
+        return Err(unauthorized(response.headers(), sent));
+    }
+    Ok(response)
 }
 
 /// At most [`MAX_HTML_BYTES`] of the body, as text.

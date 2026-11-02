@@ -12,6 +12,7 @@ use tokio::fs::OpenOptions;
 use crate::checksum::{self, Sha256Sum};
 use crate::errors::{CoreError, ErrorKind};
 use crate::filename::{self, unique_path};
+use crate::http::auth::authorize;
 use crate::store::{JobRecord, JobState};
 use crate::system;
 
@@ -126,7 +127,11 @@ async fn expected_sum(ctx: &JobContext, job: &JobRecord) -> Result<Option<Sha256
 /// The text of a `SHA256SUMS` file, fetched like the job's own requests;
 /// `None` on any error, a non-2xx answer, a body over 1 MiB, or cancel.
 async fn fetch_sums(ctx: &JobContext, job: &JobRecord, url: url::Url) -> Option<String> {
-    let mut request = ctx.client.get(url);
+    let (mut request, _) = authorize(
+        ctx.client.get(url.as_str()),
+        ctx.auth.as_ref(),
+        url.as_str(),
+    );
     if let Some(referer) = &job.referer {
         request = request.header(REFERER, referer);
     }

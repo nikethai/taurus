@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::errors::{CoreError, ErrorKind, backoff_delay_with};
+use crate::http::auth::{Auth, authorize, unauthorized};
 use crate::http::client::{bot_check_error, request_error, status_error};
 use crate::http::probe::{parse_content_range, validator_change};
 use crate::limit::Limiter;
@@ -64,6 +65,8 @@ pub(super) struct Worker {
     pub(super) client: reqwest::Client,
     pub(super) url: String,
     pub(super) referer: Option<String>,
+    /// The job's credentials, sent if `url` is on the link's origin.
+    pub(super) auth: Option<Auth>,
     /// The job's validators, which every 206 must match.
     pub(super) etag: Option<String>,
     pub(super) last_modified: Option<String>,
@@ -149,7 +152,8 @@ impl Worker {
         if self.written >= end {
             return Ok(WorkerEnd::Complete);
         }
-        let mut request = self.client.get(&self.url);
+        let (mut request, signed_in) =
+            authorize(self.client.get(&self.url), self.auth.as_ref(), &self.url);
         if self.resumable {
             request = request.header(RANGE, format!("bytes={}-{}", self.written, end - 1));
         }
@@ -160,7 +164,10 @@ impl Worker {
             _ = self.stop.cancelled() => return Ok(WorkerEnd::Cancelled),
             sent = request.send() => sent.map_err(|e| Fault::Source(request_error(e)))?,
         };
-        if let Some(end) = self.check_response(&response, end).map_err(Fault::Source)? {
+        if let Some(end) = self
+            .check_response(&response, end, signed_in)
+            .map_err(Fault::Source)?
+        {
             return Ok(end);
         }
         // Counted before it is announced, so the workers it lets start see it.
@@ -212,11 +219,13 @@ impl Worker {
     }
 
     /// Accepts the response, asks for the fallback, or returns the error.
-    /// Runs before any byte of the response is written.
+    /// Runs before any byte of the response is written. `signed_in`: the
+    /// request carried the job's credentials.
     fn check_response(
         &self,
         response: &reqwest::Response,
         end: u64,
+        signed_in: bool,
     ) -> Result<Option<WorkerEnd>, CoreError> {
         let status = response.status();
         let headers = response.headers();
@@ -244,6 +253,12 @@ impl Worker {
         ) && self.open.load(Ordering::SeqCst) > 0
         {
             return Ok(Some(WorkerEnd::ConnectionLimit));
+        }
+        if status == StatusCode::UNAUTHORIZED {
+            // A redirect to another origin dropped the credentials.
+            let sent = signed_in
+                && url::Url::parse(&self.url).is_ok_and(|u| u.origin() == response.url().origin());
+            return Err(unauthorized(headers, sent));
         }
         if !status.is_success() {
             return Err(status_error(status));

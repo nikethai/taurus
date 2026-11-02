@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::errors::CoreError;
 use crate::http::{JobOutcome, Probe};
 use crate::limit::{Limiter, PeakTracker};
+use crate::secrets::Credentials;
 use crate::settings::{Settings, TorrentSettings, WhenDone};
 use crate::store::{JobId, JobKind, JobRecord, JobState, Store};
 use crate::system::{AwakeGuard, SpaceSource};
@@ -21,6 +22,7 @@ use crate::torrent::hub::TorrentHub;
 use crate::when_done::WhenDoneRunner;
 
 use super::media::{MediaAdd, MediaUpdate};
+use super::sign_in::Secrets;
 use super::torrent::TorrentInput;
 use super::{AddRequest, Event, RemoveFiles, TorrentView, Views, no_such_job, read, write};
 
@@ -63,6 +65,12 @@ pub(super) enum Command {
     },
     Get {
         id: JobId,
+        reply: Reply<JobRecord>,
+    },
+    /// Answers the job as it was.
+    SetCredentials {
+        id: JobId,
+        creds: Credentials,
         reply: Reply<JobRecord>,
     },
     Remove {
@@ -203,6 +211,8 @@ pub(super) struct Actor {
     pub(super) tools: Arc<ToolManager>,
     /// The `stop_recording` token of each running media job.
     pub(super) media_stops: HashMap<JobId, CancellationToken>,
+    /// The jobs' passwords.
+    pub(super) secrets: Secrets,
 }
 
 pub(super) type Rates = (Option<u64>, Option<u64>, Option<u64>);
@@ -300,6 +310,9 @@ impl Actor {
                         .get_job(id)
                         .and_then(|j| j.ok_or_else(no_such_job)),
                 );
+            }
+            Command::SetCredentials { id, creds, reply } => {
+                let _ = reply.send(self.set_credentials(id, creds));
             }
             Command::Remove { id, files, reply } => {
                 let _ = reply.send(self.remove(id, files).await);

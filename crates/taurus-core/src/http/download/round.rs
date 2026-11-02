@@ -340,6 +340,7 @@ impl Round<'_> {
             // The link itself, so every request re-follows its redirects.
             url: self.sources.url(source).to_owned(),
             referer: self.job.referer.clone(),
+            auth: self.ctx.auth.clone(),
             etag: self.job.etag.clone(),
             last_modified: self.job.last_modified.clone(),
             tapa: self.tapa.to_path_buf(),
@@ -420,6 +421,7 @@ mod tests {
             limiter: Limiter::new(None),
             timing: Timing::default(),
             auto_checksum: false,
+            auth: None,
         };
         let (tx, _rx) = mpsc::unbounded_channel();
         let tapa = dir.path().join("x.bin.tapa");

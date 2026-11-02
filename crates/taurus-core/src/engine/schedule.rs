@@ -303,9 +303,13 @@ impl Actor {
             limiter: self.limiter.clone(),
             timing: self.timing.clone(),
             auto_checksum: self.settings.auto_checksum,
+            auth: None,
         };
         let tx = self.job_tx.clone();
+        let secrets = self.secrets.clone();
         tokio::spawn(async move {
+            let mut ctx = ctx;
+            ctx.auth = secrets.auth_for_stored(&ctx.store, id).await;
             // A task of its own, so a panic still ends in `Finished`.
             let job = tokio::spawn(run_job(ctx));
             // Ends when the job drops its progress sender, i.e. when it ends.

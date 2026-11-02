@@ -10,6 +10,7 @@ pub mod media;
 pub mod page;
 pub mod plan;
 pub mod progress;
+pub mod secrets;
 pub mod settings;
 pub mod store;
 pub mod system;
@@ -24,6 +25,7 @@ pub use engine::{
 };
 pub use errors::{CoreError, ErrorKind};
 pub use grab::{GrabOptions, GrabResult, GrabbedLink};
+pub use secrets::Credentials;
 pub use settings::{
     PowerMode, Settings, SpeedLimit, ThemeChoice, TorrentSettings, UiMode, UiSettings, WhenDone,
 };

@@ -11,10 +11,12 @@ mod inspect;
 mod jobs;
 mod media;
 mod media_job;
+mod mirrors;
 mod open;
 mod remove;
 mod schedule;
 mod settings;
+mod sign_in;
 mod stop_requests;
 mod tool_ops;
 mod torrent;
@@ -30,7 +32,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::checksum;
 use crate::errors::{CoreError, ErrorKind, classify_io};
-use crate::http::resolve;
+use crate::http::{Auth, resolve_with};
 use crate::media::fast_path_host;
 use crate::settings::Settings;
 use crate::store::{JobId, JobKind, JobState, Store};
@@ -43,11 +45,13 @@ use actor::Command;
 #[doc(hidden)]
 pub use actor::JobMsg;
 pub use inspect::LinkInfo;
-use jobs::{downloaded, fixed_url, vet_mirrors, view_of};
+use jobs::{downloaded, fixed_url, view_of};
 pub use media::{MediaChoice, MediaView};
+use mirrors::vet_mirrors;
 use open::assemble;
 pub use remove::RemoveFiles;
 use schedule::check_space;
+use sign_in::{Secrets, web_only};
 pub use types::{AddRequest, EngineConfig, Event, JobView, TorrentView};
 
 const COMMAND_CAPACITY: usize = 64;
@@ -84,6 +88,8 @@ pub struct Engine {
     tools: Arc<ToolManager>,
     /// Holds the database, the tools and the media jobs' thumbnails.
     data_dir: PathBuf,
+    /// The jobs' passwords, shared with the actor.
+    secrets: Secrets,
 }
 
 impl Engine {
@@ -159,6 +165,13 @@ impl Engine {
     /// and a checksum are refused. With `req.media_info` the link is taken
     /// as the media it describes, and not read again. It counts toward `max_active` like a web
     /// download; see `stop_recording` for live streams.
+    ///
+    /// With `req.credentials` a web download signs in (HTTP Basic auth) on
+    /// its link's own origin only, mirrors there included; the password
+    /// goes to `EngineConfig::secrets`. A 401 fails with `NeedsSignIn`
+    /// ("wrong user name or password" if the request signed in, else
+    /// naming the server's realm). Credentials for a torrent or a media
+    /// link are refused.
     pub async fn add(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         self.check_running()?;
         // Resolving may take minutes: the machine must not sleep meanwhile.
@@ -182,7 +195,10 @@ impl Engine {
         // on a small stack (a front end's main thread: 1 MiB on Windows).
         match classify(&req.url) {
             Ok(Source::Http(_)) => {}
-            Ok(source) => return Box::pin(self.add_torrent(req, source)).await,
+            Ok(source) => {
+                web_only(&req)?;
+                return Box::pin(self.add_torrent(req, source)).await;
+            }
             // A bad magnet link; anything else is for `resolve` to report.
             Err(e) if e.kind == ErrorKind::SiteNotSupported => return Err(e),
             Err(_) => {}
@@ -205,13 +221,21 @@ impl Engine {
         }
         let referer = req.referer.clone();
         if fast_path_host(&req.url) || req.media_info.is_some() {
+            web_only(&req)?;
             return Box::pin(self.add_media(req)).await;
         }
         let url = fixed_url(&req.url);
-        let probe = match Box::pin(resolve(&self.client, &url, referer.as_deref())).await {
+        let auth = req.credentials.clone().and_then(|c| Auth::new(c, &url));
+        let resolved = resolve_with(&self.client, &url, referer.as_deref(), auth.as_ref());
+        let probe = match Box::pin(resolved).await {
             Ok(probe) => probe,
-            // A web page; yt-dlp may read it, when asked for.
-            Err(page) if page.kind == ErrorKind::SiteNotSupported && req.media.is_some() => {
+            // A web page; yt-dlp may read it, when asked for (with no
+            // credentials, which it would not get).
+            Err(page)
+                if page.kind == ErrorKind::SiteNotSupported
+                    && req.media.is_some()
+                    && req.credentials.is_none() =>
+            {
                 return Box::pin(self.add_media(req)).await;
             }
             Err(e) => return Err(e),
@@ -231,6 +255,7 @@ impl Engine {
             &probe,
             &req.mirrors,
             referer.as_deref(),
+            auth.as_ref(),
         ))
         .await;
         self.call(|reply| Command::Add { req, probe, reply })
@@ -266,14 +291,12 @@ impl Engine {
         // the job runs.
         let probe = match job.kind {
             JobKind::Torrent | JobKind::Media => None,
-            JobKind::Http => Some(
-                resolve(
-                    &self.client,
-                    &fixed_url(&job.source_url),
-                    job.referer.as_deref(),
-                )
-                .await?,
-            ),
+            JobKind::Http => {
+                let auth = self.secrets.auth_for(&job).await;
+                let url = fixed_url(&job.source_url);
+                let referer = job.referer.as_deref();
+                Some(resolve_with(&self.client, &url, referer, auth.as_ref()).await?)
+            }
         };
         self.call(|reply| Command::Resume { id, probe, reply })
             .await?
@@ -301,6 +324,7 @@ impl Engine {
     /// but not a playlist's folder. With `RemoveFiles::IfUnfinished` (see
     /// `remove_with`) an unfinished media job loses only those partial
     /// files: what it finished (a paused playlist's done videos) is kept.
+    /// A job's password (see `set_credentials`) is deleted in every case.
     pub async fn remove(&self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
         let files = if delete_files {
             RemoveFiles::All

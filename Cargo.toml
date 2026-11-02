@@ -55,6 +55,8 @@ libc = "0.2"
 windows-sys = "0.61"
 dunce = "1"
 keepawake = "0.6"
+# Passwords for protected downloads (OS keychain; pure-Rust D-Bus on Linux).
+keyring = "4.2"
 # Exact: the [patch.crates-io] below replaces 9.1.0 only, and a newer
 # release would silently bypass it.
 librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls"] }
@@ -66,6 +68,7 @@ lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "x
 
 # Tests only
 axum = "0.8"
+base64 = "0.23"
 tempfile = "3"
 sha1 = "0.11"
 

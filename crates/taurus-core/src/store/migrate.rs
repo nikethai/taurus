@@ -9,7 +9,7 @@ use crate::errors::{CoreError, ErrorKind};
 
 use super::{Store, db_err, io_err, now_secs};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE jobs (
@@ -85,6 +85,14 @@ const MIGRATE_V5_TO_V6: &str = "
 ALTER TABLE jobs ADD COLUMN media_options TEXT;
 ";
 
+/// Applied on top of v6: one step for all of M6a's columns (v7 is not
+/// released until M6a is; each of its additions appends an `ALTER` here).
+/// `auth_user`: the user name of a protected download (its password is in
+/// the secret store, never here).
+const MIGRATE_V6_TO_V7: &str = "
+ALTER TABLE jobs ADD COLUMN auth_user TEXT;
+";
+
 fn is_corruption(e: &rusqlite::Error) -> bool {
     matches!(
         e.sqlite_error_code(),
@@ -125,6 +133,7 @@ fn init(path: &Path) -> rusqlite::Result<Connection> {
         MIGRATE_V3_TO_V4,
         MIGRATE_V4_TO_V5,
         MIGRATE_V5_TO_V6,
+        MIGRATE_V6_TO_V7,
     ];
     let steps = match usize::try_from(version) {
         Ok(from) if from < chain.len() => chain[from..].concat(),
@@ -441,7 +450,7 @@ mod tests {
             .lock()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, SCHEMA_VERSION);
         // The new kind, state and column are usable.
         let options = crate::media::MediaOptions {
             quality: "audio-best".into(),
@@ -491,6 +500,66 @@ mod tests {
         )
         .unwrap();
         assert!(old.partial_files.is_empty());
+    }
+
+    #[test]
+    fn v6_database_migrates_to_v7() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taurus.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for step in [
+                SCHEMA_V1,
+                MIGRATE_V1_TO_V2,
+                MIGRATE_V2_TO_V3,
+                MIGRATE_V3_TO_V4,
+                MIGRATE_V4_TO_V5,
+                MIGRATE_V5_TO_V6,
+            ] {
+                conn.execute_batch(step).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 6).unwrap();
+            conn.execute(
+                "INSERT INTO jobs (url, source_url, dest_dir, file_name, state, connections, \
+                 created_at, updated_at, kind, media_options) \
+                 VALUES ('u', 'u', '/d', 'x', 'paused', 4, 1, 1, 'media', \
+                 '{\"quality\":\"best\",\"selector\":\"b\",\"audio_only\":false,\
+                 \"convert\":null,\"playlist\":false,\"live_from_start\":false}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        let jobs = store.list_jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        let mut job = jobs[0].clone();
+        // What v6 recorded survives; no job has a user name yet.
+        assert_eq!(job.kind, JobKind::Media);
+        assert_eq!(job.state, JobState::Paused);
+        assert_eq!(job.media.as_ref().map(|m| m.quality.as_str()), Some("best"));
+        assert_eq!(job.auth_user, None);
+        let version: i64 = store
+            .lock()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
+        // The user name is set on its own; a whole-record update from a
+        // copy without it leaves it alone.
+        store.set_auth_user(job.id, Some("ann")).unwrap();
+        job.state = JobState::Failed;
+        store.update_job(&job).unwrap();
+        let stored = store.get_job(job.id).unwrap().unwrap();
+        assert_eq!(stored.auth_user.as_deref(), Some("ann"));
+        assert_eq!(stored.state, JobState::Failed);
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.get_job(job.id).unwrap().unwrap().auth_user.as_deref(),
+            Some("ann")
+        );
+        store.set_auth_user(job.id, None).unwrap();
+        assert_eq!(store.get_job(job.id).unwrap().unwrap().auth_user, None);
     }
 
     #[test]

@@ -2,9 +2,11 @@
 //! the views of the jobs and the events it broadcasts.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::errors::ErrorKind;
 use crate::media::MediaInfo;
+use crate::secrets::{Credentials, KeyringStore, SecretStore};
 use crate::settings::{PowerMode, Settings, WhenDone};
 use crate::store::{JobId, JobKind, JobState};
 use crate::system::{SpaceSource, available_space};
@@ -30,6 +32,11 @@ pub struct EngineConfig {
     /// Where yt-dlp, ffmpeg and Deno are downloaded from; the real
     /// publishers by default.
     pub tool_sources: ToolSources,
+    /// Where the passwords of protected downloads are kept: the OS
+    /// keychain by default. When the store fails (no keychain), the engine
+    /// keeps them in memory until it stops, and a job asks again after a
+    /// restart.
+    pub secrets: Arc<dyn SecretStore>,
     /// Test-only: where free space is read from, so tests need not fill a
     /// disk. Not for front ends.
     #[doc(hidden)]
@@ -48,6 +55,7 @@ impl EngineConfig {
             power: PowerMode::Execute,
             autostart: true,
             tool_sources: ToolSources::default(),
+            secrets: Arc::new(KeyringStore),
             available_space,
             torrent_test: None,
         }
@@ -84,6 +92,10 @@ pub struct AddRequest {
     /// What `Engine::inspect` found at `url` (`LinkInfo::Media`), so a
     /// media link is not read by yt-dlp a second time; `None` reads it.
     pub media_info: Option<MediaInfo>,
+    /// The user name and password of a protected (HTTP Basic auth) web
+    /// download, sent only to the link's own host. The password goes to
+    /// `EngineConfig::secrets`, never to the database.
+    pub credentials: Option<Credentials>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]

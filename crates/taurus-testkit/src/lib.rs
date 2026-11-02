@@ -19,8 +19,8 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::header::{
-    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG,
-    HeaderMap, HeaderName, HeaderValue, LAST_MODIFIED, LOCATION, RANGE,
+    ACCEPT_RANGES, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
+    ETAG, HeaderMap, HeaderName, HeaderValue, LAST_MODIFIED, LOCATION, RANGE, WWW_AUTHENTICATE,
 };
 use axum::http::{Response, StatusCode};
 use axum::routing::get;
@@ -76,6 +76,10 @@ pub struct FileSpec {
     pub fail_after: Option<FailAfter>,
     /// Added to every successful response.
     pub extra_headers: Vec<(String, String)>,
+    /// `(user, password)`: every request without this HTTP Basic
+    /// `Authorization` answers 401 with `WWW-Authenticate: Basic
+    /// realm="test"` (checked before anything else).
+    pub basic_auth: Option<(String, String)>,
 }
 
 impl FileSpec {
@@ -96,6 +100,7 @@ impl FileSpec {
             over_limit_status: 429,
             fail_after: None,
             extra_headers: Vec::new(),
+            basic_auth: None,
         }
     }
 }
@@ -483,6 +488,16 @@ async fn handle(
 /// `max_concurrent`, then the normal response.
 fn file_response(entry: &mut FileEntry, number: usize, headers: &HeaderMap) -> Response<Body> {
     let spec = &entry.spec;
+    if let Some((user, password)) = &spec.basic_auth
+        && !authorized(headers, user, password)
+    {
+        let mut resp = empty(StatusCode::UNAUTHORIZED);
+        resp.headers_mut().insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static("Basic realm=\"test\""),
+        );
+        return resp;
+    }
     if let Some(&status) = spec.fail_first.get(number - 1)
         && status != 0
     {
@@ -574,6 +589,17 @@ fn file_response(entry: &mut FileEntry, number: usize, headers: &HeaderMap) -> R
     }
     apply_headers(h, &spec.extra_headers);
     resp
+}
+
+/// Whether the request carries HTTP Basic auth for `user` and `password`.
+fn authorized(headers: &HeaderMap, user: &str, password: &str) -> bool {
+    use base64::Engine as _;
+    let expected = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Basic "))
+        .is_some_and(|given| given.trim() == expected)
 }
 
 struct Pacing {
@@ -732,6 +758,23 @@ mod tests {
         assert_eq!(resp.status(), 416);
         assert_eq!(header(&resp, "content-range"), "bytes */1000");
         assert!(resp.bytes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn basic_auth_refuses_until_matched() {
+        let server = TestServer::start().await;
+        let mut spec = FileSpec::new(1000);
+        spec.basic_auth = Some(("ann".into(), "pw".into()));
+        let url = server.serve("/p.bin", spec);
+        let resp = get(&url, None).await;
+        assert_eq!(resp.status(), 401);
+        assert_eq!(resp.headers()["www-authenticate"], "Basic realm=\"test\"");
+        let client = reqwest::Client::new();
+        let wrong = client.get(&url).basic_auth("ann", Some("no")).send();
+        assert_eq!(wrong.await.unwrap().status(), 401);
+        let right = client.get(&url).basic_auth("ann", Some("pw")).send();
+        assert_eq!(right.await.unwrap().status(), 200);
+        assert_eq!(server.requests("/p.bin"), 3);
     }
 
     #[tokio::test]

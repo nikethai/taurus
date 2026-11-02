@@ -106,6 +106,9 @@ pub struct JobRecord {
     /// What a media job downloads and how; `None` for other jobs. Stored
     /// as JSON (`media_options`).
     pub media: Option<MediaOptions>,
+    /// The user name of a protected download; its password is in the
+    /// engine's secret store. Written only by `set_auth_user`.
+    pub auth_user: Option<String>,
 }
 
 pub struct NewJob {
@@ -297,8 +300,9 @@ impl Store {
     }
 
     /// Writes every mutable field of `job` (all but `id`, `source_url`,
-    /// `kind` and `uploaded`, which `commit_torrent_progress` owns, so a
-    /// stale copy cannot lower it). Updating a job that no longer exists is
+    /// `kind`, `auth_user`, which `set_auth_user` owns, and `uploaded`,
+    /// which `commit_torrent_progress` owns, so a stale copy cannot lower
+    /// it). Updating a job that no longer exists is
     /// a no-op; an info-hash another job has is `AlreadyAdded`.
     pub fn update_job(&self, job: &JobRecord) -> Result<(), CoreError> {
         let total = opt_to_i64(job.total, "total size")?;
@@ -395,6 +399,18 @@ impl Store {
             .execute(
                 "UPDATE jobs SET state = ?2, updated_at = ?3 WHERE id = ?1",
                 params![id.0, state.as_str(), now_secs()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Sets only the user name of a protected download (`None`: none). A
+    /// job that no longer exists is a no-op.
+    pub fn set_auth_user(&self, id: JobId, user: Option<&str>) -> Result<(), CoreError> {
+        self.lock()
+            .execute(
+                "UPDATE jobs SET auth_user = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id.0, user, now_secs()],
             )
             .map_err(db_err)?;
         Ok(())
@@ -632,6 +648,7 @@ mod tests {
                 uploaded: 0,
                 seed_started_at: None,
                 media: None,
+                auth_user: None,
             }
         );
 

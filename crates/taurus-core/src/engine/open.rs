@@ -21,6 +21,7 @@ use super::actor::{Actor, Command, JobMsg};
 use super::jobs::{downloaded, view_of};
 use super::media::restore_thumbnails;
 use super::settings::{fresh_peak, speed_limit, unix_now};
+use super::sign_in::Secrets;
 use super::{
     COMMAND_CAPACITY, DB_FILE, EVENT_CAPACITY, Engine, EngineConfig, IN_USE, JobView, LOCK_FILE,
     io_error,
@@ -100,6 +101,7 @@ pub(super) async fn assemble(
         })
     };
     let client = build_client();
+    let secrets = Secrets::new(config.secrets.clone());
     let (torrent_settings, _) = watch::channel(settings.torrent.clone());
     let tools = Arc::new(
         ToolManager::new(&config.data_dir, config.tool_sources, client.clone())
@@ -149,6 +151,7 @@ pub(super) async fn assemble(
         transferred: 0,
         tools: tools.clone(),
         media_stops: HashMap::new(),
+        secrets: secrets.clone(),
     };
     let engine = Engine {
         commands,
@@ -164,6 +167,7 @@ pub(super) async fn assemble(
         metadata_timeout: config.timing.torrent_metadata_timeout,
         tools,
         data_dir: config.data_dir,
+        secrets,
     };
     Ok((engine, actor, commands_rx))
 }
