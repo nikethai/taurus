@@ -71,6 +71,7 @@ mod tests {
     fn the_switches_set_the_config() {
         let mut config = EngineConfig::new(PathBuf::from("/data"));
         let default_wait = config.timing.waiting_retry_first;
+        let default_secrets = config.secrets.clone();
         apply_from(&mut config, |name| match name {
             "TAURUS_FAST_TIMING" => Some("1".into()),
             "TAURUS_TORRENT_TEST_PEERS" => Some("127.0.0.1:6881, junk,[::1]:7".into()),
@@ -79,6 +80,8 @@ mod tests {
             _ => None,
         });
         assert!(config.timing.waiting_retry_first < default_wait);
+        // Passwords are in memory, not in the default (keychain) store.
+        assert!(!std::sync::Arc::ptr_eq(&config.secrets, &default_secrets));
         let peers = config.torrent_test.unwrap().initial_peers;
         assert_eq!(peers.len(), 2);
         assert_eq!(
@@ -90,5 +93,8 @@ mod tests {
         apply_from(&mut config, |_| None);
         assert!(config.torrent_test.is_none());
         assert_eq!(config.timing.waiting_retry_first, default_wait);
+        let default_secrets = config.secrets.clone();
+        apply_from(&mut config, |_| None);
+        assert!(std::sync::Arc::ptr_eq(&config.secrets, &default_secrets));
     }
 }

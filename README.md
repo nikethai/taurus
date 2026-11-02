@@ -52,12 +52,12 @@ taurus grab https://example.com/papers/ --ext pdf,zip
 # A folder listing: read its subfolders too (one level)
 taurus grab https://example.com/files/ --subfolders
 
-# Add every listed file to the queue and download them into a folder
-# (all into that one folder, whatever subfolder they came from)
+# Add every listed file to the queue and download them into a folder; a file found in
+# a subfolder goes into the same subfolder of that folder (a/x.pdf and b/x.pdf stay apart)
 taurus grab https://example.com/papers/ --ext pdf --add --dir ~/Downloads
 ```
 
-`--json` prints one object, `{"links": [{"index", "url", "name", "folder", "extension", "size"}], "truncated": bool}`. Without `--add`, nothing is queued.
+`--json` prints the listing as one object, `{"links": [{"index", "url", "name", "folder", "extension", "size"}], "truncated": bool}`. Without `--add`, nothing is queued; with `--add`, `--json` goes on to print the usual event lines after that object, one JSON value per line. Folder names come from the page, so they are checked: a name that is empty, `.`, `..` or holds a backslash makes that one file fail (the others go on, exit 1), and nothing is ever written outside `--dir`. With `--add`, a file whose host is the page's own is requested with the page as its Referer, like a browser following the link.
 
 ### Protected downloads
 
@@ -67,14 +67,15 @@ A web download that asks for a user name and password (HTTP Basic sign-in) takes
 # Asks "Password for alice:" on the terminal
 taurus add https://files.example.com/report.zip --user alice
 
-# Give a download that failed with "sign-in needed" (or was paused) its user name and
+# Give a download that failed with NeedsSignIn (or was paused) its user name and
 # password; it then resumes and the queue runs until it is idle
 taurus login 3 --user alice
 ```
 
+- The user name cannot contain `:` (HTTP Basic sign-in has no room for it; `--user alice:secret` is refused, and nothing is stored). The password is asked for before anything else starts, so `taurus` holds no lock on its data while you type.
 - The password is never an option and is never read from the environment or a pipe: with no terminal, `taurus` exits 1 and says so.
 - It goes to the operating system's keychain (Keychain on macOS, Credential Manager on Windows, the Secret Service on Linux), filed under the service `dev.nikethai.taurus`. It is never written to the job database, the settings, the logs or the output, and it is sent only to the link's own host (mirrors on that host included).
-- When there is no keychain (for example a Linux session without a Secret Service), the password is kept in memory only, until `taurus` exits. A download that needs it after a restart then fails with "sign-in needed": run `taurus login <ID> --user <NAME>` and type the password again.
+- When there is no keychain (for example a Linux session without a Secret Service), the password is kept in memory only, until `taurus` exits. A download that needs it after a restart then fails with `NeedsSignIn: the server asks for a user name and password`: run `taurus login <ID> --user <NAME>` and type the password again.
 - Only web downloads can be protected, not torrents or video links. A proxy with a user name or password is not supported either (see Settings).
 
 ### Torrents
@@ -228,7 +229,7 @@ taurus config set network.proxy socks5h://127.0.0.1:9050
 taurus config set network.proxy none
 ```
 
-The proxy is used by downloads, yt-dlp and tool downloads from the next request on, and by torrents (a SOCKS proxy only) the next time Taurus starts. A proxy URL with a user name or password is refused (they would be stored in the settings), as is anything that is not one of the schemes above; `config set` then exits 1 and shows the reason.
+The proxy is used by downloads, yt-dlp and tool downloads from the next request on, and by torrents (a SOCKS proxy only) the next time Taurus starts; setting or leaving a SOCKS proxy prints `applies next time Taurus starts`. A proxy URL with a user name or password is refused (they would be stored in the settings), as is anything that is not one of the schemes above; `config set` then exits 1 and shows the reason.
 
 Global options go before the command:
 

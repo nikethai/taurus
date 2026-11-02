@@ -1285,6 +1285,138 @@ async fn grab_lists_and_adds() {
     assert_exit(&fx.run(&["grab", &page, "--dir", dir]).await, 1);
 }
 
+fn listing_page(title: &str, links: &[&str]) -> String {
+    let rows: String = links
+        .iter()
+        .map(|l| format!("<a href=\"{l}\">{l}</a>\n"))
+        .collect();
+    format!(
+        "<html><head><title>{title}</title></head><body><h1>{title}</h1><pre>{rows}</pre></body></html>"
+    )
+}
+
+fn header(server: &TestServer, path: &str, name: &str) -> Option<String> {
+    server
+        .last_request_headers(path)
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grab_add_keeps_subfolders_and_sends_the_page_as_referer() {
+    let fx = Fixture::new().await;
+    let other = TestServer::start().await;
+    let (a, b) = (
+        FileSpec::new(1500),
+        FileSpec {
+            seed: 5,
+            ..FileSpec::new(2500)
+        },
+    );
+    fx.server.serve("/lst/a/x.pdf", a.clone());
+    fx.server.serve("/lst/b/x.pdf", b.clone());
+    fx.server.serve("/lst/r.pdf", FileSpec::new(700));
+    let far = other.serve("/far.pdf", FileSpec::new(900));
+    let page = fx.server.serve_page(
+        "/lst/",
+        200,
+        &[],
+        &listing_page("Index of /lst/", &["a/", "b/", "r.pdf", &far]),
+    );
+    fx.server.serve_page(
+        "/lst/a/",
+        200,
+        &[],
+        &listing_page("Index of /lst/a/", &["x.pdf"]),
+    );
+    fx.server.serve_page(
+        "/lst/b/",
+        200,
+        &[],
+        &listing_page("Index of /lst/b/", &["x.pdf"]),
+    );
+
+    let dir = fx.out.to_str().unwrap();
+    let output = fx
+        .run(&["grab", &page, "--subfolders", "--add", "--dir", dir])
+        .await;
+
+    assert_exit(&output, 0);
+    // Same names in different folders stay apart, where the listing put them.
+    assert_same_bytes(&fx.out.join("a/x.pdf"), &a);
+    assert_same_bytes(&fx.out.join("b/x.pdf"), &b);
+    assert_eq!(fs::metadata(fx.out.join("r.pdf")).unwrap().len(), 700);
+    assert!(!fx.out.join("x.pdf").exists());
+    assert!(!fx.out.join("x (1).pdf").exists());
+    // The page is the Referer for its own host's files, and for no other host.
+    assert_eq!(
+        header(&fx.server, "/lst/r.pdf", "referer").as_deref(),
+        Some(page.as_str())
+    );
+    assert_eq!(header(&other, "/far.pdf", "referer"), None);
+    assert_eq!(fs::metadata(fx.out.join("far.pdf")).unwrap().len(), 900);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grab_add_keeps_hostile_folders_inside_dir() {
+    let fx = Fixture::new().await;
+    // The server decodes the path of a request, so these are registered
+    // decoded: the links name them as `x%2F..%2F..%2Fescape/` and `a%5Cb/`.
+    for folder in ["/h/x/../../escape/", "/h/a\\b/", "/h/ok/"] {
+        fx.server
+            .serve(&format!("{folder}ev.pdf"), FileSpec::new(300));
+        fx.server.serve_page(
+            folder,
+            200,
+            &[],
+            &listing_page("Index of folder", &["ev.pdf"]),
+        );
+    }
+    let page = fx.server.serve_page(
+        "/h/",
+        200,
+        &[],
+        &listing_page("Index of /h/", &["x%2F..%2F..%2Fescape/", "a%5Cb/", "ok/"]),
+    );
+    let sandbox = fx.tmp.path().join("sandbox");
+    fs::create_dir(&sandbox).unwrap();
+    let dir = sandbox.join("dl");
+    fs::create_dir(&dir).unwrap();
+
+    let output = fx
+        .run(&[
+            "grab",
+            &page,
+            "--subfolders",
+            "--add",
+            "--dir",
+            dir.to_str().unwrap(),
+        ])
+        .await;
+
+    // The unsafe folders fail; the good one downloads.
+    assert_exit(&output, 1);
+    assert!(stderr(&output).contains("folder"), "{}", stderr(&output));
+    assert_eq!(fs::metadata(dir.join("ok/ev.pdf")).unwrap().len(), 300);
+    let mut inside = Vec::new();
+    let mut todo = vec![sandbox.clone()];
+    while let Some(next) = todo.pop() {
+        for entry in fs::read_dir(next).unwrap().flatten() {
+            if entry.path().is_dir() {
+                todo.push(entry.path());
+            } else {
+                inside.push(entry.path());
+            }
+        }
+    }
+    assert_eq!(inside, [dir.join("ok/ev.pdf")], "{inside:?}");
+    // Nothing next to the sandbox or the destination either.
+    let entries = |p: &Path| fs::read_dir(p).unwrap().count();
+    assert_eq!(entries(&sandbox), 1);
+    assert_eq!(entries(&dir), 1);
+}
+
 const SECRET: &str = "s3cret-pw-4711";
 
 /// The names of the files under `dir` whose bytes contain `needle`.
@@ -1327,6 +1459,13 @@ async fn add_with_user_prompts() {
     assert_exit(&output, 1);
     assert!(stderr(&output).contains("terminal"), "{}", stderr(&output));
     assert!(!fx.file().exists());
+
+    // A user name that carries a password is refused, and not repeated.
+    let output = fx
+        .run(&["add", &url, "--user", "bob:tryme", "--dir", dir])
+        .await;
+    assert_exit(&output, 1);
+    assert!(!say(&output).contains("tryme"), "{}", say(&output));
 
     // A password is never an option.
     let output = fx
@@ -1415,6 +1554,7 @@ async fn login_after_restart() {
     let list = fx.run(&["--json", "list"]).await;
     let jobs: Value = serde_json::from_slice(&list.stdout).unwrap();
     assert_eq!(jobs[0]["state"], "Failed", "{jobs}");
+    assert_eq!(jobs[0]["error"][0], "NeedsSignIn", "{jobs}");
 
     // A wrong password stays failed; the right one finishes the file.
     let login = |password: &str| {
@@ -1482,10 +1622,19 @@ async fn video_options_reach_yt_dlp() {
             "--container",
             "webm",
         ],
-        &["resume", "1", "--cookies-from", "netscape"],
     ] {
         assert_exit(&video.fx.run(args).await, 1);
     }
+    let output = video
+        .fx
+        .run(&["resume", "1", "--cookies-from", "netscape"])
+        .await;
+    assert_exit(&output, 1);
+    assert!(
+        stderr(&output).contains("unknown browser"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1524,6 +1673,15 @@ async fn convert_command() {
         .map(|j| j["kind"].as_str().unwrap())
         .collect();
     assert_eq!(kinds, ["Convert", "Http", "Convert"]);
+
+    // Only web downloads take a login, said before any password is asked.
+    let output = fx.run(&["login", "1", "--user", "bob"]).await;
+    assert_exit(&output, 1);
+    assert!(
+        stderr(&output).contains("not a web download"),
+        "{}",
+        stderr(&output)
+    );
 
     // Refusals say why and exit 1.
     let output = fx.run(&["convert", "77", "mp3"]).await;
@@ -1684,9 +1842,10 @@ async fn proxy_config_roundtrip_and_rejects_bad() {
         .run(&["config", "set", "network.proxy", "socks5h://127.0.0.1:9050"])
         .await;
     assert_exit(&output, 0);
+    // Torrents pick up a SOCKS proxy when Taurus next starts.
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "network.proxy = socks5h://127.0.0.1:9050\n"
+        "network.proxy = socks5h://127.0.0.1:9050\napplies next time Taurus starts\n"
     );
     assert_eq!(
         proxy_line(&fx).await,
@@ -1703,9 +1862,12 @@ async fn proxy_config_roundtrip_and_rejects_bad() {
             .contains("network.proxy = socks5h://127.0.0.1:9050\n")
     );
 
-    assert_exit(
-        &fx.run(&["config", "set", "network.proxy", "none"]).await,
-        0,
+    // Leaving a SOCKS proxy says so too: a running torrent session keeps it.
+    let output = fx.run(&["config", "set", "network.proxy", "none"]).await;
+    assert_exit(&output, 0);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "network.proxy = none\napplies next time Taurus starts\n"
     );
     assert_eq!(proxy_line(&fx).await, "network.proxy = none\n");
     assert_exit(
@@ -1713,15 +1875,19 @@ async fn proxy_config_roundtrip_and_rejects_bad() {
         0,
     );
     assert_eq!(proxy_line(&fx).await, "network.proxy = system\n");
-    assert_exit(
-        &fx.run(&[
+    // An http proxy is for web downloads only: used at once, no note.
+    let output = fx
+        .run(&[
             "config",
             "set",
             "network.proxy",
             "http://proxy.example:3128",
         ])
-        .await,
-        0,
+        .await;
+    assert_exit(&output, 0);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "network.proxy = http://proxy.example:3128\n"
     );
 
     // A user name or password in the URL is refused with the engine's own

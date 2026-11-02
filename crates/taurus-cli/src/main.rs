@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use taurus_core::torrent::source::{Source, classify};
-use taurus_core::{AddRequest, Engine, EngineConfig, JobId, JobView, PowerMode};
+use taurus_core::{AddRequest, Credentials, Engine, EngineConfig, JobId, JobView, PowerMode};
 use tokio::sync::broadcast::error::TryRecvError;
 
 use crate::edit::{ConvertArgs, JobAction, LoginArgs, SelectArgs};
@@ -218,6 +218,16 @@ fn parse() -> std::result::Result<Cli, ExitCode> {
             return Err(usage_error(&e));
         }
     }
+    if let Command::Resume {
+        cookies_from: Some(browser),
+        ..
+    } = &cli.command
+        && let Err(e) = taurus_core::media::validate_browser(browser.trim())
+    {
+        let message = format!("--cookies-from: {}", e.detail);
+        let e = Cli::command().error(clap::error::ErrorKind::InvalidValue, message);
+        return Err(usage_error(&e));
+    }
     Ok(cli)
 }
 
@@ -250,6 +260,9 @@ fn read_url_file(path: &Path) -> std::io::Result<Vec<String>> {
 
 async fn run(cli: Cli) -> Result<ExitCode> {
     let data_dir = data_dir(cli.data_dir)?;
+    // A password is asked for first: while a person types, no engine holds
+    // the data dir or runs its tasks.
+    let credentials = ask_credentials(&cli.command, &data_dir)?;
     // Only the queue runners start jobs; the other commands look or edit.
     let autostart = match &cli.command {
         Command::Add { .. }
@@ -302,9 +315,24 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Err(e) => return Err(e.into()),
     };
-    let result = execute(&engine, cli.command, options).await;
+    let result = execute(&engine, cli.command, credentials, options).await;
     engine.shutdown().await?;
     result
+}
+
+/// The user name and password the command signs in with, asked for on the
+/// terminal: `add --user`, and `login` for a stored web download.
+fn ask_credentials(command: &Command, data_dir: &Path) -> Result<Option<Credentials>> {
+    match command {
+        Command::Add {
+            user: Some(user), ..
+        } => password::credentials(user).map(Some),
+        Command::Login(args) => {
+            edit::check_login_target(&EngineConfig::new(data_dir), JobId(args.id))?;
+            password::credentials(&args.user).map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 fn engine_config(data_dir: PathBuf, dry_run_power: bool, autostart: bool) -> EngineConfig {
@@ -318,7 +346,12 @@ fn engine_config(data_dir: PathBuf, dry_run_power: bool, autostart: bool) -> Eng
     config
 }
 
-async fn execute(engine: &Engine, command: Command, options: Options) -> Result<ExitCode> {
+async fn execute(
+    engine: &Engine,
+    command: Command,
+    credentials: Option<Credentials>,
+    options: Options,
+) -> Result<ExitCode> {
     let json = options.json;
     match command {
         Command::Add {
@@ -331,10 +364,9 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
             checksum,
             referer,
             files,
-            user,
+            user: _,
             video,
         } => {
-            let credentials = user.map(|user| password::credentials(&user)).transpose()?;
             let only_files = files.map(|FileList(indices)| indices);
             let dest_dir = std::path::absolute(match dir {
                 Some(dir) => dir,
@@ -457,7 +489,10 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
         Command::Tools { action } => tools::run(engine, action, json).await,
         Command::Config { action } => configure(engine, action, json).await,
         Command::Grab(args) => grab::run(engine, args, options).await,
-        Command::Login(args) => edit::login(engine, args, options).await,
+        Command::Login(args) => {
+            let creds = credentials.ok_or("no password was asked for")?;
+            edit::login(engine, args.id, creds, options).await
+        }
         Command::Convert(args) => edit::convert(engine, args, options).await,
         Command::TorrentSelect(args) => edit::torrent_select(engine, args, json).await,
         Command::Job { action } => edit::job_set(engine, action, json).await,
@@ -466,6 +501,7 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
 
 async fn configure(engine: &Engine, action: ConfigAction, json: bool) -> Result<ExitCode> {
     let mut settings = engine.settings();
+    let before = settings.clone();
     match action {
         ConfigAction::Get { key: None } => {
             if json {
@@ -494,7 +530,7 @@ async fn configure(engine: &Engine, action: ConfigAction, json: bool) -> Result<
                 println!("{}", serde_json::to_string(&settings)?);
             } else {
                 println!("{key} = {}", config::get(&settings, &key)?);
-                if config::RESTART_KEYS.contains(&key.as_str()) {
+                if config::needs_restart(&key, &before, &settings) {
                     println!("{}", config::RESTART_NOTE);
                 }
             }

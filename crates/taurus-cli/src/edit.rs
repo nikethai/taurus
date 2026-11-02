@@ -6,12 +6,15 @@ use std::process::ExitCode;
 
 use clap::{Args, Subcommand, ValueEnum};
 use taurus_core::media::ConvertPreset;
-use taurus_core::{ConvertSource, Engine, JobId, JobState, JobView};
+use taurus_core::{
+    ConvertSource, CoreError, Credentials, Engine, EngineConfig, ErrorKind, JobId, JobKind,
+    JobState, JobView,
+};
 
 use crate::file_list::FileList;
 use crate::runner::{Enqueued, Options, Runner};
 use crate::video::Convert;
-use crate::{Result, config, password};
+use crate::{Result, config};
 
 #[derive(Args, Clone, Debug)]
 pub struct LoginArgs {
@@ -65,12 +68,32 @@ fn find(engine: &Engine, id: JobId) -> Result<JobView> {
         .ok_or_else(|| format!("download {} not found", id.0).into())
 }
 
-/// Gives the job its credentials (it resumes when it was stopped), then
-/// runs the queue until it is idle.
-pub async fn login(engine: &Engine, args: LoginArgs, options: Options) -> Result<ExitCode> {
-    let id = JobId(args.id);
-    find(engine, id)?;
-    let creds = password::credentials(&args.user)?;
+/// Fails, before anyone types a password, unless `id` is a stored web
+/// download. Reads the database without opening the engine.
+pub fn check_login_target(config: &EngineConfig, id: JobId) -> Result<()> {
+    let view = Engine::read_snapshot(config)?
+        .into_iter()
+        .find(|v| v.id == id)
+        .ok_or_else(|| format!("download {} not found", id.0))?;
+    if view.kind != JobKind::Http {
+        return Err(format!(
+            "download {} is not a web download: only those take a user name and password",
+            id.0
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Gives the job its credentials (asked for before the engine opened; it
+/// resumes when it was stopped), then runs the queue until it is idle.
+pub async fn login(
+    engine: &Engine,
+    id: i64,
+    creds: Credentials,
+    options: Options,
+) -> Result<ExitCode> {
+    let id = JobId(id);
     let runner = Runner::new(engine, options);
     let enqueue = async {
         let mut enqueued = Enqueued::default();
@@ -89,15 +112,17 @@ pub async fn login(engine: &Engine, args: LoginArgs, options: Options) -> Result
 async fn sign_in(
     engine: &Engine,
     id: JobId,
-    creds: taurus_core::Credentials,
-) -> std::result::Result<(), taurus_core::CoreError> {
-    // A job that failed to sign in resumes by itself.
+    creds: Credentials,
+) -> std::result::Result<(), CoreError> {
+    let before = find(engine, id).ok();
     engine.set_credentials(id, creds).await?;
-    let stopped = engine
-        .snapshot()
-        .into_iter()
-        .any(|v| v.id == id && matches!(v.state, JobState::Paused | JobState::Failed));
-    if stopped {
+    // A job that failed to sign in resumes by itself; any other stopped one
+    // is resumed here.
+    let stopped_otherwise = before.is_some_and(|v| {
+        matches!(v.state, JobState::Paused | JobState::Failed)
+            && !matches!(v.error, Some((ErrorKind::NeedsSignIn, _)))
+    });
+    if stopped_otherwise {
         engine.resume(id).await?;
     }
     Ok(())

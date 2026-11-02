@@ -31,6 +31,14 @@ pub const RESTART_KEYS: [&str; 4] = [
     "torrent.upnp",
     "torrent.dht",
 ];
+/// Whether setting `key` from `before` to `after` takes effect only when the
+/// torrent session next starts: the keys above, and a SOCKS proxy (torrents
+/// cannot use an HTTP one), set or left.
+pub fn needs_restart(key: &str, before: &Settings, after: &Settings) -> bool {
+    let socks = |s: &Settings| matches!(&s.network.proxy, ProxySetting::Manual { url } if url.starts_with("socks"));
+    RESTART_KEYS.contains(&key) || (key == "network.proxy" && (socks(before) || socks(after)))
+}
+
 /// Printed after one of those is set.
 pub const RESTART_NOTE: &str = "applies next time Taurus starts";
 
@@ -535,5 +543,27 @@ mod tests {
             assert_eq!(s, before, "{bad}");
         }
         assert!(lines(&s).ends_with("network.proxy = socks5h://127.0.0.1:9050\n"));
+    }
+
+    #[test]
+    fn restart_notes() {
+        let with = |url: &str| {
+            let mut s = Settings::default();
+            set(&mut s, "network.proxy", url).unwrap();
+            s
+        };
+        let (system, http, socks) = (
+            Settings::default(),
+            with("http://p.example:3128"),
+            with("socks5://p.example:1080"),
+        );
+        assert!(needs_restart("torrent.port", &system, &system));
+        assert!(!needs_restart("speed", &system, &system));
+        // Torrents use a SOCKS proxy only, from the next session.
+        assert!(needs_restart("network.proxy", &system, &socks));
+        assert!(needs_restart("network.proxy", &socks, &system));
+        assert!(needs_restart("network.proxy", &socks, &http));
+        assert!(!needs_restart("network.proxy", &system, &http));
+        assert!(!needs_restart("network.proxy", &http, &system));
     }
 }
