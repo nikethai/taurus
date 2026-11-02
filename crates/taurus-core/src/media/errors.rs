@@ -105,9 +105,69 @@ pub(crate) fn classify_stderr_with(stderr: &str, custom_quality: bool) -> (Error
     (kind, false)
 }
 
+/// The `ERROR:` lines of `stderr`, without the prefix.
+fn error_lines(stderr: &str) -> impl Iterator<Item = &str> {
+    stderr
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("ERROR:"))
+        .map(str::trim)
+}
+
+/// Whether yt-dlp's only complaint is that the file's container cannot
+/// hold a thumbnail (`--embed-thumbnail` on an AVI, WebM, …: "Supported
+/// filetypes for thumbnail embedding are: …"), once or once per entry.
+/// The file itself is then fully downloaded (see
+/// `Tracker::keep_without_thumbnails`); any other error is a failure.
+pub(crate) fn only_thumbnail_refused(stderr: &str) -> bool {
+    let mut lines = error_lines(stderr).peekable();
+    lines.peek().is_some()
+        && lines.all(|l| l.contains("Supported filetypes for thumbnail embedding are"))
+}
+
+/// Whether yt-dlp refused `--live-from-start` because the site offers no
+/// way to record the stream from its beginning (as on Twitch): it can be
+/// recorded from now on instead.
+pub(crate) fn live_from_start_refused(stderr: &str) -> bool {
+    error_lines(stderr).any(|l| {
+        l.contains("--live-from-start is passed, but there are no formats that can be downloaded from the start")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refusals_that_are_not_failures() {
+        let thumbnail = "ERROR: Postprocessing: Supported filetypes for thumbnail embedding are: mp3, mkv/mka, ogg/opus/flac, m4a/mp4/m4v/mov";
+        assert!(only_thumbnail_refused(thumbnail));
+        assert!(only_thumbnail_refused(&format!(
+            "[info] x\n{thumbnail}\nsome noise\n{thumbnail}\n"
+        )));
+        // Another error besides it, or none at all, is not "only".
+        assert!(!only_thumbnail_refused(&format!(
+            "{thumbnail}\nERROR: Postprocessing: Conversion failed!"
+        )));
+        assert!(!only_thumbnail_refused(
+            "ERROR: Postprocessing: Conversion failed!"
+        ));
+        assert!(!only_thumbnail_refused(""));
+        assert!(!only_thumbnail_refused(
+            "WARNING: Supported filetypes for thumbnail embedding are: mp3"
+        ));
+        // The thumbnail refusal stays a tool failure when it is classified.
+        assert_eq!(classify_stderr(thumbnail).0, ErrorKind::ToolFailed);
+
+        let live = "ERROR: [twitch:stream] lofigirl: --live-from-start is passed, but there are no formats that can be downloaded from the start. If you want to download from the current time, use --no-live-from-start";
+        assert!(live_from_start_refused(live));
+        assert!(live_from_start_refused(&format!(
+            "[twitch:stream] x\n{live}\n"
+        )));
+        assert!(!live_from_start_refused(
+            "ERROR: [youtube] x: Video unavailable"
+        ));
+        assert!(!live_from_start_refused(""));
+    }
 
     const BROKE: bool = true;
 
