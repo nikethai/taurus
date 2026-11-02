@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::convert::ConvertSpec;
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::media::MediaOptions;
 use crate::plan::Segment;
@@ -43,12 +44,14 @@ pub enum JobState {
 }
 
 /// What a job downloads: a file over HTTP, a torrent, or a video, audio or
-/// playlist link that yt-dlp downloads.
+/// playlist link that yt-dlp downloads; or converts: a finished local file
+/// that ffmpeg converts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum JobKind {
     Http,
     Torrent,
     Media,
+    Convert,
 }
 
 impl JobKind {
@@ -57,6 +60,7 @@ impl JobKind {
             Self::Http => "http",
             Self::Torrent => "torrent",
             Self::Media => "media",
+            Self::Convert => "convert",
         }
     }
 
@@ -65,6 +69,7 @@ impl JobKind {
             "http" => Self::Http,
             "torrent" => Self::Torrent,
             "media" => Self::Media,
+            "convert" => Self::Convert,
             _ => return None,
         })
     }
@@ -109,6 +114,9 @@ pub struct JobRecord {
     /// The user name of a protected download; its password is in the
     /// engine's secret store. Written only by `set_auth_user`.
     pub auth_user: Option<String>,
+    /// What a convert job converts; `None` for other jobs. Stored as JSON
+    /// (`convert_source`). Written only by `set_convert`.
+    pub convert: Option<ConvertSpec>,
 }
 
 pub struct NewJob {
@@ -300,7 +308,8 @@ impl Store {
     }
 
     /// Writes every mutable field of `job` (all but `id`, `source_url`,
-    /// `kind`, `auth_user`, which `set_auth_user` owns, and `uploaded`,
+    /// `kind`, `auth_user`, which `set_auth_user` owns, `convert`, which
+    /// `set_convert` owns, and `uploaded`,
     /// which `commit_torrent_progress` owns, so a stale copy cannot lower
     /// it). Updating a job that no longer exists is
     /// a no-op; an info-hash another job has is `AlreadyAdded`.
@@ -411,6 +420,23 @@ impl Store {
             .execute(
                 "UPDATE jobs SET auth_user = ?2, updated_at = ?3 WHERE id = ?1",
                 params![id.0, user, now_secs()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Sets only what a convert job converts (its source, preset and the
+    /// partial output its run recorded). A job that no longer exists is a
+    /// no-op.
+    pub fn set_convert(&self, id: JobId, convert: &ConvertSpec) -> Result<(), CoreError> {
+        let json = serde_json::to_string(convert).map_err(|e| CoreError {
+            kind: ErrorKind::Unknown,
+            detail: e.to_string(),
+        })?;
+        self.lock()
+            .execute(
+                "UPDATE jobs SET convert_source = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id.0, json, now_secs()],
             )
             .map_err(db_err)?;
         Ok(())
@@ -649,6 +675,7 @@ mod tests {
                 seed_started_at: None,
                 media: None,
                 auth_user: None,
+                convert: None,
             }
         );
 

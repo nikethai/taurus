@@ -14,6 +14,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+// Beside the root file, but not in `src/bin/` itself: cargo would take a
+// file there for another binary.
+#[path = "fake_tool/ffmpeg.rs"]
+mod ffmpeg;
+
 /// Last 16 bytes of a binary carrying a release trailer.
 const MAGIC: &[u8; 16] = b"HYADES-FAKETOOL1";
 /// Longest `wait_for_interrupt` wait before finishing normally.
@@ -55,7 +60,8 @@ fn run() -> i32 {
     }
     match tool {
         "yt-dlp" => yt_dlp(&args, &version),
-        "ffmpeg" => ffmpeg(&args),
+        "ffmpeg" => ffmpeg::ffmpeg(&args),
+        "ffprobe" => ffmpeg::ffprobe(&args),
         _ => 0,
     }
 }
@@ -165,51 +171,6 @@ fn json_string(s: &str) -> String {
     }
     out.push('"');
     out
-}
-
-// ---------------------------------------------------------------- ffmpeg
-
-/// `ffmpeg [-y] -i <in> [-i <in> ...] [-map N ...] -c copy <out>` writes
-/// the inputs, one after the other, to `<out>` (one input: a plain copy;
-/// several: what a real remux joining a video and an audio stream would
-/// hold, for a test's purposes); anything else exits 0 without doing
-/// anything.
-fn ffmpeg(args: &[String]) -> i32 {
-    let inputs: Vec<&String> = args
-        .windows(2)
-        .filter(|w| w[0] == "-i")
-        .map(|w| &w[1])
-        .collect();
-    let copy = args
-        .windows(2)
-        .any(|w| (w[0] == "-c" || w[0] == "-codec") && w[1] == "copy");
-    let (false, true, Some(output)) = (inputs.is_empty(), copy, args.last()) else {
-        return 0;
-    };
-    if inputs.contains(&output) {
-        return 0;
-    }
-    if Path::new(output).exists() && !args.iter().any(|a| a == "-y") {
-        eprintln!("File '{output}' already exists. Exiting.");
-        return 1;
-    }
-    let mut joined = Vec::new();
-    for input in &inputs {
-        match fs::read(input) {
-            Ok(bytes) => joined.extend_from_slice(&bytes),
-            Err(e) => {
-                eprintln!("{input}: {e}");
-                return 1;
-            }
-        }
-    }
-    match fs::write(output, joined) {
-        Ok(()) => 0,
-        Err(e) => {
-            eprintln!("{output}: {e}");
-            1
-        }
-    }
 }
 
 // ---------------------------------------------------------------- yt-dlp

@@ -84,6 +84,7 @@ impl Actor {
             seed_started_at: None,
             media: None,
             auth_user: None,
+            convert: None,
         };
         apply_probe(&mut job, probe);
         let stored = self.store.update_job(&job);
@@ -231,6 +232,7 @@ impl Actor {
             Some(job) if job.kind == JobKind::Media => {
                 self.delete_media(job, delete_files, finished_too);
             }
+            Some(job) if job.kind == JobKind::Convert => self.delete_convert(job, delete_files),
             Some(job) if delete_files => delete_job_files(&self.store, job)?,
             _ => {}
         }

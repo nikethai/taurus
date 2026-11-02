@@ -146,13 +146,13 @@ impl Actor {
         }
     }
 
-    /// Running HTTP and media jobs, and running torrents that are not
+    /// Running HTTP, media and convert jobs, and running torrents that are not
     /// Seeding: what `max_active` and `torrent.max_active` limit.
     pub(super) fn active(&self) -> (usize, usize) {
         let views = read(&self.views);
         let running = self.running.keys().filter_map(|id| views.get(id));
         running.fold((0, 0), |(http, torrents), view| match view.kind {
-            JobKind::Http | JobKind::Media => (http + 1, torrents),
+            JobKind::Http | JobKind::Media | JobKind::Convert => (http + 1, torrents),
             JobKind::Torrent if view.state == JobState::Seeding => (http, torrents),
             JobKind::Torrent => (http, torrents + 1),
         })
@@ -282,10 +282,14 @@ impl Actor {
     }
 
     /// Spawns the job's download task; the job is Downloading from here on.
-    /// A media job has a runner of its own (`start_media`).
+    /// A media job has a runner of its own (`start_media`), and so has a
+    /// convert job (`start_convert`).
     pub(super) fn start(&mut self, id: JobId) {
         if self.is_media(id) {
             return self.start_media(id);
+        }
+        if self.is_convert(id) {
+            return self.start_convert(id);
         }
         if let Err(e) = self.store.set_state(id, JobState::Downloading) {
             // The run records its own state as it starts.

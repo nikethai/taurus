@@ -6,6 +6,8 @@
 //! running jobs or reserves names runs in the actor, one command at a time.
 
 mod actor;
+mod convert;
+mod convert_job;
 mod cookies;
 mod grab;
 mod inspect;
@@ -307,7 +309,7 @@ impl Engine {
         // Mirrors are not checked again: one that fails is dropped while
         // the job runs.
         let probe = match job.kind {
-            JobKind::Torrent | JobKind::Media => None,
+            JobKind::Torrent | JobKind::Media | JobKind::Convert => None,
             JobKind::Http => {
                 let auth = self.secrets.auth_for(&job).await;
                 let url = fixed_url(&job.source_url);

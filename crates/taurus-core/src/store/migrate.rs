@@ -89,8 +89,11 @@ ALTER TABLE jobs ADD COLUMN media_options TEXT;
 /// released until M6a is; each of its additions appends an `ALTER` here).
 /// `auth_user`: the user name of a protected download (its password is in
 /// the secret store, never here).
+/// `convert_source`: what a convert job (kind 'convert') converts, as JSON
+/// (source file, preset, and the partial output of its run).
 const MIGRATE_V6_TO_V7: &str = "
 ALTER TABLE jobs ADD COLUMN auth_user TEXT;
+ALTER TABLE jobs ADD COLUMN convert_source TEXT;
 ";
 
 fn is_corruption(e: &rusqlite::Error) -> bool {
@@ -227,8 +230,10 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::convert::ConvertSpec;
+    use crate::media::ConvertPreset;
     use crate::store::test_support::{new_job, open_temp};
-    use crate::store::{JobKind, JobState};
+    use crate::store::{JobKind, JobState, NewJob};
 
     #[test]
     fn open_configures_wal_and_foreign_keys() {
@@ -540,6 +545,7 @@ mod tests {
         assert_eq!(job.state, JobState::Paused);
         assert_eq!(job.media.as_ref().map(|m| m.quality.as_str()), Some("best"));
         assert_eq!(job.auth_user, None);
+        assert_eq!(job.convert, None);
         let version: i64 = store
             .lock()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -561,6 +567,31 @@ mod tests {
         );
         store.set_auth_user(job.id, None).unwrap();
         assert_eq!(store.get_job(job.id).unwrap().unwrap().auth_user, None);
+
+        // What a convert job converts is set on its own, too.
+        let spec = ConvertSpec {
+            source: "/d/song.webm".into(),
+            preset: ConvertPreset::Mp3,
+            partial: Some("/d/.part.mp3".into()),
+        };
+        store.set_convert(job.id, &spec).unwrap();
+        job.state = JobState::Paused;
+        store.update_job(&job).unwrap();
+        let stored = store.get_job(job.id).unwrap().unwrap();
+        assert_eq!(stored.convert.as_ref(), Some(&spec));
+        assert_eq!(stored.state, JobState::Paused);
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let stored = store.get_job(job.id).unwrap().unwrap();
+        assert_eq!(stored.convert, Some(spec));
+        // A new job of the new kind roundtrips.
+        let id = store
+            .insert_job(&NewJob {
+                kind: JobKind::Convert,
+                ..new_job("song (mp3).mp3", "/d")
+            })
+            .unwrap();
+        assert_eq!(store.get_job(id).unwrap().unwrap().kind, JobKind::Convert);
     }
 
     #[test]

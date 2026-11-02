@@ -192,6 +192,7 @@ pub fn job_table(views: &[JobView]) -> String {
             JobKind::Http => "http",
             JobKind::Torrent => "torrent",
             JobKind::Media => "media",
+            JobKind::Convert => "convert",
         };
         let _ = writeln!(
             out,

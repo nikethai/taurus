@@ -458,6 +458,7 @@ mod tests {
             seed_started_at: None,
             media: None,
             auth_user: None,
+            convert: None,
         }
     }
 

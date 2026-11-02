@@ -44,6 +44,12 @@ pub(super) enum Command {
         add: MediaAdd,
         reply: Reply<JobId>,
     },
+    /// One convert job per file; answers their ids.
+    AddConvert {
+        files: Vec<std::path::PathBuf>,
+        preset: crate::media::ConvertPreset,
+        reply: Reply<Vec<JobId>>,
+    },
     /// Answers whether the job runs and was asked to stop.
     StopRecording {
         id: JobId,
@@ -288,6 +294,7 @@ impl Actor {
             Command::Add { .. }
                 | Command::AddTorrent { .. }
                 | Command::AddMedia { .. }
+                | Command::AddConvert { .. }
                 | Command::Resume { .. }
                 | Command::SetMediaCookies { .. }
                 | Command::StartNow { .. }
@@ -303,6 +310,13 @@ impl Actor {
             }
             Command::AddMedia { req, add, reply } => {
                 let _ = reply.send(self.add_media(req, add));
+            }
+            Command::AddConvert {
+                files,
+                preset,
+                reply,
+            } => {
+                let _ = reply.send(self.add_convert(files, preset));
             }
             Command::StopRecording { id, reply } => {
                 let _ = reply.send(self.stop_recording(id));

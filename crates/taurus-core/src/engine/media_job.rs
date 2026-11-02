@@ -478,7 +478,9 @@ impl MediaJob {
     }
 }
 
-fn emitter(events: &broadcast::Sender<Event>) -> impl Fn(ToolStatus) + Send + Sync + use<> {
+pub(super) fn emitter(
+    events: &broadcast::Sender<Event>,
+) -> impl Fn(ToolStatus) + Send + Sync + use<> {
     let events = events.clone();
     move |status| {
         // No subscriber is fine.

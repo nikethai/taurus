@@ -190,11 +190,14 @@ pub(crate) async fn run_process(
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    let program = Path::new(command.as_std().get_program())
+        .file_stem()
+        .map_or_else(|| "the tool".into(), |n| n.to_string_lossy().into_owned());
     let mut run = TreeChild::spawn(&mut command)
         .await
         .map_err(|e| CoreError {
             kind: ErrorKind::ToolFailed,
-            detail: format!("could not run yt-dlp: {e}"),
+            detail: format!("could not run {program}: {e}"),
         })?;
     let mut out = Stream::new(run.child.stdout.take().expect("stdout is piped"));
     let mut err = Stream::new(run.child.stderr.take().expect("stderr is piped"));
@@ -241,7 +244,7 @@ pub(crate) async fn run_process(
     };
     let status = status.transpose().map_err(|e| CoreError {
         kind: ErrorKind::ToolFailed,
-        detail: format!("could not wait for yt-dlp: {e}"),
+        detail: format!("could not wait for {program}: {e}"),
     })?;
     // What is still in the pipes.
     let _ = tokio::time::timeout(DRAIN, async {

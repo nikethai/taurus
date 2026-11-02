@@ -1,4 +1,5 @@
 pub mod checksum;
+pub mod convert;
 pub mod engine;
 pub mod errors;
 pub mod filename;
@@ -20,6 +21,7 @@ pub mod tools;
 pub mod torrent;
 mod when_done;
 
+pub use convert::ConvertSource;
 pub use engine::{
     AddRequest, Engine, EngineConfig, Event, JobView, LinkInfo, MediaChoice, MediaView,
     RemoveFiles, TorrentView, WhenDoneHold,
