@@ -1,74 +1,17 @@
-//! Protected downloads in the engine: where a job's password is kept (the
-//! secret store, else memory until the engine stops), reading it back for a
-//! request, and giving a job new credentials.
-
-use std::sync::Arc;
+//! Protected downloads in the engine: what a job signs in with, and giving
+//! a job new credentials. Where the passwords are kept: `keychain`.
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::http::Auth;
-use crate::secrets::{Credentials, MemoryStore, SecretStore};
+use crate::secrets::Credentials;
 use crate::store::{JobId, JobKind, JobRecord, JobState, Store};
 
 use super::actor::{Actor, Command};
 use super::jobs::fixed_url;
+use super::keychain::Secrets;
 use super::{AddRequest, Engine, no_such_job};
 
-/// The engine's passwords: `EngineConfig::secrets`, with memory standing
-/// in for it while it fails (no keychain). Cheap to clone.
-#[derive(Clone)]
-pub(super) struct Secrets {
-    store: Arc<dyn SecretStore>,
-    /// Passwords the store would not take, kept until the engine stops.
-    session: Arc<MemoryStore>,
-}
-
 impl Secrets {
-    pub(super) fn new(store: Arc<dyn SecretStore>) -> Secrets {
-        Secrets {
-            store,
-            session: Arc::new(MemoryStore::new()),
-        }
-    }
-
-    /// Keeps the job's password, replacing any earlier one. Blocks for the
-    /// keychain.
-    pub(super) fn keep(&self, id: JobId, password: &str) {
-        let account = account(id);
-        match self.store.set(&account, password) {
-            Ok(()) => {
-                let _ = self.session.delete(&account);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    job = id.0,
-                    "keeping the password in memory until the engine stops: {e}"
-                );
-                let _ = self.session.set(&account, password);
-            }
-        }
-    }
-
-    /// The job's password, if one is kept. Blocks for the keychain.
-    fn password(&self, id: JobId) -> Option<String> {
-        let account = account(id);
-        if let Ok(Some(password)) = self.session.get(&account) {
-            return Some(password);
-        }
-        self.store.get(&account).unwrap_or_else(|e| {
-            tracing::warn!(job = id.0, "could not read the password: {e}");
-            None
-        })
-    }
-
-    /// Deletes the job's password. Blocks for the keychain.
-    pub(super) fn forget(&self, id: JobId) {
-        let account = account(id);
-        let _ = self.session.delete(&account);
-        if let Err(e) = self.store.delete(&account) {
-            tracing::warn!(job = id.0, "could not delete the password: {e}");
-        }
-    }
-
     /// What the job signs in with (for its link's origin only): `None`
     /// without a user name, or without a password (one kept in memory by
     /// an earlier session is gone: the job then asks for it again). The
@@ -103,11 +46,6 @@ impl Secrets {
     }
 }
 
-/// The secret store's account of the job's password.
-fn account(id: JobId) -> String {
-    format!("job:{}", id.0)
-}
-
 /// Fails unless the request has no credentials: only web downloads take
 /// them (not torrents, nor what yt-dlp downloads).
 pub(super) fn web_only(req: &AddRequest) -> Result<(), CoreError> {
@@ -126,20 +64,32 @@ fn not_for_this_job() -> CoreError {
 
 impl Engine {
     /// Gives a web download the user name and password it signs in with
-    /// (replacing any it had; the password goes to `EngineConfig::secrets`),
-    /// then resumes it if it failed with `NeedsSignIn`; that resume's error
-    /// (e.g. a wrong password) is returned. Any other job uses them the next
-    /// time it runs. Torrents and media jobs are refused.
+    /// (replacing any it had; the password goes to `EngineConfig::secrets`,
+    /// and is kept before this returns), then resumes it if it failed with
+    /// `NeedsSignIn`. If that resume fails to sign in (e.g. a wrong
+    /// password), its error is returned and recorded as the job's error;
+    /// the job stays Failed. Any other job, a running one included, uses
+    /// them from its next run (or resume). Torrents and media jobs are
+    /// refused.
     pub async fn set_credentials(&self, id: JobId, creds: Credentials) -> Result<(), CoreError> {
         self.check_running()?;
         let job = self
             .call(|reply| Command::SetCredentials { id, creds, reply })
             .await??;
+        self.secrets.flush().await;
         let needs_sign_in = matches!(job.error, Some((ErrorKind::NeedsSignIn, _)));
-        if job.state == JobState::Failed && needs_sign_in {
-            self.resume(id).await?;
+        if job.state != JobState::Failed || !needs_sign_in {
+            return Ok(());
         }
-        Ok(())
+        match self.resume(id).await {
+            Err(e) if e.kind == ErrorKind::NeedsSignIn => {
+                let error = e.clone();
+                self.call(|reply| Command::SignInFailed { id, error, reply })
+                    .await?;
+                Err(e)
+            }
+            resumed => resumed,
+        }
     }
 }
 
@@ -174,54 +124,18 @@ impl Actor {
         Ok(())
     }
 
+    /// Records a failed sign-in as the error of the job, if it is still
+    /// Failed (its state does not change).
+    pub(super) fn sign_in_failed(&mut self, id: JobId, error: CoreError) {
+        if self.state_of(id) == Some(JobState::Failed) {
+            self.record_error(id, JobState::Failed, None, error);
+        }
+    }
+
     /// Deletes the password of a job being removed, if it has one.
     pub(super) fn forget_credentials(&self, job: Option<&JobRecord>) {
         if let Some(job) = job.filter(|job| job.auth_user.is_some()) {
             self.secrets.forget(job.id);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A keychain that is not there.
-    struct NoKeychain;
-
-    impl SecretStore for NoKeychain {
-        fn set(&self, _: &str, _: &str) -> Result<(), CoreError> {
-            Err(not_for_this_job())
-        }
-        fn get(&self, _: &str) -> Result<Option<String>, CoreError> {
-            Err(not_for_this_job())
-        }
-        fn delete(&self, _: &str) -> Result<(), CoreError> {
-            Err(not_for_this_job())
-        }
-    }
-
-    #[test]
-    fn without_a_keychain_passwords_live_in_memory() {
-        let secrets = Secrets::new(Arc::new(NoKeychain));
-        assert_eq!(secrets.password(JobId(1)), None);
-        secrets.keep(JobId(1), "pw");
-        assert_eq!(secrets.password(JobId(1)).as_deref(), Some("pw"));
-        assert_eq!(secrets.password(JobId(2)), None);
-        secrets.forget(JobId(1));
-        assert_eq!(secrets.password(JobId(1)), None);
-    }
-
-    #[test]
-    fn a_working_store_holds_the_password() {
-        let store = Arc::new(MemoryStore::new());
-        let secrets = Secrets::new(store.clone());
-        secrets.keep(JobId(7), "pw");
-        assert_eq!(store.get("job:7").unwrap().as_deref(), Some("pw"));
-        assert_eq!(secrets.session.get("job:7").unwrap(), None);
-        secrets.keep(JobId(7), "new");
-        assert_eq!(secrets.password(JobId(7)).as_deref(), Some("new"));
-        secrets.forget(JobId(7));
-        assert_eq!(store.get("job:7").unwrap(), None);
     }
 }

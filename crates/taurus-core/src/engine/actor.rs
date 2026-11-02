@@ -21,8 +21,8 @@ use crate::tools::ToolManager;
 use crate::torrent::hub::TorrentHub;
 use crate::when_done::WhenDoneRunner;
 
+use super::keychain::Secrets;
 use super::media::{MediaAdd, MediaUpdate};
-use super::sign_in::Secrets;
 use super::torrent::TorrentInput;
 use super::{AddRequest, Event, RemoveFiles, TorrentView, Views, no_such_job, read, write};
 
@@ -72,6 +72,11 @@ pub(super) enum Command {
         id: JobId,
         creds: Credentials,
         reply: Reply<JobRecord>,
+    },
+    SignInFailed {
+        id: JobId,
+        error: CoreError,
+        reply: oneshot::Sender<()>,
     },
     Remove {
         id: JobId,
@@ -313,6 +318,10 @@ impl Actor {
             }
             Command::SetCredentials { id, creds, reply } => {
                 let _ = reply.send(self.set_credentials(id, creds));
+            }
+            Command::SignInFailed { id, error, reply } => {
+                self.sign_in_failed(id, error);
+                let _ = reply.send(());
             }
             Command::Remove { id, files, reply } => {
                 let _ = reply.send(self.remove(id, files).await);

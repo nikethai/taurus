@@ -57,6 +57,8 @@ dunce = "1"
 keepawake = "0.6"
 # Passwords for protected downloads (OS keychain; pure-Rust D-Bus on Linux).
 keyring = "4.2"
+# The per-database token in keychain account names (a CSPRNG).
+getrandom = "0.3"
 # Exact: the [patch.crates-io] below replaces 9.1.0 only, and a newer
 # release would silently bypass it.
 librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls"] }

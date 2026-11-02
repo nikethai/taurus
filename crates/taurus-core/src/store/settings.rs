@@ -13,6 +13,7 @@ const UNREADABLE_SETTINGS_KEY: &str = "settings.unreadable";
 const MEASURED_PEAK_KEY: &str = "measured_peak";
 /// Followed by a tool's name: when it was last checked for updates.
 const TOOL_CHECKED_PREFIX: &str = "tool_checked.";
+const DATABASE_TOKEN: &str = "database_token";
 
 /// A learned connection limit older than this is forgotten: hosts change.
 const HOST_CAP_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
@@ -136,6 +137,23 @@ impl Store {
         Ok(())
     }
 
+    /// This database's own random id (16 hex digits), made on first use and
+    /// kept: it tells this data dir's jobs from another's in names shared
+    /// by every data dir, such as keychain accounts.
+    pub fn database_token(&self) -> Result<String, CoreError> {
+        if let Some(token) = self.setting(DATABASE_TOKEN)? {
+            return Ok(token);
+        }
+        let mut bytes = [0u8; 8];
+        getrandom::fill(&mut bytes).map_err(|e| CoreError {
+            kind: ErrorKind::Unknown,
+            detail: format!("no random numbers from the system: {e}"),
+        })?;
+        let token = hex::encode(bytes);
+        self.put_setting(DATABASE_TOKEN, &token)?;
+        Ok(token)
+    }
+
     fn setting(&self, key: &str) -> Result<Option<String>, CoreError> {
         self.lock()
             .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
@@ -205,6 +223,20 @@ mod tests {
     use super::*;
     use crate::settings::{SpeedLimit, ThemeChoice, TorrentSettings, UiSettings, WhenDone};
     use crate::store::test_support::open_temp;
+
+    #[test]
+    fn database_token_is_made_once_and_differs_per_database() {
+        let (dir, store) = open_temp();
+        let token = store.database_token().unwrap();
+        assert_eq!(token.len(), 16);
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(store.database_token().unwrap(), token);
+        drop(store);
+        let reopened = Store::open(&dir.path().join("taurus.db")).unwrap();
+        assert_eq!(reopened.database_token().unwrap(), token);
+        let (_other_dir, other) = open_temp();
+        assert_ne!(other.database_token().unwrap(), token);
+    }
 
     #[test]
     fn tool_check_times_roundtrip() {

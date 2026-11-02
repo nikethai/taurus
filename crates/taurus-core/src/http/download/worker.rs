@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::errors::{CoreError, ErrorKind, backoff_delay_with};
-use crate::http::auth::{Auth, authorize, unauthorized};
+use crate::http::auth::{self, Auth, unauthorized};
 use crate::http::client::{bot_check_error, request_error, status_error};
 use crate::http::probe::{parse_content_range, validator_change};
 use crate::limit::Limiter;
@@ -152,17 +152,21 @@ impl Worker {
         if self.written >= end {
             return Ok(WorkerEnd::Complete);
         }
-        let (mut request, signed_in) =
-            authorize(self.client.get(&self.url), self.auth.as_ref(), &self.url);
-        if self.resumable {
-            request = request.header(RANGE, format!("bytes={}-{}", self.written, end - 1));
-        }
-        if let Some(referer) = &self.referer {
-            request = request.header(REFERER, referer);
-        }
-        let mut response = tokio::select! {
+        let build = |url: &str| {
+            let mut request = self.client.get(url);
+            if self.resumable {
+                request = request.header(RANGE, format!("bytes={}-{}", self.written, end - 1));
+            }
+            if let Some(referer) = &self.referer {
+                request = request.header(REFERER, referer);
+            }
+            request
+        };
+        let (mut response, signed_in) = tokio::select! {
             _ = self.stop.cancelled() => return Ok(WorkerEnd::Cancelled),
-            sent = request.send() => sent.map_err(|e| Fault::Source(request_error(e)))?,
+            sent = auth::send(build, self.auth.as_ref(), &self.url) => {
+                sent.map_err(|e| Fault::Source(request_error(e)))?
+            }
         };
         if let Some(end) = self
             .check_response(&response, end, signed_in)
@@ -220,7 +224,7 @@ impl Worker {
 
     /// Accepts the response, asks for the fallback, or returns the error.
     /// Runs before any byte of the response is written. `signed_in`: the
-    /// request carried the job's credentials.
+    /// request that got the response carried the job's credentials.
     fn check_response(
         &self,
         response: &reqwest::Response,
@@ -255,10 +259,7 @@ impl Worker {
             return Ok(Some(WorkerEnd::ConnectionLimit));
         }
         if status == StatusCode::UNAUTHORIZED {
-            // A redirect to another origin dropped the credentials.
-            let sent = signed_in
-                && url::Url::parse(&self.url).is_ok_and(|u| u.origin() == response.url().origin());
-            return Err(unauthorized(headers, sent));
+            return Err(unauthorized(headers, signed_in));
         }
         if !status.is_success() {
             return Err(status_error(status));

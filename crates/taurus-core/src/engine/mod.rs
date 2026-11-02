@@ -9,6 +9,7 @@ mod actor;
 mod grab;
 mod inspect;
 mod jobs;
+mod keychain;
 mod media;
 mod media_job;
 mod mirrors;
@@ -46,12 +47,13 @@ use actor::Command;
 pub use actor::JobMsg;
 pub use inspect::LinkInfo;
 use jobs::{downloaded, fixed_url, view_of};
+use keychain::Secrets;
 pub use media::{MediaChoice, MediaView};
 use mirrors::vet_mirrors;
 use open::assemble;
 pub use remove::RemoveFiles;
 use schedule::check_space;
-use sign_in::{Secrets, web_only};
+use sign_in::web_only;
 pub use types::{AddRequest, EngineConfig, Event, JobView, TorrentView};
 
 const COMMAND_CAPACITY: usize = 64;
@@ -167,11 +169,13 @@ impl Engine {
     /// download; see `stop_recording` for live streams.
     ///
     /// With `req.credentials` a web download signs in (HTTP Basic auth) on
-    /// its link's own origin only, mirrors there included; the password
-    /// goes to `EngineConfig::secrets`. A 401 fails with `NeedsSignIn`
-    /// ("wrong user name or password" if the request signed in, else
-    /// naming the server's realm). Credentials for a torrent or a media
-    /// link are refused.
+    /// its link's own origin only, mirrors there included, and on that
+    /// host's https when an http link is upgraded (see `http::Auth`). The
+    /// password goes to `EngineConfig::secrets` and is kept there once
+    /// `add` returns. A 401 fails with `NeedsSignIn` ("wrong user name or
+    /// password" if the request that got it signed in, else naming the
+    /// server's realm). Credentials for a torrent or a media link are
+    /// refused.
     pub async fn add(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         self.check_running()?;
         // Resolving may take minutes: the machine must not sleep meanwhile.
@@ -258,8 +262,16 @@ impl Engine {
             auth.as_ref(),
         ))
         .await;
-        self.call(|reply| Command::Add { req, probe, reply })
-            .await?
+        let signs_in = req.credentials.is_some();
+        let added = self
+            .call(|reply| Command::Add { req, probe, reply })
+            .await?;
+        if signs_in && added.is_ok() {
+            // The job can already read its password; the store has it too
+            // once `add` returns.
+            self.secrets.flush().await;
+        }
+        added
     }
 
     /// Stops the job and returns once its progress is saved and its state is
@@ -338,8 +350,12 @@ impl Engine {
     /// `RemoveFiles::IfUnfinished` it looks at the job as it is when it
     /// removes it, so a download that finished a moment ago keeps its file.
     pub async fn remove_with(&self, id: JobId, files: RemoveFiles) -> Result<(), CoreError> {
-        self.call(|reply| Command::Remove { id, files, reply })
-            .await?
+        let removed = self
+            .call(|reply| Command::Remove { id, files, reply })
+            .await?;
+        // The job's password is deleted from the store before this returns.
+        self.secrets.flush().await;
+        removed
     }
 
     /// Every job, ordered by id.
@@ -415,6 +431,8 @@ impl Engine {
     pub async fn shutdown(&self) -> Result<(), CoreError> {
         // An error here means the engine has already stopped.
         let _ = self.call(|reply| Command::Shutdown { reply }).await;
+        // Passwords being written reach the store.
+        self.secrets.flush().await;
         Ok(())
     }
 

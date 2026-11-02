@@ -19,9 +19,9 @@ use crate::when_done::{EngineLink, WhenDoneRunner};
 
 use super::actor::{Actor, Command, JobMsg};
 use super::jobs::{downloaded, view_of};
+use super::keychain::Secrets;
 use super::media::restore_thumbnails;
 use super::settings::{fresh_peak, speed_limit, unix_now};
-use super::sign_in::Secrets;
 use super::{
     COMMAND_CAPACITY, DB_FILE, EVENT_CAPACITY, Engine, EngineConfig, IN_USE, JobView, LOCK_FILE,
     io_error,
@@ -101,7 +101,7 @@ pub(super) async fn assemble(
         })
     };
     let client = build_client();
-    let secrets = Secrets::new(config.secrets.clone());
+    let secrets = Secrets::new(config.secrets.clone(), &store.database_token()?);
     let (torrent_settings, _) = watch::channel(settings.torrent.clone());
     let tools = Arc::new(
         ToolManager::new(&config.data_dir, config.tool_sources, client.clone())

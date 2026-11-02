@@ -457,7 +457,13 @@ impl Actor {
 
     /// Records the job in `state` with `e` as its error (and, if Waiting,
     /// its next retry at `retry_at`) and announces it.
-    fn record_error(&mut self, id: JobId, state: JobState, retry_at: Option<i64>, e: CoreError) {
+    pub(super) fn record_error(
+        &mut self,
+        id: JobId,
+        state: JobState,
+        retry_at: Option<i64>,
+        e: CoreError,
+    ) {
         let error = Some((e.kind, e.detail));
         match self.store.get_job(id) {
             Ok(Some(mut job)) => {

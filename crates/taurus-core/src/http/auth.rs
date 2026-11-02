@@ -1,8 +1,8 @@
 //! HTTP Basic auth for protected downloads: which requests carry a job's
 //! user name and password, and what a 401 means.
 
-use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, WWW_AUTHENTICATE};
+use reqwest::{RequestBuilder, Response, StatusCode};
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::secrets::Credentials;
@@ -12,9 +12,11 @@ pub const WRONG_CREDENTIALS: &str = "wrong user name or password";
 /// Longest realm quoted in an error; servers choose it.
 const MAX_REALM: usize = 100;
 
-/// A job's credentials and the one origin (scheme, host, port) they are
-/// sent to: its link's. Not to a mirror or confirm form elsewhere; reqwest
-/// drops them itself on a redirect to another origin.
+/// A job's credentials and where they are sent: its link's origin (scheme,
+/// host, port) and, for an `http` link on the default port, the same host
+/// over `https` on the default port (a site upgrading itself). Never a
+/// downgrade, another host or another port: not a mirror or confirm form
+/// elsewhere.
 #[derive(Clone, Debug)]
 pub struct Auth {
     credentials: Credentials,
@@ -32,17 +34,30 @@ impl Auth {
     }
 
     fn covers(&self, url: &str) -> bool {
-        url::Url::parse(url).is_ok_and(|url| url.origin() == self.origin)
+        url::Url::parse(url).is_ok_and(|url| {
+            let to = url.origin();
+            to == self.origin || is_https_upgrade(&self.origin, &to)
+        })
+    }
+}
+
+/// Whether `to` is `from` upgraded to https: `http://host` (port 80) to
+/// `https://host` (port 443), same host. Other ports do not pair up: a
+/// server's http and https ports cannot be the same, and any other mapping
+/// would be a guess.
+pub(crate) fn is_https_upgrade(from: &url::Origin, to: &url::Origin) -> bool {
+    match (from, to) {
+        (
+            url::Origin::Tuple(from_scheme, from_host, 80),
+            url::Origin::Tuple(to_scheme, to_host, 443),
+        ) => from_scheme == "http" && to_scheme == "https" && from_host == to_host,
+        _ => false,
     }
 }
 
 /// `request` (to `url`) with the credentials when `auth` covers `url`, and
 /// whether it got them.
-pub(crate) fn authorize(
-    request: RequestBuilder,
-    auth: Option<&Auth>,
-    url: &str,
-) -> (RequestBuilder, bool) {
+fn authorize(request: RequestBuilder, auth: Option<&Auth>, url: &str) -> (RequestBuilder, bool) {
     match auth.filter(|auth| auth.covers(url)) {
         // `basic_auth` marks the header sensitive: it is never printed.
         Some(auth) => (
@@ -50,6 +65,35 @@ pub(crate) fn authorize(
             true,
         ),
         None => (request, false),
+    }
+}
+
+/// Sends the request `build` makes for `url`, with the credentials where
+/// `auth` covers it. reqwest drops them on a redirect that changes the
+/// origin (an https upgrade included, or a hop through another host): a 401
+/// from a covered URL that a redirect led to is asked again there, once,
+/// directly, with the credentials. Returns the answer and whether the
+/// request that got it carried them; only an unredirected request is sure
+/// to have, so a 401 is "wrong user name or password" only then.
+pub(crate) async fn send(
+    build: impl Fn(&str) -> RequestBuilder,
+    auth: Option<&Auth>,
+    url: &str,
+) -> reqwest::Result<(Response, bool)> {
+    let (request, signed_in) = authorize(build(url), auth, url);
+    let response = request.send().await?;
+    let direct = url::Url::parse(url).is_ok_and(|u| &u == response.url());
+    if response.status() != StatusCode::UNAUTHORIZED || direct {
+        return Ok((response, signed_in && direct));
+    }
+    let landed = response.url().clone();
+    match authorize(build(landed.as_str()), auth, landed.as_str()) {
+        (request, true) => {
+            let again = request.send().await?;
+            let sent = again.url() == &landed;
+            Ok((again, sent))
+        }
+        (_, false) => Ok((response, false)),
     }
 }
 
@@ -115,6 +159,38 @@ mod tests {
         assert!(!auth.covers("https://mirror.example/x.iso"));
         assert!(Auth::new(creds(), "not a url").is_none());
         assert!(!format!("{auth:?}").contains("pw"));
+    }
+
+    #[test]
+    fn an_http_link_covers_its_https_upgrade_only() {
+        let auth = Auth::new(creds(), "http://files.example/x.iso").unwrap();
+        assert!(auth.covers("https://files.example/x.iso"));
+        assert!(auth.covers("https://files.example:443/y"));
+        assert!(!auth.covers("https://files.example:8443/x.iso"));
+        assert!(!auth.covers("https://cdn.files.example/x.iso"));
+        assert!(!auth.covers("https://other.example/x.iso"));
+        // Never a downgrade, nor an upgrade from another port.
+        let https = Auth::new(creds(), "https://files.example/x.iso").unwrap();
+        assert!(!https.covers("http://files.example/x.iso"));
+        let port = Auth::new(creds(), "http://files.example:8080/x.iso").unwrap();
+        assert!(!port.covers("https://files.example/x.iso"));
+        assert!(!port.covers("https://files.example:8080/x.iso"));
+    }
+
+    #[test]
+    fn https_upgrade_decision() {
+        let origin = |s: &str| url::Url::parse(s).unwrap().origin();
+        let up = |a: &str, b: &str| is_https_upgrade(&origin(a), &origin(b));
+        assert!(up("http://h.test/", "https://h.test/"));
+        assert!(up("http://H.test:80/", "https://h.test:443/"));
+        assert!(!up("https://h.test/", "http://h.test/"));
+        assert!(!up("http://h.test/", "http://h.test/"));
+        assert!(!up("https://h.test/", "https://h.test/"));
+        assert!(!up("http://h.test/", "https://g.test/"));
+        assert!(!up("http://h.test:81/", "https://h.test/"));
+        assert!(!up("http://h.test/", "https://h.test:444/"));
+        assert!(!up("http://127.0.0.1/", "https://[::1]/"));
+        assert!(!up("http://h.test/", "ftp://h.test/"));
     }
 
     #[test]

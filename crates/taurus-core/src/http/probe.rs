@@ -6,7 +6,7 @@ use reqwest::header::{
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::filename::choose_name;
-use crate::http::auth::{Auth, authorize, unauthorized};
+use crate::http::auth::{self, Auth, unauthorized};
 use crate::http::client::{bot_check_error, request_error, status_error};
 use crate::page::{self, MAX_HTML_BYTES, PageVerdict};
 
@@ -127,19 +127,20 @@ async fn send(
     auth: Option<&Auth>,
     ranged: bool,
 ) -> Result<reqwest::Response, CoreError> {
-    let request = client.get(url.clone()).header(ACCEPT_ENCODING, "identity");
-    let (mut request, signed_in) = authorize(request, auth, url.as_str());
-    if ranged {
-        request = request.header(RANGE, "bytes=0-0");
-    }
-    if let Some(referer) = referer {
-        request = request.header(REFERER, referer);
-    }
-    let response = request.send().await.map_err(request_error)?;
+    let build = |url: &str| {
+        let mut request = client.get(url).header(ACCEPT_ENCODING, "identity");
+        if ranged {
+            request = request.header(RANGE, "bytes=0-0");
+        }
+        if let Some(referer) = referer {
+            request = request.header(REFERER, referer);
+        }
+        request
+    };
+    let (response, sent) = auth::send(build, auth, url.as_str())
+        .await
+        .map_err(request_error)?;
     if response.status() == StatusCode::UNAUTHORIZED {
-        // Signed in only if no redirect led elsewhere (reqwest then drops
-        // the credentials).
-        let sent = signed_in && response.url().origin() == url.origin();
         return Err(unauthorized(response.headers(), sent));
     }
     Ok(response)
