@@ -2373,3 +2373,131 @@ async fn retry_with_cookies_refuses_a_web_job_and_resumes_a_paused_video() {
         &["--cookies-from-browser", "chrome"]
     ));
 }
+
+// ---- A speed-limit change reaches running video downloads ----
+
+/// A download of `x.mp4` for the run given `rate` as its `--limit-rate`
+/// (runs are told apart by that value): it prints some progress and, with
+/// `hold`, waits to be interrupted, leaving `x.mp4.part` as yt-dlp does.
+fn run_at_rate(rate: u64, hold: bool) -> Value {
+    json!({
+        "if_arg": rate.to_string(),
+        "stdout": [progress(100, 1000), file_line("x.mp4")],
+        "wait_for_interrupt": hold,
+        "start_files": [["x.mp4.part", 7]],
+        "write_files": [["x.mp4", 1000]],
+        "on_interrupt": { "write_files": [["interrupted", 1]], "exit": 1 },
+    })
+}
+
+async fn set_limit(rig: &MediaRig, bytes_per_sec: u64) {
+    let mut settings = rig.engine.settings();
+    settings.speed = taurus_core::SpeedLimit::Custom { bytes_per_sec };
+    rig.engine.set_settings(settings).await.unwrap();
+}
+
+/// The `--limit-rate` value of a yt-dlp run.
+fn rate_of(argv: &[String]) -> Option<&str> {
+    let at = argv.iter().position(|a| a == "--limit-rate")?;
+    Some(argv[at + 1].as_str())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn media_restarts_on_big_limit_change() {
+    let rig = MediaRig::new(
+        &video_info(),
+        json!([run_at_rate(400_000, true), run_at_rate(100_000, false)]),
+    )
+    .await;
+    set_limit(&rig, 400_000).await;
+    let mut events = rig.engine.subscribe();
+    let link = "https://www.youtube.com/watch?v=restarts_on_big_limit_change";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    // The first run is in place (its interrupt handler too).
+    rig.until(id, "progress", |v| v.downloaded > 0).await;
+
+    // 400 kB/s to 100 kB/s: yt-dlp is restarted with the new rate.
+    set_limit(&rig, 100_000).await;
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let calls = download_calls(link);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(rate_of(&calls[0].argv), Some("400000"));
+    assert_eq!(rate_of(&calls[1].argv), Some("100000"));
+    #[cfg(unix)]
+    {
+        assert!(rig.dest.join("interrupted").is_file(), "not interrupted");
+        assert!(process_gone(calls[0].pid));
+    }
+    // The finished file is intact, and the restart was no state change:
+    // never Paused, Waiting or Failed on the way, no error recorded.
+    let view = rig.view(id);
+    assert_eq!(view.file_name, "x.mp4");
+    assert_eq!(
+        std::fs::metadata(rig.dest.join("x.mp4")).unwrap().len(),
+        1000
+    );
+    assert!(view.error.is_none(), "{view:?}");
+    while let Ok(event) = events.try_recv() {
+        if let Event::JobUpdated(v) | Event::JobAdded(v) = event
+            && v.id == id
+        {
+            assert!(
+                matches!(
+                    v.state,
+                    JobState::Queued | JobState::Downloading | JobState::Completed
+                ),
+                "{v:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn media_keeps_running_on_a_small_limit_change() {
+    // Slow enough to be running when the limit changes, ends by itself.
+    let run = json!({
+        "if_arg": "400000",
+        "stdout": [progress(100, 1000), progress(200, 1000), progress(300, 1000),
+                   file_line("x.mp4")],
+        "delay_ms_per_line": 300,
+        "write_files": [["x.mp4", 1000]],
+    });
+    let rig = MediaRig::new(&video_info(), run).await;
+    set_limit(&rig, 400_000).await;
+    let link = "https://www.youtube.com/watch?v=small_limit_change";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    rig.until(id, "progress", |v| v.downloaded > 0).await;
+    // 12 % less: within the 20 % that is left to the running process.
+    set_limit(&rig, 350_000).await;
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    assert_eq!(download_calls(link).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recording_not_restarted_on_limit_change() {
+    let rig = MediaRig::new(&fixture("live.json"), live_recording(true, 0)).await;
+    set_limit(&rig, 400_000).await;
+    let link = "https://www.twitch.tv/recording_not_restarted";
+    let id = recording(&rig, link).await;
+    let before = media(&rig.view(id)).live_elapsed_secs.unwrap();
+
+    set_limit(&rig, 100_000).await;
+    // A restart would begin a new run (and its clock): seconds pass on the
+    // same one.
+    rig.until(id, "the same recording going on", |v| {
+        media(v).live_elapsed_secs.is_some_and(|s| s >= before + 2)
+    })
+    .await;
+    assert_eq!(download_calls(link).len(), 1);
+    #[cfg(unix)]
+    assert!(!rig.dest.join("interrupted").exists(), "was interrupted");
+
+    tokio::time::timeout(Duration::from_secs(30), rig.engine.stop_recording(id))
+        .await
+        .unwrap()
+        .unwrap();
+    let calls = download_calls(link);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(rate_of(&calls[0].argv), Some("400000"));
+    assert_eq!(rig.view(id).state, JobState::Completed);
+}

@@ -606,6 +606,74 @@ async fn a_cancelled_install_is_not_left_installing() {
     assert_eq!(f.status_of(ToolKind::Ffmpeg).state, ToolState::Ready);
 }
 
+/// A cancelled install announces what the tool really is now, so a front
+/// end showing "getting video tools" can clear it: Missing for a tool that
+/// was never installed, Ready (its version) for an update that was dropped.
+#[tokio::test]
+async fn cancelled_install_clears_installing_state() {
+    let f = Fixture::new().await;
+    let seen = Mutex::new(Vec::<ToolStatus>::new());
+    let started = tokio::sync::Notify::new();
+    let report = |s: ToolStatus| {
+        if matches!(s.state, ToolState::Installing { .. }) {
+            started.notify_one();
+        }
+        seen.lock().unwrap().push(s);
+    };
+    tokio::select! {
+        biased;
+        () = started.notified() => {}
+        _ = f.manager.ensure(ToolKind::YtDlp, &report) => panic!("finished before it was dropped"),
+    }
+    // Dropped: not installing any more, and the last word said so.
+    assert_eq!(f.status_of(ToolKind::YtDlp).state, ToolState::Missing);
+    let last = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(
+        (last.kind, last.state),
+        (ToolKind::YtDlp, ToolState::Missing)
+    );
+    assert_eq!(last.version, None);
+
+    // An update dropped half-way: the installed version is announced Ready.
+    f.ensure(ToolKind::Ffmpeg).await;
+    let version = f.current(ToolKind::Ffmpeg);
+    f.host.set_release("ffmpeg", ToolRelease::new("7.2"));
+    seen.lock().unwrap().clear();
+    tokio::select! {
+        biased;
+        () = started.notified() => {}
+        _ = f.manager.update(ToolKind::Ffmpeg, true, &report) => panic!("finished before it was dropped"),
+    }
+    let last = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(
+        (last.kind, last.state),
+        (ToolKind::Ffmpeg, ToolState::Ready)
+    );
+    assert_eq!(last.version.as_deref(), Some(version.as_str()));
+}
+
+/// A failed install is reported once, as `Failed` (not also as Missing).
+#[tokio::test]
+async fn a_failed_install_reports_failed_not_missing() {
+    let f = Fixture::new().await;
+    f.host.go_offline();
+    let seen = Mutex::new(Vec::<ToolStatus>::new());
+    let report = |s: ToolStatus| seen.lock().unwrap().push(s);
+    let err = f
+        .manager
+        .ensure(ToolKind::YtDlp, &report)
+        .await
+        .unwrap_err();
+    assert!(err.kind.is_transient(), "{err:?}");
+    let seen = seen.lock().unwrap();
+    let last = seen.last().unwrap();
+    assert_eq!(last.state, ToolState::Failed(err.kind));
+    assert!(
+        !seen.iter().any(|s| s.state == ToolState::Missing),
+        "{seen:?}"
+    );
+}
+
 #[tokio::test]
 async fn status_is_readable_without_a_manager() {
     let f = Fixture::new().await;

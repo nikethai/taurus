@@ -89,7 +89,8 @@ pub(super) async fn assemble(
     let views = Arc::new(RwLock::new(views));
     let shared_settings = Arc::new(RwLock::new(settings.clone()));
     let keeping_awake = Arc::new(AtomicBool::new(false));
-    let limiter = Limiter::new(speed_limit(&settings, measured_peak));
+    let media_global = speed_limit(&settings, measured_peak);
+    let limiter = Limiter::new(media_global);
     let peak = PeakTracker::with_max(fresh_peak(measured_peak, unix_now()).unwrap_or(0));
     let (commands, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
     let (events, _) = broadcast::channel(EVENT_CAPACITY);
@@ -153,6 +154,8 @@ pub(super) async fn assemble(
         transferred: 0,
         tools: tools.clone(),
         media_stops: HashMap::new(),
+        media_rates: HashMap::new(),
+        media_global,
         secrets: secrets.clone(),
     };
     let engine = Engine {

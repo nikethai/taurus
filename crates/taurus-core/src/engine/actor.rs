@@ -242,6 +242,11 @@ pub(super) struct Actor {
     pub(super) tools: Arc<ToolManager>,
     /// The `stop_recording` token of each running media job.
     pub(super) media_stops: HashMap<JobId, CancellationToken>,
+    /// The speed-limit share of each running media job that a limit change
+    /// may restart (a live recording has none).
+    pub(super) media_rates: HashMap<JobId, super::media_rate::MediaRate>,
+    /// The effective global speed limit as media jobs last heard of it.
+    pub(super) media_global: Option<u64>,
     /// The jobs' passwords.
     pub(super) secrets: Secrets,
 }

@@ -15,6 +15,7 @@ mod jobs;
 mod keychain;
 mod media;
 mod media_job;
+mod media_rate;
 mod mirrors;
 mod open;
 mod remove;

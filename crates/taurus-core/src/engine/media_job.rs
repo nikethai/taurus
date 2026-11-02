@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::http::JobOutcome;
 use crate::media::remux::{RemuxPlan, recorded_parts, remux_parts, unmoved_recording};
-use crate::media::run::{Ended, MediaPhase, Output, Stop, Tracker, download_args, run_process};
+use crate::media::run::{Ended, MediaPhase, Output, Stop, Tracker, download_args};
 use crate::media::{
     YtDlp, classify_stderr_with, failure_detail, live_from_start_refused, only_thumbnail_refused,
     standard_quality,
@@ -26,6 +26,7 @@ use crate::tools::{ToolKind, ToolManager, ToolState, ToolStatus};
 use super::Event;
 use super::actor::JobMsg;
 use super::media::MediaUpdate;
+use super::media_rate::run_restartable;
 
 /// What a media job's runner needs.
 pub(super) struct MediaJob {
@@ -34,9 +35,10 @@ pub(super) struct MediaJob {
     pub(super) store: Store,
     /// How long yt-dlp may take to stop after the interrupt.
     pub(super) grace: Duration,
-    /// The job's share of the speed limit (bytes per second), as it
-    /// started; `None` without a limit.
-    pub(super) limit_rate: Option<u64>,
+    /// The job's share of the speed limit (bytes per second; `None`
+    /// without a limit) for its next yt-dlp run. A change while one runs
+    /// restarts it (see `media_rate`); a recording's never changes.
+    pub(super) rate: watch::Receiver<Option<u64>>,
     /// The proxy setting as the job started: each yt-dlp run is given it.
     pub(super) proxy: ProxySetting,
     /// For `Event::ToolStatus` while the tools are installed.
@@ -111,13 +113,15 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
     let mut partials = options.partial_files.clone();
     loop {
         let yt_dlp = YtDlp::prepare(&ctx.tools, &ctx.proxy).await?;
+        let mut rate = ctx.rate.clone();
+        let limit_rate = *rate.borrow_and_update();
         let mut command = yt_dlp.command();
         command
             .args(download_args(
                 options,
                 &job.dest_dir,
                 &job.url,
-                ctx.limit_rate,
+                limit_rate,
                 from_start,
             ))
             .current_dir(&job.dest_dir);
@@ -126,29 +130,44 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
         let started = SystemTime::now();
         let mut live = Live::default();
         ctx.update(&tracker, None, true);
-        let ended = run_process(command, &ctx.cancel, &ctx.finish, ctx.grace, |out| {
-            let change = match out {
-                Output::Line(line) => tracker.apply(line),
-                Output::Tick => {
-                    if options.live_from_start {
-                        live.tick(ctx, &tracker);
+        let (ended, restart) = run_restartable(
+            command,
+            &ctx.cancel,
+            &ctx.finish,
+            ctx.grace,
+            rate,
+            limit_rate,
+            |out| {
+                let change = match out {
+                    Output::Line(line) => tracker.apply(line),
+                    Output::Tick => {
+                        if options.live_from_start {
+                            live.tick(ctx, &tracker);
+                        }
+                        return;
                     }
-                    return;
+                };
+                if change.partials {
+                    ctx.store_partials(&tracker);
                 }
-            };
-            if change.partials {
-                ctx.store_partials(&tracker);
-            }
-            if let Some((downloaded, total, speed_bps)) = change.progress {
-                ctx.progress(downloaded, total, speed_bps);
-            }
-            let elapsed = live.elapsed(options.live_from_start, &tracker);
-            if change.view || (elapsed.is_some() && change.progress.is_some()) {
-                ctx.update(&tracker, elapsed, change.view);
-            }
-        })
+                if let Some((downloaded, total, speed_bps)) = change.progress {
+                    ctx.progress(downloaded, total, speed_bps);
+                }
+                let elapsed = live.elapsed(options.live_from_start, &tracker);
+                if change.view || (elapsed.is_some() && change.progress.is_some()) {
+                    ctx.update(&tracker, elapsed, change.view);
+                }
+            },
+        )
         .await?;
         partials.clone_from(&tracker.partials);
+        // The speed limit changed a lot: yt-dlp, stopped as for a pause,
+        // goes on from its partial file at the new rate (no failure, no
+        // retry, no state change).
+        if restart && ended.stopped == Some(Stop::Pause) {
+            tracing::info!(job = job.id.0, "the speed limit changed; restarting yt-dlp");
+            continue;
+        }
         match ended.stopped {
             Some(Stop::Pause) => return Ok(JobOutcome::Paused),
             Some(Stop::Finish) => {

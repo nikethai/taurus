@@ -251,6 +251,7 @@ impl Actor {
     pub(super) fn on_finished(&mut self, id: JobId, outcome: JobOutcome) {
         let run = self.running.remove(&id);
         self.media_stops.remove(&id);
+        self.media_rates.remove(&id);
         // Pause, remove or shutdown is waiting for this run to end.
         let told_to_stop = run.as_ref().is_some_and(|run| run.cancel.is_cancelled());
         let known = read(&self.views).get(&id).cloned();

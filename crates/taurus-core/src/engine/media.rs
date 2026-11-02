@@ -21,10 +21,9 @@ use super::actor::{Actor, Command, JobMsg, Run};
 use super::inspect::clean_browser;
 use super::jobs::view_of;
 use super::media_job::{MediaJob, run_media_job};
+use super::media_rate::MediaRate;
 use super::schedule::check_space;
-use super::settings::speed_limit;
 use super::{AddRequest, Engine, Event, JobView, no_such_job, read, write};
-use crate::torrent::policy::split_rate;
 
 /// Playlists longer than this need `AddRequest::confirm_large_playlist`.
 const LARGE_PLAYLIST: u32 = 50;
@@ -328,12 +327,17 @@ impl Actor {
         let downloaded_at_start = read(&self.views).get(&id).map_or(0, |v| v.downloaded);
         let cancel = CancellationToken::new();
         let finish = CancellationToken::new();
+        let (media_rate, rate) = MediaRate::new(self.media_rate());
+        // A recording keeps the limit it started with.
+        if !live {
+            self.media_rates.insert(id, media_rate);
+        }
         let ctx = MediaJob {
             job,
             tools: self.tools.clone(),
             store: self.store.clone(),
             grace: self.timing.media_stop_grace,
-            limit_rate: self.media_rate(),
+            rate,
             proxy: self.settings.network.proxy.clone(),
             events: self.events.clone(),
             cancel: cancel.clone(),
@@ -361,16 +365,6 @@ impl Actor {
             },
         );
         self.set_view_state(id, state);
-    }
-
-    /// The share of the speed limit for a media job about to start: yt-dlp
-    /// takes a fixed `--limit-rate`, so it gets its part of the web
-    /// downloads' rate as the jobs running now (and it) split it.
-    fn media_rate(&self) -> Option<u64> {
-        let (http, torrents) = self.active();
-        let global = speed_limit(&self.settings, self.measured_peak);
-        let (http_rate, _) = split_rate(global, true, torrents > 0);
-        http_rate.map(|rate| rate / (http as u64 + 1))
     }
 
     /// Asks the running media job to stop as a finished recording; true if

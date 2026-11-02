@@ -72,6 +72,12 @@ impl Actor {
     pub(super) fn apply_limits(&mut self) {
         let (http, torrents) = self.active();
         let global = speed_limit(&self.settings, self.measured_peak);
+        // Only a change of the limit itself reaches running video downloads,
+        // not jobs coming and going.
+        if global != self.media_global {
+            self.media_global = global;
+            self.retune_media();
+        }
         let (http_rate, torrent_share) = split_rate(global, http > 0, torrents > 0);
         let torrent_rate = torrent_rate(torrent_share, self.settings.torrent.download_limit_bps);
         let rates = (
