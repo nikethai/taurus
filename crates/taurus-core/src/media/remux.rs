@@ -10,16 +10,23 @@ use tokio::process::Command;
 use crate::errors::{CoreError, ErrorKind};
 use crate::tools::tree::TreeChild;
 
-use super::run::{Tracker, read_tail};
+use super::process::read_tail;
+use super::run::Tracker;
 
-/// The partial files a stopped recording left: nothing if the run never
-/// reported progress; else those it reported for the current video that
-/// still exist, else the `.part` and `.ts` files in `dir` changed since
-/// `since` whose names carry the video's id as `[<id>]` (yt-dlp's output
-/// name), so another job's file in the same folder is never taken.
-pub(crate) fn recorded_parts(dir: &Path, tracker: &Tracker, since: SystemTime) -> Vec<PathBuf> {
+/// The partial files a stopped recording left, and whether they are the
+/// run's own: nothing if the run never reported progress; else those it
+/// reported for the current video that still exist (its own); else the
+/// `.part` and `.ts` files in `dir` changed since `since` whose names carry
+/// the video's id as `[<id>]` (yt-dlp's output name). Those are found by
+/// their name only, so they could be another job's: they are joined into
+/// the recording but never deleted (see `RemuxPlan::owned`).
+pub(crate) fn recorded_parts(
+    dir: &Path,
+    tracker: &Tracker,
+    since: SystemTime,
+) -> (Vec<PathBuf>, bool) {
     if !tracker.progressed {
-        return Vec::new();
+        return (Vec::new(), true);
     }
     let tag = tracker.video_id.as_deref().map(|id| format!("[{id}]"));
     let current = |path: &Path| {
@@ -35,14 +42,14 @@ pub(crate) fn recorded_parts(dir: &Path, tracker: &Tracker, since: SystemTime) -
         .cloned()
         .collect();
     if !reported.is_empty() {
-        return reported;
+        return (reported, true);
     }
     let Some(tag) = tag else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let since = since.checked_sub(Duration::from_secs(2)).unwrap_or(since);
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let mut found: Vec<PathBuf> = entries
         .filter_map(Result::ok)
@@ -59,7 +66,7 @@ pub(crate) fn recorded_parts(dir: &Path, tracker: &Tracker, since: SystemTime) -
         .map(|e| e.path())
         .collect();
     found.sort();
-    found
+    (found, false)
 }
 
 /// Where a partial recording goes once remuxed: its name without `.part`,
@@ -104,10 +111,11 @@ fn free_name(parts: &[PathBuf]) -> PathBuf {
 /// MP4 with ffmpeg (`ffmpeg -y -i <part> [-i <part> -map 0 -map 1 …] -c
 /// copy <final>.mp4`, every stream of every part), named after them
 /// without overwriting another file, and deletes the parts only if that
-/// worked. Returns the MP4; on failure nothing of it is left. Dropping the
-/// future stops ffmpeg; the caller then deletes `out` (see `RemuxPlan`).
+/// worked and they are the run's own (`RemuxPlan::owned`). Returns the MP4;
+/// on failure nothing of it is left. Dropping the future stops ffmpeg; the
+/// caller then deletes `out` (see `RemuxPlan`).
 pub(crate) async fn remux_parts(ffmpeg: &Path, plan: &RemuxPlan) -> Result<PathBuf, CoreError> {
-    let RemuxPlan { parts, out } = plan;
+    let RemuxPlan { parts, out, owned } = plan;
     let mut command = Command::new(ffmpeg);
     command.arg("-y");
     for part in parts {
@@ -138,7 +146,7 @@ pub(crate) async fn remux_parts(ffmpeg: &Path, plan: &RemuxPlan) -> Result<PathB
             "ffmpeg could not finish the recording ({status}): {last}"
         )));
     }
-    for part in parts {
+    for part in parts.iter().filter(|_| *owned) {
         if let Err(e) = std::fs::remove_file(part) {
             tracing::warn!("could not remove {}: {e}", part.display());
         }
@@ -151,16 +159,19 @@ pub(crate) async fn remux_parts(ffmpeg: &Path, plan: &RemuxPlan) -> Result<PathB
 pub(crate) struct RemuxPlan {
     pub parts: Vec<PathBuf>,
     pub out: PathBuf,
+    /// The parts are the ones the run reported writing: deleted once
+    /// joined. Parts found only by their name are kept.
+    pub owned: bool,
 }
 
 impl RemuxPlan {
     /// `None` without parts.
-    pub(crate) fn new(parts: Vec<PathBuf>) -> Option<RemuxPlan> {
+    pub(crate) fn new((parts, owned): (Vec<PathBuf>, bool)) -> Option<RemuxPlan> {
         if parts.is_empty() {
             return None;
         }
         let out = free_name(&parts);
-        Some(RemuxPlan { parts, out })
+        Some(RemuxPlan { parts, out, owned })
     }
 }
 
@@ -202,13 +213,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let part = tmp.path().join("Live [a].f137.mp4.part");
         std::fs::write(&part, b"x").unwrap();
-        let plan = RemuxPlan::new(vec![part.clone()]).unwrap();
+        let plan = RemuxPlan::new((vec![part.clone()], true)).unwrap();
         assert_eq!(plan.out, tmp.path().join("Live [a].mp4"));
         std::fs::write(tmp.path().join("Live [a].mp4"), b"mine").unwrap();
         std::fs::write(tmp.path().join("Live [a] (2).mp4"), b"mine too").unwrap();
-        let plan = RemuxPlan::new(vec![part]).unwrap();
+        let plan = RemuxPlan::new((vec![part], true)).unwrap();
         assert_eq!(plan.out, tmp.path().join("Live [a] (3).mp4"));
-        assert!(RemuxPlan::new(Vec::new()).is_none());
+        assert!(RemuxPlan::new((Vec::new(), true)).is_none());
     }
 
     #[test]
@@ -223,7 +234,7 @@ mod tests {
         std::fs::write(&video, b"x").unwrap();
         std::fs::write(&audio, b"x").unwrap();
         // Nothing recorded yet (no progress): nothing is taken.
-        assert!(recorded_parts(dir, &t, before).is_empty());
+        assert!(recorded_parts(dir, &t, before).0.is_empty());
         t.apply(&progress(
             serde_json::json!({"status": "downloading", "downloaded_bytes": 9}),
         ));
@@ -231,17 +242,18 @@ mod tests {
         std::fs::write(dir.join("Other [zzz].mp4.part"), b"x").unwrap();
         std::fs::write(dir.join("other.ts"), b"x").unwrap();
         std::fs::write(dir.join("notes [abc].txt"), b"x").unwrap();
+        // Found by name only: not the run's own, so never deleted.
         assert_eq!(
             recorded_parts(dir, &t, before),
-            [video.clone(), audio.clone()]
+            (vec![video.clone(), audio.clone()], false)
         );
         // Without the video's id, the folder is not searched at all.
         let mut unknown = t.clone();
         unknown.video_id = None;
-        assert!(recorded_parts(dir, &unknown, before).is_empty());
+        assert!(recorded_parts(dir, &unknown, before).0.is_empty());
         // Parts older than the run are another run's.
         let later = SystemTime::now() + Duration::from_secs(60);
-        assert!(recorded_parts(dir, &t, later).is_empty());
+        assert!(recorded_parts(dir, &t, later).0.is_empty());
         // Those the run reported win; a reported one that is gone, or
         // another video's, does not count.
         t.parts = vec![
@@ -250,7 +262,7 @@ mod tests {
             dir.join("Other [zzz].mp4.part"),
             video.clone(),
         ];
-        assert_eq!(recorded_parts(dir, &t, later), [audio, video]);
+        assert_eq!(recorded_parts(dir, &t, later), (vec![audio, video], true));
     }
 
     #[cfg(unix)]
@@ -259,7 +271,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let part = tmp.path().join("x.mp4.part");
         std::fs::write(&part, b"data").unwrap();
-        let plan = RemuxPlan::new(vec![part.clone()]).unwrap();
+        let plan = RemuxPlan::new((vec![part.clone()], true)).unwrap();
         let err = remux_parts(Path::new("false"), &plan).await.unwrap_err();
         assert_eq!(err.kind, ErrorKind::ToolFailed);
         assert!(part.is_file());

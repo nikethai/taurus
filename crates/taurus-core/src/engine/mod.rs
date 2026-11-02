@@ -295,8 +295,11 @@ impl Engine {
     /// `delete_files` its own files go (those whose size is still the
     /// torrent's), then the folders they leave empty, and the folder it was
     /// given if that is empty. A media job with `delete_files` loses its
-    /// finished files and yt-dlp's partial files of its videos (named with
-    /// their ids; never another job's), but not a playlist's folder.
+    /// finished files and the partial files its runs recorded writing (as
+    /// yt-dlp reported them, never found by name, so never another job's),
+    /// but not a playlist's folder. With `RemoveFiles::IfUnfinished` (see
+    /// `remove_with`) an unfinished media job loses only those partial
+    /// files: what it finished (a paused playlist's done videos) is kept.
     pub async fn remove(&self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
         let files = if delete_files {
             RemoveFiles::All

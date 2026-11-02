@@ -98,6 +98,8 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
         MediaPhase::Downloading
     };
     let mut retried = false;
+    // What the job's runs wrote and did not finish, kept across the runs.
+    let mut partials = options.partial_files.clone();
     loop {
         let yt_dlp = YtDlp::prepare(&ctx.tools).await?;
         let mut command = yt_dlp.command();
@@ -110,13 +112,15 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
             ))
             .current_dir(&job.dest_dir);
         let mut tracker = Tracker::new(&job.dest_dir, first_phase);
+        tracker.partials = std::mem::take(&mut partials);
         let started = SystemTime::now();
         let mut live_since = None;
-        let mut video_ids = options.video_ids.clone();
         ctx.update(&tracker, None, true);
         let ended = run_process(command, &ctx.cancel, &ctx.finish, ctx.grace, |line| {
             let change = tracker.apply(line);
-            ctx.remember_ids(&tracker, &mut video_ids);
+            if change.partials {
+                ctx.store_partials(&tracker);
+            }
             if let Some((downloaded, total, speed_bps)) = change.progress {
                 let _ = ctx.msgs.send(JobMsg::Progress {
                     id: job.id,
@@ -139,6 +143,7 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
             }
         })
         .await?;
+        partials.clone_from(&tracker.partials);
         match ended.stopped {
             Some(Stop::Pause) => return Ok(JobOutcome::Paused),
             Some(Stop::Finish) => {
@@ -322,25 +327,19 @@ fn name_of(dest_dir: &Path, file: &Path, playlist: bool) -> Option<String> {
 }
 
 impl MediaJob {
-    /// Stores the ids of the videos the run began that `known` lacks, so
-    /// that removing the job finds their partial files, even after a
-    /// restart.
-    fn remember_ids(&self, tracker: &Tracker, known: &mut Vec<String>) {
-        let new: Vec<&String> = tracker
-            .video_ids
-            .iter()
-            .filter(|id| !known.contains(id))
-            .collect();
-        if new.is_empty() {
-            return;
-        }
-        known.extend(new.into_iter().cloned());
+    /// Stores the job's unfinished files as the tracker has them (only
+    /// the media options change), so that removing the job deletes exactly
+    /// those, even after a restart.
+    fn store_partials(&self, tracker: &Tracker) {
         let Some(mut options) = self.job.media.clone() else {
             return;
         };
-        options.video_ids = known.clone();
+        options.partial_files.clone_from(&tracker.partials);
         if let Err(e) = self.store.set_media(self.job.id, &options) {
-            tracing::warn!(job = self.job.id.0, "could not store the video ids: {e}");
+            tracing::warn!(
+                job = self.job.id.0,
+                "could not store the partial files: {e}"
+            );
         }
     }
 

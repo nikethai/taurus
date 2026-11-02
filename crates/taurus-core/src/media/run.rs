@@ -11,7 +11,7 @@ use std::process::ExitStatus;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -139,8 +139,11 @@ pub(crate) struct Tracker {
     /// The id of the video downloading now (yt-dlp's `%(id)s`, which the
     /// output names carry as `[<id>]`).
     pub video_id: Option<String>,
-    /// Every video id the run began, in order (a playlist has several).
-    pub video_ids: Vec<String>,
+    /// The job's unfinished files: every `tmpfilename` reported, and the
+    /// `filename` it becomes, until reported finished (`TAURUS-FILE`).
+    /// Seeded by the runner with what earlier runs recorded; a finished
+    /// entry also drops those that no longer exist (yt-dlp removed them).
+    pub partials: Vec<PathBuf>,
     /// Bytes of the entries before the current one.
     before_entry: u64,
     /// Bytes of the current entry's finished streams (video, then audio).
@@ -159,6 +162,8 @@ pub(crate) struct Change {
     pub progress: Option<(u64, Option<u64>, u64)>,
     /// Phase, entries or files changed.
     pub view: bool,
+    /// `partials` changed (to be stored).
+    pub partials: bool,
 }
 
 impl Tracker {
@@ -172,7 +177,7 @@ impl Tracker {
             parts: Vec::new(),
             progressed: false,
             video_id: None,
-            video_ids: Vec::new(),
+            partials: Vec::new(),
             before_entry: 0,
             entry_finished: 0,
             stream: None,
@@ -212,6 +217,9 @@ impl Tracker {
                 return Change::default();
             };
             let path = local_path(&self.dest_dir, &path);
+            let recorded = self.partials.len();
+            // Finished, it is the user's; what yt-dlp cleaned up is gone.
+            self.partials.retain(|p| *p != path && p.exists());
             if !self.files.contains(&path) {
                 self.files.push(path);
             }
@@ -220,6 +228,7 @@ impl Tracker {
             return Change {
                 progress: None,
                 view: true,
+                partials: self.partials.len() != recorded,
             };
         }
         if let Some(rest) = line.strip_prefix(ENTRY) {
@@ -235,11 +244,6 @@ impl Tracker {
                 .next()
                 .and_then(Result::ok)
                 .filter(|id| !id.is_empty());
-            if let Some(id) = &self.video_id
-                && !self.video_ids.contains(id)
-            {
-                self.video_ids.push(id.clone());
-            }
             self.before_entry += self.entry_finished + self.stream_done;
             self.entry_finished = 0;
             self.stream = None;
@@ -250,6 +254,7 @@ impl Tracker {
             return Change {
                 progress: None,
                 view: true,
+                partials: false,
             };
         }
         Change::default()
@@ -269,11 +274,19 @@ impl Tracker {
             .or_else(|| number("total_bytes_estimate"))
             .map(whole);
         let file = text("filename").map(str::to_owned);
+        let mut partials = false;
         if let Some(part) = text("tmpfilename") {
             let part = local_path(&self.dest_dir, part);
             if self.parts.last() != Some(&part) {
                 self.parts.retain(|p| *p != part);
-                self.parts.push(part);
+                self.parts.push(part.clone());
+            }
+            // Only with a `tmpfilename`: this run writes it (a file already
+            // downloaded is reported without one, and is not the job's to
+            // delete).
+            partials |= self.record(part);
+            if let Some(file) = &file {
+                partials |= self.record(local_path(&self.dest_dir, file));
             }
         }
         // Another stream of the same entry (the audio after the video).
@@ -299,7 +312,17 @@ impl Tracker {
         Change {
             progress: Some(self.totals()),
             view,
+            partials,
         }
+    }
+
+    /// Adds `path` to `partials`; true if it was not there.
+    fn record(&mut self, path: PathBuf) -> bool {
+        if self.partials.contains(&path) {
+            return false;
+        }
+        self.partials.push(path);
+        true
     }
 
     fn set_phase(&mut self, phase: MediaPhase) -> Change {
@@ -308,6 +331,7 @@ impl Tracker {
         Change {
             progress: None,
             view,
+            partials: false,
         }
     }
 
@@ -555,24 +579,6 @@ fn interrupt(run: &TreeChild, grace: Duration) -> Instant {
         Err(e) => {
             tracing::info!("could not interrupt yt-dlp, killing it: {e}");
             Instant::now()
-        }
-    }
-}
-
-/// Reads to the end, keeping the last `cap` bytes or so.
-pub(super) async fn read_tail(mut reader: impl AsyncRead + Unpin, cap: usize) -> Vec<u8> {
-    let mut kept = Vec::new();
-    // On the heap: a future holding it inline would be 16 KiB larger.
-    let mut buf = vec![0u8; 16 * 1024];
-    loop {
-        match reader.read(&mut buf).await {
-            Ok(0) | Err(_) => return kept,
-            Ok(n) => {
-                kept.extend_from_slice(&buf[..n]);
-                if kept.len() > 2 * cap {
-                    kept.drain(..kept.len() - cap);
-                }
-            }
         }
     }
 }

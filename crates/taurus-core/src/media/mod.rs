@@ -6,6 +6,7 @@
 
 mod errors;
 mod inspect;
+mod partials;
 mod process;
 pub(crate) mod remux;
 pub(crate) mod run;
@@ -24,6 +25,7 @@ use crate::tools::{ToolKind, ToolManager};
 pub(crate) use errors::classify_stderr_with;
 pub(crate) use inspect::{failure_detail, fast_path_host, standard_quality};
 pub use inspect::{inspect, parse_info, qualities, single_video_link};
+pub(crate) use partials::own_partial_files;
 pub use run::MediaPhase;
 
 /// One way to download a video: yt-dlp's format selector, plus the
@@ -72,11 +74,12 @@ pub struct MediaOptions {
     /// The link was live or upcoming when inspected: it is recorded from
     /// its start, waiting for an upcoming stream to begin.
     pub live_from_start: bool,
-    /// The ids of the videos its runs began (yt-dlp's `%(id)s`, which its
-    /// file names carry as `[<id>]`), so that removing the job can find its
-    /// partial files.
+    /// The files its runs wrote that are not finished, as yt-dlp reported
+    /// them (`tmpfilename`, and the `filename` it becomes), so that removing
+    /// the job deletes its own partial files and no one else's, even after
+    /// a restart. A file reported finished leaves the list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub video_ids: Vec<String>,
+    pub partial_files: Vec<PathBuf>,
 }
 
 /// A conversion after the download.

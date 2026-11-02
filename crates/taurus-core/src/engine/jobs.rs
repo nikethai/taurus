@@ -206,17 +206,28 @@ impl Actor {
         self.resolved_again.remove(&id);
         // Decided now, after the run stopped: it may have just finished.
         let delete_files = files.deletes(read(&self.views).get(&id));
-        let removed = self.delete(id, delete_files).await;
+        let removed = self
+            .delete(id, delete_files, files == RemoveFiles::All)
+            .await;
         self.after_change();
         removed
     }
 
-    async fn delete(&mut self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
+    /// Forgets the job; with `delete_files` deletes its files (a media
+    /// job's finished ones only with `finished_too`, see `delete_media`).
+    async fn delete(
+        &mut self,
+        id: JobId,
+        delete_files: bool,
+        finished_too: bool,
+    ) -> Result<(), CoreError> {
         match self.store.get_job(id)? {
             Some(job) if job.kind == JobKind::Torrent => {
                 self.delete_torrent(&job, delete_files).await?;
             }
-            Some(job) if job.kind == JobKind::Media => self.delete_media(&job, delete_files),
+            Some(job) if job.kind == JobKind::Media => {
+                self.delete_media(&job, delete_files, finished_too);
+            }
             Some(job) if delete_files => delete_job_files(&self.store, &job)?,
             _ => {}
         }

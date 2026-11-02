@@ -85,3 +85,21 @@ async fn read_capped(reader: &mut (impl AsyncRead + Unpin), cap: usize) -> Vec<u
         }
     }
 }
+
+/// Reads to the end, keeping the last `cap` bytes or so.
+pub(super) async fn read_tail(mut reader: impl AsyncRead + Unpin, cap: usize) -> Vec<u8> {
+    let mut kept = Vec::new();
+    // On the heap: a future holding it inline would be 16 KiB larger.
+    let mut buf = vec![0u8; 16 * 1024];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => return kept,
+            Ok(n) => {
+                kept.extend_from_slice(&buf[..n]);
+                if kept.len() > 2 * cap {
+                    kept.drain(..kept.len() - cap);
+                }
+            }
+        }
+    }
+}

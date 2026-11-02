@@ -8,7 +8,7 @@ fn options(quality: &str, selector: &str, audio_only: bool) -> MediaOptions {
         convert: None,
         playlist: false,
         live_from_start: false,
-        video_ids: Vec::new(),
+        partial_files: Vec::new(),
     }
 }
 
@@ -227,7 +227,6 @@ fn tracker_counts_playlist_entries() {
     t.apply(&format!("{ENTRY}2 4 \"b2\" \"Two\""));
     assert_eq!(t.video_id.as_deref(), Some("b2"));
     t.apply(&format!("{ENTRY}2 4 \"b2\" \"Two\""));
-    assert_eq!(t.video_ids, ["id 1", "b2"]);
     assert_eq!(t.entries_done, 1);
     let c = t.apply(&progress(serde_json::json!({
         "status": "downloading", "downloaded_bytes": 30
@@ -409,4 +408,41 @@ mod process {
         );
         assert_eq!(ended.stderr.trim(), "ERROR: bad");
     }
+}
+
+#[test]
+fn tracker_records_the_jobs_partial_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path();
+    let at = |name: &str| local_path(dest, name);
+    let writes = |tmp: &str, file: &str| {
+        progress(serde_json::json!({
+            "status": "downloading", "downloaded_bytes": 1,
+            "tmpfilename": tmp, "filename": file,
+        }))
+    };
+    let mut t = Tracker::new(dest, MediaPhase::Downloading);
+    // A file already downloaded (reported without a `tmpfilename`) is not
+    // this run's.
+    let c = t.apply(&progress(serde_json::json!({
+        "status": "finished", "downloaded_bytes": 1, "filename": "old.mp4"
+    })));
+    assert!(!c.partials && t.partials.is_empty());
+    let video = writes("L/1 [a].f137.mp4.part", "L/1 [a].f137.mp4");
+    assert!(t.apply(&video).partials);
+    assert!(!t.apply(&video).partials, "known already");
+    assert_eq!(
+        t.partials,
+        [at("L/1 [a].f137.mp4.part"), at("L/1 [a].f137.mp4")]
+    );
+    // The entry is finished (merged): yt-dlp removed its streams.
+    assert!(t.apply(&format!("{FILE}\"L/1 [a].mp4\"")).partials);
+    assert!(t.partials.is_empty());
+    // A single stream's file is the finished one: it leaves the list.
+    std::fs::create_dir_all(dest.join("L")).unwrap();
+    std::fs::write(at("L/2 [b].mp4.part"), b"x").unwrap();
+    std::fs::write(at("L/2 [b].mp4"), b"x").unwrap();
+    t.apply(&writes("L/2 [b].mp4.part", "L/2 [b].mp4"));
+    assert!(t.apply(&format!("{FILE}\"L/2 [b].mp4\"")).partials);
+    assert_eq!(t.partials, [at("L/2 [b].mp4.part")]);
 }

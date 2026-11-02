@@ -954,6 +954,9 @@ async fn a_stopped_recording_never_takes_another_jobs_file() {
     assert_eq!(std::fs::read(&decoy_ts).unwrap(), b"an old one");
     assert!(!rig.dest.join("Other Stream [zzz].mp4").exists());
     assert!(!rig.dest.join("Old Stream.mp4").exists());
+    // The part was found by its name, not reported: joined, never deleted.
+    assert!(rig.dest.join("Live Now [live1].mp4").is_file());
+    assert!(rig.dest.join("Live Now [live1].mp4.part").is_file());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1420,20 +1423,20 @@ async fn stopping_during_the_update_after_a_break_pauses_cleanly() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn removing_an_unfinished_media_job_deletes_only_its_own_partial_files() {
+    // The audio stream is done (waiting to be merged), the video's part is
+    // being written, with yt-dlp's companions of it.
     let own = [
+        "Vid [vid1].f140.m4a",
         "Vid [vid1].f137.mp4.part",
         "Vid [vid1].f137.mp4.ytdl",
         "Vid [vid1].f137.mp4.part-Frag3",
-        "Vid [vid1].f140.m4a",
-        "Vid [vid1].temp.mp4",
-        "Sub/Vid [vid1].f137.mp4.part",
     ];
     let download = json!({
         "stdout": [
             format!("TAURUS-ENTRY 0 1 {} {}", json!("vid1"), json!("Vid")),
-            progress(100, 1000),
-            progress(200, 1000),
-            progress(300, 1000),
+            progress_into(100, 100, "Vid [vid1].f140.m4a.part", "Vid [vid1].f140.m4a"),
+            progress_into(200, 1000, "Vid [vid1].f137.mp4.part", "Vid [vid1].f137.mp4"),
+            progress_into(300, 1000, "Vid [vid1].f137.mp4.part", "Vid [vid1].f137.mp4"),
             file_line("Vid [vid1].mp4"),
         ],
         "delay_ms_per_line": 400,
@@ -1444,10 +1447,15 @@ async fn removing_an_unfinished_media_job_deletes_only_its_own_partial_files() {
     let rig = MediaRig::new(&video_info(), download).await;
     // Another job's partial file, and the user's files that share the id
     // but are not partial downloads.
+    // Files of the same video it did not report writing (another job's,
+    // even in a folder inside its own) stay too.
     let decoys = [
         "Other [zzz].f137.mp4.part",
         "Notes [vid1].txt",
         "Song [vid1].flac",
+        "Vid [vid1].f251.webm.part",
+        "Vid [vid1].temp.mp4",
+        "Sub/Vid [vid1].f137.mp4.part",
         "Sub/Other [zzz].mp4.ytdl",
     ];
     std::fs::create_dir_all(rig.dest.join("Sub")).unwrap();
@@ -1456,7 +1464,8 @@ async fn removing_an_unfinished_media_job_deletes_only_its_own_partial_files() {
     }
     let link = "https://www.youtube.com/watch?v=remove_partial_files";
     let id = rig.engine.add(rig.request(link)).await.unwrap();
-    rig.until(id, "progress", |v| v.downloaded > 0).await;
+    rig.until(id, "both streams reported", |v| v.downloaded >= 300)
+        .await;
     rig.engine.pause(id).await.unwrap();
     for file in own {
         assert!(rig.dest.join(file).is_file(), "{file} written");
@@ -1586,4 +1595,138 @@ async fn a_video_too_big_for_the_disk_is_refused_on_add() {
         .await
         .unwrap();
     rig.engine.remove(id, false).await.unwrap();
+}
+
+/// A progress line of a stream yt-dlp writes to `tmp` (relative to the
+/// job's folder, or absolute), to become `file`.
+fn progress_into(done: u64, total: u64, tmp: &str, file: &str) -> String {
+    let progress = json!({
+        "status": "downloading",
+        "downloaded_bytes": done,
+        "total_bytes": total,
+        "speed": 1000.0,
+        "tmpfilename": tmp,
+        "filename": file,
+    });
+    format!("TAURUS-PROGRESS {progress}")
+}
+
+/// Shuts the rig's engine down and opens a new one on the same data.
+async fn reopen(rig: MediaRig) -> MediaRig {
+    let MediaRig {
+        host,
+        tmp,
+        engine,
+        dest,
+    } = rig;
+    engine.shutdown().await.unwrap();
+    drop(engine);
+    let mut config = EngineConfig::new(tmp.path().join("data"));
+    config.tool_sources = sources(&host);
+    config.timing = Timing::fast_for_tests();
+    let engine = Engine::open(config).await.unwrap();
+    MediaRig {
+        host,
+        tmp,
+        engine,
+        dest,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paused_playlist_keeps_finished_videos_on_remove() {
+    let info = json!({
+        "_type": "playlist",
+        "id": "PLK",
+        "title": "Kept",
+        "webpage_url": "https://www.youtube.com/playlist?list=PLK",
+        "extractor_key": "YoutubeTab",
+        "entries": [
+            {"_type": "url", "id": "k1", "title": "One"},
+            {"_type": "url", "id": "k2", "title": "Two"}
+        ]
+    });
+    let one = "Kept/001 - One [k1].mp4";
+    let two = "Kept/002 - Two [k2].mp4";
+    let two_part = "Kept/002 - Two [k2].mp4.part";
+    let download = json!({
+        "stdout": [
+            format!("TAURUS-ENTRY 1 2 {} {}", json!("k1"), json!("One")),
+            progress_into(50, 100, &format!("{one}.part"), one),
+            file_line(one),
+            format!("TAURUS-ENTRY 2 2 {} {}", json!("k2"), json!("Two")),
+            progress_into(30, 100, two_part, two),
+        ],
+        // Entry 1 is finished; entry 2 is still being downloaded.
+        "start_files": [[one, 100], [two_part, 30]],
+        "wait_for_interrupt": true,
+        "on_interrupt": { "exit": 1 },
+    });
+    let rig = MediaRig::new(&info, download).await;
+    let link = "https://www.youtube.com/playlist?list=PLkeeps_finished";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    rig.until(id, "entry 2 under way", |v| {
+        media(v).entries_done == 1 && v.downloaded >= 130
+    })
+    .await;
+    rig.engine.pause(id).await.unwrap();
+    assert_eq!(rig.view(id).state, JobState::Paused);
+
+    rig.engine
+        .remove_with(id, taurus_core::RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    assert!(
+        rig.dest.join(one).is_file(),
+        "a finished video is the user's"
+    );
+    assert!(!rig.dest.join(two_part).exists(), "entry 2's part is gone");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_jobs_for_the_same_video_keep_each_others_partials() {
+    let part = "Same [same1].f137.mp4.part";
+    let download = json!({
+        "stdout": [
+            format!("TAURUS-ENTRY 0 1 {} {}", json!("same1"), json!("Same")),
+            progress_into(10, 100, part, "Same [same1].f137.mp4"),
+        ],
+        // In each job's own folder (yt-dlp runs there).
+        "start_files": [[part, 10]],
+        "wait_for_interrupt": true,
+        "on_interrupt": { "exit": 1 },
+    });
+    let rig = MediaRig::new(&video_info(), download).await;
+    // The same video twice: once in the download folder, once in a folder
+    // inside it, and by another link (front ends ask before a duplicate).
+    let inner = rig.dest.join("Inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    let first = rig
+        .engine
+        .add(rig.request("https://www.youtube.com/watch?v=same_video_1"))
+        .await
+        .unwrap();
+    let mut req = rig.request("https://youtu.be/same_video_2");
+    req.dest_dir = inner.clone();
+    let second = rig.engine.add(req).await.unwrap();
+    for id in [first, second] {
+        rig.until(id, "progress", |v| v.downloaded > 0).await;
+        rig.engine.pause(id).await.unwrap();
+    }
+    let (own, other) = (rig.dest.join(part), inner.join(part));
+    assert!(own.is_file() && other.is_file());
+    // What each job wrote is known after a restart too.
+    let rig = reopen(rig).await;
+
+    rig.engine
+        .remove_with(first, taurus_core::RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    assert!(!own.exists(), "its own part is gone");
+    assert!(other.is_file(), "the other job's part stays");
+    rig.engine
+        .remove_with(second, taurus_core::RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    assert!(!other.exists());
 }

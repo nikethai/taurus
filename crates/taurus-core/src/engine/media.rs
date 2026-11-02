@@ -11,7 +11,9 @@ use crate::filename::sanitize;
 use crate::http::JobOutcome;
 use crate::media::run::MediaPhase;
 use crate::media::thumbnail::{THUMBS_DIR, fetch_thumbnail, thumbnail_in};
-use crate::media::{ConvertPreset, LiveStatus, MediaInfo, MediaOptions, standard_quality};
+use crate::media::{
+    ConvertPreset, LiveStatus, MediaInfo, MediaOptions, own_partial_files, standard_quality,
+};
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob};
 
 use super::actor::{Actor, Command, JobMsg, Run};
@@ -200,7 +202,7 @@ fn media_options(
             info.live,
             LiveStatus::IsLive | LiveStatus::IsUpcoming { .. }
         ),
-        video_ids: Vec::new(),
+        partial_files: Vec::new(),
     })
 }
 
@@ -397,11 +399,14 @@ impl Actor {
     }
 
     /// Deletes what the removed media job leaves: its thumbnail, and with
-    /// `delete_files` its files: those it finished (its view's, a single
-    /// video's file once Completed) and yt-dlp's partial files of its
-    /// videos (see `own_partial_files`). A playlist's folder is kept.
-    pub(super) fn delete_media(&self, job: &JobRecord, delete_files: bool) {
-        let (thumbnail, mut files) = read(&self.views)
+    /// `delete_files` the partial files its runs recorded (see
+    /// `own_partial_files`), chosen by the job, never by a name; with
+    /// `finished_too` (`RemoveFiles::All`) also those it finished (its
+    /// view's, a single video's file once Completed). Without it a finished
+    /// file is never deleted, even one of a paused playlist. A playlist's
+    /// folder is kept.
+    pub(super) fn delete_media(&self, job: &JobRecord, delete_files: bool, finished_too: bool) {
+        let (thumbnail, mut finished) = read(&self.views)
             .get(&job.id)
             .and_then(|v| v.media.as_ref())
             .map(|m| (m.thumbnail.clone(), m.files.clone()))
@@ -414,10 +419,15 @@ impl Actor {
         }
         let single = job.media.as_ref().is_some_and(|m| !m.playlist);
         if single && job.state == JobState::Completed {
-            files.push(job.dest_dir.join(&job.file_name));
+            finished.push(job.dest_dir.join(&job.file_name));
         }
-        if let Some(options) = &job.media {
-            files.extend(own_partial_files(&job.dest_dir, &options.video_ids));
+        let recorded = job
+            .media
+            .as_ref()
+            .map_or(&[][..], |m| m.partial_files.as_slice());
+        let mut files = own_partial_files(recorded, &finished);
+        if finished_too {
+            files.extend(finished);
         }
         for path in files {
             if path.is_file()
@@ -427,65 +437,6 @@ impl Actor {
             }
         }
     }
-}
-
-/// yt-dlp's partial files of the videos `ids`, in `dest_dir` and the
-/// folders directly in it (a playlist's): names carrying a video's
-/// `[<id>]`, as its output names do, that are a partial download (`.part`,
-/// its fragments, `.ytdl`, `.temp`) or one stream of a video not yet
-/// merged (`[<id>].f<format>.<ext>`). Nothing without such a name is taken,
-/// so other jobs' and the user's files stay.
-pub(super) fn own_partial_files(dest_dir: &Path, ids: &[String]) -> Vec<PathBuf> {
-    let tags: Vec<String> = ids
-        .iter()
-        .filter(|id| !id.is_empty())
-        .map(|id| format!("[{id}]"))
-        .collect();
-    if tags.is_empty() {
-        return Vec::new();
-    }
-    let partial = |name: &str| {
-        let lower = name.to_ascii_lowercase();
-        tags.iter().any(|tag| {
-            let Some(at) = name.find(tag.as_str()) else {
-                return false;
-            };
-            let after = &lower[at + tag.len()..];
-            // `.f137.mp4`, not a finished `.flac`.
-            let stream = after
-                .strip_prefix(".f")
-                .is_some_and(|rest| rest.find('.').is_some_and(|dot| dot > 0));
-            stream
-                || after.starts_with(".temp")
-                || lower.ends_with(".part")
-                || lower.ends_with(".ytdl")
-                || lower.contains(".part-frag")
-        })
-    };
-    let mut found = Vec::new();
-    let mut dirs = vec![dest_dir.to_path_buf()];
-    let mut depth = 0;
-    while depth < 2 && !dirs.is_empty() {
-        let mut next = Vec::new();
-        for dir in dirs {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let Ok(kind) = entry.file_type() else {
-                    continue;
-                };
-                if kind.is_dir() {
-                    next.push(entry.path());
-                } else if kind.is_file() && partial(&entry.file_name().to_string_lossy()) {
-                    found.push(entry.path());
-                }
-            }
-        }
-        dirs = next;
-        depth += 1;
-    }
-    found
 }
 
 /// What only a media job's view has, as stored: its phase as it would

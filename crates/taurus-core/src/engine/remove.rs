@@ -14,7 +14,9 @@ pub enum RemoveFiles {
     /// engine when it removes the job: a partial file would be left behind
     /// for good, while a finished file is the user's. A torrent's files are
     /// finished once Seeding or Completed, and also when it was paused with
-    /// all of its data (after seeding).
+    /// all of its data (after seeding). An unfinished media job loses only
+    /// the partial files it recorded writing: the videos it already
+    /// finished (a paused playlist's) are kept.
     IfUnfinished,
 }
 

@@ -3,19 +3,17 @@ mod file_list;
 mod render;
 mod runner;
 mod stop;
+mod test_hooks;
 mod tools;
 mod video;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use std::error::Error;
 use std::io::Write;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use taurus_core::tools::ToolSources;
-use taurus_core::torrent::hub::TorrentTestNet;
 use taurus_core::torrent::source::{Source, classify};
-use taurus_core::{AddRequest, Engine, EngineConfig, JobId, JobView, PowerMode, Timing};
+use taurus_core::{AddRequest, Engine, EngineConfig, JobId, JobView, PowerMode};
 use tokio::sync::broadcast::error::TryRecvError;
 
 use crate::file_list::FileList;
@@ -283,32 +281,8 @@ fn engine_config(data_dir: PathBuf, dry_run_power: bool, autostart: bool) -> Eng
     if dry_run_power {
         config.power = PowerMode::DryRun;
     }
-    // Test-only switch: short retry and when-done delays, so the CLI's
-    // integration tests do not wait in real time. Not for users.
-    if std::env::var_os("TAURUS_FAST_TIMING").is_some_and(|v| v == "1") {
-        config.timing = Timing::fast_for_tests();
-    }
-    // Test-only switch: `host:port,...` are the peers every torrent gets, and
-    // the torrent session leaves DHT, trackers, LSD and UPnP off. Not for
-    // users.
-    if let Some(peers) = std::env::var_os("TAURUS_TORRENT_TEST_PEERS") {
-        config.torrent_test = Some(TorrentTestNet {
-            initial_peers: peers
-                .to_string_lossy()
-                .split(',')
-                .filter_map(|peer| peer.trim().parse::<SocketAddr>().ok())
-                .collect(),
-            restore_in_place: false,
-        });
-    }
-    // Test-only switch: the tool manager downloads yt-dlp, ffmpeg and Deno
-    // from the fake host at this base URL. Not for users.
-    if let Some(base) = std::env::var_os("TAURUS_TOOL_SOURCES") {
-        match url::Url::parse(&base.to_string_lossy()) {
-            Ok(base) => config.tool_sources = ToolSources::under(&base),
-            Err(e) => eprintln!("warning: ignoring TAURUS_TOOL_SOURCES: {e}"),
-        }
-    }
+    // Debug builds only: see `test_hooks`.
+    test_hooks::apply(&mut config);
     config
 }
 

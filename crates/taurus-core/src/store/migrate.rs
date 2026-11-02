@@ -450,7 +450,7 @@ mod tests {
             convert: Some(crate::media::ConvertPreset::Mp3),
             playlist: false,
             live_from_start: true,
-            video_ids: vec!["abc".into()],
+            partial_files: vec!["/d/a [x].mp4.part".into()],
         };
         let id = store
             .insert_job(&crate::store::NewJob {
@@ -474,10 +474,11 @@ mod tests {
             Some(options.clone())
         );
         assert_eq!(store.list_jobs().unwrap().len(), 2);
-        // Only the media options change; options stored before the video
-        // ids were kept read without them.
+        // Only the media options change; options stored before the partial
+        // files were recorded read without them (an older `video_ids` is
+        // ignored).
         let more = crate::media::MediaOptions {
-            video_ids: vec!["abc".into(), "def".into()],
+            partial_files: vec!["/d/a [x].mp4.part".into(), "/d/a [x].mp4".into()],
             ..options
         };
         store.set_media(id, &more).unwrap();
@@ -486,10 +487,10 @@ mod tests {
         assert_eq!(stored.state, JobState::Recording);
         let old: crate::media::MediaOptions = serde_json::from_str(
             r#"{"quality":"best","selector":"b","audio_only":false,"convert":null,
-                "playlist":false,"live_from_start":false}"#,
+                "playlist":false,"live_from_start":false,"video_ids":["abc"]}"#,
         )
         .unwrap();
-        assert!(old.video_ids.is_empty());
+        assert!(old.partial_files.is_empty());
     }
 
     #[test]
