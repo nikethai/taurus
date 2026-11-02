@@ -559,7 +559,7 @@ fn scan_tree(dir: &Path, secrets: &[String]) -> Vec<Vec<u8>> {
             read.extend(scan_tree(&path, secrets));
             continue;
         }
-        let bytes = fs::read(&path).unwrap();
+        let bytes = read_shared(&path);
         for secret in secrets {
             assert!(
                 !find(&bytes, secret.as_bytes()),
@@ -570,6 +570,31 @@ fn scan_tree(dir: &Path, secrets: &[String]) -> Vec<Vec<u8>> {
         read.push(bytes);
     }
     read
+}
+
+/// The file's bytes, readable while SQLite has the database open: on
+/// Windows its byte-range locks (on the `-shm` index, or the lock bytes of
+/// a database past 1 GiB) fail reads that touch them (ERROR_LOCK_VIOLATION),
+/// so a block that cannot be read for that reason alone reads as zeros. The
+/// locked bytes are SQLite's lock slots, never stored data.
+fn read_shared(path: &Path) -> Vec<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+    const BLOCK: usize = 512;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    let mut file = fs::File::open(path).unwrap();
+    let mut bytes = Vec::new();
+    let mut block = [0; BLOCK];
+    loop {
+        file.seek(SeekFrom::Start(bytes.len() as u64)).unwrap();
+        match file.read(&mut block) {
+            Ok(0) => return bytes,
+            Ok(n) => bytes.extend_from_slice(&block[..n]),
+            Err(e) if cfg!(windows) && e.raw_os_error() == Some(ERROR_LOCK_VIOLATION) => {
+                bytes.extend_from_slice(&[0; BLOCK]);
+            }
+            Err(e) => panic!("{}: {e}", path.display()),
+        }
+    }
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> bool {
