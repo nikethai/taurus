@@ -2377,16 +2377,25 @@ async fn retry_with_cookies_refuses_a_web_job_and_resumes_a_paused_video() {
 // ---- A speed-limit change reaches running video downloads ----
 
 /// A download of `x.mp4` for the run given `rate` as its `--limit-rate`
-/// (runs are told apart by that value): it prints some progress and, with
-/// `hold`, waits to be interrupted, leaving `x.mp4.part` as yt-dlp does.
+/// (runs are told apart by that value). With `hold` it prints some progress
+/// and waits to be interrupted, leaving `x.mp4.part` as yt-dlp does;
+/// without, it continues from that part: renaming it fails (and so the run)
+/// if the restart deleted it.
 fn run_at_rate(rate: u64, hold: bool) -> Value {
+    if hold {
+        return json!({
+            "if_arg": rate.to_string(),
+            "stdout": [progress(100, 1000)],
+            "wait_for_interrupt": true,
+            "start_files": [["x.mp4.part", 7]],
+            "on_interrupt": { "write_files": [["interrupted", 1]], "exit": 1 },
+        });
+    }
     json!({
         "if_arg": rate.to_string(),
-        "stdout": [progress(100, 1000), file_line("x.mp4")],
-        "wait_for_interrupt": hold,
-        "start_files": [["x.mp4.part", 7]],
+        "stdout": [progress(1000, 1000), file_line("x.mp4")],
+        "rename_files": [["x.mp4.part", "x.mp4"]],
         "write_files": [["x.mp4", 1000]],
-        "on_interrupt": { "write_files": [["interrupted", 1]], "exit": 1 },
     })
 }
 
@@ -2459,7 +2468,7 @@ async fn media_keeps_running_on_a_small_limit_change() {
         "if_arg": "400000",
         "stdout": [progress(100, 1000), progress(200, 1000), progress(300, 1000),
                    file_line("x.mp4")],
-        "delay_ms_per_line": 300,
+        "delay_ms_per_line": 600,
         "write_files": [["x.mp4", 1000]],
     });
     let rig = MediaRig::new(&video_info(), run).await;
@@ -2469,6 +2478,8 @@ async fn media_keeps_running_on_a_small_limit_change() {
     rig.until(id, "progress", |v| v.downloaded > 0).await;
     // 12 % less: within the 20 % that is left to the running process.
     set_limit(&rig, 350_000).await;
+    // Still running when it was changed, or the test proves nothing.
+    assert_eq!(rig.view(id).state, JobState::Downloading);
     assert_eq!(rig.wait(id).await, JobState::Completed);
     assert_eq!(download_calls(link).len(), 1);
 }
@@ -2500,4 +2511,70 @@ async fn recording_not_restarted_on_limit_change() {
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(rate_of(&calls[0].argv), Some("400000"));
     assert_eq!(rig.view(id).state, JobState::Completed);
+}
+
+/// A playlist's first entry is merged and its second downloading when the
+/// limit drops: the restart happens whichever of the two the change meets
+/// (a change while merging waits for the next progress line), the second
+/// run continues the entry's part, and the first entry stays in the view.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_limit_change_reaches_the_next_playlist_entry() {
+    let info = json!({
+        "_type": "playlist",
+        "id": "PLlimit",
+        "title": "Two Songs",
+        "webpage_url": "https://www.youtube.com/playlist?list=PLlimit",
+        "extractor_key": "YoutubeTab",
+        "entries": [
+            {"_type": "url", "id": "a", "title": "One"},
+            {"_type": "url", "id": "b", "title": "Two"}
+        ]
+    });
+    let (one, two) = ("One [a].mp4", "Two [b].mp4");
+    let first = json!({
+        "if_arg": "400000",
+        "stdout": [
+            entry_line(1, 2, "a", "One", one),
+            progress(100, 100),
+            "TAURUS-PP Merger started",
+            file_line(one),
+            entry_line(2, 2, "b", "Two", two),
+            progress(10, 100),
+        ],
+        "delay_ms_per_line": 400,
+        "wait_for_interrupt": true,
+        "start_files": [[one, 10], [format!("{two}.part"), 7]],
+        "on_interrupt": { "exit": 1 },
+    });
+    let second = json!({
+        "if_arg": "100000",
+        "stdout": [
+            entry_line(2, 2, "b", "Two", two),
+            progress(100, 100),
+            file_line(two),
+        ],
+        "rename_files": [[format!("{two}.part"), two]],
+        "write_files": [[two, 20]],
+    });
+    let rig = MediaRig::new(&info, json!([first, second])).await;
+    set_limit(&rig, 400_000).await;
+    let link = "https://www.youtube.com/playlist?list=PLlimit_next_entry";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    rig.until(id, "the first entry merging", |v| {
+        media(v).phase == MediaPhase::Merging
+    })
+    .await;
+    set_limit(&rig, 100_000).await;
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let calls = download_calls(link);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(rate_of(&calls[0].argv), Some("400000"));
+    assert_eq!(rate_of(&calls[1].argv), Some("100000"));
+    let view = rig.view(id);
+    assert!(view.error.is_none(), "{view:?}");
+    assert_same_paths(
+        &media(&view).files,
+        &[rig.dest.join(one), rig.dest.join(two)],
+    );
+    assert_eq!(media(&view).entries_done, 2);
 }

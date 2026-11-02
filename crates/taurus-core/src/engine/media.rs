@@ -406,6 +406,8 @@ impl Actor {
         if let Some(view) = view {
             self.emit(Event::JobUpdated(view));
         }
+        // A speed-limit change may have waited for the download to go on.
+        self.apply_wanted(id, update.phase);
     }
 
     pub(super) fn on_thumbnail(&mut self, id: JobId, path: PathBuf) {

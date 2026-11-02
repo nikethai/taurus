@@ -111,8 +111,14 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
     let mut from_start = options.live_from_start;
     // What the job's runs wrote and did not finish, kept across the runs.
     let mut partials = options.partial_files.clone();
+    // What a run that was restarted had finished, for the next run's view.
+    let mut carried: Option<(Vec<PathBuf>, u32, u32)> = None;
     loop {
-        let yt_dlp = YtDlp::prepare(&ctx.tools, &ctx.proxy).await?;
+        // Not behind another job's yt-dlp update when paused meanwhile.
+        let yt_dlp = tokio::select! {
+            yt_dlp = YtDlp::prepare(&ctx.tools, &ctx.proxy) => yt_dlp?,
+            () = ctx.cancel.cancelled() => return Ok(JobOutcome::Paused),
+        };
         let mut rate = ctx.rate.clone();
         let limit_rate = *rate.borrow_and_update();
         let mut command = yt_dlp.command();
@@ -127,6 +133,11 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
             .current_dir(&job.dest_dir);
         let mut tracker = Tracker::new(&job.dest_dir, first_phase);
         tracker.partials = std::mem::take(&mut partials);
+        if let Some((files, done, total)) = carried.take() {
+            tracker.files = files;
+            tracker.entries_done = done;
+            tracker.entries_total = total;
+        }
         let started = SystemTime::now();
         let mut live = Live::default();
         ctx.update(&tracker, None, true);
@@ -166,6 +177,7 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
         // retry, no state change).
         if restart && ended.stopped == Some(Stop::Pause) {
             tracing::info!(job = job.id.0, "the speed limit changed; restarting yt-dlp");
+            carried = Some((tracker.files, tracker.entries_done, tracker.entries_total));
             continue;
         }
         match ended.stopped {

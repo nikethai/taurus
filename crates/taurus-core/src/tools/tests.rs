@@ -606,57 +606,108 @@ async fn a_cancelled_install_is_not_left_installing() {
     assert_eq!(f.status_of(ToolKind::Ffmpeg).state, ToolState::Ready);
 }
 
+/// A release of `tool` whose binaries hang when run (its version check,
+/// which an install does after the download), under a version of its own;
+/// returns that version's pid file, which appears once one is running.
+fn hanging_release(f: &Fixture, tool: &str) -> (String, PathBuf) {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    let version = format!("2026.9.{nanos}");
+    let pid_file = hang_pid_file(&version);
+    let _ = std::fs::remove_file(&pid_file);
+    f.host.set_release(
+        tool,
+        ToolRelease {
+            hang: true,
+            ..ToolRelease::new(&version)
+        },
+    );
+    (version, pid_file)
+}
+
+/// Polls `work` until `pid_file` exists (a hanging binary is running: the
+/// install is truly under way), then drops it.
+async fn drop_once_hanging<T>(work: impl std::future::Future<Output = T>, pid_file: &Path) {
+    let running = async {
+        while !pid_file.is_file() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    let running = tokio::time::timeout(std::time::Duration::from_secs(30), running);
+    tokio::select! {
+        biased;
+        r = running => r.expect("the hanging binary never ran"),
+        _ = work => panic!("finished before it was dropped"),
+    }
+}
+
 /// A cancelled install announces what the tool really is now, so a front
 /// end showing "getting video tools" can clear it: Missing for a tool that
 /// was never installed, Ready (its version) for an update that was dropped.
+/// Dropped while the downloaded binary is being checked, not at the start.
 #[tokio::test]
 async fn cancelled_install_clears_installing_state() {
     let f = Fixture::new().await;
     let seen = Mutex::new(Vec::<ToolStatus>::new());
-    let started = tokio::sync::Notify::new();
-    let report = |s: ToolStatus| {
-        if matches!(s.state, ToolState::Installing { .. }) {
-            started.notify_one();
-        }
-        seen.lock().unwrap().push(s);
-    };
-    tokio::select! {
-        biased;
-        () = started.notified() => {}
-        _ = f.manager.ensure(ToolKind::YtDlp, &report) => panic!("finished before it was dropped"),
-    }
+    let report = |s: ToolStatus| seen.lock().unwrap().push(s);
+    let (_, pid_file) = hanging_release(&f, "yt-dlp");
+    drop_once_hanging(f.manager.ensure(ToolKind::YtDlp, &report), &pid_file).await;
     // Dropped: not installing any more, and the last word said so.
     assert_eq!(f.status_of(ToolKind::YtDlp).state, ToolState::Missing);
-    let last = seen.lock().unwrap().last().cloned().unwrap();
-    assert_eq!(
-        (last.kind, last.state),
-        (ToolKind::YtDlp, ToolState::Missing)
-    );
-    assert_eq!(last.version, None);
+    {
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter()
+                .any(|s| matches!(s.state, ToolState::Installing { .. })),
+            "{seen:?}"
+        );
+        let last = seen.last().unwrap();
+        assert_eq!(
+            (last.kind, &last.state),
+            (ToolKind::YtDlp, &ToolState::Missing)
+        );
+        assert_eq!(last.version, None);
+    }
+    let _ = std::fs::remove_file(&pid_file);
 
-    // An update dropped half-way: the installed version is announced Ready.
+    // An update dropped likewise: the installed version is announced Ready.
     f.ensure(ToolKind::Ffmpeg).await;
     let version = f.current(ToolKind::Ffmpeg);
-    f.host.set_release("ffmpeg", ToolRelease::new("7.2"));
+    let (_, pid_file) = hanging_release(&f, "ffmpeg");
     seen.lock().unwrap().clear();
-    tokio::select! {
-        biased;
-        () = started.notified() => {}
-        _ = f.manager.update(ToolKind::Ffmpeg, true, &report) => panic!("finished before it was dropped"),
+    drop_once_hanging(f.manager.update(ToolKind::Ffmpeg, true, &report), &pid_file).await;
+    {
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter()
+                .any(|s| matches!(s.state, ToolState::Installing { .. })),
+            "{seen:?}"
+        );
+        let last = seen.last().unwrap();
+        assert_eq!(
+            (last.kind, &last.state),
+            (ToolKind::Ffmpeg, &ToolState::Ready)
+        );
+        assert_eq!(last.version.as_deref(), Some(version.as_str()));
     }
-    let last = seen.lock().unwrap().last().cloned().unwrap();
-    assert_eq!(
-        (last.kind, last.state),
-        (ToolKind::Ffmpeg, ToolState::Ready)
-    );
-    assert_eq!(last.version.as_deref(), Some(version.as_str()));
+    let _ = std::fs::remove_file(&pid_file);
+    assert_eq!(f.current(ToolKind::Ffmpeg), version);
 }
 
-/// A failed install is reported once, as `Failed` (not also as Missing).
+/// An install that fails inside the download (here: a checksum that does
+/// not match) is reported once, as `Failed`, and not also as Missing.
 #[tokio::test]
 async fn a_failed_install_reports_failed_not_missing() {
     let f = Fixture::new().await;
-    f.host.go_offline();
+    f.host.set_release(
+        "yt-dlp",
+        ToolRelease {
+            corrupt_checksum: true,
+            ..ToolRelease::new(YT1)
+        },
+    );
     let seen = Mutex::new(Vec::<ToolStatus>::new());
     let report = |s: ToolStatus| seen.lock().unwrap().push(s);
     let err = f
@@ -664,10 +715,15 @@ async fn a_failed_install_reports_failed_not_missing() {
         .ensure(ToolKind::YtDlp, &report)
         .await
         .unwrap_err();
-    assert!(err.kind.is_transient(), "{err:?}");
+    assert_eq!(err.kind, ErrorKind::ChecksumMismatch, "{err}");
     let seen = seen.lock().unwrap();
-    let last = seen.last().unwrap();
-    assert_eq!(last.state, ToolState::Failed(err.kind));
+    // It got as far as installing, then failed: the last word is Failed.
+    assert!(
+        seen.iter()
+            .any(|s| matches!(s.state, ToolState::Installing { .. })),
+        "{seen:?}"
+    );
+    assert_eq!(seen.last().unwrap().state, ToolState::Failed(err.kind));
     assert!(
         !seen.iter().any(|s| s.state == ToolState::Missing),
         "{seen:?}"

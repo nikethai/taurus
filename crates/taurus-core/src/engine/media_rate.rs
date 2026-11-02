@@ -18,6 +18,7 @@ use crate::torrent::policy::split_rate;
 use super::actor::Actor;
 use super::read;
 use super::settings::speed_limit;
+use crate::store::JobId;
 
 /// What the limit change must move a share by to restart a run: more than
 /// this many percent of the share it started with.
@@ -28,6 +29,10 @@ pub(super) struct MediaRate {
     /// The share (bytes per second; `None` without a limit) the job's
     /// current run has, or is about to start with.
     share: Option<u64>,
+    /// The share the speed limit calls for now. It differs from `share`
+    /// while a change waits for the job to be downloading again (see
+    /// `apply_wanted`).
+    wanted: Option<u64>,
     /// The runner reads its next run's rate from here, and a run is
     /// restarted when it changes (`run_restartable`).
     tx: watch::Sender<Option<u64>>,
@@ -36,7 +41,14 @@ pub(super) struct MediaRate {
 impl MediaRate {
     pub(super) fn new(share: Option<u64>) -> (MediaRate, watch::Receiver<Option<u64>>) {
         let (tx, rx) = watch::channel(share);
-        (MediaRate { share, tx }, rx)
+        (
+            MediaRate {
+                share,
+                wanted: share,
+                tx,
+            },
+            rx,
+        )
     }
 }
 
@@ -70,29 +82,46 @@ impl Actor {
     }
 
     /// Run after the effective speed limit changed (see `apply_limits`):
-    /// every running media job whose share moved a lot restarts with the new
-    /// rate. One in the middle of merging or converting is left alone: its
-    /// limit no longer matters, and stopping it would waste the work.
+    /// every running media job learns the share it now calls for, and one
+    /// whose share moved a lot restarts with the new rate (see
+    /// `apply_wanted`).
     pub(super) fn retune_media(&mut self) {
         let (http, torrents) = self.active();
         let new = self.media_share(http, torrents);
         let ids: Vec<_> = self.media_rates.keys().copied().collect();
         for id in ids {
+            if !self.running.contains_key(&id) {
+                continue;
+            }
             let phase = read(&self.views)
                 .get(&id)
                 .and_then(|v| v.media.as_ref())
                 .map(|m| m.phase);
-            let waiting_for_tools = phase == Some(MediaPhase::GettingTools);
-            let downloading = phase == Some(MediaPhase::Downloading);
-            if !self.running.contains_key(&id) || !(downloading || waiting_for_tools) {
-                continue;
+            if let Some(rate) = self.media_rates.get_mut(&id) {
+                rate.wanted = new;
             }
-            if let Some(rate) = self.media_rates.get_mut(&id)
-                && big_change(rate.share, new)
-            {
-                rate.share = new;
-                rate.tx.send_replace(new);
+            if let Some(phase) = phase {
+                self.apply_wanted(id, phase);
             }
+        }
+    }
+
+    /// Hands the job's runner the share the limit calls for if it moved a
+    /// lot from the one the job has, and the job is in `phase` Downloading
+    /// (or still getting its tools: nothing runs yet to restart). One that
+    /// is merging or converting keeps it for later: its limit no longer
+    /// matters and stopping it would waste the work. In a playlist that
+    /// phase lasts until the next entry's first progress line, so this is
+    /// also called when a job's phase becomes Downloading again.
+    pub(super) fn apply_wanted(&mut self, id: JobId, phase: MediaPhase) {
+        if !matches!(phase, MediaPhase::Downloading | MediaPhase::GettingTools) {
+            return;
+        }
+        if let Some(rate) = self.media_rates.get_mut(&id)
+            && big_change(rate.share, rate.wanted)
+        {
+            rate.share = rate.wanted;
+            rate.tx.send_replace(rate.wanted);
         }
     }
 }
@@ -126,7 +155,7 @@ pub(super) async fn run_restartable(
     let run = run_process(command, &pause, finish, grace, on_output);
     tokio::pin!(run, changed);
     let mut restarting = false;
-    let ended = loop {
+    let mut ended = loop {
         tokio::select! {
             ended = &mut run => break ended?,
             () = &mut changed, if !restarting => {
@@ -136,12 +165,29 @@ pub(super) async fn run_restartable(
         }
     };
     let restart = restarting && !cancel.is_cancelled() && !finish.is_cancelled();
+    // yt-dlp finished by itself just as it was told to stop: that is a
+    // success, not a restart (it is not run again over a finished download).
+    if restart && ended.success() {
+        ended.stopped = None;
+        return Ok((ended, false));
+    }
     Ok((ended, restart))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::big_change;
+    use std::time::Duration;
+
+    use tokio::sync::watch;
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+    use crate::engine::actor::{Actor, Run};
+    use crate::engine::media::{MediaUpdate, MediaView};
+    use crate::engine::write;
+    use crate::engine::{EngineConfig, assemble};
+    use crate::settings::SpeedLimit;
+    use crate::store::{JobKind, JobState, NewJob, Store};
 
     #[test]
     fn restarts_only_on_big_changes() {
@@ -159,5 +205,127 @@ mod tests {
         assert!(big_change(Some(0), Some(1)));
         assert!(!big_change(Some(0), Some(0)));
         assert!(big_change(Some(u64::MAX), Some(1)));
+    }
+
+    /// A playlist stays Merging or Converting until the next entry's first
+    /// progress line: a limit change in between is kept and applied then.
+    #[tokio::test]
+    async fn a_change_while_merging_is_applied_when_downloading_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let store = Store::open(&data.join("taurus.db")).unwrap();
+        let id = store
+            .insert_job(&NewJob {
+                url: "http://127.0.0.1:9/list".into(),
+                source_url: "http://127.0.0.1:9/list".into(),
+                dest_dir: "/nowhere".into(),
+                file_name: "list".into(),
+                connections: 1,
+                mirrors: Vec::new(),
+                checksum: None,
+                referer: None,
+                queue_pos: 0,
+                kind: JobKind::Media,
+                info_hash: None,
+                torrent_meta: None,
+                only_files: None,
+            })
+            .unwrap();
+        drop(store);
+        let mut config = EngineConfig::new(data);
+        config.autostart = false;
+        let (_engine, mut actor, _commands) = assemble(config).await.unwrap();
+        let custom = |bytes_per_sec| SpeedLimit::Custom { bytes_per_sec };
+        actor.settings.speed = custom(400_000);
+        actor.media_global = Some(400_000);
+        let update = |actor: &mut Actor, phase| {
+            let update = MediaUpdate {
+                phase,
+                entries_done: 1,
+                entries_total: 2,
+                files: Vec::new(),
+                live_elapsed_secs: None,
+                announce: true,
+            };
+            actor.on_media_update(id, update);
+        };
+        write(&actor.views).get_mut(&id).unwrap().media = Some(MediaView {
+            phase: MediaPhase::Merging,
+            audio_only: false,
+            live: false,
+            entries_done: 0,
+            entries_total: 2,
+            live_elapsed_secs: None,
+            starts_at: None,
+            thumbnail: None,
+            files: Vec::new(),
+        });
+        actor.running.insert(
+            id,
+            Run {
+                cancel: CancellationToken::new(),
+                downloaded_at_start: 0,
+            },
+        );
+        actor.set_view_state(id, JobState::Downloading);
+        let (rate, mut rx) = MediaRate::new(Some(400_000));
+        actor.media_rates.insert(id, rate);
+
+        for phase in [MediaPhase::Merging, MediaPhase::Converting] {
+            actor.settings.speed = custom(100_000);
+            update(&mut actor, phase);
+            actor.apply_limits();
+            assert!(!rx.has_changed().unwrap(), "{phase:?}: restarted at once");
+            update(&mut actor, phase);
+            assert!(!rx.has_changed().unwrap());
+            // The next entry downloads: the new share is handed over.
+            update(&mut actor, MediaPhase::Downloading);
+            assert!(rx.has_changed().unwrap(), "{phase:?}: never applied");
+            assert_eq!(*rx.borrow_and_update(), Some(100_000));
+            // Back to a limit near the one the run has: nothing to do.
+            actor.settings.speed = custom(110_000);
+            actor.apply_limits();
+            update(&mut actor, MediaPhase::Downloading);
+            assert!(!rx.has_changed().unwrap());
+            // For the next round: a big change from 100 kB/s.
+            actor.settings.speed = custom(400_000);
+            actor.apply_limits();
+            assert_eq!(*rx.borrow_and_update(), Some(400_000));
+            let (rate, new_rx) = MediaRate::new(Some(400_000));
+            actor.media_rates.insert(id, rate);
+            rx = new_rx;
+        }
+    }
+
+    /// yt-dlp that finishes by itself as it is told to stop has succeeded:
+    /// it is not run again over a finished download.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_finished_run_is_not_restarted() {
+        let (tx, rx) = watch::channel(Some(1));
+        let mut command = tokio::process::Command::new("sh");
+        // Ignores the interrupt; says when it does, then ends well.
+        command.args(["-c", "trap '' INT; echo ready; sleep 1; exit 0"]);
+        command.stdin(std::process::Stdio::null());
+        let (cancel, finish) = (CancellationToken::new(), CancellationToken::new());
+        let (ended, restart) = run_restartable(
+            command,
+            &cancel,
+            &finish,
+            Duration::from_secs(30),
+            rx,
+            Some(1),
+            |out| {
+                if out == Output::Line("ready") {
+                    tx.send_replace(Some(2));
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert!(ended.success(), "{ended:?}");
+        assert_eq!(ended.stopped, None);
+        assert!(!restart);
     }
 }
