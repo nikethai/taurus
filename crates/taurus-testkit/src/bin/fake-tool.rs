@@ -220,6 +220,8 @@ struct Scenario {
     stderr: Vec<String>,
     exit: i32,
     write_files: Vec<(String, u64)>,
+    /// Renamed `[from, to]` before the first line (before `start_files`).
+    rename_files: Vec<(String, String)>,
     /// Written before the first line, whatever happens later.
     start_files: Vec<(String, u64)>,
     delay_ms_per_line: u64,
@@ -281,7 +283,8 @@ fn scenario(value: Json, top: bool) -> Result<Scenario, String> {
             "stderr" => s.stderr = strings(value, &key)?,
             "exit" => s.exit = number(&value, &key)? as i32,
             "write_files" => s.write_files = files(value)?,
-            "start_files" if top => s.start_files = files(value)?,
+            "start_files" => s.start_files = files(value)?,
+            "rename_files" => s.rename_files = renames(value)?,
             "delay_ms_per_line" => s.delay_ms_per_line = number(&value, &key)? as u64,
             "wait_for_interrupt" if top => s.wait_for_interrupt = matches!(value, Json::Bool(true)),
             "on_interrupt" if top => s.on_interrupt = Some(Box::new(scenario(value, false)?)),
@@ -329,15 +332,48 @@ fn files(value: Json) -> Result<Vec<(String, u64)>, String> {
         .collect()
 }
 
-fn replay(s: &Scenario) -> i32 {
-    if s.on_interrupt.is_some() {
-        watch_interrupt();
+/// `[[from, to], ...]`.
+fn renames(value: Json) -> Result<Vec<(String, String)>, String> {
+    let bad = || "rename_files must be [[from, to], ...]".to_owned();
+    let Json::Arr(items) = value else {
+        return Err(bad());
+    };
+    items
+        .into_iter()
+        .map(|item| match item {
+            Json::Arr(pair) => match pair.as_slice() {
+                [Json::Str(from), Json::Str(to)] => Ok((from.clone(), to.clone())),
+                _ => Err(bad()),
+            },
+            _ => Err(bad()),
+        })
+        .collect()
+}
+
+/// Renames the scenario's `rename_files`, then writes its `start_files`;
+/// false (after saying why) if one fails.
+fn start(s: &Scenario) -> bool {
+    for (from, to) in &s.rename_files {
+        if let Err(e) = fs::rename(from, to) {
+            eprintln!("fake yt-dlp: cannot rename {from} to {to}: {e}");
+            return false;
+        }
     }
     for (path, size) in &s.start_files {
         if let Err(e) = write_file(path, *size) {
             eprintln!("fake yt-dlp: cannot write {path}: {e}");
-            return 2;
+            return false;
         }
+    }
+    true
+}
+
+fn replay(s: &Scenario) -> i32 {
+    if s.on_interrupt.is_some() {
+        watch_interrupt();
+    }
+    if !start(s) {
+        return 2;
     }
     let delay = Duration::from_millis(s.delay_ms_per_line);
     let lines = s
@@ -359,6 +395,9 @@ fn replay(s: &Scenario) -> i32 {
     }
     match &s.on_interrupt {
         Some(on) if interrupted_now() => {
+            if !start(on) {
+                return 2;
+            }
             // Not interruptible: a slow way out.
             let delay = Duration::from_millis(on.delay_ms_per_line);
             for line in &on.stdout {

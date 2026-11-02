@@ -925,18 +925,18 @@ async fn large_playlist_needs_yes() {
 }
 
 /// A live stream that records until it is stopped, then leaves a partial
-/// file that the fake ffmpeg turns into the final one.
+/// file that the fake ffmpeg turns into the final one. As real yt-dlp
+/// records a live stream (through ffmpeg): the entry with the file it goes
+/// to, then no progress at all.
 fn live_recording() -> Value {
     let part = "Live Now [live1].mp4.part";
-    let live = json!({
-        "status": "downloading", "downloaded_bytes": 4096, "fragment_index": 3,
-        "speed": 2000.0, "tmpfilename": part,
-    });
     json!({
-        "stdout": [
-            format!("TAURUS-ENTRY 0 1 {} {}", json!("live1"), json!("Live Now")),
-            format!("TAURUS-PROGRESS {live}"),
-        ],
+        "stdout": [format!(
+            "TAURUS-ENTRY 0 1 {} {} {}",
+            json!("live1"),
+            json!("Live Now"),
+            json!("Live Now [live1].mp4")
+        )],
         "start_files": [[part, 4096]],
         "wait_for_interrupt": true,
         "on_interrupt": { "write_files": [["interrupted", 1]], "exit": 1 },

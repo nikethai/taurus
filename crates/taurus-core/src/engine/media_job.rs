@@ -11,9 +11,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::http::JobOutcome;
-use crate::media::remux::{RemuxPlan, recorded_parts, remux_parts};
-use crate::media::run::{Ended, MediaPhase, Stop, Tracker, download_args, run_process};
-use crate::media::{YtDlp, classify_stderr_with, failure_detail, standard_quality};
+use crate::media::remux::{RemuxPlan, recorded_parts, remux_parts, unmoved_recording};
+use crate::media::run::{Ended, MediaPhase, Output, Stop, Tracker, download_args, run_process};
+use crate::media::{
+    YtDlp, classify_stderr_with, failure_detail, live_from_start_refused, only_thumbnail_refused,
+    standard_quality,
+};
 use crate::plan::Segment;
 use crate::store::{JobRecord, JobState, Store};
 use crate::system::marks::mark_downloaded;
@@ -97,7 +100,10 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
     } else {
         MediaPhase::Downloading
     };
+    let job_since = added_at(ctx);
     let mut retried = false;
+    // From the stream's start, until yt-dlp says the site cannot do that.
+    let mut from_start = options.live_from_start;
     // What the job's runs wrote and did not finish, kept across the runs.
     let mut partials = options.partial_files.clone();
     loop {
@@ -109,35 +115,31 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
                 &job.dest_dir,
                 &job.url,
                 ctx.limit_rate,
+                from_start,
             ))
             .current_dir(&job.dest_dir);
         let mut tracker = Tracker::new(&job.dest_dir, first_phase);
         tracker.partials = std::mem::take(&mut partials);
         let started = SystemTime::now();
-        let mut live_since = None;
+        let mut live = Live::default();
         ctx.update(&tracker, None, true);
-        let ended = run_process(command, &ctx.cancel, &ctx.finish, ctx.grace, |line| {
-            let change = tracker.apply(line);
+        let ended = run_process(command, &ctx.cancel, &ctx.finish, ctx.grace, |out| {
+            let change = match out {
+                Output::Line(line) => tracker.apply(line),
+                Output::Tick => {
+                    if options.live_from_start {
+                        live.tick(ctx, &tracker);
+                    }
+                    return;
+                }
+            };
             if change.partials {
                 ctx.store_partials(&tracker);
             }
             if let Some((downloaded, total, speed_bps)) = change.progress {
-                let _ = ctx.msgs.send(JobMsg::Progress {
-                    id: job.id,
-                    downloaded,
-                    total,
-                    speed_bps,
-                });
+                ctx.progress(downloaded, total, speed_bps);
             }
-            let elapsed = options.live_from_start.then(|| {
-                tracker.progressed.then(|| {
-                    live_since
-                        .get_or_insert_with(Instant::now)
-                        .elapsed()
-                        .as_secs()
-                })
-            });
-            let elapsed = elapsed.flatten();
+            let elapsed = live.elapsed(options.live_from_start, &tracker);
             if change.view || (elapsed.is_some() && change.progress.is_some()) {
                 ctx.update(&tracker, elapsed, change.view);
             }
@@ -147,34 +149,110 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
         match ended.stopped {
             Some(Stop::Pause) => return Ok(JobOutcome::Paused),
             Some(Stop::Finish) => {
-                return finish_recording(ctx, &mut tracker, started, &ffmpeg).await;
+                let since = Since {
+                    run: started,
+                    job: job_since,
+                };
+                return finish_recording(ctx, &mut tracker, since, &ffmpeg).await;
             }
             None if ended.success() => {
                 tracker.finish();
                 ctx.update(&tracker, None, true);
                 return complete(ctx, &tracker);
             }
-            None => {
-                let (kind, broke) = classify_stderr_with(&ended.stderr, custom_quality);
-                if broke && !retried {
-                    retried = true;
-                    tokio::select! {
-                        newer = update_after_break(ctx, &ended, yt_dlp.path()) => {
-                            if newer {
-                                continue;
-                            }
-                        }
-                        () = ctx.cancel.cancelled() => return Ok(JobOutcome::Paused),
-                        // Nothing was recorded: stopping ends it cleanly.
-                        () = ctx.finish.cancelled() => return Ok(JobOutcome::Paused),
+            // Downloaded, but the container cannot hold the thumbnail.
+            None if ended.status.is_some() && only_thumbnail_refused(&ended.stderr) => {
+                tracker.keep_without_thumbnails(job_since);
+                if !tracker.files.is_empty() {
+                    ctx.store_partials(&tracker);
+                    tracker.finish();
+                    ctx.update(&tracker, None, true);
+                    return complete(ctx, &tracker);
+                }
+            }
+            // The site has no recording from the start: from now on.
+            None if from_start && live_from_start_refused(&ended.stderr) => {
+                tracing::info!(
+                    job = job.id.0,
+                    "the site cannot record this stream from its start; recording from now"
+                );
+                from_start = false;
+                continue;
+            }
+            None => {}
+        }
+        let (kind, broke) = classify_stderr_with(&ended.stderr, custom_quality);
+        if broke && !retried {
+            retried = true;
+            tokio::select! {
+                newer = update_after_break(ctx, &ended, yt_dlp.path()) => {
+                    if newer {
+                        continue;
                     }
                 }
-                return Err(CoreError {
-                    kind,
-                    detail: failure_detail(&ended.stderr),
-                });
+                () = ctx.cancel.cancelled() => return Ok(JobOutcome::Paused),
+                // Nothing was recorded: stopping ends it cleanly.
+                () = ctx.finish.cancelled() => return Ok(JobOutcome::Paused),
             }
         }
+        return Err(CoreError {
+            kind,
+            detail: failure_detail(&ended.stderr),
+        });
+    }
+}
+
+/// A live recording's clock and size while it runs: yt-dlp records most
+/// live streams through ffmpeg, which prints no progress at all, so the
+/// elapsed time runs from the moment it began (`Tracker::started`) and,
+/// without progress lines, the size is that of the partial file it writes.
+#[derive(Default)]
+struct Live {
+    since: Option<Instant>,
+    /// The partial file's size at the last tick, and when that was.
+    last: Option<(u64, Instant)>,
+}
+
+impl Live {
+    /// Seconds recorded, once a live stream has begun.
+    fn elapsed(&mut self, live: bool, tracker: &Tracker) -> Option<u64> {
+        if !live || !tracker.started {
+            return None;
+        }
+        Some(
+            self.since
+                .get_or_insert_with(Instant::now)
+                .elapsed()
+                .as_secs(),
+        )
+    }
+
+    /// Another second of a live recording: its elapsed time, and its size
+    /// read from the partial files when yt-dlp reports none.
+    fn tick(&mut self, ctx: &MediaJob, tracker: &Tracker) {
+        let Some(elapsed) = self.elapsed(true, tracker) else {
+            return;
+        };
+        if !tracker.progressed {
+            let size: u64 = tracker
+                .parts
+                .iter()
+                .filter_map(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len())
+                .sum();
+            let now = Instant::now();
+            let speed = self.last.map_or(0, |(before, at)| {
+                let secs = now.duration_since(at).as_secs_f64();
+                if secs > 0.0 {
+                    (size.saturating_sub(before) as f64 / secs) as u64
+                } else {
+                    0
+                }
+            });
+            self.last = Some((size, now));
+            ctx.progress(size, None, speed);
+        }
+        ctx.update(tracker, Some(elapsed), false);
     }
 }
 
@@ -235,19 +313,44 @@ async fn update_after_break(ctx: &MediaJob, ended: &Ended, used: &Path) -> bool 
     other
 }
 
+/// When the run started, and when the job was added.
+#[derive(Clone, Copy)]
+struct Since {
+    run: SystemTime,
+    job: SystemTime,
+}
+
+/// When the job was added (the run's start if the store cannot say).
+fn added_at(ctx: &MediaJob) -> SystemTime {
+    match ctx.store.created_at(ctx.job.id) {
+        Ok(Some(secs)) => {
+            SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).unwrap_or(0))
+        }
+        _ => SystemTime::now(),
+    }
+}
+
 /// The recording was stopped: keeps what yt-dlp finished, else joins its
-/// partial files (video and audio) into one playable file with ffmpeg.
+/// partial files (video and audio) into one playable file with ffmpeg;
+/// if yt-dlp was killed while finalizing it, the file it had renamed but
+/// not reported is made playable instead (see `unmoved_recording`).
 /// Nothing recorded yet (the stream had not begun) is Paused: nothing to
 /// keep, and nothing went wrong.
 async fn finish_recording(
     ctx: &MediaJob,
     tracker: &mut Tracker,
-    started: SystemTime,
+    since: Since,
     ffmpeg: &Path,
 ) -> Result<JobOutcome, CoreError> {
     tracker.files.retain(|f| f.is_file());
     if tracker.files.is_empty() {
-        let parts = recorded_parts(&ctx.job.dest_dir, tracker, started);
+        let mut parts = recorded_parts(&ctx.job.dest_dir, tracker, since.run);
+        // Nothing of its own (at most another job's, found by name).
+        if (parts.0.is_empty() || !parts.1)
+            && let Some(part) = unmoved_recording(tracker, since.run)
+        {
+            parts = (vec![part], true);
+        }
         let Some(plan) = RemuxPlan::new(parts) else {
             return Ok(JobOutcome::Paused);
         };
@@ -261,6 +364,9 @@ async fn finish_recording(
             }
         };
         tracker.files.push(file);
+        // yt-dlp did not finish it: its thumbnail and temporary file
+        // would be left.
+        tracker.remove_leftovers(since.job);
     }
     tracker.finish();
     ctx.update(tracker, None, true);
@@ -327,6 +433,16 @@ fn name_of(dest_dir: &Path, file: &Path, playlist: bool) -> Option<String> {
 }
 
 impl MediaJob {
+    /// Sends the job's progress (`downloaded` bytes of `total`).
+    fn progress(&self, downloaded: u64, total: Option<u64>, speed_bps: u64) {
+        let _ = self.msgs.send(JobMsg::Progress {
+            id: self.job.id,
+            downloaded,
+            total,
+            speed_bps,
+        });
+    }
+
     /// Stores the job's unfinished files as the tracker has them (only
     /// the media options change), so that removing the job deletes exactly
     /// those, even after a restart.

@@ -1040,22 +1040,19 @@ fn media_scenario() -> Value {
     let song = "A Fine Video [abc123].mp3";
     let first = "Big List/001 - V0 [v0].mp4";
     // Written as the recording starts, so it is there on every platform
-    // (on Windows the stop kills the fake rather than interrupting it).
+    // (on Windows the stop kills the fake rather than interrupting it). As
+    // real yt-dlp records a live stream (through ffmpeg): the entry with
+    // the file it goes to, then no progress at all.
     let part = "Live Now [live1].mp4.part";
-    let live_line = json!({
-        "status": "downloading",
-        "downloaded_bytes": 4096,
-        "fragment_index": 3,
-        "speed": 2000.0,
-        "tmpfilename": part,
-    });
     json!([
         {
             "if_arg": "--live-from-start",
-            "stdout": [
-                format!("TAURUS-ENTRY 0 1 {} {}", json!("live1"), json!("Live Now")),
-                format!("TAURUS-PROGRESS {live_line}"),
-            ],
+            "stdout": [format!(
+                "TAURUS-ENTRY 0 1 {} {} {}",
+                json!("live1"),
+                json!("Live Now"),
+                json!("Live Now [live1].mp4")
+            )],
             "start_files": [[part, 4096]],
             "wait_for_interrupt": true,
             "on_interrupt": {"stdout": ["bye"], "exit": 1},

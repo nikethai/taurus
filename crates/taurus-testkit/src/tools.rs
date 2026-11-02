@@ -44,13 +44,17 @@
 //!   "start_files": [["x.mp4.part", 7]],  // written before the first line (kept if killed)
 //!   "write_files": [["rel/or/abs.mp4", 1024]], // written after the lines; relative to cwd; parents created
 //!   "exit": 0,
+//!   "rename_files": [["x.mp4.part", "x.mp4"]], // renamed before `start_files`
 //!   "on_interrupt": { "stdout": [], "stderr": [], "write_files": [], "exit": 1,
+//!                     "rename_files": [], "start_files": [],
 //!                     "delay_ms_per_line": 0 } }   // sleeps after each of its lines, not interruptible
 //! ```
 //!
 //! With `on_interrupt`, SIGINT (Unix) or CTRL_C/CTRL_BREAK (Windows) stops the
-//! replay at the next line or within 10 ms of a delay; the fake then prints
-//! `on_interrupt`'s lines, writes only its files and exits with its code.
+//! replay at the next line or within 10 ms of a delay; the fake then renames
+//! and writes `on_interrupt`'s `rename_files` and `start_files` (at once,
+//! as yt-dlp finalizing a recording), prints its lines, writes its
+//! `write_files` and exits with its code.
 //! Without `on_interrupt` the signal keeps its default action.
 //! Written files hold a repeating byte pattern of the given size.
 
