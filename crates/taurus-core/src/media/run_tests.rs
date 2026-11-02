@@ -1,3 +1,6 @@
+use std::path::PathBuf;
+use std::time::SystemTime;
+
 use super::*;
 
 fn options(quality: &str, selector: &str, audio_only: bool) -> MediaOptions {
@@ -26,6 +29,7 @@ fn video_args_in_order() {
         dest,
         "https://v",
         None,
+        true,
     ));
     let template = dest.join(SINGLE_TEMPLATE).to_string_lossy().into_owned();
     let expected = [
@@ -47,7 +51,7 @@ fn video_args_in_order() {
         "--print",
         "after_move:TAURUS-FILE %(filepath)j",
         "--print",
-        "before_dl:TAURUS-ENTRY %(playlist_index|0)s %(n_entries|1)s %(id)j %(title)j",
+        "before_dl:TAURUS-ENTRY %(playlist_index|0)s %(n_entries|1)s %(id)j %(title)j %(filename)j",
         "--",
         "https://v",
     ];
@@ -62,6 +66,7 @@ fn audio_playlist_live_and_conversions() {
         dest,
         "u",
         None,
+        true,
     ));
     assert_eq!(&audio[..3], ["-f", "ba/b", "-x"]);
     assert!(!audio.iter().any(|a| a == "--merge-output-format"));
@@ -71,6 +76,7 @@ fn audio_playlist_live_and_conversions() {
         dest,
         "u",
         None,
+        true,
     ));
     assert_eq!(
         &small[..7],
@@ -94,7 +100,7 @@ fn audio_playlist_live_and_conversions() {
             convert: Some(ConvertPreset::Mp3),
             ..quality
         };
-        let args = strings(&download_args(&mp3, dest, "u", None));
+        let args = strings(&download_args(&mp3, dest, "u", None, true));
         assert_eq!(
             &args[2..7],
             ["-x", "--audio-format", "mp3", "--audio-quality", "2"]
@@ -105,7 +111,7 @@ fn audio_playlist_live_and_conversions() {
         convert: Some(ConvertPreset::SmallerMp4),
         ..options("720p", "bv*[height<=720]+ba/b[height<=720]", false)
     };
-    let args = strings(&download_args(&smaller, dest, "u", None));
+    let args = strings(&download_args(&smaller, dest, "u", None, true));
     assert_eq!(
         &args[2..8],
         [
@@ -123,7 +129,7 @@ fn audio_playlist_live_and_conversions() {
         live_from_start: true,
         ..options("best", "bv*+ba/b", false)
     };
-    let args = strings(&download_args(&live_list, dest, "u", None));
+    let args = strings(&download_args(&live_list, dest, "u", None, true));
     assert!(!args.iter().any(|a| a == "--no-playlist"));
     let at = args.iter().position(|a| a == "--live-from-start").unwrap();
     assert_eq!(
@@ -132,17 +138,29 @@ fn audio_playlist_live_and_conversions() {
     );
     let at = args.iter().position(|a| a == "-o").unwrap();
     assert_eq!(args[at + 1], dest.join(PLAYLIST_TEMPLATE).to_string_lossy());
+    // Where the site cannot record from the start: from now on, still
+    // waiting for an upcoming stream.
+    let args = strings(&download_args(&live_list, dest, "u", None, false));
+    assert!(!args.iter().any(|a| a == "--live-from-start"), "{args:?}");
+    let at = args.iter().position(|a| a == "--wait-for-video").unwrap();
+    assert_eq!(args[at + 1], "30-600");
+    // `from_start` means nothing for a video that is not live.
+    let video = options("best", "bv*+ba/b", false);
+    assert_eq!(
+        download_args(&video, dest, "u", None, true),
+        download_args(&video, dest, "u", None, false)
+    );
 }
 
 #[test]
 fn a_speed_limit_becomes_limit_rate() {
     let dest = Path::new("/dl");
     let best = options("best", "bv*+ba/b", false);
-    let limited = strings(&download_args(&best, dest, "u", Some(250_000)));
+    let limited = strings(&download_args(&best, dest, "u", Some(250_000), true));
     let at = limited.iter().position(|a| a == "--limit-rate").unwrap();
     assert_eq!(limited[at + 1], "250000");
     assert!(at < limited.iter().position(|a| a == "--").unwrap());
-    let fastest = strings(&download_args(&best, dest, "u", None));
+    let fastest = strings(&download_args(&best, dest, "u", None, true));
     assert!(!fastest.iter().any(|a| a == "--limit-rate"));
 }
 
@@ -253,6 +271,75 @@ fn a_live_stream_waits_until_its_first_progress() {
 }
 
 #[test]
+fn an_announced_entry_names_its_partial_file() {
+    let dest = Path::new("/dl");
+    let mut t = Tracker::new(dest, MediaPhase::WaitingForStream);
+    let entry = format!("{ENTRY}0 1 \"live1\" \"Live\" \"/dl/Live [live1].mp4\"");
+    let c = t.apply(&entry);
+    assert!(c.view && c.partials, "{c:?}");
+    assert_eq!(c.progress, None);
+    // A live stream begins with its entry (yt-dlp records it through
+    // ffmpeg and prints no progress).
+    assert!(t.started && !t.progressed);
+    assert_eq!(t.phase, MediaPhase::Downloading);
+    assert_eq!(t.video_id.as_deref(), Some("live1"));
+    let part = dest.join("Live [live1].mp4.part");
+    assert_eq!(t.parts, std::slice::from_ref(&part));
+    assert_eq!(t.partials, [part]);
+    assert_eq!(t.entry_files, [dest.join("Live [live1].mp4")]);
+    // The same entry again: nothing new to store.
+    assert!(!t.apply(&entry).partials);
+    assert_eq!(t.entry_files.len(), 1);
+
+    // Not live: an entry starts nothing. `NA` (no such field) is no file.
+    let mut v = Tracker::new(dest, MediaPhase::Downloading);
+    let c = v.apply(&format!("{ENTRY}1 2 \"a\" \"A\" \"NA\""));
+    assert!(c.view && !c.partials);
+    assert!(v.entry_files.is_empty() && v.parts.is_empty());
+    v.apply(&format!("{ENTRY}1 2 \"a\" \"A\" \"L/001 - A [a].avi\""));
+    assert_eq!(v.entry_files, [dest.join("L/001 - A [a].avi")]);
+    assert!(!v.started);
+    assert_eq!(v.phase, MediaPhase::Downloading);
+}
+
+#[test]
+fn files_are_kept_without_the_thumbnails_they_could_not_hold() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path();
+    let write = |name: &str| {
+        let path = dest.join(name);
+        std::fs::write(&path, b"x").unwrap();
+        path
+    };
+    let (one, one_jpg) = (write("One [a].avi"), write("One [a].jpg"));
+    let (two, two_png) = (write("Two.x [b].webm"), write("Two.x [b].png"));
+    let mut t = Tracker::new(dest, MediaPhase::Downloading);
+    for (index, name) in [
+        (1, "One [a].avi"),
+        (2, "Two.x [b].webm"),
+        (3, "Gone [c].avi"),
+    ] {
+        t.apply(&format!(
+            "{ENTRY}{index} 3 \"x\" \"x\" {}",
+            serde_json::json!(dest.join(name))
+        ));
+    }
+    t.apply(&format!("{FILE}{}", serde_json::json!(two)));
+    // Thumbnails older than the run are not its own.
+    let mut early = t.clone();
+    early.keep_without_thumbnails(SystemTime::now() + Duration::from_secs(60));
+    assert!(one_jpg.is_file() && two_png.is_file());
+
+    t.keep_without_thumbnails(SystemTime::now() - Duration::from_secs(60));
+    // Finished in announced order; one already reported is not repeated;
+    // one that is not there is not.
+    assert_eq!(t.files, [two.clone(), one.clone()]);
+    assert!(!one_jpg.exists() && !two_png.exists());
+    assert!(one.is_file() && two.is_file());
+    assert!(t.partials.is_empty(), "{:?}", t.partials);
+}
+
+#[test]
 fn printed_paths_get_one_spelling() {
     let dest = Path::new("/dl");
     assert_eq!(
@@ -318,9 +405,11 @@ mod process {
             &pause,
             &finish,
             Duration::from_millis(300),
-            |line| {
-                grandchild = line.trim().parse::<libc::pid_t>().ok();
-                stopper.cancel();
+            |out| {
+                if let Output::Line(line) = out {
+                    grandchild = line.trim().parse::<libc::pid_t>().ok();
+                    stopper.cancel();
+                }
             },
         )
         .await
@@ -345,8 +434,10 @@ mod process {
             .stdin(std::process::Stdio::null());
         let never = CancellationToken::new();
         let mut lines = Vec::new();
-        let ended = run_process(command, &never, &never, Duration::from_secs(1), |l| {
-            lines.push(l.to_owned());
+        let ended = run_process(command, &never, &never, Duration::from_secs(1), |out| {
+            if let Output::Line(l) = out {
+                lines.push(l.to_owned());
+            }
         })
         .await
         .unwrap();
@@ -354,6 +445,26 @@ mod process {
         assert_eq!(ended.status.and_then(|s| s.code()), Some(3));
         assert_eq!(ended.stopped, None);
         assert_eq!(ended.stderr.trim(), "ERROR: bad");
+    }
+
+    #[tokio::test]
+    async fn a_quiet_run_still_ticks_every_second() {
+        // As yt-dlp recording a live stream: nothing printed for a while.
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 2.4; echo done"])
+            .stdin(std::process::Stdio::null());
+        let never = CancellationToken::new();
+        let mut seen = Vec::new();
+        run_process(command, &never, &never, Duration::from_secs(1), |out| {
+            seen.push(match out {
+                Output::Line(l) => l.to_owned(),
+                Output::Tick => "tick".to_owned(),
+            });
+        })
+        .await
+        .unwrap();
+        assert_eq!(seen, ["tick", "tick", "done"]);
     }
 
     #[tokio::test]
@@ -369,8 +480,10 @@ mod process {
             .stdin(std::process::Stdio::null());
         let never = CancellationToken::new();
         let mut lines = Vec::new();
-        let ended = run_process(command, &never, &never, Duration::from_secs(1), |l| {
-            lines.push(l.to_owned());
+        let ended = run_process(command, &never, &never, Duration::from_secs(1), |out| {
+            if let Output::Line(l) = out {
+                lines.push(l.to_owned());
+            }
         })
         .await
         .unwrap();
@@ -396,8 +509,10 @@ mod process {
             .stdin(std::process::Stdio::null());
         let never = CancellationToken::new();
         let mut lines = Vec::new();
-        let ended = run_process(command, &never, &never, Duration::from_secs(1), |l| {
-            lines.push(l.to_owned());
+        let ended = run_process(command, &never, &never, Duration::from_secs(1), |out| {
+            if let Output::Line(l) = out {
+                lines.push(l.to_owned());
+            }
         })
         .await
         .unwrap();

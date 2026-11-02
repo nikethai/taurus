@@ -466,9 +466,25 @@ impl MediaRig {
 }
 
 /// yt-dlp reading the link (`-J`) prints `info`; any other run replays
-/// `download`.
+/// `download` (one scenario, or an array of them told apart by `if_arg`).
 fn media_scenario(info: &Value, download: Value) -> Value {
-    json!([{ "if_arg": "-J", "stdout": [info.to_string()] }, download])
+    let mut scenario = vec![json!({ "if_arg": "-J", "stdout": [info.to_string()] })];
+    match download {
+        Value::Array(entries) => scenario.extend(entries),
+        one => scenario.push(one),
+    }
+    Value::Array(scenario)
+}
+
+/// What real yt-dlp prints before an entry's download (`before_dl`):
+/// its place in the list, id, title and the file it goes to.
+fn entry_line(index: u32, count: u32, id: &str, title: &str, file: &str) -> String {
+    format!(
+        "TAURUS-ENTRY {index} {count} {} {} {}",
+        json!(id),
+        json!(title),
+        json!(file)
+    )
 }
 
 /// A video's info without its thumbnail (which would be fetched).
@@ -795,26 +811,21 @@ async fn pause_interrupts_and_resume_continues() {
     assert!(part.is_file());
 }
 
-/// A live stream that records until stopped: it writes its partial file
-/// as it starts and never prints a finished one. Stopped, Ctrl+C (Unix)
-/// ends it with exit 1 (after `slow_exit_ms` per line of a slow way out);
-/// on Windows the Ctrl+Break does not reach it and it is killed.
+/// A live stream that records until stopped, as real yt-dlp records one
+/// through ffmpeg: it announces the entry (with the file it goes to, if
+/// `report_part`), writes its partial file and prints nothing more, no
+/// progress and no finished file. Stopped, Ctrl+C (Unix) ends it with
+/// exit 1 (after `slow_exit_ms` per line of a slow way out); on Windows
+/// the Ctrl+Break does not reach it and it is killed.
 fn live_recording(report_part: bool, slow_exit_ms: u64) -> Value {
     let part = "Live Now [live1].mp4.part";
-    let mut live = json!({
-        "status": "downloading",
-        "downloaded_bytes": 4096,
-        "fragment_index": 3,
-        "speed": 2000.0,
-    });
-    if report_part {
-        live["tmpfilename"] = json!(part);
-    }
+    let entry = if report_part {
+        entry_line(0, 1, "live1", "Live Now", "Live Now [live1].mp4")
+    } else {
+        format!("TAURUS-ENTRY 0 1 {} {}", json!("live1"), json!("Live Now"))
+    };
     json!({
-        "stdout": [
-            format!("TAURUS-ENTRY 0 1 {} {}", json!("live1"), json!("Live Now")),
-            format!("TAURUS-PROGRESS {live}"),
-        ],
+        "stdout": [entry],
         "start_files": [[part, 4096]],
         "wait_for_interrupt": true,
         "on_interrupt": {
@@ -1290,7 +1301,7 @@ fn live_two_streams() -> Value {
     };
     json!({
         "stdout": [
-            format!("TAURUS-ENTRY 0 1 {} {}", json!("live1"), json!("Live Now")),
+            entry_line(0, 1, "live1", "Live Now", "Live Now [live1].mp4"),
             line(video, 4096),
             line(audio, 1024),
         ],
@@ -1338,10 +1349,10 @@ async fn a_stopped_recording_joins_its_video_and_audio() {
     }
 }
 
-/// An upcoming stream that sends nothing until stopped.
+/// An upcoming stream that sends nothing until stopped: yt-dlp waits for
+/// it (`--wait-for-video`) before announcing the entry.
 fn upcoming_stream() -> Value {
     json!({
-        "stdout": [format!("TAURUS-ENTRY 0 1 {} {}", json!("soon1"), json!("Soon"))],
         "wait_for_interrupt": true,
         "on_interrupt": { "exit": 1 },
     })
@@ -1729,4 +1740,186 @@ async fn two_jobs_for_the_same_video_keep_each_others_partials() {
         .await
         .unwrap();
     assert!(!other.exists());
+}
+
+// ---- Real yt-dlp: thumbnails on any container, live without from-start ----
+
+/// What real yt-dlp prints when `--embed-thumbnail` meets a container
+/// that cannot hold one (an AVI from archive.org).
+const THUMBNAIL_REFUSAL: &str = "ERROR: Postprocessing: Supported filetypes for thumbnail embedding are: mp3, mkv/mka, ogg/opus/flac, m4a/mp4/m4v/mov";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn container_without_thumbnail_support_completes() {
+    let info = json!({
+        "_type": "playlist",
+        "id": "flock",
+        "title": "Flock",
+        "webpage_url": "https://archive.org/details/flock",
+        "extractor_key": "ArchiveOrg",
+        "entries": [
+            {"_type": "url", "id": "flock/a.avi", "title": "a.avi"},
+            {"_type": "url", "id": "flock/b.avi", "title": "b.avi"}
+        ]
+    });
+    // As real yt-dlp does it: each AVI is downloaded and its metadata
+    // embedded, then embedding the thumbnail is refused, before the file
+    // is reported moved into place; the thumbnail written for it is left,
+    // and the run ends with exit 1. (A `/` in an id is `⧸` in the name.)
+    let (one, two) = (
+        "Flock/001 - a.avi [flock⧸a.avi].avi",
+        "Flock/002 - b.avi [flock⧸b.avi].avi",
+    );
+    let thumbs = [
+        "Flock/001 - a.avi [flock⧸a.avi].jpg",
+        "Flock/002 - b.avi [flock⧸b.avi].jpg",
+    ];
+    let download = json!({
+        "stdout": [
+            entry_line(1, 2, "flock/a.avi", "a.avi", one),
+            progress_into(500, 500, &format!("{one}.part"), one),
+            entry_line(2, 2, "flock/b.avi", "b.avi", two),
+            progress_into(700, 700, &format!("{two}.part"), two),
+        ],
+        "stderr": [THUMBNAIL_REFUSAL, THUMBNAIL_REFUSAL],
+        "write_files": [[one, 500], [two, 700], [thumbs[0], 10], [thumbs[1], 10]],
+        "exit": 1,
+    });
+    let rig = MediaRig::new(&info, download).await;
+    // A link read by yt-dlp at once (no page is fetched first).
+    let link = "https://www.youtube.com/playlist?list=PLthumbnail_refused";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    assert_eq!(
+        rig.wait(id).await,
+        JobState::Completed,
+        "{:?}",
+        rig.view(id)
+    );
+    let view = rig.view(id);
+    assert_eq!(view.error, None);
+    assert_eq!(view.file_name, "Flock");
+    assert_eq!(view.total, Some(1200));
+    let m = media(&view);
+    assert_eq!((m.entries_done, m.entries_total), (2, 2));
+    assert_same_paths(&m.files, &[rig.dest.join(one), rig.dest.join(two)]);
+    for file in [one, two] {
+        assert!(rig.dest.join(file).is_file(), "{file}");
+    }
+    for thumb in thumbs {
+        assert!(!rig.dest.join(thumb).exists(), "{thumb} was left behind");
+    }
+    // Still asked for: a container that can hold it gets it.
+    let argv = &download_calls(link)[0].argv;
+    assert!(argv.iter().any(|a| a == "--embed-thumbnail"), "{argv:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_merge_still_fails_beside_a_thumbnail_refusal() {
+    let name = "Clip [c1].avi";
+    let download = json!({
+        "stdout": [entry_line(0, 1, "c1", "Clip", name), progress(100, 100)],
+        "stderr": [THUMBNAIL_REFUSAL, "ERROR: Postprocessing: Conversion failed!"],
+        "write_files": [[name, 100]],
+        "exit": 1,
+    });
+    let rig = MediaRig::new(&video_info(), download).await;
+    let link = "https://www.youtube.com/watch?v=failed_merge_and_thumbnail";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Failed);
+    let (kind, _) = rig.view(id).error.unwrap();
+    assert_eq!(kind, ErrorKind::ToolFailed);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn twitch_live_records_without_live_from_start() {
+    // Real yt-dlp on a Twitch stream: `--live-from-start` is refused at
+    // once; without it, the stream is recorded from now on.
+    let refusal = "ERROR: [twitch:stream] lofigirl: --live-from-start is passed, but there are no formats that can be downloaded from the start. If you want to download from the current time, use --no-live-from-start";
+    let download = json!([
+        { "if_arg": "--live-from-start", "stderr": [refusal], "exit": 1 },
+        live_recording(true, 0),
+    ]);
+    let rig = MediaRig::new(&fixture("live.json"), download).await;
+    let link = "https://www.twitch.tv/records_without_live_from_start";
+    let id = recording(&rig, link).await;
+    tokio::time::timeout(Duration::from_secs(30), rig.engine.stop_recording(id))
+        .await
+        .unwrap()
+        .unwrap();
+    let view = rig.view(id);
+    assert_eq!(view.state, JobState::Completed, "{view:?}");
+    assert_eq!(view.file_name, "Live Now [live1].mp4");
+    let calls = download_calls(link);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    let (first, second) = (&calls[0].argv, &calls[1].argv);
+    assert!(has_run(
+        first,
+        &["--live-from-start", "--wait-for-video", "30-600"]
+    ));
+    assert!(
+        !second.iter().any(|a| a == "--live-from-start"),
+        "{second:?}"
+    );
+    // Still waiting for an upcoming stream.
+    assert!(
+        has_run(second, &["--wait-for-video", "30-600"]),
+        "{second:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn killed_live_recording_without_progress_is_joined() {
+    // Real yt-dlp recording a live stream: the entry (with the file it
+    // goes to), then nothing at all while ffmpeg writes the `.part`. It
+    // ignores the interrupt for longer than the grace, so it is killed (as
+    // it always is on Windows) and never finalizes the file.
+    let part = "Live Now [live1].mp4.part";
+    // The thumbnail yt-dlp wrote to embed once it finalizes the file.
+    let thumbnail = "Live Now [live1].jpg";
+    let download = json!({
+        "stdout": [entry_line(0, 1, "live1", "Live Now", "Live Now [live1].mp4")],
+        "start_files": [[part, 4096], [thumbnail, 10]],
+        "wait_for_interrupt": true,
+        "on_interrupt": {
+            "stdout": ["finishing", "finishing"],
+            "delay_ms_per_line": 20_000,
+            "write_files": [["finalized", 1]],
+            "exit": 0,
+        },
+    });
+    let rig = MediaRig::new(&fixture("live.json"), download).await;
+    let link = "https://www.twitch.tv/killed_without_progress";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    // Recording: no longer waiting for the stream, the clock runs without
+    // a progress line, and the size is the partial file's.
+    let view = rig
+        .until(id, "two seconds recorded", |v| {
+            v.state == JobState::Recording && media(v).live_elapsed_secs >= Some(2)
+        })
+        .await;
+    assert_eq!(media(&view).phase, MediaPhase::Downloading);
+    rig.until(id, "the part's size", |v| v.downloaded == 4096)
+        .await;
+
+    tokio::time::timeout(Duration::from_secs(30), rig.engine.stop_recording(id))
+        .await
+        .unwrap()
+        .unwrap();
+    let view = rig.view(id);
+    assert_eq!(view.state, JobState::Completed, "{view:?}");
+    assert_eq!(view.error, None);
+    let file = rig.dest.join("Live Now [live1].mp4");
+    assert_eq!(std::fs::metadata(&file).unwrap().len(), 4096);
+    assert_eq!(view.file_name, "Live Now [live1].mp4");
+    assert_same_paths(&media(&view).files, &[file]);
+    assert!(!rig.dest.join(part).exists(), "the part is joined and gone");
+    assert!(!rig.dest.join(thumbnail).exists(), "the thumbnail was left");
+    assert!(!rig.dest.join("finalized").exists(), "it was not killed");
+    let calls = download_calls(link);
+    #[cfg(unix)]
+    assert!(process_gone(calls[0].pid));
+    let part = rig.dest.join(part);
+    let remux = process_args_log().into_iter().any(|e| {
+        e.tool == "ffmpeg" && has_run(&e.argv, &["-y", "-i", part.to_str().unwrap(), "-c", "copy"])
+    });
+    assert!(remux, "ffmpeg -y -i <part> -c copy <final>.mp4 was run");
 }

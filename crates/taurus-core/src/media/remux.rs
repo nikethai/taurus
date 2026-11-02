@@ -14,37 +14,31 @@ use super::process::read_tail;
 use super::run::Tracker;
 
 /// The partial files a stopped recording left, and whether they are the
-/// run's own: nothing if the run never reported progress; else those it
-/// reported for the current video that still exist (its own); else the
-/// `.part` and `.ts` files in `dir` changed since `since` whose names carry
-/// the video's id as `[<id>]` (yt-dlp's output name). Those are found by
-/// their name only, so they could be another job's: they are joined into
-/// the recording but never deleted (see `RemuxPlan::owned`).
+/// run's own: nothing if the download never began (`Tracker::started`);
+/// else those yt-dlp announced or reported for the current entry that
+/// still exist (its own: `Tracker::parts`); else the `.part` and `.ts`
+/// files in `dir` changed since `since` whose names carry the video's id
+/// as `[<id>]` (yt-dlp's output name). Those are found by their name only,
+/// so they could be another job's: they are joined into the recording but
+/// never deleted (see `RemuxPlan::owned`).
 pub(crate) fn recorded_parts(
     dir: &Path,
     tracker: &Tracker,
     since: SystemTime,
 ) -> (Vec<PathBuf>, bool) {
-    if !tracker.progressed {
+    if !tracker.started {
         return (Vec::new(), true);
     }
-    let tag = tracker.video_id.as_deref().map(|id| format!("[{id}]"));
-    let current = |path: &Path| {
-        tag.as_deref().is_none_or(|tag| {
-            path.file_name()
-                .is_some_and(|n| n.to_string_lossy().contains(tag))
-        })
-    };
     let reported: Vec<PathBuf> = tracker
         .parts
         .iter()
-        .filter(|p| p.is_file() && current(p))
+        .filter(|p| p.is_file())
         .cloned()
         .collect();
     if !reported.is_empty() {
         return (reported, true);
     }
-    let Some(tag) = tag else {
+    let Some(tag) = tracker.video_id.as_deref().map(|id| format!("[{id}]")) else {
         return (Vec::new(), false);
     };
     let since = since.checked_sub(Duration::from_secs(2)).unwrap_or(since);
@@ -228,16 +222,15 @@ mod tests {
         let dir = tmp.path();
         let before = SystemTime::now() - Duration::from_secs(60);
         let mut t = Tracker::new(dir, MediaPhase::WaitingForStream);
-        t.apply("TAURUS-ENTRY 0 1 \"abc\" \"Live\"");
         let video = dir.join("Live [abc].f137.mp4.part");
         let audio = dir.join("Live [abc].f140.m4a.part");
         std::fs::write(&video, b"x").unwrap();
         std::fs::write(&audio, b"x").unwrap();
-        // Nothing recorded yet (no progress): nothing is taken.
+        // The stream has not begun: nothing is taken.
         assert!(recorded_parts(dir, &t, before).0.is_empty());
-        t.apply(&progress(
-            serde_json::json!({"status": "downloading", "downloaded_bytes": 9}),
-        ));
+        // It begins (an entry announced without its file name).
+        t.apply("TAURUS-ENTRY 0 1 \"abc\" \"Live\"");
+        assert!(t.started);
         // Another job's partial files in the same folder are never taken.
         std::fs::write(dir.join("Other [zzz].mp4.part"), b"x").unwrap();
         std::fs::write(dir.join("other.ts"), b"x").unwrap();
@@ -254,15 +247,36 @@ mod tests {
         // Parts older than the run are another run's.
         let later = SystemTime::now() + Duration::from_secs(60);
         assert!(recorded_parts(dir, &t, later).0.is_empty());
-        // Those the run reported win; a reported one that is gone, or
-        // another video's, does not count.
-        t.parts = vec![
-            audio.clone(),
-            dir.join("gone [abc].part"),
-            dir.join("Other [zzz].mp4.part"),
-            video.clone(),
-        ];
-        assert_eq!(recorded_parts(dir, &t, later), (vec![audio, video], true));
+        // Those the run reported win; a reported one that is gone does not
+        // count.
+        t.apply(&progress(serde_json::json!({
+            "status": "downloading", "downloaded_bytes": 9, "tmpfilename": audio,
+        })));
+        t.apply(&progress(serde_json::json!({
+            "status": "downloading", "downloaded_bytes": 9, "tmpfilename": dir.join("gone [abc].part"),
+        })));
+        t.apply(&progress(serde_json::json!({
+            "status": "downloading", "downloaded_bytes": 9, "tmpfilename": video,
+        })));
+        assert_eq!(
+            recorded_parts(dir, &t, later),
+            (vec![audio.clone(), video.clone()], true)
+        );
+        // A new entry starts over, with the file yt-dlp announced for it
+        // (a live stream recorded through ffmpeg reports nothing else).
+        let file = dir.join("Next ⧸ one [a⧸b].mp4");
+        t.apply(&format!(
+            "TAURUS-ENTRY 0 1 \"a/b\" \"Next / one\" {}",
+            serde_json::json!(file)
+        ));
+        let part = dir.join("Next ⧸ one [a⧸b].mp4.part");
+        assert_eq!(t.parts, std::slice::from_ref(&part));
+        assert!(
+            recorded_parts(dir, &t, later).0.is_empty(),
+            "not written yet"
+        );
+        std::fs::write(&part, b"ts").unwrap();
+        assert_eq!(recorded_parts(dir, &t, later), (vec![part], true));
     }
 
     #[cfg(unix)]

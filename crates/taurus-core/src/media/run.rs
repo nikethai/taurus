@@ -6,11 +6,10 @@
 //! give up; this module only knows yt-dlp.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitStatus;
 use std::time::Duration;
 
-use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::time::Instant;
@@ -19,6 +18,10 @@ use tokio_util::sync::CancellationToken;
 use crate::errors::{CoreError, ErrorKind};
 use crate::tools::tree::TreeChild;
 
+use super::tracker::OURS;
+pub(crate) use super::tracker::Tracker;
+#[cfg(test)]
+use super::tracker::{Change, ENTRY, FILE, POSTPROCESS, PROGRESS, local_path};
 use super::{ConvertPreset, MediaOptions, extra_args_for};
 
 /// Output name of a single video, inside the job's folder.
@@ -27,13 +30,6 @@ pub(crate) const SINGLE_TEMPLATE: &str = "%(title).200B [%(id)s].%(ext)s";
 pub(crate) const PLAYLIST_TEMPLATE: &str =
     "%(playlist_title).100B/%(playlist_index)03d - %(title).150B [%(id)s].%(ext)s";
 
-const PROGRESS: &str = "TAURUS-PROGRESS ";
-const POSTPROCESS: &str = "TAURUS-PP ";
-const FILE: &str = "TAURUS-FILE ";
-const ENTRY: &str = "TAURUS-ENTRY ";
-/// What every line of ours starts with, on either stream.
-const OURS: &str = "TAURUS-";
-
 /// The most of one output line kept; the rest of a longer line is dropped.
 const MAX_LINE: usize = 64 * 1024;
 /// The most of stderr kept: its end, where the errors are.
@@ -41,6 +37,8 @@ const MAX_STDERR: usize = 256 * 1024;
 /// How long the output is still read after yt-dlp exits (something it
 /// started may hold the pipe open).
 const DRAIN: Duration = Duration::from_secs(2);
+/// How often a run's caller hears `Output::Tick`.
+const TICK: Duration = Duration::from_secs(1);
 
 /// What a media job is doing, for its view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -57,12 +55,15 @@ pub enum MediaPhase {
 }
 
 /// yt-dlp's arguments after the global flags, ending with the link;
-/// `limit_rate` (bytes per second) caps the download speed.
+/// `limit_rate` (bytes per second) caps the download speed. A live or
+/// upcoming stream waits for its start; with `from_start` it is recorded
+/// from its beginning (`--live-from-start`, which only some sites allow).
 pub(crate) fn download_args(
     options: &MediaOptions,
     dest_dir: &Path,
     url: &str,
     limit_rate: Option<u64>,
+    from_start: bool,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["-f".into(), options.selector.clone().into()];
     let audio = options.audio_only || options.convert == Some(ConvertPreset::Mp3);
@@ -84,7 +85,10 @@ pub(crate) fn download_args(
         args.push("--no-playlist".into());
     }
     if options.live_from_start {
-        args.extend(["--live-from-start", "--wait-for-video", "30-600"].map(OsString::from));
+        if from_start {
+            args.push("--live-from-start".into());
+        }
+        args.extend(["--wait-for-video", "30-600"].map(OsString::from));
     }
     if let Some(rate) = limit_rate {
         args.push("--limit-rate".into());
@@ -111,7 +115,9 @@ pub(crate) fn download_args(
         ("--print", "after_move:TAURUS-FILE %(filepath)j"),
         (
             "--print",
-            "before_dl:TAURUS-ENTRY %(playlist_index|0)s %(n_entries|1)s %(id)j %(title)j",
+            // `filename`: where the download goes (its `.part` first).
+            "before_dl:TAURUS-ENTRY %(playlist_index|0)s %(n_entries|1)s %(id)j %(title)j \
+             %(filename)j",
         ),
     ] {
         args.push(flag.into());
@@ -121,260 +127,6 @@ pub(crate) fn download_args(
     args.push("--".into());
     args.push(url.into());
     args
-}
-
-/// What a run has shown so far, from its output lines.
-#[derive(Clone, Debug)]
-pub(crate) struct Tracker {
-    dest_dir: PathBuf,
-    pub phase: MediaPhase,
-    pub entries_done: u32,
-    pub entries_total: u32,
-    /// The finished files, in the order yt-dlp moved them into place.
-    pub files: Vec<PathBuf>,
-    /// The partial files the download wrote to, newest last.
-    pub parts: Vec<PathBuf>,
-    /// Whether any progress line came (a live stream has begun).
-    pub progressed: bool,
-    /// The id of the video downloading now (yt-dlp's `%(id)s`, which the
-    /// output names carry as `[<id>]`).
-    pub video_id: Option<String>,
-    /// The job's unfinished files: every `tmpfilename` reported, and the
-    /// `filename` it becomes, until reported finished (`TAURUS-FILE`).
-    /// Seeded by the runner with what earlier runs recorded; a finished
-    /// entry also drops those that no longer exist (yt-dlp removed them).
-    pub partials: Vec<PathBuf>,
-    /// Bytes of the entries before the current one.
-    before_entry: u64,
-    /// Bytes of the current entry's finished streams (video, then audio).
-    entry_finished: u64,
-    /// The stream downloading now: its file, bytes and size.
-    stream: Option<String>,
-    stream_done: u64,
-    stream_total: Option<u64>,
-    speed: u64,
-}
-
-/// What one line changed.
-#[derive(Debug, Default, PartialEq)]
-pub(crate) struct Change {
-    /// `(downloaded, total, speed)` to report.
-    pub progress: Option<(u64, Option<u64>, u64)>,
-    /// Phase, entries or files changed.
-    pub view: bool,
-    /// `partials` changed (to be stored).
-    pub partials: bool,
-}
-
-impl Tracker {
-    pub(crate) fn new(dest_dir: &Path, phase: MediaPhase) -> Tracker {
-        Tracker {
-            dest_dir: dest_dir.to_path_buf(),
-            phase,
-            entries_done: 0,
-            entries_total: 0,
-            files: Vec::new(),
-            parts: Vec::new(),
-            progressed: false,
-            video_id: None,
-            partials: Vec::new(),
-            before_entry: 0,
-            entry_finished: 0,
-            stream: None,
-            stream_done: 0,
-            stream_total: None,
-            speed: 0,
-        }
-    }
-
-    /// Reads one line yt-dlp printed (on stdout or stderr); lines that are
-    /// not ours change nothing.
-    pub(crate) fn apply(&mut self, line: &str) -> Change {
-        let line = line.trim_end();
-        if let Some(json) = line.strip_prefix(PROGRESS) {
-            return serde_json::from_str::<Value>(json).map_or_else(
-                |_| Change::default(),
-                |progress| self.on_progress(&progress),
-            );
-        }
-        if let Some(rest) = line.strip_prefix(POSTPROCESS) {
-            let mut words = rest.split_whitespace();
-            let (pp, status) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
-            // yt-dlp's `pp_key()`: the class name without `FFmpeg` and `PP`
-            // (the prefixed spellings are kept, in case that ever changes).
-            let phase = match pp.strip_prefix("FFmpeg").unwrap_or(pp) {
-                "Merger" => MediaPhase::Merging,
-                "ExtractAudio" | "VideoConvertor" | "VideoRemuxer" => MediaPhase::Converting,
-                _ => return Change::default(),
-            };
-            if status == "finished" {
-                return Change::default();
-            }
-            return self.set_phase(phase);
-        }
-        if let Some(json) = line.strip_prefix(FILE) {
-            let Ok(path) = serde_json::from_str::<String>(json) else {
-                return Change::default();
-            };
-            let path = local_path(&self.dest_dir, &path);
-            let recorded = self.partials.len();
-            // Finished, it is the user's; what yt-dlp cleaned up is gone.
-            self.partials.retain(|p| *p != path && p.exists());
-            if !self.files.contains(&path) {
-                self.files.push(path);
-            }
-            let done = u32::try_from(self.files.len()).unwrap_or(u32::MAX);
-            self.entries_done = self.entries_done.max(done.min(self.entries_total.max(1)));
-            return Change {
-                progress: None,
-                view: true,
-                partials: self.partials.len() != recorded,
-            };
-        }
-        if let Some(rest) = line.strip_prefix(ENTRY) {
-            let mut words = rest.splitn(3, ' ');
-            let number = |w: Option<&str>| w.and_then(|w| w.parse::<u32>().ok());
-            let (Some(index), Some(count)) = (number(words.next()), number(words.next())) else {
-                return Change::default();
-            };
-            // Then the id and the title, each a JSON string.
-            let mut strings = serde_json::Deserializer::from_str(words.next().unwrap_or(""))
-                .into_iter::<String>();
-            self.video_id = strings
-                .next()
-                .and_then(Result::ok)
-                .filter(|id| !id.is_empty());
-            self.before_entry += self.entry_finished + self.stream_done;
-            self.entry_finished = 0;
-            self.stream = None;
-            self.stream_done = 0;
-            self.stream_total = None;
-            self.entries_total = count.max(1);
-            self.entries_done = self.entries_done.max(index.saturating_sub(1));
-            return Change {
-                progress: None,
-                view: true,
-                partials: false,
-            };
-        }
-        Change::default()
-    }
-
-    /// The run ended well: every entry is done.
-    pub(crate) fn finish(&mut self) {
-        self.entries_total = self.entries_total.max(1);
-        self.entries_done = self.entries_total;
-    }
-
-    fn on_progress(&mut self, progress: &Value) -> Change {
-        let number = |key: &str| progress.get(key).and_then(Value::as_f64);
-        let text = |key: &str| progress.get(key).and_then(Value::as_str);
-        let done = number("downloaded_bytes").map_or(0, whole);
-        let total = number("total_bytes")
-            .or_else(|| number("total_bytes_estimate"))
-            .map(whole);
-        let file = text("filename").map(str::to_owned);
-        let mut partials = false;
-        if let Some(part) = text("tmpfilename") {
-            let part = local_path(&self.dest_dir, part);
-            if self.parts.last() != Some(&part) {
-                self.parts.retain(|p| *p != part);
-                self.parts.push(part.clone());
-            }
-            // Only with a `tmpfilename`: this run writes it (a file already
-            // downloaded is reported without one, and is not the job's to
-            // delete).
-            partials |= self.record(part);
-            if let Some(file) = &file {
-                partials |= self.record(local_path(&self.dest_dir, file));
-            }
-        }
-        // Another stream of the same entry (the audio after the video).
-        if file.is_some() && self.stream.is_some() && file != self.stream {
-            self.entry_finished += self.stream_done;
-            self.stream_done = 0;
-        }
-        self.stream = file;
-        self.speed = number("speed").map_or(0, whole);
-        if text("status") == Some("finished") {
-            self.entry_finished += total.unwrap_or(done).max(done);
-            self.stream = None;
-            self.stream_done = 0;
-            self.stream_total = None;
-            self.speed = 0;
-        } else {
-            self.stream_done = done;
-            self.stream_total = total;
-        }
-        self.progressed = true;
-        let view = self.phase != MediaPhase::Downloading;
-        self.phase = MediaPhase::Downloading;
-        Change {
-            progress: Some(self.totals()),
-            view,
-            partials,
-        }
-    }
-
-    /// Adds `path` to `partials`; true if it was not there.
-    fn record(&mut self, path: PathBuf) -> bool {
-        if self.partials.contains(&path) {
-            return false;
-        }
-        self.partials.push(path);
-        true
-    }
-
-    fn set_phase(&mut self, phase: MediaPhase) -> Change {
-        let view = self.phase != phase;
-        self.phase = phase;
-        Change {
-            progress: None,
-            view,
-            partials: false,
-        }
-    }
-
-    /// `(downloaded, total, speed)` of the whole job: for a playlist the
-    /// entries done plus the current one's share, scaled to bytes when its
-    /// size is known (else the bytes so far, with no total).
-    fn totals(&self) -> (u64, Option<u64>, u64) {
-        let entry_done = self.entry_finished + self.stream_done;
-        let entry_total = self
-            .stream_total
-            .map(|t| self.entry_finished + t.max(self.stream_done));
-        if self.entries_total <= 1 {
-            return (entry_done, entry_total, self.speed);
-        }
-        match entry_total {
-            Some(t) if t > 0 => {
-                let share = entry_done as f64 / t as f64;
-                let total = t.saturating_mul(u64::from(self.entries_total));
-                let fraction =
-                    (f64::from(self.entries_done) + share) / f64::from(self.entries_total);
-                (whole(fraction * total as f64), Some(total), self.speed)
-            }
-            _ => (self.before_entry + entry_done, None, self.speed),
-        }
-    }
-}
-
-/// A path yt-dlp printed (absolute, or relative to its working folder,
-/// `dest_dir`) in one spelling: no `\\?\` prefix where a plain path does,
-/// and the platform's separator throughout (yt-dlp may mix `/` into a
-/// Windows path from the output template).
-pub(crate) fn local_path(dest_dir: &Path, printed: &str) -> PathBuf {
-    dunce::simplified(&dest_dir.join(printed))
-        .components()
-        .collect()
-}
-
-fn whole(n: f64) -> u64 {
-    if n.is_finite() && n > 0.0 {
-        n as u64
-    } else {
-        0
-    }
 }
 
 /// Why a run was stopped.
@@ -402,19 +154,30 @@ impl Ended {
     }
 }
 
+/// What a run hands its caller while it runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Output<'a> {
+    /// A line yt-dlp printed (on stdout, or one of ours on stderr).
+    Line(&'a str),
+    /// Another second has passed (yt-dlp may print nothing for long, as
+    /// while it records a live stream through ffmpeg).
+    Tick,
+}
+
 /// Starts `command` (yt-dlp with all its arguments) as a process tree and
-/// hands each line of ours to `on_line` until it exits: from stdout, and
+/// hands each line of ours to `on_output` until it exits: from stdout, and
 /// from stderr too, where yt-dlp prints the postprocessing template under
 /// the `--quiet` that `--print` implies (the rest of stderr is kept as the
-/// error tail). When `pause` or `finish` is cancelled, the tree gets the
-/// graceful interrupt (Ctrl+C; Ctrl+Break on Windows), and is killed if it
-/// has not exited `grace` later, or at once if the interrupt cannot be sent.
+/// error tail); and an `Output::Tick` every second. When `pause` or
+/// `finish` is cancelled, the tree gets the graceful interrupt (Ctrl+C;
+/// Ctrl+Break on Windows), and is killed if it has not exited `grace`
+/// later, or at once if the interrupt cannot be sent.
 pub(crate) async fn run_process(
     mut command: Command,
     pause: &CancellationToken,
     finish: &CancellationToken,
     grace: Duration,
-    mut on_line: impl FnMut(&str),
+    mut on_output: impl FnMut(Output<'_>),
 ) -> Result<Ended, CoreError> {
     command
         .stdout(std::process::Stdio::piped())
@@ -430,6 +193,8 @@ pub(crate) async fn run_process(
     let mut tail = Vec::new();
     let mut stopped = None;
     let mut deadline: Option<Instant> = None;
+    let mut ticks = tokio::time::interval_at(Instant::now() + TICK, TICK);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let status = loop {
         tokio::select! {
             // Stopping first, so a flood of output cannot hold it up.
@@ -453,15 +218,16 @@ pub(crate) async fn run_process(
             }
             line = out.next(), if out.open => {
                 if let Some(text) = line {
-                    on_line(&text);
+                    on_output(Output::Line(&text));
                 }
             }
             line = err.next(), if err.open => {
                 if let Some(text) = line {
-                    from_stderr(&text, &mut on_line, &mut tail);
+                    from_stderr(&text, &mut on_output, &mut tail);
                 }
             }
             status = run.child.wait() => break Some(status),
+            _ = ticks.tick() => on_output(Output::Tick),
         }
     };
     let status = status.transpose().map_err(|e| CoreError {
@@ -474,12 +240,12 @@ pub(crate) async fn run_process(
             tokio::select! {
                 line = out.next(), if out.open => {
                     if let Some(text) = line {
-                        on_line(&text);
+                        on_output(Output::Line(&text));
                     }
                 }
                 line = err.next(), if err.open => {
                     if let Some(text) = line {
-                        from_stderr(&text, &mut on_line, &mut tail);
+                        from_stderr(&text, &mut on_output, &mut tail);
                     }
                 }
             }
@@ -522,11 +288,11 @@ impl<R: AsyncRead + Unpin> Stream<R> {
     }
 }
 
-/// A stderr line: ours goes to `on_line`, the rest to the error tail, of
+/// A stderr line: ours goes to `on_output`, the rest to the error tail, of
 /// which the last `MAX_STDERR` bytes or so are kept.
-fn from_stderr(line: &str, on_line: &mut impl FnMut(&str), tail: &mut Vec<u8>) {
+fn from_stderr(line: &str, on_output: &mut impl FnMut(Output<'_>), tail: &mut Vec<u8>) {
     if line.starts_with(OURS) {
-        on_line(line);
+        on_output(Output::Line(line));
         return;
     }
     tail.extend_from_slice(line.as_bytes());

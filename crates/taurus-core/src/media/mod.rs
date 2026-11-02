@@ -13,6 +13,7 @@ pub(crate) mod run;
 #[cfg(test)]
 mod tests;
 pub(crate) mod thumbnail;
+mod tracker;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -22,7 +23,7 @@ use tokio::process::Command;
 use crate::errors::CoreError;
 use crate::tools::{ToolKind, ToolManager};
 
-pub(crate) use errors::classify_stderr_with;
+pub(crate) use errors::{classify_stderr_with, live_from_start_refused, only_thumbnail_refused};
 pub(crate) use inspect::{failure_detail, fast_path_host, standard_quality};
 pub use inspect::{inspect, parse_info, qualities, single_video_link};
 pub(crate) use partials::own_partial_files;
