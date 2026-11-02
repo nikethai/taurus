@@ -171,7 +171,8 @@ pub(crate) enum Output<'a> {
 /// error tail); and an `Output::Tick` every second. When `pause` or
 /// `finish` is cancelled, the tree gets the graceful interrupt (Ctrl+C;
 /// Ctrl+Break on Windows), and is killed if it has not exited `grace`
-/// later, or at once if the interrupt cannot be sent.
+/// later, or at once if the interrupt cannot be sent. However it ends,
+/// nothing it started is left running.
 pub(crate) async fn run_process(
     mut command: Command,
     pause: &CancellationToken,
@@ -226,7 +227,8 @@ pub(crate) async fn run_process(
                     from_stderr(&text, &mut on_output, &mut tail);
                 }
             }
-            status = run.child.wait() => break Some(status),
+            // Also kills what it leaves running (see `TreeChild::wait`).
+            status = run.wait() => break Some(status),
             _ = ticks.tick() => on_output(Output::Tick),
         }
     };

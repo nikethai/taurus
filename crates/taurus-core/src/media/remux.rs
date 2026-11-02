@@ -162,7 +162,7 @@ pub(crate) async fn remux_parts(ffmpeg: &Path, plan: &RemuxPlan) -> Result<PathB
         .await
         .map_err(|e| tool_failed(format!("could not run ffmpeg: {e}")))?;
     let mut stderr = run.child.stderr.take().expect("stderr is piped");
-    let (tail, status) = tokio::join!(read_tail(&mut stderr, 16 * 1024), run.child.wait());
+    let (tail, status) = tokio::join!(read_tail(&mut stderr, 16 * 1024), run.wait());
     let status = status.map_err(|e| tool_failed(format!("could not wait for ffmpeg: {e}")))?;
     if !status.success() || !out.is_file() {
         let _ = std::fs::remove_file(out);

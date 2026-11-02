@@ -770,6 +770,22 @@ fn download_argvs(link: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Kills the fake yt-dlp download runs given `link`: one that a `taurus`
+/// killed outright leaves behind would wait for an interrupt for minutes
+/// (on Windows the killed process's job object ends it).
+fn kill_orphaned_downloads(link: &str) {
+    for entry in process_args_log() {
+        let download = entry.tool == "yt-dlp"
+            && entry.argv.iter().any(|a| a == link)
+            && !entry.argv.iter().any(|a| a == "-J");
+        if cfg!(unix) && download {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &entry.pid.to_string()])
+                .status();
+        }
+    }
+}
+
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -1137,6 +1153,7 @@ async fn unanswered_stop_exits_1_and_withdraws_the_request() {
     // Killed: the store still says Recording, as after a crash. Then
     // something else holds the data dir and never answers.
     child.kill().await.unwrap();
+    kill_orphaned_downloads(link);
     let _lock = hold_lock(&video.fx);
 
     let started = std::time::Instant::now();
