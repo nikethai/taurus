@@ -247,6 +247,40 @@ fn global_flags_for_every_run() {
     assert_eq!(tail, ["--proxy", "http://127.0.0.1:3128"]);
 }
 
+/// What yt-dlp starts sees the same proxy as yt-dlp: the command sets or
+/// removes the proxy variables.
+#[test]
+fn the_command_carries_the_proxy_environment() {
+    use crate::network::{ProxySetting, proxy_env};
+    let envs = |proxy: &ProxySetting| {
+        let yt_dlp = YtDlp {
+            path: "/t/yt-dlp".into(),
+            global: Vec::new(),
+            env: proxy_env(proxy),
+        };
+        let command = yt_dlp.command();
+        command
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                let k = k.to_string_lossy().to_ascii_uppercase();
+                (k, v.map(|v| v.to_string_lossy().into_owned()))
+            })
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    assert!(envs(&ProxySetting::System).is_empty());
+    let none = envs(&ProxySetting::None);
+    for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] {
+        assert_eq!(none.get(name), Some(&None), "{name}");
+    }
+    let url = "http://127.0.0.1:3128".to_string();
+    let manual = envs(&ProxySetting::Manual { url: url.clone() });
+    for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+        assert_eq!(manual.get(name), Some(&Some(url.clone())), "{name}");
+    }
+    assert_eq!(manual.get("NO_PROXY"), Some(&None));
+}
+
 #[test]
 fn fast_path_hosts() {
     for url in [

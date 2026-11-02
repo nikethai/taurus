@@ -67,15 +67,13 @@ pub(super) async fn assemble(
     }
     restore_thumbnails(&config.data_dir, views.values_mut());
 
-    let hub = Arc::new(
-        TorrentHub::new(
-            &config.data_dir,
-            &settings.torrent,
-            config.torrent_test.clone(),
-            store.clone(),
-        )
-        .with_proxy(torrent_proxy(&settings.network.proxy)),
-    );
+    let hub = Arc::new(TorrentHub::new(
+        &config.data_dir,
+        &settings.torrent,
+        config.torrent_test.clone(),
+        store.clone(),
+    ));
+    hub.set_proxy(torrent_proxy(&settings.network.proxy));
     // Torrents about to run start the session now, which makes it agree
     // with the store first. Short-lived front ends that only look at or
     // edit the jobs (no autostart) leave it for the first torrent that runs.

@@ -13,7 +13,8 @@ use taurus_core::CoreError;
 use taurus_core::secrets::{MemoryStore, SecretStore};
 use taurus_core::store::Store;
 use taurus_core::{
-    AddRequest, Credentials, Engine, EngineConfig, ErrorKind, JobId, JobState, RemoveFiles,
+    AddRequest, Credentials, Engine, EngineConfig, ErrorKind, JobId, JobState, NetworkSettings,
+    ProxySetting, RemoveFiles, Settings,
 };
 use taurus_testkit::{FileSpec, TestServer, content, sha256_hex};
 use tokio::sync::broadcast;
@@ -270,7 +271,23 @@ async fn credentials_stay_on_their_host() {
 async fn password_never_persisted_or_logged() {
     let logs = capture_logs();
     let fx = Fixture::new().await;
+    // A proxy password saved by hand (the engine refuses one, R7) is
+    // dropped when the settings load, without being logged.
+    let proxy_password = "Pr0xy-Secret-9";
+    fs::create_dir_all(fx.data_dir()).unwrap();
+    Store::open(&fx.data_dir().join("taurus.db"))
+        .unwrap()
+        .save_settings(&Settings {
+            network: NetworkSettings {
+                proxy: ProxySetting::Manual {
+                    url: format!("http://proxy-user:{proxy_password}@127.0.0.1:9"),
+                },
+            },
+            ..Settings::default()
+        })
+        .unwrap();
     let engine = fx.engine().await;
+    assert_eq!(engine.settings().network.proxy, ProxySetting::System);
     let mut events = engine.subscribe();
     let spec = protected(2 * MIB);
     let url = fx.server.serve("/p.bin", spec.clone());
@@ -298,11 +315,22 @@ async fn password_never_persisted_or_logged() {
     // While the engine runs, the WAL holds the latest writes.
     let data = fx.data_dir();
     assert!(data.join("taurus.db").exists() && data.join("taurus.db-wal").exists());
-    let mut scanned = scan_tree(&data, &secrets);
-    scan_tree(&fx.dest, &secrets);
+    let mut scanned = scan_tree(&data, &secrets, read_shared);
+    scan_tree(&fx.dest, &secrets, read_shared);
     engine.shutdown().await.unwrap();
-    // After the shutdown the WAL is folded into the database.
-    scanned.extend(scan_tree(&data, &secrets));
+    // The last handle closes the database: SQLite then checkpoints the WAL
+    // into it and deletes the WAL and its index, so nothing locks the files
+    // and the database holds everything that was ever in the WAL's
+    // current pages.
+    drop(engine);
+    let closed = tokio::time::timeout(TIMEOUT, async {
+        while data.join("taurus.db-wal").exists() || data.join("taurus.db-shm").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "the database was not closed");
+    scanned.extend(scan_tree(&data, &secrets, |path| fs::read(path).unwrap()));
     // The scan reads what is stored: the user name is there.
     assert!(
         scanned.iter().any(|bytes| find(bytes, USER.as_bytes())),
@@ -315,9 +343,18 @@ async fn password_never_persisted_or_logged() {
             Ok(event) => {
                 let json = serde_json::to_string(&event).unwrap();
                 let debug = format!("{event:?}");
-                for secret in &secrets {
-                    assert!(!json.contains(secret.as_str()), "event {json}");
-                    assert!(!debug.contains(secret.as_str()), "event {debug}");
+                // Never the event itself in the message: it would hold the
+                // secret.
+                for (i, secret) in secrets
+                    .iter()
+                    .map(String::as_str)
+                    .chain([proxy_password])
+                    .enumerate()
+                {
+                    assert!(
+                        !json.contains(secret) && !debug.contains(secret),
+                        "secret #{i} appeared in event #{seen}"
+                    );
                 }
                 seen += 1;
             }
@@ -332,8 +369,21 @@ async fn password_never_persisted_or_logged() {
         logs.contains(&format!("job={}", id.0)),
         "logs were captured"
     );
-    for secret in &secrets {
-        assert!(!logs.contains(secret.as_str()), "logged: {secret}");
+    assert!(
+        logs.contains("ignoring the saved proxy"),
+        "the proxy was dropped"
+    );
+    for (i, secret) in secrets
+        .iter()
+        .map(String::as_str)
+        .chain([proxy_password])
+        .enumerate()
+    {
+        assert!(
+            !logs.contains(secret),
+            "secret #{i} appeared in the log ({} bytes)",
+            logs.len()
+        );
     }
     #[cfg(target_os = "linux")]
     for name in xattr::list(fx.dest.join("p.bin")).unwrap() {
@@ -549,17 +599,17 @@ async fn redirects_keep_credentials_on_their_host_only() {
     assert!(header(&other.last_request_headers("/locked.bin"), "authorization").is_none());
 }
 
-/// Reads every file under `dir` and fails if one holds a secret; returns
-/// what it read.
-fn scan_tree(dir: &Path, secrets: &[String]) -> Vec<Vec<u8>> {
+/// Reads every file under `dir` with `read_file` and fails if one holds a
+/// secret (naming the file only); returns what it read.
+fn scan_tree(dir: &Path, secrets: &[String], read_file: fn(&Path) -> Vec<u8>) -> Vec<Vec<u8>> {
     let mut read = Vec::new();
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
         if path.is_dir() {
-            read.extend(scan_tree(&path, secrets));
+            read.extend(scan_tree(&path, secrets, read_file));
             continue;
         }
-        let bytes = read_shared(&path);
+        let bytes = read_file(&path);
         for secret in secrets {
             assert!(
                 !find(&bytes, secret.as_bytes()),

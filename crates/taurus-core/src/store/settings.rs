@@ -350,6 +350,15 @@ mod tests {
                 r#"{"max_active":4,"network":{"proxy":{"Manual":{"url":"nope"}}}}"#,
                 ProxySetting::System,
             ),
+            // Credentials (R7), and what parsing would silently change.
+            (
+                r#"{"max_active":4,"network":{"proxy":{"Manual":{"url":"http://u:pw@h:1"}}}}"#,
+                ProxySetting::System,
+            ),
+            (
+                r#"{"max_active":4,"network":{"proxy":{"Manual":{"url":" http://h:1"}}}}"#,
+                ProxySetting::System,
+            ),
         ] {
             store.put_setting(SETTINGS_KEY, saved).unwrap();
             let s = store.load_settings_lenient().unwrap();

@@ -51,6 +51,10 @@ async fn bad_proxy_rejected() {
         "ftp://proxy.example:21",
         "localhost:8080",
         "http://",
+        // No credentials (they would be saved), nothing parsing would drop.
+        "http://someone:not-a-real-one@127.0.0.1:8080",
+        " http://127.0.0.1:8080",
+        "socks5://[::1]:1080",
     ] {
         let mut settings = before.clone();
         settings.network.proxy = manual(bad);

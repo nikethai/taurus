@@ -10,7 +10,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 use reqwest::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue};
-use url::Url;
+use url::{Host, Url};
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::http::client::USER_AGENT;
@@ -28,8 +28,9 @@ pub enum ProxySetting {
     /// Direct connections, whatever the OS says.
     None,
     /// Everything through this proxy: `http://`, `https://`, `socks5://` or
-    /// `socks5h://` (names resolved by the proxy), with an optional
-    /// `user:password@`.
+    /// `socks5h://` (names resolved by the proxy), as [`parse_proxy`]
+    /// accepts it: no user name or password (they would be stored in the
+    /// settings) and, for SOCKS, no IPv6 address.
     Manual { url: String },
 }
 
@@ -45,14 +46,21 @@ impl ProxySetting {
 }
 
 /// The proxy URL, if it is one the engine can use: scheme `http`, `https`,
-/// `socks5` or `socks5h`, and a host. Otherwise an `Unknown` error whose
-/// detail starts with "unsupported proxy" and never repeats the URL (it may
-/// hold a password).
+/// `socks5` or `socks5h`, a host, no user name or password, nothing that
+/// URL parsing would silently drop (spaces, tabs, line breaks, other
+/// control characters), and for SOCKS no IPv6 address (the torrent
+/// session cannot use one). The URL is then used exactly as given, by the
+/// HTTP client, yt-dlp and the torrent session alike. Otherwise an
+/// `Unknown` error whose detail starts with "unsupported proxy" and never
+/// repeats the URL.
 pub fn parse_proxy(url: &str) -> Result<Url, CoreError> {
     let unsupported = |why: &str| CoreError {
         kind: ErrorKind::Unknown,
         detail: format!("unsupported proxy: {why}"),
     };
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(unsupported("the URL contains spaces or control characters"));
+    }
     let parsed = Url::parse(url)
         .map_err(|_| unsupported("not a URL such as http://host:port or socks5h://host:port"))?;
     if !matches!(parsed.scheme(), "http" | "https" | "socks5" | "socks5h") {
@@ -62,6 +70,16 @@ pub fn parse_proxy(url: &str) -> Result<Url, CoreError> {
     }
     if parsed.host_str().is_none_or(str::is_empty) {
         return Err(unsupported("the URL names no host"));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(unsupported(
+            "a user name or password in the proxy URL is not supported yet",
+        ));
+    }
+    if parsed.scheme().starts_with("socks") && matches!(parsed.host(), Some(Host::Ipv6(_))) {
+        return Err(unsupported(
+            "a SOCKS proxy on an IPv6 address is not supported; use its host name or an IPv4 address",
+        ));
     }
     Ok(parsed)
 }
@@ -118,6 +136,44 @@ pub fn ytdlp_proxy_args(proxy: &ProxySetting) -> Vec<String> {
     }
 }
 
+/// The proxy variables programs read from their environment.
+const PROXY_VARS: [&str; 6] = [
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+];
+const NO_PROXY_VARS: [&str; 2] = ["NO_PROXY", "no_proxy"];
+
+/// The environment of yt-dlp (and so of what it starts: ffmpeg, Deno) for
+/// `proxy`, as `(name, Some(value))` to set and `(name, None)` to remove:
+/// - System: nothing changes;
+/// - None: every proxy variable is removed, so a child does not use the
+///   system's proxy (yt-dlp passes its environment on as it is when
+///   `--proxy ""` is given);
+/// - Manual: `HTTP(S)_PROXY` and `ALL_PROXY` name it and `NO_PROXY` is
+///   removed, as the engine sends every request through it. (yt-dlp sets
+///   `HTTP_PROXY` for ffmpeg itself from `--proxy`, to the same URL; ffmpeg
+///   takes only an `http://` proxy, so with any other it connects directly
+///   when yt-dlp hands it a download.)
+pub fn proxy_env(proxy: &ProxySetting) -> Vec<(&'static str, Option<String>)> {
+    match proxy {
+        ProxySetting::System => Vec::new(),
+        ProxySetting::None => PROXY_VARS
+            .iter()
+            .chain(&NO_PROXY_VARS)
+            .map(|&name| (name, None))
+            .collect(),
+        ProxySetting::Manual { url } => PROXY_VARS
+            .iter()
+            .map(|&name| (name, Some(url.clone())))
+            .chain(NO_PROXY_VARS.iter().map(|&name| (name, None)))
+            .collect(),
+    }
+}
+
 /// The torrent session's proxy for `proxy`: only a manual `socks5` or
 /// `socks5h` one (librqbit has no HTTP proxy for peers), with port 1080
 /// when it names none. librqbit's peer connections and HTTP trackers go
@@ -138,7 +194,7 @@ pub fn torrent_proxy(proxy: &ProxySetting) -> Option<String> {
 
 /// Whether going from `old` to `new` changes the torrent session's proxy,
 /// which a running session only takes when the engine next opens (a front
-/// end then says so).
+/// end then says so; a session not started yet takes it when it starts).
 pub fn torrent_proxy_changes(old: &ProxySetting, new: &ProxySetting) -> bool {
     torrent_proxy(old) != torrent_proxy(new)
 }
@@ -193,8 +249,9 @@ mod tests {
             "http://127.0.0.1:8080",
             "https://proxy.example:443",
             "socks5://10.0.0.1:1080",
-            "socks5h://user:secret@proxy.example:1080",
+            "socks5h://proxy.example:1080",
             "http://proxy.example",
+            "http://[::1]:8080",
         ] {
             let url = parse_proxy(good).unwrap_or_else(|e| panic!("{good}: {e}"));
             assert!(url.host_str().is_some(), "{good}");
@@ -209,14 +266,38 @@ mod tests {
             "socks5://",
             "socks5h://:1080",
             "socks4://proxy.example:1080",
+            // Url::parse would drop these silently.
+            " http://127.0.0.1:8080",
+            "http://127.0.0.1:8080 ",
+            "http://127.0.0.1:80\t80",
+            "http://127.0.0.1:8080\n",
+            "http://127.0.\u{0}0.1:8080",
         ] {
             let e = parse_proxy(bad).expect_err(bad);
             assert_eq!(e.kind, ErrorKind::Unknown, "{bad}");
             assert!(e.detail.starts_with("unsupported proxy"), "{bad}: {e}");
         }
-        // A refused URL's password is never repeated.
+        // No credentials (R7), and never repeated in the error.
+        for with_userinfo in [
+            "http://user:hunter2@proxy.example:8080",
+            "socks5h://user:hunter2@proxy.example:1080",
+            "http://:hunter2@proxy.example",
+            "https://user@proxy.example",
+        ] {
+            let e = parse_proxy(with_userinfo).expect_err(with_userinfo);
+            assert_eq!(
+                e.detail,
+                "unsupported proxy: a user name or password in the proxy URL is not supported yet"
+            );
+        }
         let e = parse_proxy("ftp://user:hunter2@proxy.example").unwrap_err();
         assert!(!e.detail.contains("hunter2"), "{e}");
+        // librqbit keeps an IPv6 literal's brackets, which tokio-socks cannot
+        // resolve: refused for SOCKS.
+        for socks6 in ["socks5://[::1]:1080", "socks5h://[2001:db8::1]:1080"] {
+            let e = parse_proxy(socks6).expect_err(socks6);
+            assert!(e.detail.contains("IPv6"), "{socks6}: {e}");
+        }
         assert!(manual("nope").check().is_err());
         assert!(ProxySetting::System.check().is_ok() && ProxySetting::None.check().is_ok());
     }
@@ -232,6 +313,22 @@ mod tests {
     }
 
     #[test]
+    fn proxy_environment() {
+        assert!(proxy_env(&ProxySetting::System).is_empty());
+        let none = proxy_env(&ProxySetting::None);
+        assert_eq!(none.len(), 8);
+        assert!(none.iter().all(|(_, value)| value.is_none()));
+        let url = "socks5h://127.0.0.1:9050";
+        let manual = proxy_env(&manual(url));
+        for name in PROXY_VARS {
+            assert!(manual.contains(&(name, Some(url.to_owned()))), "{name}");
+        }
+        for name in NO_PROXY_VARS {
+            assert!(manual.contains(&(name, None)), "{name}");
+        }
+    }
+
+    #[test]
     fn torrent_proxy_only_socks() {
         assert_eq!(torrent_proxy(&ProxySetting::System), None);
         assert_eq!(torrent_proxy(&ProxySetting::None), None);
@@ -242,9 +339,14 @@ mod tests {
             Some("socks5://127.0.0.1:9050")
         );
         assert_eq!(
-            torrent_proxy(&manual("socks5h://u:p@proxy.example:1081")).as_deref(),
-            Some("socks5h://u:p@proxy.example:1081")
+            torrent_proxy(&manual("socks5h://proxy.example:1081")).as_deref(),
+            Some("socks5h://proxy.example:1081")
         );
+        assert_eq!(
+            torrent_proxy(&manual("socks5h://u:p@proxy.example:1081")),
+            None
+        );
+        assert_eq!(torrent_proxy(&manual("socks5://[::1]:1080")), None);
         // librqbit needs a port.
         assert_eq!(
             torrent_proxy(&manual("socks5h://proxy.example")).as_deref(),
@@ -280,9 +382,11 @@ mod tests {
             manual("http://127.0.0.1:9"),
             manual("https://127.0.0.1:9"),
             manual("socks5://127.0.0.1:9"),
-            manual("socks5h://u:p@127.0.0.1:9"),
+            manual("socks5h://127.0.0.1:9"),
+            manual("http://[::1]:9"),
             // Refused by `set_settings`; ignored here.
             manual("nope"),
+            manual("socks5h://u:p@127.0.0.1:9"),
         ] {
             let _ = build_client(&proxy);
         }

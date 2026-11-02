@@ -386,10 +386,11 @@ impl Engine {
     /// `torrent.max_active` of 0 is refused, and so is a manual proxy that
     /// `network::parse_proxy` refuses. A new proxy applies to every web
     /// request from the next one on and to yt-dlp's next run (a running
-    /// video download keeps its own). The torrent port, DHT, UPnP and proxy
-    /// apply the next time the engine opens (`network::torrent_proxy_changes`
-    /// tells whether the proxy change matters to torrents). Nothing changes
-    /// if saving fails.
+    /// video download keeps its own) and to the torrent session's next
+    /// start: a running session keeps its proxy until the engine opens again
+    /// (`network::torrent_proxy_changes` tells whether the change matters to
+    /// torrents). The torrent port, DHT and UPnP apply the next time the
+    /// engine opens. Nothing changes if saving fails.
     pub async fn set_settings(&self, settings: Settings) -> Result<(), CoreError> {
         self.call(|reply| Command::SetSettings { settings, reply })
             .await?

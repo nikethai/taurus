@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 use crate::errors::CoreError;
-use crate::network::{ProxySetting, ytdlp_proxy_args};
+use crate::network::{ProxySetting, proxy_env, ytdlp_proxy_args};
 use crate::tools::{ToolKind, ToolManager};
 
 pub(crate) use errors::{classify_stderr_with, live_from_start_refused, only_thumbnail_refused};
@@ -163,11 +163,13 @@ pub fn global_args(deno: &Path, ffmpeg_dir: &Path, proxy: &ProxySetting) -> Vec<
     args
 }
 
-/// The installed yt-dlp and the global flags for it.
+/// The installed yt-dlp, the global flags for it and the proxy variables
+/// of its environment ([`proxy_env`]).
 #[derive(Clone, Debug)]
 pub(crate) struct YtDlp {
     path: PathBuf,
     global: Vec<OsString>,
+    env: Vec<(&'static str, Option<String>)>,
 }
 
 impl YtDlp {
@@ -192,7 +194,11 @@ impl YtDlp {
             .and_then(|p| p.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| tools.tool_dir(ToolKind::Ffmpeg));
         let global = global_args(&deno, &ffmpeg_dir, proxy);
-        Ok(YtDlp { path, global })
+        Ok(YtDlp {
+            path,
+            global,
+            env: proxy_env(proxy),
+        })
     }
 
     /// The yt-dlp binary this runs.
@@ -200,7 +206,8 @@ impl YtDlp {
         &self.path
     }
 
-    /// `yt-dlp <global flags>`, with stdin closed. The caller adds the
+    /// `yt-dlp <global flags>`, with stdin closed and the proxy variables
+    /// of its environment set or removed. The caller adds the
     /// arguments and the other stdio, and starts it with
     /// `tools::tree::TreeChild::spawn`, so that stopping it stops
     /// everything it starts.
@@ -209,6 +216,12 @@ impl YtDlp {
         command
             .args(&self.global)
             .stdin(std::process::Stdio::null());
+        for (name, value) in &self.env {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+        }
         command
     }
 }

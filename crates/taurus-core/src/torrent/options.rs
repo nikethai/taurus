@@ -229,8 +229,8 @@ mod tests {
 
     #[test]
     fn a_socks_proxy_carries_the_connections() {
-        let c = connection_options("socks5h://u:p@127.0.0.1:9050");
-        assert_eq!(c.proxy_url.as_deref(), Some("socks5h://u:p@127.0.0.1:9050"));
+        let c = connection_options("socks5h://127.0.0.1:9050");
+        assert_eq!(c.proxy_url.as_deref(), Some("socks5h://127.0.0.1:9050"));
         assert!(c.enable_tcp);
         // Without one, the session's own defaults.
         assert!(options(false, true).connect.is_none());
