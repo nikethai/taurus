@@ -2,7 +2,7 @@
 //! yt-dlp reports for a link, and the plain-words error for a large playlist.
 
 use clap::{Args, ValueEnum};
-use taurus_core::media::{ConvertPreset, MediaInfo};
+use taurus_core::media::{Container, ConvertPreset, MediaInfo, SubtitleChoice, validate_browser};
 use taurus_core::{AddRequest, CoreError, Engine, ErrorKind, JobId, LinkInfo, MediaChoice};
 
 /// The flags that choose what to save of a video.
@@ -21,6 +21,22 @@ pub struct VideoFlags {
     /// Video links: also download a playlist of more than 50 videos
     #[arg(long)]
     pub yes: bool,
+    /// Video links: sign in with the cookies of a browser: chrome, firefox, safari, edge, brave,
+    /// chromium, opera or vivaldi, optionally followed by :PROFILE
+    #[arg(long, value_name = "BROWSER[:PROFILE]")]
+    pub cookies_from: Option<String>,
+    /// Video links: download these subtitle languages, e.g. en,vi, or all
+    #[arg(long, value_name = "LANGS", value_delimiter = ',')]
+    pub subs: Vec<String>,
+    /// Video links: with --subs, also the captions the site generates
+    #[arg(long)]
+    pub auto_subs: bool,
+    /// Video links: with --subs, also put them into the video file (not for WebM or sound)
+    #[arg(long)]
+    pub embed_subs: bool,
+    /// Video links: the file format of the video: mp4, mkv or webm [default: mp4]
+    #[arg(long, value_enum, value_name = "FORMAT")]
+    pub container: Option<ContainerFlag>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -34,6 +50,13 @@ pub enum Quality {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ContainerFlag {
+    Mp4,
+    Mkv,
+    Webm,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Convert {
     Mp3,
     SmallerMp4,
@@ -42,18 +65,49 @@ pub enum Convert {
 impl VideoFlags {
     /// Whether a flag that shapes a video download was given.
     fn chooses(&self) -> bool {
-        self.audio || self.quality.is_some() || self.convert.is_some()
+        self.audio
+            || self.quality.is_some()
+            || self.convert.is_some()
+            || self.cookies_from.is_some()
+            || !self.subs.is_empty()
+            || self.container.is_some()
     }
 
-    /// A combination that means nothing, in plain words.
-    pub fn conflict(&self) -> Option<&'static str> {
+    /// A combination that means nothing, or a value no video takes, in
+    /// plain words.
+    pub fn conflict(&self) -> Option<String> {
+        let say = |text: &str| Some(text.to_string());
         match (self.audio, self.quality) {
-            (false, Some(Quality::Small)) => Some("--quality small needs --audio"),
+            (false, Some(Quality::Small)) => return say("--quality small needs --audio"),
             (true, Some(Quality::P1080 | Quality::P720)) => {
-                Some("--audio cannot be combined with --quality 1080p or 720p")
+                return say("--audio cannot be combined with --quality 1080p or 720p");
             }
-            _ => None,
+            _ => {}
         }
+        if self.subs.is_empty() && (self.auto_subs || self.embed_subs) {
+            return say("--auto-subs and --embed-subs need --subs");
+        }
+        if self.convert == Some(Convert::SmallerMp4)
+            && matches!(
+                self.container,
+                Some(ContainerFlag::Mkv | ContainerFlag::Webm)
+            )
+        {
+            return say(
+                "--convert smaller-mp4 makes an MP4: it cannot be combined with --container mkv or webm",
+            );
+        }
+        if let Some(browser) = &self.cookies_from {
+            return validate_browser(browser.trim())
+                .err()
+                .map(|e| format!("--cookies-from: {}", e.detail));
+        }
+        None
+    }
+
+    /// The browser to sign in with, if one was named.
+    fn browser(&self) -> Option<&str> {
+        self.cookies_from.as_deref().map(str::trim)
     }
 
     /// The choice for `info`, and a note when the quality asked for is not
@@ -87,10 +141,22 @@ impl VideoFlags {
                 (id, None)
             }
         };
+        let subtitles = (!self.subs.is_empty()).then(|| SubtitleChoice {
+            languages: self.subs.iter().map(|l| l.trim().to_string()).collect(),
+            auto_generated: self.auto_subs,
+            embed: self.embed_subs,
+        });
+        let container = self.container.map(|c| match c {
+            ContainerFlag::Mp4 => Container::Mp4,
+            ContainerFlag::Mkv => Container::Mkv,
+            ContainerFlag::Webm => Container::Webm,
+        });
         let choice = MediaChoice {
             quality: quality.to_string(),
             convert,
-            ..MediaChoice::default()
+            cookies_from_browser: self.browser().map(String::from),
+            subtitles,
+            container,
         };
         (choice, note)
     }
@@ -110,7 +176,10 @@ pub async fn add(
     }
     // With a video flag, what the link offers decides the choice.
     if flags.chooses() {
-        match engine.inspect(&req.url).await? {
+        match engine
+            .inspect_with_cookies(&req.url, flags.browser())
+            .await?
+        {
             LinkInfo::Media(info) => {
                 let (choice, note) = flags.choice(&info);
                 if let Some(note) = note {
@@ -121,7 +190,7 @@ pub async fn add(
                 req.media_info = Some(info);
             }
             _ => eprintln!(
-                "note: {}: not a video link; ignoring --audio, --quality and --convert",
+                "note: {}: not a video link; ignoring the video options (--audio, --quality, --convert, --cookies-from, --subs, --container)",
                 req.url
             ),
         }
@@ -187,7 +256,7 @@ mod tests {
             audio,
             quality,
             convert,
-            yes: false,
+            ..VideoFlags::default()
         }
     }
 

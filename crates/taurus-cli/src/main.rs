@@ -1,5 +1,8 @@
 mod config;
+mod edit;
 mod file_list;
+mod grab;
+mod password;
 mod render;
 mod runner;
 mod stop;
@@ -16,7 +19,9 @@ use taurus_core::torrent::source::{Source, classify};
 use taurus_core::{AddRequest, Engine, EngineConfig, JobId, JobView, PowerMode};
 use tokio::sync::broadcast::error::TryRecvError;
 
+use crate::edit::{ConvertArgs, JobAction, LoginArgs, SelectArgs};
 use crate::file_list::FileList;
+use crate::grab::GrabArgs;
 use crate::runner::{Enqueued, Options, Runner};
 use crate::tools::ToolsAction;
 use crate::video::VideoFlags;
@@ -74,6 +79,9 @@ enum Command {
         /// The files of a torrent to download, by index: 0,2,5-7 (one torrent only; see torrent-files) [default: all]
         #[arg(long, value_name = "LIST")]
         files: Option<FileList>,
+        /// Web links: sign in with this user name; the password is asked for on the terminal
+        #[arg(long, value_name = "NAME")]
+        user: Option<String>,
         #[command(flatten)]
         video: VideoFlags,
     },
@@ -81,6 +89,23 @@ enum Command {
     Resume {
         #[arg(value_name = "ID", required = true)]
         ids: Vec<i64>,
+        /// Videos: first sign in with the cookies of a browser (chrome, firefox, safari, edge,
+        /// brave, chromium, opera or vivaldi, optionally :PROFILE)
+        #[arg(long, value_name = "BROWSER[:PROFILE]")]
+        cookies_from: Option<String>,
+    },
+    /// List the files a web page or folder listing links to, with sizes; --add downloads them
+    Grab(GrabArgs),
+    /// Give a download its user name and password (asked for on the terminal), then run it
+    Login(LoginArgs),
+    /// Convert a finished download, or a file, to mp3 or a smaller mp4, then run the queue
+    Convert(ConvertArgs),
+    /// Change which files of a torrent are downloaded
+    TorrentSelect(SelectArgs),
+    /// Change one download
+    Job {
+        #[command(subcommand)]
+        action: JobAction,
     },
     /// Run the queued and waiting downloads until the queue is idle; Ctrl-C stops (taurus run continues)
     Run,
@@ -124,7 +149,8 @@ enum ConfigAction {
     /// torrent.ratio <N>|never | torrent.seed_time 30m|2h|1d|off |
     /// torrent.upload_limit off|<N>KB/s|<N>MB/s | torrent.download_limit (same) |
     /// torrent.max_active <N> | torrent.peers <N>|default | torrent.port 1024-65535|random |
-    /// torrent.upnp on|off | torrent.dht on|off
+    /// torrent.upnp on|off | torrent.dht on|off |
+    /// network.proxy system|none|<URL> (http, https, socks5 or socks5h; no user name or password)
     Set { key: String, value: String },
 }
 
@@ -225,10 +251,16 @@ fn read_url_file(path: &Path) -> std::io::Result<Vec<String>> {
 async fn run(cli: Cli) -> Result<ExitCode> {
     let data_dir = data_dir(cli.data_dir)?;
     // Only the queue runners start jobs; the other commands look or edit.
-    let autostart = matches!(
-        cli.command,
-        Command::Add { .. } | Command::Resume { .. } | Command::Run | Command::StartNow { .. }
-    );
+    let autostart = match &cli.command {
+        Command::Add { .. }
+        | Command::Resume { .. }
+        | Command::Run
+        | Command::StartNow { .. }
+        | Command::Login(_)
+        | Command::Convert(_) => true,
+        Command::Grab(args) => args.add,
+        _ => false,
+    };
     let config = engine_config(data_dir.clone(), cli.dry_run_power, autostart);
     let options = Options {
         json: cli.json,
@@ -299,8 +331,10 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
             checksum,
             referer,
             files,
+            user,
             video,
         } => {
+            let credentials = user.map(|user| password::credentials(&user)).transpose()?;
             let only_files = files.map(|FileList(indices)| indices);
             let dest_dir = std::path::absolute(match dir {
                 Some(dir) => dir,
@@ -322,6 +356,7 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
                         checksum: checksum.clone(),
                         referer: referer.clone(),
                         only_files: only_files.clone(),
+                        credentials: credentials.clone(),
                         ..AddRequest::default()
                     };
                     let torrent = is_torrent(&url);
@@ -338,13 +373,17 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
             };
             runner.run(enqueue).await
         }
-        Command::Resume { ids } => {
+        Command::Resume { ids, cookies_from } => {
             let runner = Runner::new(engine, options);
             let enqueue = async {
                 let hold = engine.hold_when_done();
                 let mut enqueued = Enqueued::default();
                 for id in ids.into_iter().map(JobId) {
-                    match engine.resume(id).await {
+                    let resumed = match &cookies_from {
+                        Some(browser) => engine.retry_with_cookies(id, browser.clone()).await,
+                        None => engine.resume(id).await,
+                    };
+                    match resumed {
                         Ok(()) => enqueued.ids.push(id),
                         Err(e) => {
                             eprintln!("error: download {}: {e}", id.0);
@@ -417,6 +456,11 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
         Command::Stop { id } => stop::local(engine, JobId(id)),
         Command::Tools { action } => tools::run(engine, action, json).await,
         Command::Config { action } => configure(engine, action, json).await,
+        Command::Grab(args) => grab::run(engine, args, options).await,
+        Command::Login(args) => edit::login(engine, args, options).await,
+        Command::Convert(args) => edit::convert(engine, args, options).await,
+        Command::TorrentSelect(args) => edit::torrent_select(engine, args, json).await,
+        Command::Job { action } => edit::job_set(engine, action, json).await,
     }
 }
 
@@ -481,7 +525,7 @@ fn data_dir(flag: Option<PathBuf>) -> Result<PathBuf> {
         .ok_or_else(|| "no data directory found; pass --data-dir or set TAURUS_DATA_DIR".into())
 }
 
-fn default_dest_dir() -> Result<PathBuf> {
+pub(crate) fn default_dest_dir() -> Result<PathBuf> {
     match directories::UserDirs::new().and_then(|u| u.download_dir().map(PathBuf::from)) {
         Some(dir) => Ok(dir),
         None => Ok(std::env::current_dir()?),

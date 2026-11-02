@@ -15,6 +15,9 @@ impl FromStr for FileList {
 
     fn from_str(text: &str) -> std::result::Result<FileList, String> {
         let invalid = |token: &str| format!("invalid file list item '{token}': use e.g. 0,2,5-7");
+        if text.trim().is_empty() {
+            return Err("the file list is empty: use e.g. 0,2,5-7".to_string());
+        }
         let mut indices = Vec::new();
         for token in text.split(',').map(str::trim) {
             let number = |n: &str| {
@@ -28,7 +31,9 @@ impl FromStr for FileList {
                 Some((first, last)) => {
                     let (first, last) = (number(first)?, number(last)?);
                     if first > last {
-                        return Err(invalid(token));
+                        return Err(format!(
+                            "invalid range '{token}': it goes backwards, use {last}-{first}"
+                        ));
                     }
                     indices.extend(first..=last);
                 }
@@ -47,6 +52,18 @@ mod tests {
 
     fn list(text: &str) -> std::result::Result<Vec<usize>, String> {
         text.parse::<FileList>().map(|FileList(v)| v)
+    }
+
+    #[test]
+    fn refusals_say_why() {
+        assert!(list("").unwrap_err().contains("empty"));
+        assert!(list("  ").unwrap_err().contains("empty"));
+        assert!(list("7-5").unwrap_err().contains("backwards"));
+        assert!(
+            list("x")
+                .unwrap_err()
+                .contains("invalid file list item 'x'")
+        );
     }
 
     #[test]

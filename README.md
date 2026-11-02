@@ -38,6 +38,45 @@ taurus list
 taurus remove 1 --delete-files
 ```
 
+### Links on a web page
+
+`taurus grab <PAGE_URL>` reads a web page (or an Apache/nginx style "Index of" folder listing) and lists the files it links to: index (from 0), size (`-` when the server tells none), the folder it was found in, and name. Only links whose file name has an extension that is not a web page's are listed, each once, at most 500.
+
+```sh
+# List the files a page links to
+taurus grab https://example.com/papers/
+
+# Only some extensions (comma-separated, any case)
+taurus grab https://example.com/papers/ --ext pdf,zip
+
+# A folder listing: read its subfolders too (one level)
+taurus grab https://example.com/files/ --subfolders
+
+# Add every listed file to the queue and download them into a folder
+# (all into that one folder, whatever subfolder they came from)
+taurus grab https://example.com/papers/ --ext pdf --add --dir ~/Downloads
+```
+
+`--json` prints one object, `{"links": [{"index", "url", "name", "folder", "extension", "size"}], "truncated": bool}`. Without `--add`, nothing is queued.
+
+### Protected downloads
+
+A web download that asks for a user name and password (HTTP Basic sign-in) takes `--user`; the password is asked for on the terminal, without echo, and nothing else:
+
+```sh
+# Asks "Password for alice:" on the terminal
+taurus add https://files.example.com/report.zip --user alice
+
+# Give a download that failed with "sign-in needed" (or was paused) its user name and
+# password; it then resumes and the queue runs until it is idle
+taurus login 3 --user alice
+```
+
+- The password is never an option and is never read from the environment or a pipe: with no terminal, `taurus` exits 1 and says so.
+- It goes to the operating system's keychain (Keychain on macOS, Credential Manager on Windows, the Secret Service on Linux), filed under the service `dev.nikethai.taurus`. It is never written to the job database, the settings, the logs or the output, and it is sent only to the link's own host (mirrors on that host included).
+- When there is no keychain (for example a Linux session without a Secret Service), the password is kept in memory only, until `taurus` exits. A download that needs it after a restart then fails with "sign-in needed": run `taurus login <ID> --user <NAME>` and type the password again.
+- Only web downloads can be protected, not torrents or video links. A proxy with a user name or password is not supported either (see Settings).
+
 ### Torrents
 
 `add` also takes magnet links, `.torrent` links and `.torrent` files, mixed freely with web links; `list` shows each download's kind (`http` or `torrent`), and a torrent row shows `peers N` while it downloads and `sharing · ratio 0.42` while it shares. A torrent is saved in a folder of its own name inside `--dir`; a second torrent with the same name gets `Name (1)`. A magnet link whose peers cannot be found within two minutes waits (state Waiting) and is retried. At most `torrent.max_active` torrents download at once, and sharing ones do not count.
@@ -59,6 +98,19 @@ taurus add ./ubuntu.torrent --files 0,2,5-7
 ```
 
 When a torrent's file selection changes after it was added (even while it downloads or shares), files that stay selected keep what is downloaded, and newly selected files must fit on the disk. Files you deselect keep what they already downloaded on disk; delete them yourself if you no longer want them. A torrent that had finished and gains files checks its files again first, which may update the kept files' modification time (not their content).
+
+```sh
+# Change the files of a torrent that is already added (id from `taurus list`):
+# the same list syntax as --files; at least one file, each index within the torrent
+taurus torrent-select 4 0,2,5-7
+
+# Give one torrent its own sharing rules; `default` goes back to the global setting
+taurus job set 4 ratio 2.5            # a number, never, or default
+taurus job set 4 seed_time 12h        # 30m, 2h, 1d, off, or default
+taurus job set 4 ratio default
+```
+
+`torrent-select` says so when the torrent is queued again (run `taurus run` to download the new files) and fails, changing nothing, when the files do not fit on the disk. `job set` keeps the torrent's other rule as it was.
 
 The torrent settings are changed like the others: `taurus config set torrent.ratio 2`.
 
@@ -106,6 +158,37 @@ taurus stop 5
 
 `taurus stop <ID>` stops a running video download or recording from another terminal, keeping what was downloaded (a live stream is made playable), and says how it ended. It asks the `taurus` process or the desktop app that runs the job, which answers within a moment; if none answers within 5 seconds it exits 1. Ctrl-C in the process that runs it also stops the job, but leaves it queued, not finished.
 
+Video links also take these options:
+
+```sh
+# Sign in with a browser's cookies, for videos that need a login or a "not a bot" check
+# (chrome, firefox, safari, edge, brave, chromium, opera or vivaldi, optionally :PROFILE)
+taurus add https://www.youtube.com/watch?v=VIDEO_ID --cookies-from firefox
+taurus add https://www.youtube.com/watch?v=VIDEO_ID --cookies-from chrome:"Profile 1"
+
+# Retry a video that failed for want of a sign-in, with those cookies
+taurus resume 5 --cookies-from firefox
+
+# Subtitles: some languages (or all), with --auto-subs the captions the site generates,
+# with --embed-subs also inside the video file (not for WebM or sound)
+taurus add https://www.youtube.com/watch?v=VIDEO_ID --subs en,vi --auto-subs --embed-subs
+
+# The file format of the video: mp4 (the default), mkv or webm
+taurus add https://www.youtube.com/watch?v=VIDEO_ID --container mkv
+```
+
+`--auto-subs` and `--embed-subs` need `--subs`, and `--convert smaller-mp4` makes an MP4, so it cannot be used with `--container mkv` or `webm`. yt-dlp reads the browser's cookies itself; only the browser's name is stored with the download.
+
+Convert a finished download, or any file that is not being downloaded, with ffmpeg:
+
+```sh
+# A finished download (a playlist makes one conversion per file), or a file by path
+taurus convert 5 mp3
+taurus convert ~/Music/talk.webm smaller-mp4
+```
+
+The result is a new file next to the original, `<name> (mp3).mp3` or `<name> (smaller).mp4` (a name that is taken gets ` (1)`, ` (2)`, ...); the original is never changed or overwritten. The conversion is a download of kind `convert` in the queue, and `convert` runs the queue until it is idle.
+
 #### The tools
 
 Video downloads use yt-dlp, ffmpeg and Deno. Hyades downloads them itself, checks each against its published SHA-256 and keeps them in `<data dir>/tools/<tool>/<version>/`; the file `<data dir>/tools/<tool>/current` names the version in use, and the previous version is kept for a rollback. They are not installed system-wide and the ones on your `PATH` are not used. yt-dlp is checked for a newer version once a day while videos download (sites change often), ffmpeg and Deno once a week.
@@ -132,12 +215,20 @@ Licenses: yt-dlp is released under the Unlicense, the ffmpeg builds (from [yt-dl
 | `when_done` | what to do once the queue is done (a download finishing empties it; pausing or removing the last one does not count): `nothing`, `notify` (prints `All downloads finished.`), `sleep` or `shutdown` (after a 60 second countdown; one-shot: once it runs, `when_done` goes back to `nothing`), `quit` | `nothing` |
 | `auto_checksum` | `on` or `off`: verify a download against a `SHA256SUMS` file the host publishes beside it | `on` |
 | `keep_awake` | `on` or `off`: keep the computer from sleeping while a download runs | `on` |
+| `network.proxy` | how to reach the web: `system` (the OS settings; on Linux the `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` variables), `none` (direct), or a proxy URL: `http://`, `https://`, `socks5://` or `socks5h://` (names resolved by the proxy) | `system` |
 
 ```sh
 taurus config set max_active 2
 taurus config set speed 5MB/s
 taurus config set when_done shutdown
 ```
+
+```sh
+taurus config set network.proxy socks5h://127.0.0.1:9050
+taurus config set network.proxy none
+```
+
+The proxy is used by downloads, yt-dlp and tool downloads from the next request on, and by torrents (a SOCKS proxy only) the next time Taurus starts. A proxy URL with a user name or password is refused (they would be stored in the settings), as is anything that is not one of the schemes above; `config set` then exits 1 and shows the reason.
 
 Global options go before the command:
 

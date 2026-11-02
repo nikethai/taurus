@@ -4,7 +4,7 @@ use std::fmt::Write;
 use std::time::Duration;
 
 use taurus_core::torrent::TorrentInfo;
-use taurus_core::{JobId, JobKind, JobState, JobView, TorrentSettings, WhenDone};
+use taurus_core::{GrabbedLink, JobId, JobKind, JobState, JobView, TorrentSettings, WhenDone};
 
 use crate::config;
 
@@ -225,6 +225,32 @@ pub fn torrent_files(info: &TorrentInfo) -> String {
             file.index,
             bytes(file.size),
             printable(&file.path)
+        );
+    }
+    out
+}
+
+/// One line per link: index, size (`-` when the server tells none), the
+/// folder it was found in, name. Control characters (the page's author
+/// chose these names) are left out.
+pub fn grab_links(links: &[GrabbedLink], sizes: &[Option<u64>]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:>5}  {:>10}  {:<12}  NAME",
+        "INDEX", "SIZE", "FOLDER"
+    );
+    for (index, link) in links.iter().enumerate() {
+        let size = sizes
+            .get(index)
+            .copied()
+            .flatten()
+            .map_or("-".to_string(), bytes);
+        let _ = writeln!(
+            out,
+            "{index:>5}  {size:>10}  {:<12}  {}",
+            printable(&link.folder),
+            printable(&link.name)
         );
     }
     out

@@ -3,9 +3,9 @@
 
 use std::fmt::Write;
 
-use taurus_core::{Settings, SpeedLimit, WhenDone};
+use taurus_core::{ProxySetting, Settings, SpeedLimit, WhenDone};
 
-pub const KEYS: [&str; 14] = [
+pub const KEYS: [&str; 15] = [
     "max_active",
     "speed",
     "when_done",
@@ -20,6 +20,7 @@ pub const KEYS: [&str; 14] = [
     "torrent.port",
     "torrent.upnp",
     "torrent.dht",
+    "network.proxy",
 ];
 
 /// The settings that apply only when the torrent session next starts: the
@@ -51,6 +52,7 @@ pub fn json_field(key: &str) -> Option<(&'static str, &'static str)> {
         "torrent.port" => ("torrent", "listen_port"),
         "torrent.upnp" => ("torrent", "upnp"),
         "torrent.dht" => ("torrent", "dht"),
+        "network.proxy" => ("network", "proxy"),
         _ => return None,
     })
 }
@@ -84,6 +86,7 @@ pub fn get(settings: &Settings, key: &str) -> Result<String, String> {
             .map_or("random".to_string(), |p| p.to_string()),
         "torrent.upnp" => on_off(settings.torrent.upnp).to_string(),
         "torrent.dht" => on_off(settings.torrent.dht).to_string(),
+        "network.proxy" => format_proxy(&settings.network.proxy),
         _ => return Err(unknown_key(key)),
     })
 }
@@ -135,6 +138,7 @@ pub fn set(settings: &mut Settings, key: &str, value: &str) -> Result<(), String
         }
         "torrent.upnp" => settings.torrent.upnp = parse_on_off(key, value)?,
         "torrent.dht" => settings.torrent.dht = parse_on_off(key, value)?,
+        "network.proxy" => settings.network.proxy = parse_proxy_setting(value)?,
         _ => return Err(unknown_key(key)),
     }
     Ok(())
@@ -149,6 +153,30 @@ pub fn lines(settings: &Settings) -> String {
         }
     }
     out
+}
+
+/// `system`, `none` or a proxy URL (`http://`, `https://`, `socks5://` or
+/// `socks5h://`, no user name or password). The engine's own refusal of a
+/// URL is the error, as it words it.
+fn parse_proxy_setting(value: &str) -> Result<ProxySetting, String> {
+    let text = value.trim();
+    let setting = match text.to_ascii_lowercase().as_str() {
+        "system" => ProxySetting::System,
+        "none" => ProxySetting::None,
+        _ => ProxySetting::Manual {
+            url: text.to_string(),
+        },
+    };
+    setting.check().map_err(|e| e.detail)?;
+    Ok(setting)
+}
+
+fn format_proxy(proxy: &ProxySetting) -> String {
+    match proxy {
+        ProxySetting::System => "system".to_string(),
+        ProxySetting::None => "none".to_string(),
+        ProxySetting::Manual { url } => url.clone(),
+    }
 }
 
 /// `fastest|balanced|gentle|<N>KB/s|<N>MB/s`, ignoring case; KB = 1000 bytes,
@@ -219,7 +247,7 @@ fn format_limit(limit: Option<u64>) -> String {
 }
 
 /// A decimal number from 0 up, or `never` (`None`).
-fn parse_ratio(value: &str) -> Result<Option<f64>, String> {
+pub fn parse_ratio(value: &str) -> Result<Option<f64>, String> {
     let text = value.trim();
     if text.eq_ignore_ascii_case("never") {
         return Ok(None);
@@ -232,7 +260,7 @@ fn parse_ratio(value: &str) -> Result<Option<f64>, String> {
 }
 
 /// `off`, or `<N>s|m|h|d` above 0.
-fn parse_duration(value: &str) -> Result<Option<u64>, String> {
+pub fn parse_duration(value: &str) -> Result<Option<u64>, String> {
     let lower = value.trim().to_ascii_lowercase();
     if lower == "off" {
         return Ok(None);
@@ -312,7 +340,7 @@ mod tests {
 
     const DEFAULT_TORRENT_LINES: &str = "torrent.ratio = 1.0\ntorrent.seed_time = off\n\
          torrent.upload_limit = off\ntorrent.download_limit = off\ntorrent.max_active = 3\n\
-         torrent.peers = default\ntorrent.port = random\ntorrent.upnp = on\ntorrent.dht = on\n";
+         torrent.peers = default\ntorrent.port = random\ntorrent.upnp = on\ntorrent.dht = on\nnetwork.proxy = system\n";
 
     fn custom(bytes_per_sec: u64) -> SpeedLimit {
         SpeedLimit::Custom { bytes_per_sec }
@@ -483,5 +511,29 @@ mod tests {
         assert_eq!(format_duration(5400), "90m");
         assert_eq!(format_duration(86_400 * 3), "3d");
         assert_eq!(format_duration(61), "61s");
+    }
+
+    #[test]
+    fn proxy_grammar() {
+        let mut s = Settings::default();
+        assert_eq!(get(&s, "network.proxy").unwrap(), "system");
+        set(&mut s, "network.proxy", "http://proxy.example:3128").unwrap();
+        assert_eq!(
+            get(&s, "network.proxy").unwrap(),
+            "http://proxy.example:3128"
+        );
+        set(&mut s, "network.proxy", " NONE ").unwrap();
+        assert_eq!(s.network.proxy, ProxySetting::None);
+        set(&mut s, "network.proxy", "System").unwrap();
+        assert_eq!(s.network.proxy, ProxySetting::System);
+        set(&mut s, "network.proxy", "socks5h://127.0.0.1:9050").unwrap();
+        let before = s.clone();
+        for bad in ["", "garbage", "ftp://h:1", "http://u:p@h:1", "http://u@h:1"] {
+            let e = set(&mut s, "network.proxy", bad).unwrap_err();
+            assert!(e.starts_with("unsupported proxy"), "{bad}: {e}");
+            assert!(!e.contains("http://u"), "{bad}: {e}");
+            assert_eq!(s, before, "{bad}");
+        }
+        assert!(lines(&s).ends_with("network.proxy = socks5h://127.0.0.1:9050\n"));
     }
 }
