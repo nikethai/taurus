@@ -6,6 +6,7 @@
 //! running jobs or reserves names runs in the actor, one command at a time.
 
 mod actor;
+mod grab;
 mod inspect;
 mod jobs;
 mod media;

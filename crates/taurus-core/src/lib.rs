@@ -3,6 +3,7 @@ pub mod engine;
 pub mod errors;
 pub mod filename;
 pub mod fixups;
+pub mod grab;
 pub mod http;
 pub mod limit;
 pub mod media;
@@ -22,6 +23,7 @@ pub use engine::{
     RemoveFiles, TorrentView, WhenDoneHold,
 };
 pub use errors::{CoreError, ErrorKind};
+pub use grab::{GrabOptions, GrabResult, GrabbedLink};
 pub use settings::{
     PowerMode, Settings, SpeedLimit, ThemeChoice, TorrentSettings, UiMode, UiSettings, WhenDone,
 };
