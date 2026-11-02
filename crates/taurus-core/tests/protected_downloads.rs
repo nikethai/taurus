@@ -625,26 +625,111 @@ fn scan_tree(dir: &Path, secrets: &[String], read_file: fn(&Path) -> Vec<u8>) ->
 /// The file's bytes, readable while SQLite has the database open: on
 /// Windows its byte-range locks (on the `-shm` index, or the lock bytes of
 /// a database past 1 GiB) fail reads that touch them (ERROR_LOCK_VIOLATION),
-/// so a block that cannot be read for that reason alone reads as zeros. The
-/// locked bytes are SQLite's lock slots, never stored data.
+/// so a block inside the file that cannot be read for that reason alone
+/// reads as zeros. The locked bytes are SQLite's lock slots, never stored
+/// data.
 fn read_shared(path: &Path) -> Vec<u8> {
-    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path).unwrap();
+    let len = file.metadata().unwrap().len();
+    read_bounded(&mut file, len, cfg!(windows))
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// Up to `len` bytes of `reader`, in blocks; with `zero_locked`, a block
+/// that fails with ERROR_LOCK_VIOLATION reads as zeros. Never reads past
+/// `len` (on Windows a read past the end into a locked range fails instead
+/// of returning 0), and stops early if the file is shorter by now.
+fn read_bounded(
+    reader: &mut (impl std::io::Read + std::io::Seek),
+    len: u64,
+    zero_locked: bool,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::SeekFrom;
     const BLOCK: usize = 512;
     const ERROR_LOCK_VIOLATION: i32 = 33;
-    let mut file = fs::File::open(path).unwrap();
-    let mut bytes = Vec::new();
+    let len = usize::try_from(len).expect("the file fits in memory");
+    let mut bytes = Vec::with_capacity(len);
     let mut block = [0; BLOCK];
-    loop {
-        file.seek(SeekFrom::Start(bytes.len() as u64)).unwrap();
-        match file.read(&mut block) {
-            Ok(0) => return bytes,
+    while bytes.len() < len {
+        let want = BLOCK.min(len - bytes.len());
+        reader.seek(SeekFrom::Start(bytes.len() as u64))?;
+        match reader.read(&mut block[..want]) {
+            Ok(0) => break,
             Ok(n) => bytes.extend_from_slice(&block[..n]),
-            Err(e) if cfg!(windows) && e.raw_os_error() == Some(ERROR_LOCK_VIOLATION) => {
-                bytes.extend_from_slice(&[0; BLOCK]);
+            Err(e) if zero_locked && e.raw_os_error() == Some(ERROR_LOCK_VIOLATION) => {
+                bytes.resize(bytes.len() + want, 0);
             }
-            Err(e) => panic!("{}: {e}", path.display()),
+            Err(e) => return Err(e),
         }
     }
+    Ok(bytes)
+}
+
+/// A file as Windows shows it while SQLite holds it: reads touching the
+/// locked range, or anything past the end, fail with ERROR_LOCK_VIOLATION.
+struct LockedFile {
+    data: Vec<u8>,
+    locked: std::ops::Range<usize>,
+    pos: usize,
+}
+
+impl std::io::Read for LockedFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let end = self.pos + buf.len();
+        if self.pos >= self.data.len() || (self.pos < self.locked.end && self.locked.start < end) {
+            return Err(std::io::Error::from_raw_os_error(33));
+        }
+        let n = buf.len().min(self.data.len() - self.pos);
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for LockedFile {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        let std::io::SeekFrom::Start(at) = to else {
+            unreachable!("only absolute seeks")
+        };
+        self.pos = at as usize;
+        Ok(at)
+    }
+}
+
+#[test]
+fn the_shared_read_stops_at_the_end_and_zeroes_locked_blocks() {
+    let data: Vec<u8> = (0..1300u32).map(|i| (i % 251) as u8 + 1).collect();
+    let mut file = LockedFile {
+        data: data.clone(),
+        locked: 600..610,
+        pos: 0,
+    };
+    let read = read_bounded(&mut file, 1300, true).unwrap();
+    assert_eq!(read.len(), 1300);
+    assert_eq!(read[..512], data[..512]);
+    assert!(read[512..1024].iter().all(|&b| b == 0), "the locked block");
+    assert_eq!(read[1024..], data[1024..]);
+    // Locked up to and past the end: still bounded by the length.
+    file.locked = 1200..usize::MAX;
+    let read = read_bounded(&mut file, 1300, true).unwrap();
+    assert_eq!(read.len(), 1300);
+    assert_eq!(read[..1024], data[..1024]);
+    // Without the tolerance, a lock is an error.
+    assert_eq!(
+        read_bounded(&mut file, 1300, false)
+            .unwrap_err()
+            .raw_os_error(),
+        Some(33)
+    );
+    // A file shorter by now than its length said: what is there.
+    let mut short = LockedFile {
+        data: data[..700].to_vec(),
+        locked: 0..0,
+        pos: 0,
+    };
+    assert_eq!(read_bounded(&mut short, 1300, true).unwrap().len(), 1300);
+    let mut plain = std::io::Cursor::new(data[..700].to_vec());
+    assert_eq!(read_bounded(&mut plain, 1300, true).unwrap(), data[..700]);
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> bool {
