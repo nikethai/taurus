@@ -289,6 +289,7 @@ impl Actor {
                 | Command::AddTorrent { .. }
                 | Command::AddMedia { .. }
                 | Command::Resume { .. }
+                | Command::SetMediaCookies { .. }
                 | Command::StartNow { .. }
         ) {
             self.when_done.cancel();

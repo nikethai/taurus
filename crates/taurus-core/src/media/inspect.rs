@@ -9,7 +9,7 @@ use crate::errors::{CoreError, ErrorKind};
 
 use super::errors::{classify_stderr, error_line};
 use super::process::run_captured;
-use super::{LiveStatus, MediaInfo, PlaylistInfo, QualityOption, YtDlp};
+use super::{LiveStatus, MediaInfo, PlaylistInfo, QualityOption, YtDlp, validate_browser};
 
 const BEST: &str = "bv*+ba/b";
 const AUDIO: &str = "ba/b";
@@ -60,18 +60,26 @@ pub(crate) fn fast_path_host(url: &str) -> bool {
 /// no extractor for is `SiteNotSupported`; its other failures are mapped by
 /// [`classify_stderr`](super::errors); a run longer than `timeout` is killed
 /// (with everything it started) and fails with `Timeout`. yt-dlp uses
-/// `proxy`.
+/// `proxy`, and with `cookies` (a checked [`validate_browser`](super::validate_browser)
+/// spec) the cookies of that browser, for links that need a sign-in.
 pub async fn inspect(
     tools: &crate::tools::ToolManager,
     url: &str,
     proxy: &crate::network::ProxySetting,
+    cookies: Option<&str>,
     timeout: Duration,
 ) -> Result<MediaInfo, CoreError> {
     let url = url.trim();
+    if let Some(spec) = cookies {
+        validate_browser(spec)?;
+    }
     let yt_dlp = YtDlp::prepare(tools, proxy).await?;
     let mut command = yt_dlp.command();
     if single_video_link(url) {
         command.arg("--no-playlist");
+    }
+    if let Some(spec) = cookies {
+        command.args(["--cookies-from-browser", spec]);
     }
     // `--` so that a link can never be taken for an option.
     command.args(["--flat-playlist", "-J", "--", url]);

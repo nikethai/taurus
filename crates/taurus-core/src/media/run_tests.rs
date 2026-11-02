@@ -650,11 +650,24 @@ fn cookies_subtitles_and_container_args() {
             "bv*+ba/b",
             "--write-subs",
             "--sub-langs",
-            "all",
+            "all,-live_chat",
             "--merge-output-format",
             "webm"
         ]
     );
+    // WebM takes only WebVTT: its subtitles are not embedded.
+    let webm = MediaOptions {
+        subtitles: Some(SubtitleChoice {
+            languages: vec!["en".into()],
+            auto_generated: false,
+            embed: true,
+        }),
+        container: Some(Container::Webm),
+        ..base.clone()
+    };
+    let args = strings(&download_args(&webm, dest, "u", None, true));
+    assert!(args.iter().any(|a| a == "--write-subs"));
+    assert!(!args.iter().any(|a| a == "--embed-subs"));
     // Audio ignores the container and never embeds; sidecar subtitles and
     // cookies stay.
     let audio = MediaOptions {

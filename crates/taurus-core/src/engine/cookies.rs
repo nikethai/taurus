@@ -14,16 +14,17 @@ impl Engine {
     /// of `browser` (`chrome`, `firefox`, `safari`, `edge`, `brave`,
     /// `chromium`, `opera` or `vivaldi`, optionally `:<profile>`): yt-dlp
     /// reads them from the browser itself, so only its name is stored with
-    /// the job's options, and the job is queued again. A browser that is
+    /// the job's options, and the job is queued again, in one step: if it
+    /// cannot be queued, the job keeps the choice it had. A browser that is
     /// not known, a job that is not a video, or one that is running,
     /// queued or finished is refused and left as it was.
     pub async fn retry_with_cookies(&self, id: JobId, browser: String) -> Result<(), CoreError> {
         self.check_running()?;
         let browser = browser.trim().to_owned();
         validate_browser(&browser)?;
+        let _hold = self.hold_when_done();
         self.call(|reply| Command::SetMediaCookies { id, browser, reply })
-            .await??;
-        self.resume(id).await
+            .await?
     }
 }
 
@@ -44,7 +45,17 @@ impl Actor {
         {
             return refuse("the video is not stopped");
         }
-        options.cookies_from_browser = Some(browser.to_owned());
-        self.store.set_media(id, &options)
+        let before = options.cookies_from_browser.replace(browser.to_owned());
+        self.store.set_media(id, &options)?;
+        // Stored and queued in this one command; if it cannot be queued the
+        // job keeps the choice it had.
+        if let Err(e) = self.resume(id, None) {
+            options.cookies_from_browser = before;
+            if let Err(undo) = self.store.set_media(id, &options) {
+                tracing::warn!(job = id.0, "could not restore the browser choice: {undo}");
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 }

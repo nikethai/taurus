@@ -96,11 +96,15 @@ pub(crate) fn validate_subtitles(choice: &SubtitleChoice) -> Result<(), CoreErro
 
 /// The arguments for the cookies and subtitles: `--cookies-from-browser
 /// <spec>`; `--write-subs`, `--write-auto-subs` (when `auto_generated`),
-/// `--sub-langs <a,b|all>` and `--embed-subs` (when `embed`, for video).
+/// `--sub-langs <a,b|all,-live_chat>` (a stream's chat replay is not a
+/// subtitle) and `--embed-subs` (when `embed`, for MP4 and MKV video; WebM
+/// takes only WebVTT, which not every site has, so its subtitles stay
+/// beside the video).
 pub(crate) fn cookie_and_subtitle_args(
     cookies: Option<&str>,
     subtitles: Option<&SubtitleChoice>,
     audio: bool,
+    container: Option<Container>,
 ) -> Vec<OsString> {
     let mut args = Vec::new();
     if let Some(browser) = cookies {
@@ -113,13 +117,13 @@ pub(crate) fn cookie_and_subtitle_args(
             args.push("--write-auto-subs".into());
         }
         let languages = if subs.languages.iter().any(|l| l == "all") {
-            "all".to_owned()
+            "all,-live_chat".to_owned()
         } else {
             subs.languages.join(",")
         };
         args.push("--sub-langs".into());
         args.push(languages.into());
-        if subs.embed && !audio {
+        if subs.embed && !audio && container != Some(Container::Webm) {
             args.push("--embed-subs".into());
         }
     }

@@ -71,6 +71,7 @@ pub(crate) fn download_args(
         options.cookies_from_browser.as_deref(),
         options.subtitles.as_ref(),
         audio,
+        options.container,
     ));
     if audio {
         let extra = match options.convert {

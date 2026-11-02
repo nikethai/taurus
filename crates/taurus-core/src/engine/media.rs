@@ -18,6 +18,7 @@ use crate::media::{
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob};
 
 use super::actor::{Actor, Command, JobMsg, Run};
+use super::inspect::clean_browser;
 use super::jobs::view_of;
 use super::media_job::{MediaJob, run_media_job};
 use super::schedule::check_space;
@@ -43,7 +44,8 @@ pub struct MediaChoice {
     /// string is none.
     pub cookies_from_browser: Option<String>,
     pub subtitles: Option<SubtitleChoice>,
-    /// `None` is MP4; audio ignores it.
+    /// `None` is MP4; audio ignores it. The smaller-file conversion makes
+    /// an MP4, so it is refused with Mkv or Webm.
     pub container: Option<Container>,
 }
 
@@ -99,10 +101,17 @@ impl Engine {
                 detail: "mirrors and checksum apply only to web downloads".to_string(),
             });
         }
+        // A bad browser is refused before anything is read.
+        let cookies = clean_browser(
+            req.media
+                .as_ref()
+                .and_then(|c| c.cookies_from_browser.as_deref()),
+        )?
+        .map(str::to_owned);
         // Read once: the front end usually inspected the link already.
         let info = match req.media_info.take() {
             Some(info) => info,
-            None => self.media_info(req.url.trim()).await?,
+            None => self.media_info(req.url.trim(), cookies.as_deref()).await?,
         };
         if let Some(playlist) = &info.playlist
             && playlist.count > LARGE_PLAYLIST
@@ -212,6 +221,15 @@ fn media_options(
     if let Some(browser) = cookies_from_browser {
         validate_browser(browser)?;
     }
+    let container = choice.and_then(|c| c.container);
+    if choice.is_some_and(|c| c.convert == Some(ConvertPreset::SmallerMp4))
+        && matches!(container, Some(Container::Mkv | Container::Webm))
+    {
+        return Err(CoreError {
+            kind: ErrorKind::Unknown,
+            detail: "the smaller-file conversion always makes an MP4".to_owned(),
+        });
+    }
     let subtitles = choice.and_then(|c| c.subtitles.clone());
     if let Some(subtitles) = &subtitles {
         validate_subtitles(subtitles)?;
@@ -229,7 +247,7 @@ fn media_options(
         partial_files: Vec::new(),
         cookies_from_browser: cookies_from_browser.map(str::to_owned),
         subtitles,
-        container: choice.and_then(|c| c.container),
+        container,
     })
 }
 

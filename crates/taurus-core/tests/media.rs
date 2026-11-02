@@ -272,6 +272,7 @@ async fn media_inspect_kills_the_process_group_on_timeout() {
         &tools,
         link,
         &Default::default(),
+        None,
         Duration::from_millis(700),
     )
     .await
@@ -405,8 +406,13 @@ impl MediaRig {
         download: Value,
         tweak: impl FnOnce(&mut EngineConfig),
     ) -> MediaRig {
+        MediaRig::with_scenario(&media_scenario(info, download), tweak).await
+    }
+
+    /// `with_config` for a whole scenario of yt-dlp's.
+    async fn with_scenario(scenario: &Value, tweak: impl FnOnce(&mut EngineConfig)) -> MediaRig {
         let version = unique_version();
-        set_ytdlp_scenario(&version, &media_scenario(info, download).to_string());
+        set_ytdlp_scenario(&version, &scenario.to_string());
         let host = FakeToolHost::start(
             ToolRelease::new(&version),
             ToolRelease::new("7.1"),
@@ -2084,16 +2090,16 @@ async fn args_for_cookies_subs_container() {
         ),
         "{argv:?}"
     );
-    // The inspection never carries cookies.
+    // The link was read with the cookies too (the add inspected it itself).
     let inspections: Vec<_> = calls_with(link)
         .into_iter()
         .filter(|e| e.argv.iter().any(|a| a == "-J"))
         .collect();
-    assert!(
-        inspections
-            .iter()
-            .all(|e| !e.argv.iter().any(|a| a.starts_with("--cookies")))
-    );
+    assert_eq!(inspections.len(), 1, "{inspections:?}");
+    assert!(has_run(
+        &inspections[0].argv,
+        &["--cookies-from-browser", "chrome:Profile 1"]
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2205,4 +2211,147 @@ async fn retry_with_cookies_refuses_a_job_that_is_not_stopped() {
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Unknown);
     assert_eq!(download_calls(link).len(), 1);
+}
+
+/// A video whose reading (`-J`) needs a browser's cookies; its download
+/// (told by `--progress`) is let through, so tests look at its arguments.
+fn signed_in_only_with_cookies(name: &str) -> Value {
+    json!([
+        { "if_arg": "--progress", "stdout": [file_line(name)], "write_files": [[name, 10]] },
+        { "if_arg": "--cookies-from-browser", "stdout": [video_info().to_string()] },
+        { "stderr": ["ERROR: [youtube] x: Sign in to confirm your age"], "exit": 1 },
+    ])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cookies_reach_the_inspection() {
+    let rig = MediaRig::with_scenario(&signed_in_only_with_cookies("aged.mp4"), |_| {}).await;
+    let link = "https://www.youtube.com/watch?v=aged_inspection";
+    // Without cookies the age check stops the reading, and no job is made.
+    let err = rig.engine.inspect(link).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NeedsSignIn);
+    let err = rig.engine.add(rig.request(link)).await;
+    // (no media choice: the fast-path host is read by yt-dlp all the same)
+    assert_eq!(err.unwrap_err().kind, ErrorKind::NeedsSignIn);
+    assert!(rig.engine.snapshot().is_empty());
+    // A bad browser is refused before yt-dlp is asked.
+    let before = calls_with(link).len();
+    let err = rig
+        .engine
+        .inspect_with_cookies(link, Some("netscape"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.detail, "unknown browser");
+    assert_eq!(calls_with(link).len(), before);
+    // With cookies the link is read.
+    let info = rig
+        .engine
+        .inspect_with_cookies(link, Some("firefox"))
+        .await
+        .unwrap();
+    assert!(matches!(info, LinkInfo::Media(_)), "{info:?}");
+    let last = calls_with(link).pop().unwrap();
+    assert!(has_run(&last.argv, &["--cookies-from-browser", "firefox"]));
+    // An empty choice is none.
+    let err = rig.engine.inspect_with_cookies(link, Some(" ")).await;
+    assert_eq!(err.unwrap_err().kind, ErrorKind::NeedsSignIn);
+
+    // Adding with the choice and nothing inspected reads it with the
+    // cookies, and the job's runs carry them.
+    let mut req = rig.request(link);
+    req.media = Some(taurus_core::MediaChoice {
+        quality: "best".into(),
+        cookies_from_browser: Some("firefox".into()),
+        ..Default::default()
+    });
+    let id = rig.engine.add(req).await.unwrap();
+    assert_eq!(
+        rig.wait(id).await,
+        JobState::Completed,
+        "{:?}",
+        rig.view(id)
+    );
+    let calls = calls_with(link);
+    let reads: Vec<_> = calls
+        .iter()
+        .filter(|e| e.argv.iter().any(|a| a == "-J"))
+        .collect();
+    assert!(
+        reads
+            .last()
+            .is_some_and(|e| has_run(&e.argv, &["--cookies-from-browser", "firefox"]))
+    );
+    let runs = download_calls(link);
+    assert!(has_run(
+        &runs.last().unwrap().argv,
+        &["--cookies-from-browser", "firefox"]
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn smaller_file_with_mkv_or_webm_is_refused() {
+    let rig = MediaRig::new(&video_info(), downloads("never.mp4", 10)).await;
+    let link = "https://www.youtube.com/watch?v=smaller_mkv";
+    for container in [
+        taurus_core::media::Container::Mkv,
+        taurus_core::media::Container::Webm,
+    ] {
+        let mut req = rig.request(link);
+        req.media = Some(taurus_core::MediaChoice {
+            quality: "best".into(),
+            convert: Some(ConvertPreset::SmallerMp4),
+            container: Some(container),
+            ..Default::default()
+        });
+        let err = rig.engine.add(req).await.unwrap_err();
+        assert!(err.detail.contains("MP4"), "{}", err.detail);
+    }
+    // Mp4 with it is fine.
+    let mut req = rig.request(link);
+    req.media = Some(taurus_core::MediaChoice {
+        quality: "best".into(),
+        convert: Some(ConvertPreset::SmallerMp4),
+        container: Some(taurus_core::media::Container::Mp4),
+        ..Default::default()
+    });
+    rig.engine.add(req).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retry_with_cookies_refuses_a_web_job_and_resumes_a_paused_video() {
+    let server = TestServer::start().await;
+    let file = server.serve_bytes("/plain.bin", "application/octet-stream", b"0123456789");
+    let rig = MediaRig::new(
+        &video_info(),
+        Value::Array(sign_in_unless_cookies(
+            "ERROR: [youtube] x: Sign in to confirm your age",
+            "later.mp4",
+        )),
+    )
+    .await;
+    let web = rig.engine.add(rig.request(&file)).await.unwrap();
+    assert_eq!(rig.wait(web).await, JobState::Completed);
+    let err = rig
+        .engine
+        .retry_with_cookies(web, "firefox".into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Unknown);
+    assert!(err.detail.contains("video"), "{}", err.detail);
+
+    // A video that failed and then fails again with the cookies keeps its
+    // later runs on them.
+    let link = "https://www.youtube.com/watch?v=retry_cookies_twice";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Failed);
+    rig.engine
+        .retry_with_cookies(id, "chrome".into())
+        .await
+        .unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let runs = download_calls(link);
+    assert!(has_run(
+        &runs[1].argv,
+        &["--cookies-from-browser", "chrome"]
+    ));
 }
