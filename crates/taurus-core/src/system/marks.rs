@@ -26,13 +26,14 @@ fn write_mark(path: &Path, url: Option<&str>, referer: Option<&str>) -> std::io:
     let mut stream = path.as_os_str().to_owned();
     stream.push(":Zone.Identifier");
     let stream = std::path::PathBuf::from(stream);
-    // Already marked (a torrent's file finishing again, when more of its
-    // files are selected): writing the stream again would change the
-    // file's modification time.
-    if stream.exists() {
+    let mark = zone_identifier(url, referer);
+    // Already marked just so (a torrent's file finishing again, when more
+    // of its files are selected): writing the same stream again could
+    // change the file's modification time. Any other mark is replaced.
+    if std::fs::read(&stream).is_ok_and(|old| old == mark.as_bytes()) {
         return Ok(());
     }
-    std::fs::write(stream, zone_identifier(url, referer))
+    std::fs::write(stream, mark)
 }
 
 /// Sets the quarantine attribute, as a browser does.

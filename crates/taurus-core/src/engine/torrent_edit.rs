@@ -12,7 +12,7 @@ use crate::torrent::hub::info_from_bytes;
 use crate::torrent::policy::TorrentOverrides;
 
 use super::actor::{Actor, Command};
-use super::jobs::view_of;
+use super::jobs::{downloaded, view_of};
 use super::schedule::check_space;
 use super::{Engine, Event, no_such_job, read, write};
 
@@ -22,7 +22,8 @@ impl Engine {
     /// files still to download must fit on the disk beside what other
     /// downloads there still need (else `DiskFull`, `FileTooLargeForDisk`);
     /// an empty selection is refused ("select at least one file"), and so is
-    /// an index the torrent does not have. A refused change changes nothing.
+    /// an index the torrent does not have. A refused change changes nothing
+    /// (nor stops a when-done countdown; a change made does, like adding).
     ///
     /// Files that stay selected keep what is downloaded; files left out keep
     /// theirs on disk too (librqbit never deletes them). The job's total
@@ -96,6 +97,8 @@ impl Actor {
             return Ok(());
         }
 
+        // Going ahead: like other new work, it stops a when-done countdown.
+        self.when_done.cancel();
         let was_running = self.running.get(&id).map(|run| run.cancel.clone());
         if let Some(cancel) = &was_running {
             // The run stops only to start again: its waiters wait on.
@@ -106,49 +109,18 @@ impl Actor {
                 self.waiters.entry(id).or_default().extend(waiters);
             }
         }
-        // As the stopped run left it.
-        let mut job = self.torrent_job(id)?;
-        let have = info.as_ref().map(|info| self.have_per_file(&job, info));
-        let gained = info.as_ref().is_some_and(|info| {
-            info.files.iter().any(|f| {
-                is_selected(Some(&only), f.index)
-                    && !is_selected(job.only_files.as_deref(), f.index)
-            })
-        });
-        if gained {
-            // Not all downloaded any more: it finishes (and is shared) anew.
-            job.seed_started_at = None;
-        }
-        let restart = was_running.is_some() && job.state == JobState::Paused;
-        if restart || (gained && job.state == JobState::Completed) {
-            job.state = JobState::Queued;
-            job.error = None;
-        }
-        let downloaded = match (&info, &have) {
-            (Some(info), Some(have)) => info
-                .files
-                .iter()
-                .filter(|f| is_selected(Some(&only), f.index))
-                .map(|f| have[f.index])
-                .sum(),
-            _ => 0,
+        let stored = self.store_selection(id, info.as_ref(), only, was_running.is_some());
+        let (job, downloaded, restart) = match stored {
+            Ok(stored) => stored,
+            Err(e) => {
+                // Nothing was stored: the stopped run goes on as it was.
+                if was_running.is_some() && self.state_of(id) == Some(JobState::Paused) {
+                    self.start_torrent(id);
+                }
+                self.after_change();
+                return Err(e);
+            }
         };
-        job.total = info.as_ref().map(|info| selected_total(info, Some(&only)));
-        job.only_files = Some(only);
-        self.store.update_job(&job)?;
-        // The runner's one segment, `[0, total)`; it reads the rest from the
-        // session as it runs.
-        let segments: Vec<Segment> = job
-            .total
-            .map(|total| Segment {
-                start: 0,
-                end: total,
-                done: downloaded.min(total),
-            })
-            .into_iter()
-            .collect();
-        self.store.replace_segments(id, &segments)?;
-
         let mut view = view_of(&self.store, &job, downloaded);
         view.retry_at = read(&self.views).get(&id).and_then(|v| v.retry_at);
         write(&self.views).insert(id, view.clone());
@@ -160,6 +132,55 @@ impl Actor {
         Ok(())
     }
 
+    /// Stores the selection `only` (all of it in one transaction, or none):
+    /// the job as its run (if `was_running`, now stopped) left it, with the
+    /// new total and progress; a job that gains files is not finished any
+    /// more. Answers the job, the bytes of `only` downloaded, and whether
+    /// its run must start again (it was stopped for this).
+    fn store_selection(
+        &self,
+        id: JobId,
+        info: Option<&TorrentInfo>,
+        only: Vec<usize>,
+        was_running: bool,
+    ) -> Result<(JobRecord, u64, bool), CoreError> {
+        let mut job = self.torrent_job(id)?;
+        let downloaded = match info {
+            Some(info) => self.have_bytes(&job, info, &only)?,
+            None => 0,
+        };
+        let gained = info.is_some_and(|info| {
+            info.files.iter().any(|f| {
+                is_selected(Some(&only), f.index)
+                    && !is_selected(job.only_files.as_deref(), f.index)
+            })
+        });
+        if gained {
+            // Not all downloaded any more: it finishes (and is shared) anew.
+            job.seed_started_at = None;
+        }
+        let restart = was_running && job.state == JobState::Paused;
+        if restart || (gained && job.state == JobState::Completed) {
+            job.state = JobState::Queued;
+            job.error = None;
+        }
+        job.total = info.map(|info| selected_total(info, Some(&only)));
+        job.only_files = Some(only);
+        // The runner's one segment, `[0, total)`; it reads the rest from the
+        // session as it runs.
+        let segments: Vec<Segment> = job
+            .total
+            .map(|total| Segment {
+                start: 0,
+                end: total,
+                done: downloaded.min(total),
+            })
+            .into_iter()
+            .collect();
+        self.store.set_torrent_selection(&job, &segments)?;
+        Ok((job, downloaded, restart))
+    }
+
     /// The files `only` selects that are not downloaded yet must fit on the
     /// disk beside what other downloads there still need.
     fn check_reselection_fits(
@@ -168,16 +189,14 @@ impl Actor {
         info: &TorrentInfo,
         only: &[usize],
     ) -> Result<(), CoreError> {
-        let have = self.have_per_file(job, info);
-        let selected = || {
-            info.files
-                .iter()
-                .filter(|f| is_selected(Some(only), f.index))
-        };
-        let missing = selected()
-            .map(|f| f.size.saturating_sub(have[f.index]))
-            .fold(0u64, u64::saturating_add);
-        let largest = selected().map(|f| f.size).max();
+        let missing =
+            selected_total(info, Some(only)).saturating_sub(self.have_bytes(job, info, only)?);
+        let largest = info
+            .files
+            .iter()
+            .filter(|f| is_selected(Some(only), f.index))
+            .map(|f| f.size)
+            .max();
         check_space(
             &self.views,
             self.space,
@@ -188,25 +207,53 @@ impl Actor {
         )
     }
 
-    /// Bytes downloaded of each of the torrent's files, by index: what the
-    /// session found, once it has checked them; otherwise all of each file
-    /// selected so far if the download finished, and nothing of any other
-    /// (which may count too little as downloaded, never too much).
-    fn have_per_file(&self, job: &JobRecord, info: &TorrentInfo) -> Vec<u64> {
+    /// Bytes of the files `only` selects that are downloaded (at most their
+    /// size). Once the session has checked the torrent, what it found of
+    /// each file. Otherwise, from the store:
+    /// - a finished download has all of each file it selected, nothing of
+    ///   the others;
+    /// - an unfinished one has its stored progress less the size of every
+    ///   file it selected that `only` leaves out, counted toward the files
+    ///   `only` keeps (and at most their size): it has no per-file
+    ///   progress, so files `only` adds count nothing.
+    ///
+    /// Without the session this may count too little, never too much (up
+    /// to the part of a piece the session counted in a file beside one
+    /// selected, which it also does as it runs).
+    fn have_bytes(
+        &self,
+        job: &JobRecord,
+        info: &TorrentInfo,
+        only: &[usize],
+    ) -> Result<u64, CoreError> {
         let progress = job
             .info_hash
             .as_deref()
             .and_then(|hash| self.hub.file_progress(hash))
             .filter(|p| p.len() == info.files.len());
-        let finished = job.seed_started_at.is_some();
-        info.files
-            .iter()
-            .map(|f| match &progress {
-                Some(progress) => progress[f.index].min(f.size),
-                None if finished && is_selected(job.only_files.as_deref(), f.index) => f.size,
-                None => 0,
-            })
-            .collect()
+        let old = job.only_files.as_deref();
+        let sum = |keep: &dyn Fn(usize) -> bool| -> u64 {
+            info.files
+                .iter()
+                .filter(|f| keep(f.index))
+                .map(|f| f.size)
+                .fold(0, u64::saturating_add)
+        };
+        if let Some(progress) = progress {
+            return Ok(info
+                .files
+                .iter()
+                .filter(|f| is_selected(Some(only), f.index))
+                .map(|f| progress[f.index].min(f.size))
+                .fold(0, u64::saturating_add));
+        }
+        let kept = sum(&|i| is_selected(Some(only), i) && is_selected(old, i));
+        if job.seed_started_at.is_some() {
+            return Ok(kept);
+        }
+        let left_out = sum(&|i| is_selected(old, i) && !is_selected(Some(only), i));
+        let stored = downloaded(&self.store, job.id)?;
+        Ok(stored.saturating_sub(left_out).min(kept))
     }
 
     pub(super) fn set_torrent_overrides(

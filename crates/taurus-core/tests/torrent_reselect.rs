@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use sha2::{Digest, Sha256};
-use taurus_core::store::JobId;
+use taurus_core::store::{JobId, JobRecord, Store};
 use taurus_core::system::SpaceSource;
 use taurus_core::system::space::SPACE_MARGIN;
 use taurus_core::torrent::hub::TorrentTestNet;
@@ -49,9 +49,23 @@ async fn seeder() -> (TorrentSeeder, Vec<u8>, Vec<u8>) {
 }
 
 struct Rig {
-    _tmp: TempDir,
+    tmp: TempDir,
     dest: PathBuf,
+    peers: Vec<SocketAddr>,
+    space: SpaceSource,
     engine: Engine,
+}
+
+fn config(dir: &Path, peers: &[SocketAddr], space: SpaceSource) -> EngineConfig {
+    let mut config = EngineConfig::new(dir.join("data"));
+    config.timing = Timing::fast_for_tests();
+    config.power = PowerMode::DryRun;
+    config.available_space = space;
+    config.torrent_test = Some(TorrentTestNet {
+        initial_peers: peers.to_vec(),
+        restore_in_place: false,
+    });
+    config
 }
 
 impl Rig {
@@ -59,15 +73,9 @@ impl Rig {
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("dest");
         fs::create_dir_all(&dest).unwrap();
-        let mut config = EngineConfig::new(tmp.path().join("data"));
-        config.timing = Timing::fast_for_tests();
-        config.power = PowerMode::DryRun;
-        config.available_space = space;
-        config.torrent_test = Some(TorrentTestNet {
-            initial_peers: peers,
-            restore_in_place: false,
-        });
-        let engine = Engine::open(config).await.unwrap();
+        let engine = Engine::open(config(tmp.path(), &peers, space))
+            .await
+            .unwrap();
         engine
             .set_settings(Settings {
                 torrent,
@@ -76,10 +84,27 @@ impl Rig {
             .await
             .unwrap();
         Rig {
-            _tmp: tmp,
+            tmp,
             dest,
+            peers,
+            space,
             engine,
         }
+    }
+
+    /// Shuts the engine down and opens it again on the same data.
+    async fn reopen(&mut self) {
+        self.engine.shutdown().await.unwrap();
+        self.engine = Engine::open(config(self.tmp.path(), &self.peers, self.space))
+            .await
+            .unwrap();
+    }
+
+    /// The job as the database has it, read beside the running engine.
+    fn stored(&self, id: JobId) -> JobRecord {
+        let path = self.tmp.path().join("data").join("taurus.db");
+        let store = Store::open_read_only(&path).unwrap().expect("a database");
+        store.get_job(id).unwrap().expect("job stored")
     }
 
     /// Adds the seeder's magnet link with only `path` selected; answers the
@@ -150,6 +175,7 @@ async fn wait_job(engine: &Engine, id: JobId) -> JobState {
 async fn reselect_keeps_done_files_and_checks_space() {
     let (seeder, a, b) = seeder().await;
     let both = (a.len() + b.len()) as u64;
+    FREE.store(u64::MAX, Ordering::SeqCst);
     // Shares for ever: the torrent stays in the session, sharing file 0.
     let rig = Rig::new(vec![seeder.addr], free_space, policy(None)).await;
     let (id, ia, ib) = rig.add_only(&seeder, "a.bin").await;
@@ -160,6 +186,16 @@ async fn reselect_keeps_done_files_and_checks_space() {
     assert_eq!(fs::read(&a_path).unwrap(), a);
     // As the session counts it: whole pieces.
     let total = rig.view(id).total;
+    // librqbit creates every file; b.bin holds at most the end of a.bin's
+    // last piece.
+    let b_path = rig.dest.join("pack/dir/b.bin");
+    let b_before = fs::read(&b_path).unwrap();
+    assert!(
+        b_before.len() < 64 * 1024,
+        "{} bytes of b.bin",
+        b_before.len()
+    );
+    let sent = seeder.uploaded_bytes();
 
     // b.bin does not fit: refused, nothing changes.
     FREE.store(SPACE_MARGIN + 1024, Ordering::SeqCst);
@@ -173,9 +209,20 @@ async fn reselect_keeps_done_files_and_checks_space() {
     assert_eq!(view.state, JobState::Seeding);
     assert_eq!(view.total, total);
     assert_eq!(selection(&view), (1, 2));
+    // Not in the database either.
+    let stored = rig.stored(id);
+    assert_eq!(stored.only_files, Some(vec![ia]));
+    assert_eq!(stored.total, Some(a.len() as u64));
+    // Nor in the session: it downloads nothing of b.bin.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(fs::read(&b_path).unwrap(), b_before);
+    assert_eq!(seeder.uploaded_bytes(), sent);
+    assert_eq!(rig.view(id).state, JobState::Seeding);
 
-    // With room, b.bin is downloaded beside a.bin, which is left alone.
-    FREE.store(u64::MAX, Ordering::SeqCst);
+    // With room for what b.bin still needs (not for both files), b.bin is
+    // downloaded beside a.bin, which is left alone.
+    FREE.store(SPACE_MARGIN + b.len() as u64 + 64 * 1024, Ordering::SeqCst);
+    assert!(b.len() as u64 + 64 * 1024 < both);
     rig.engine
         .set_torrent_files(id, vec![ib, ia, ia])
         .await
@@ -186,8 +233,11 @@ async fn reselect_keeps_done_files_and_checks_space() {
         v.state == JobState::Seeding && v.total == Some(both) && v.downloaded == both
     })
     .await;
-    assert_eq!(fs::read(rig.dest.join("pack/dir/b.bin")).unwrap(), b);
+    assert_eq!(fs::read(&b_path).unwrap(), b);
     assert_eq!(hash_and_mtime(&a_path), before, "a.bin was touched");
+    let stored = rig.stored(id);
+    assert_eq!(stored.only_files, Some(vec![ia.min(ib), ia.max(ib)]));
+    assert_eq!(stored.total, Some(both));
 
     // Its own rule stops the sharing: the job completes with both files.
     let rules = TorrentOverrides {
@@ -333,5 +383,55 @@ async fn reselect_mid_download_goes_on() {
     let sent = seeder.uploaded_bytes();
     let both = (a.len() + b.len()) as u64;
     assert!(sent < both + 128 * 1024, "the seeder sent {sent} of {both}");
+    rig.engine.shutdown().await.unwrap();
+}
+
+/// The free space `reselect_paused_after_restart_counts_what_is_stored`
+/// sees.
+static FREE_AFTER_RESTART: AtomicU64 = AtomicU64::new(u64::MAX);
+
+fn free_after_restart(_: &Path) -> std::io::Result<u64> {
+    Ok(FREE_AFTER_RESTART.load(Ordering::SeqCst))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reselect_paused_after_restart_counts_what_is_stored() {
+    // About five seconds for a.bin at 64 KiB/s.
+    let a = data(300 * 1024, 51);
+    let b = data(60 * 1024, 52);
+    let files = [("a.bin", a.clone()), ("dir/b.bin", b.clone())];
+    let seeder = TorrentSeeder::start("pack", &files, Some(64 * 1024)).await;
+    let mut rig = Rig::new(vec![seeder.addr], free_after_restart, policy(Some(0.0))).await;
+    let (id, ia, ib) = rig.add_only(&seeder, "a.bin").await;
+    rig.until(id, "partly downloaded", |v| {
+        v.state == JobState::Downloading && v.downloaded >= 64 * 1024
+    })
+    .await;
+    rig.engine.pause(id).await.unwrap();
+    let done = rig.view(id).downloaded;
+    assert!(done < a.len() as u64, "finished before the pause");
+
+    // Reopened, the session does not run (nothing is queued): only the
+    // store knows what is downloaded.
+    rig.reopen().await;
+    assert!(rig.engine.torrent_listen_addr().is_none());
+    let both = (a.len() + b.len()) as u64;
+    // Fits only if what is downloaded counts.
+    FREE_AFTER_RESTART.store(SPACE_MARGIN + both - done + 32 * 1024, Ordering::SeqCst);
+    rig.engine
+        .set_torrent_files(id, vec![ia, ib])
+        .await
+        .unwrap();
+    let view = rig.view(id);
+    assert_eq!(view.state, JobState::Paused);
+    assert_eq!(view.total, Some(both));
+    assert_eq!(view.downloaded, done);
+    assert_eq!(selection(&view), (2, 2));
+
+    FREE_AFTER_RESTART.store(u64::MAX, Ordering::SeqCst);
+    rig.engine.resume(id).await.unwrap();
+    assert_eq!(wait_job(&rig.engine, id).await, JobState::Completed);
+    assert_eq!(fs::read(rig.dest.join("pack/a.bin")).unwrap(), a);
+    assert_eq!(fs::read(rig.dest.join("pack/dir/b.bin")).unwrap(), b);
     rig.engine.shutdown().await.unwrap();
 }
