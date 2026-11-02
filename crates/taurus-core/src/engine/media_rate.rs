@@ -69,7 +69,7 @@ impl Actor {
     /// its part of the web downloads' rate as the jobs running now (and it)
     /// split it.
     pub(super) fn media_rate(&self) -> Option<u64> {
-        let (http, torrents) = self.active();
+        let (http, torrents) = self.transferring();
         self.media_share(http + 1, torrents)
     }
 
@@ -86,7 +86,7 @@ impl Actor {
     /// whose share moved a lot restarts with the new rate (see
     /// `apply_wanted`).
     pub(super) fn retune_media(&mut self) {
-        let (http, torrents) = self.active();
+        let (http, torrents) = self.transferring();
         let new = self.media_share(http, torrents);
         let ids: Vec<_> = self.media_rates.keys().copied().collect();
         for id in ids {
@@ -202,6 +202,69 @@ mod tests {
         assert!(big_change(Some(0), Some(1)));
         assert!(!big_change(Some(0), Some(0)));
         assert!(big_change(Some(u64::MAX), Some(1)));
+    }
+
+    /// A conversion holds a `max_active` slot but uses no network: it takes
+    /// no share of the speed limit from videos and does not halve the
+    /// torrents' part.
+    #[tokio::test]
+    async fn conversions_take_no_share_of_the_speed_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let store = Store::open(&data.join("taurus.db")).unwrap();
+        let add = |kind: JobKind, name: &str| {
+            store
+                .insert_job(&NewJob {
+                    url: format!("http://127.0.0.1:9/{name}"),
+                    source_url: format!("http://127.0.0.1:9/{name}"),
+                    dest_dir: "/nowhere".into(),
+                    file_name: name.into(),
+                    connections: 1,
+                    mirrors: Vec::new(),
+                    checksum: None,
+                    referer: None,
+                    queue_pos: 0,
+                    kind,
+                    info_hash: (kind == JobKind::Torrent).then(|| "ab".repeat(20)),
+                    torrent_meta: None,
+                    only_files: None,
+                })
+                .unwrap()
+        };
+        let media = add(JobKind::Media, "video");
+        let convert = add(JobKind::Convert, "song (mp3).mp3");
+        let torrent = add(JobKind::Torrent, "pack");
+        drop(store);
+        let mut config = EngineConfig::new(data);
+        config.autostart = false;
+        let (_engine, mut actor, _commands) = assemble(config).await.unwrap();
+        actor.settings.speed = SpeedLimit::Custom {
+            bytes_per_sec: 400_000,
+        };
+        let run = |actor: &mut Actor, id| {
+            actor.running.insert(
+                id,
+                Run {
+                    cancel: CancellationToken::new(),
+                    downloaded_at_start: 0,
+                },
+            );
+            actor.set_view_state(id, JobState::Downloading);
+        };
+        run(&mut actor, media);
+        run(&mut actor, convert);
+        // Both hold a `max_active` slot.
+        assert_eq!(actor.active(), (2, 0));
+        // The next video shares the limit with the running video only.
+        assert_eq!(actor.media_rate(), Some(200_000));
+        // A conversion beside a torrent: the torrent keeps the whole limit.
+        actor.running.remove(&media);
+        actor.set_view_state(media, JobState::Paused);
+        run(&mut actor, torrent);
+        actor.apply_limits();
+        let (_, torrent_rate, _) = actor.rates.expect("limits applied");
+        assert_eq!(torrent_rate, Some(400_000));
     }
 
     /// A playlist stays Merging or Converting until the next entry's first

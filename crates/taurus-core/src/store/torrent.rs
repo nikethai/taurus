@@ -159,4 +159,34 @@ mod tests {
         assert_eq!(store.get_job(id).unwrap().unwrap().total, Some(150));
         assert_eq!(store.load_segments(id).unwrap(), [seg(0, 150, 40)]);
     }
+
+    /// A statement failing inside the transaction, after the job's row was
+    /// updated and its segments deleted, undoes both.
+    #[test]
+    fn a_failure_inside_the_transaction_writes_nothing() {
+        let (_dir, store) = open_temp();
+        let id = store.insert_job(&torrent_job("t", "abcd")).unwrap();
+        store.replace_segments(id, &[seg(0, 100, 40)]).unwrap();
+        let before = store.get_job(id).unwrap().unwrap();
+        // Refuses the new segment, the last statement of the transaction.
+        store
+            .lock()
+            .execute_batch(
+                "CREATE TEMP TRIGGER refuse_segment BEFORE INSERT ON segments \
+                 WHEN NEW.start = 7 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        let job = JobRecord {
+            only_files: Some(vec![1]),
+            total: Some(150),
+            state: JobState::Queued,
+            ..before.clone()
+        };
+        let err = store
+            .set_torrent_selection(&job, &[seg(7, 150, 40)])
+            .unwrap_err();
+        assert!(err.detail.contains("refused"), "{err}");
+        assert_eq!(store.get_job(id).unwrap().unwrap(), before);
+        assert_eq!(store.load_segments(id).unwrap(), [seg(0, 100, 40)]);
+    }
 }

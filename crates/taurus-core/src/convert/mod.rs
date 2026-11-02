@@ -37,8 +37,9 @@ pub struct ConvertSpec {
     pub source: PathBuf,
     pub preset: ConvertPreset,
     /// The temporary file ffmpeg writes to, recorded before ffmpeg starts
-    /// and only once it was seen not to exist: it is this job's, so the job
-    /// (also after a restart, or when it is removed) may delete it.
+    /// and only once the folder holding it was created by the job: it is
+    /// this job's, so the job (also after a restart, or when it is removed)
+    /// may delete it, and that folder.
     #[serde(default)]
     pub partial: Option<PathBuf>,
 }

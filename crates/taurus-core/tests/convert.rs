@@ -16,7 +16,8 @@ use taurus_core::{
     JobView, Timing,
 };
 use taurus_testkit::{
-    FakeToolHost, ToolRelease, process_args_log, set_ytdlp_scenario, unique_version,
+    FakeToolHost, ToolRelease, make_torrent_bytes, process_args_log, set_ytdlp_scenario,
+    unique_version,
 };
 use tokio::sync::MutexGuard;
 
@@ -512,6 +513,77 @@ async fn a_job_still_downloading_is_refused() {
         .unwrap_err();
     assert!(err.detail.contains("not finished"), "{err}");
     assert_eq!(rig.engine.snapshot().len(), 1);
+}
+
+/// A torrent's file is written inside its folder (the job's name) while
+/// the torrent downloads: it is refused as a source until the torrent has
+/// finished.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_of_a_torrent_still_downloading_is_refused() {
+    let _serial = serial().await;
+    let rig = Rig::with(&json!([]), |c| c.autostart = false).await;
+    let song = vec![7u8; 40_000];
+    let bytes = make_torrent_bytes("pack", &[("a.webm", &song), ("b.bin", &[1u8; 10])], 16384);
+    let torrent = rig.tmp.path().join("pack.torrent");
+    std::fs::write(&torrent, bytes).unwrap();
+    let id = rig
+        .engine
+        .add(AddRequest {
+            url: torrent.to_string_lossy().into_owned(),
+            dest_dir: rig.dir.clone(),
+            ..AddRequest::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(rig.view(id).state, JobState::Queued);
+    assert_eq!(rig.view(id).file_name, "pack");
+    // Half of its file is there.
+    let folder = rig.dir.join("pack");
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    std::fs::write(folder.join("a.webm"), &song[..20_000]).unwrap();
+    std::fs::write(folder.join("sub").join("c.webm"), b"part").unwrap();
+
+    for inside in [folder.join("a.webm"), folder.join("sub").join("c.webm")] {
+        let err = rig
+            .engine
+            .convert(ConvertSource::Path(inside), ConvertPreset::Mp3)
+            .await
+            .unwrap_err();
+        assert!(err.detail.contains("still downloading"), "{err}");
+    }
+    assert_eq!(rig.engine.snapshot().len(), 1);
+    // A file beside the folder, with a name that starts like it, is not the
+    // torrent's.
+    let beside = rig.file("pack.webm", 400);
+    rig.engine
+        .convert(ConvertSource::Path(beside), ConvertPreset::Mp3)
+        .await
+        .unwrap();
+}
+
+fn no_room(_: &Path) -> std::io::Result<u64> {
+    Ok(0)
+}
+
+/// The output is at most as large as the source: a conversion that may not
+/// fit fails before ffmpeg runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_conversion_that_may_not_fit_does_not_start() {
+    let _serial = serial().await;
+    let rig = Rig::with(&json!([]), |c| c.available_space = no_room).await;
+    let source = rig.file("song.webm", 4000);
+
+    let id = rig
+        .engine
+        .convert(ConvertSource::Path(source.clone()), ConvertPreset::Mp3)
+        .await
+        .unwrap();
+
+    assert_eq!(rig.wait(id).await, JobState::Failed);
+    let (kind, detail) = rig.view(id).error.expect("an error");
+    assert_eq!(kind, ErrorKind::DiskFull, "{detail}");
+    assert!(ffmpeg_calls(&source).is_empty());
+    assert_eq!(rig.names(), ["song.webm"]);
 }
 
 /// A playlist's `-J` answer and the file names its entries are downloaded to.

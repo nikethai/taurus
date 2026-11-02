@@ -22,6 +22,7 @@
 //! file (or a mirror serving another file) is never stitched in.
 
 mod finalize;
+pub(crate) use finalize::rename_with_retry;
 mod part_file;
 mod round;
 mod window;

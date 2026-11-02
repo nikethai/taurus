@@ -15,7 +15,7 @@ use crate::media::ConvertPreset;
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob};
 
 use super::actor::{Actor, Command, JobMsg, Run};
-use super::convert_job::{ConvertJob, run_convert_job};
+use super::convert_job::{ConvertJob, remove_own, run_convert_job};
 use super::jobs::view_of;
 use super::{Engine, Event, JobView, io_error, no_such_job, read, write};
 
@@ -98,17 +98,23 @@ impl Engine {
         Ok(path)
     }
 
-    /// Whether an unfinished job is writing the file `path` (by its name in
-    /// the job's folder).
+    /// Whether an unfinished job is writing the file `path`: by its name in
+    /// the job's folder, or, for a torrent, anywhere inside the torrent's
+    /// own folder (its name), where it writes all its files.
     fn still_downloading(&self, path: &Path) -> bool {
         let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
             return false;
         };
         read(&self.views).values().any(|v| {
-            v.kind != JobKind::Convert
-                && !matches!(v.state, JobState::Completed | JobState::Seeding)
-                && v.dest_dir == dir
-                && name == v.file_name.as_str()
+            let unfinished = v.kind != JobKind::Convert
+                && !matches!(v.state, JobState::Completed | JobState::Seeding);
+            let writes = match v.kind {
+                JobKind::Torrent => {
+                    !v.file_name.is_empty() && path.starts_with(v.dest_dir.join(&v.file_name))
+                }
+                _ => v.dest_dir == dir && name == v.file_name.as_str(),
+            };
+            unfinished && writes
         })
     }
 }
@@ -279,15 +285,8 @@ impl Actor {
     /// its size changed). Never the source.
     pub(super) fn delete_convert(&self, job: &JobRecord, delete_files: bool) {
         let spec = job.convert.as_ref();
-        if let Some(partial) = spec.and_then(|s| s.partial.as_ref())
-            && partial.is_file()
-            && let Err(e) = std::fs::remove_file(partial)
-        {
-            tracing::warn!(
-                job = job.id.0,
-                "could not delete {}: {e}",
-                partial.display()
-            );
+        if let Some(partial) = spec.and_then(|s| s.partial.as_ref()) {
+            remove_own(partial);
         }
         if !delete_files || job.state != JobState::Completed {
             return;

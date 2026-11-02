@@ -70,7 +70,8 @@ impl Actor {
     /// download (a torrent-only limit caps the torrent side further), and
     /// applies it, with the upload limit, if anything changed.
     pub(super) fn apply_limits(&mut self) {
-        let (http, torrents) = self.active();
+        // Convert jobs download nothing: they take no share.
+        let (http, torrents) = self.transferring();
         let global = speed_limit(&self.settings, self.measured_peak);
         // Only a change of the limit itself reaches running video downloads,
         // not jobs coming and going.

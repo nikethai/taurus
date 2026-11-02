@@ -12,9 +12,12 @@ pub const PARTIAL_EXT: &str = "tapa";
 const FALLBACK_NAME: &str = "download";
 const MAX_NAME_BYTES: usize = 255;
 const MAX_EXT_BYTES: usize = 16;
-const RESERVED_STEMS: [&str; 22] = [
+/// Windows device names, refused as file and folder names with any
+/// extension (the superscript-digit ports and the console streams too).
+const RESERVED_STEMS: [&str; 30] = [
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "COM9", "COM¹", "COM²", "COM³", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
+    "LPT9", "LPT¹", "LPT²", "LPT³", "CONIN$", "CONOUT$",
 ];
 
 /// Extracts the raw (unsanitized) file name from a `Content-Disposition`
@@ -345,6 +348,20 @@ mod tests {
             "file"
         );
         assert_eq!(choose_name(Some("inline"), &u, None), "file.iso");
+    }
+
+    #[test]
+    fn every_windows_device_name_is_escaped() {
+        // Windows also reserves the superscript-digit ports and the console
+        // streams, as file and folder names, with any extension.
+        for name in ["COM¹", "com²", "COM³.txt", "LPT¹", "lpt²", "LPT³.log"] {
+            assert_eq!(sanitize(name), format!("_{name}"), "{name}");
+        }
+        for name in ["CONIN$", "conout$", "CONOUT$.txt"] {
+            assert_eq!(sanitize(name), format!("_{name}"), "{name}");
+        }
+        assert_eq!(sanitize("COM¹0"), "COM¹0");
+        assert_eq!(sanitize("CONIN"), "CONIN");
     }
 
     #[test]

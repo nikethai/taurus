@@ -160,8 +160,9 @@ async fn fetch_sums(ctx: &JobContext, job: &JobRecord, url: url::Url) -> Option<
     Some(String::from_utf8_lossy(&body).into_owned())
 }
 
-/// Windows can briefly lock a just-closed file (antivirus, indexer).
-async fn rename_with_retry(from: &Path, to: &Path) -> Result<(), CoreError> {
+/// Windows can briefly lock a just-closed file (antivirus, indexer): a
+/// rename refused with `PermissionDenied` is tried again a few times.
+pub(crate) async fn rename_with_retry(from: &Path, to: &Path) -> Result<(), CoreError> {
     let mut attempt = 1;
     loop {
         match tokio::fs::rename(from, to).await {

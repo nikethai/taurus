@@ -8,5 +8,6 @@ pub mod probe;
 mod sources;
 
 pub use auth::Auth;
+pub(crate) use download::rename_with_retry;
 pub use download::{JobContext, JobOutcome, host_key, run_job};
 pub use probe::{Probe, probe, resolve, resolve_with};

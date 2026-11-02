@@ -13,8 +13,8 @@ use taurus_core::CoreError;
 use taurus_core::secrets::{MemoryStore, SecretStore};
 use taurus_core::store::Store;
 use taurus_core::{
-    AddRequest, Credentials, Engine, EngineConfig, ErrorKind, JobId, JobState, NetworkSettings,
-    ProxySetting, RemoveFiles, Settings,
+    AddRequest, Credentials, Engine, EngineConfig, ErrorKind, JobId, JobState, MediaChoice,
+    NetworkSettings, ProxySetting, RemoveFiles, Settings,
 };
 use taurus_testkit::{FileSpec, TestServer, content, sha256_hex};
 use tokio::sync::broadcast;
@@ -229,6 +229,29 @@ async fn remove_deletes_secret() {
 
 /// Credentials go to the link's own host only: not to a host a redirect
 /// leads to, nor to a mirror elsewhere.
+/// A web page with a video choice is for yt-dlp, which never gets a
+/// password: credentials there are refused as for any media link, not
+/// reported as an unsupported page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn credentials_with_a_video_choice_on_a_web_page_are_refused() {
+    let fx = Fixture::new().await;
+    let url = fx.server.serve_page(
+        "/watch",
+        200,
+        &[("Content-Type", "text/html")],
+        "<html><body>a video page</body></html>",
+    );
+    let engine = fx.engine().await;
+    let mut req = fx.request(&url, creds(PASSWORD));
+    req.media = Some(MediaChoice::default());
+
+    let err = engine.add(req).await.unwrap_err();
+
+    assert!(err.detail.contains("only to web downloads"), "{err}");
+    assert!(engine.snapshot().is_empty());
+    engine.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn credentials_stay_on_their_host() {
     let fx = Fixture::new().await;

@@ -6,11 +6,17 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 
 use crate::secrets::SecretStore;
 use crate::store::JobId;
+
+/// How long `flush` waits for the store: a locked keyring may wait on an
+/// unlock prompt nobody answers, and must not hang `shutdown`, `add`,
+/// `remove` or `set_credentials`.
+const FLUSH_LIMIT: Duration = Duration::from_secs(10);
 
 /// Passwords not (yet) in the store, by account: `(write number, password)`.
 type Pending = Arc<Mutex<HashMap<String, (u64, String)>>>;
@@ -24,8 +30,8 @@ type Pending = Arc<Mutex<HashMap<String, (u64, String)>>>;
 /// from the moment it is kept, and the store's writes and deletes run one
 /// after the other in a blocking thread, in the order asked. If the store
 /// fails to take a password (no keychain), it stays in memory until the
-/// engine stops, with a warning that does not hold it: a job then asks for
-/// it again after a restart. A failed delete only warns.
+/// engine stops (`clear_memory`), with a warning that does not hold it: a
+/// job then asks for it again after a restart. A failed delete only warns.
 #[derive(Clone)]
 pub(super) struct Secrets {
     store: Arc<dyn SecretStore>,
@@ -93,12 +99,33 @@ impl Secrets {
         let _ = self.writes.send(Write::Delete { id, account });
     }
 
-    /// Returns once every write asked for so far is done.
+    /// Returns once every write asked for so far is done, or after
+    /// `FLUSH_LIMIT` (with a warning); the writes go on either way.
     pub(super) async fn flush(&self) {
+        self.flush_within(FLUSH_LIMIT).await;
+    }
+
+    /// `flush`, waiting at most `limit`; whether every write was done.
+    async fn flush_within(&self, limit: Duration) -> bool {
         let (done, wait) = oneshot::channel();
-        if self.writes.send(Write::Flush(done)).is_ok() {
-            let _ = wait.await;
+        if self.writes.send(Write::Flush(done)).is_err() {
+            return true;
         }
+        match tokio::time::timeout(limit, wait).await {
+            Ok(_) => true,
+            Err(_) => {
+                tracing::warn!(
+                    "the keychain has not answered in {limit:?}; going on without waiting for it"
+                );
+                false
+            }
+        }
+    }
+
+    /// Forgets the passwords held in memory (those the store has not
+    /// taken), as the engine stops.
+    pub(super) fn clear_memory(&self) {
+        lock(&self.pending).clear();
     }
 
     /// The job's password, if one is kept. Blocks for the store.
@@ -226,6 +253,48 @@ mod tests {
         secrets.flush().await;
         assert_eq!(store.get("job:7:abc").unwrap(), None);
         assert_eq!(secrets.password(JobId(7)), None);
+    }
+
+    /// A keychain that waits (a locked keyring's unlock prompt nobody
+    /// answers) until the test lets it go on.
+    struct Stuck(Mutex<std::sync::mpsc::Receiver<()>>);
+
+    impl SecretStore for Stuck {
+        fn set(&self, _: &str, _: &str) -> Result<(), CoreError> {
+            let _ = lock(&self.0).recv();
+            Ok(())
+        }
+        fn get(&self, _: &str) -> Result<Option<String>, CoreError> {
+            Ok(None)
+        }
+        fn delete(&self, _: &str) -> Result<(), CoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stuck_keychain_holds_a_flush_only_up_to_its_limit() {
+        let (go_on, wait) = std::sync::mpsc::channel();
+        let secrets = Secrets::new(Arc::new(Stuck(Mutex::new(wait))), "t1");
+        secrets.keep(JobId(1), "pw");
+        let started = std::time::Instant::now();
+        assert!(!secrets.flush_within(Duration::from_millis(200)).await);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        // The password is still there for the job meanwhile.
+        assert_eq!(secrets.password(JobId(1)).as_deref(), Some("pw"));
+        go_on.send(()).unwrap();
+        assert!(secrets.flush_within(Duration::from_secs(30)).await);
+    }
+
+    #[tokio::test]
+    async fn passwords_kept_in_memory_are_cleared_at_shutdown() {
+        let secrets = Secrets::new(Arc::new(NoKeychain), "t2");
+        secrets.keep(JobId(1), "pw");
+        secrets.flush().await;
+        assert_eq!(secrets.password(JobId(1)).as_deref(), Some("pw"));
+        secrets.clear_memory();
+        assert_eq!(secrets.password(JobId(1)), None);
+        assert!(lock(&secrets.pending).is_empty());
     }
 
     #[tokio::test]

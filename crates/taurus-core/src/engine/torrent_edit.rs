@@ -97,8 +97,6 @@ impl Actor {
             return Ok(());
         }
 
-        // Going ahead: like other new work, it stops a when-done countdown.
-        self.when_done.cancel();
         let was_running = self.running.get(&id).map(|run| run.cancel.clone());
         if let Some(cancel) = &was_running {
             // The run stops only to start again: its waiters wait on.
@@ -111,7 +109,13 @@ impl Actor {
         }
         let stored = self.store_selection(id, info.as_ref(), only, was_running.is_some());
         let (job, downloaded, restart) = match stored {
-            Ok(stored) => stored,
+            // Stored: like other new work, it stops a when-done countdown.
+            // Not before: a failed write changes nothing, so a countdown
+            // goes on.
+            Ok(stored) => {
+                self.when_done.cancel();
+                stored
+            }
             Err(e) => {
                 // Nothing was stored: the stopped run goes on as it was.
                 if was_running.is_some() && self.state_of(id) == Some(JobState::Paused) {

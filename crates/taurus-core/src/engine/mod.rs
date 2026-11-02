@@ -242,13 +242,10 @@ impl Engine {
         let resolved = resolve_with(&client, &url, referer.as_deref(), auth.as_ref());
         let probe = match Box::pin(resolved).await {
             Ok(probe) => probe,
-            // A web page; yt-dlp may read it, when asked for (with no
-            // credentials, which it would not get).
-            Err(page)
-                if page.kind == ErrorKind::SiteNotSupported
-                    && req.media.is_some()
-                    && req.credentials.is_none() =>
-            {
+            // A web page; yt-dlp may read it, when asked for. It never
+            // gets credentials, so they are refused as for any media link.
+            Err(page) if page.kind == ErrorKind::SiteNotSupported && req.media.is_some() => {
+                web_only(&req)?;
                 return Box::pin(self.add_media(req)).await;
             }
             Err(e) => return Err(e),
@@ -446,8 +443,10 @@ impl Engine {
     pub async fn shutdown(&self) -> Result<(), CoreError> {
         // An error here means the engine has already stopped.
         let _ = self.call(|reply| Command::Shutdown { reply }).await;
-        // Passwords being written reach the store.
+        // Passwords being written reach the store (unless it hangs); none
+        // stays in memory.
         self.secrets.flush().await;
+        self.secrets.clear_memory();
         Ok(())
     }
 
