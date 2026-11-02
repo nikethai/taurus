@@ -2226,6 +2226,17 @@ fn signed_in_only_with_cookies(name: &str) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cookies_reach_the_inspection() {
     let rig = MediaRig::with_scenario(&signed_in_only_with_cookies("aged.mp4"), |_| {}).await;
+    // No run may write into the source tree: they all run in a temp folder.
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let listing = || {
+        let mut names: Vec<_> = std::fs::read_dir(crate_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let tree_before = listing();
     let link = "https://www.youtube.com/watch?v=aged_inspection";
     // Without cookies the age check stops the reading, and no job is made.
     let err = rig.engine.inspect(link).await.unwrap_err();
@@ -2286,6 +2297,11 @@ async fn cookies_reach_the_inspection() {
         &runs.last().unwrap().argv,
         &["--cookies-from-browser", "firefox"]
     ));
+    assert_eq!(
+        listing(),
+        tree_before,
+        "a run left a file in the source tree"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2306,6 +2322,8 @@ async fn smaller_file_with_mkv_or_webm_is_refused() {
         let err = rig.engine.add(req).await.unwrap_err();
         assert!(err.detail.contains("MP4"), "{}", err.detail);
     }
+    // Refused before yt-dlp was asked anything.
+    assert!(calls_with(link).is_empty());
     // Mp4 with it is fine.
     let mut req = rig.request(link);
     req.media = Some(taurus_core::MediaChoice {

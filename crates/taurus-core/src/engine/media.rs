@@ -13,7 +13,7 @@ use crate::media::run::MediaPhase;
 use crate::media::thumbnail::{THUMBS_DIR, fetch_thumbnail, thumbnail_in};
 use crate::media::{
     Container, ConvertPreset, LiveStatus, MediaInfo, MediaOptions, SubtitleChoice,
-    own_partial_files, standard_quality, validate_browser, validate_subtitles,
+    own_partial_files, standard_quality, validate_subtitles,
 };
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob};
 
@@ -101,13 +101,8 @@ impl Engine {
                 detail: "mirrors and checksum apply only to web downloads".to_string(),
             });
         }
-        // A bad browser is refused before anything is read.
-        let cookies = clean_browser(
-            req.media
-                .as_ref()
-                .and_then(|c| c.cookies_from_browser.as_deref()),
-        )?
-        .map(str::to_owned);
+        // A bad choice is refused before anything is read.
+        let cookies = check_choice(req.media.as_ref())?;
         // Read once: the front end usually inspected the link already.
         let info = match req.media_info.take() {
             Some(info) => info,
@@ -192,6 +187,29 @@ impl Engine {
     }
 }
 
+/// Refuses a choice whose video options cannot be used (an unknown browser,
+/// bad subtitle languages, the smaller-file conversion with Mkv or Webm,
+/// which it would turn into MP4); returns the browser, trimmed (none if
+/// empty).
+fn check_choice(choice: Option<&MediaChoice>) -> Result<Option<String>, CoreError> {
+    let Some(choice) = choice else {
+        return Ok(None);
+    };
+    let cookies = clean_browser(choice.cookies_from_browser.as_deref())?;
+    if choice.convert == Some(ConvertPreset::SmallerMp4)
+        && matches!(choice.container, Some(Container::Mkv | Container::Webm))
+    {
+        return Err(CoreError {
+            kind: ErrorKind::Unknown,
+            detail: "the smaller-file conversion always makes an MP4".to_owned(),
+        });
+    }
+    if let Some(subtitles) = &choice.subtitles {
+        validate_subtitles(subtitles)?;
+    }
+    Ok(cookies.map(str::to_owned))
+}
+
 /// The stored options for `info` downloaded as `choice` (default `best`).
 /// A quality the link does not list, but which is one of the five, is used
 /// as it is usually built (a playlist lists only `best` and `audio-best`).
@@ -218,22 +236,8 @@ fn media_options(
         .and_then(|c| c.cookies_from_browser.as_deref())
         .map(str::trim)
         .filter(|b| !b.is_empty());
-    if let Some(browser) = cookies_from_browser {
-        validate_browser(browser)?;
-    }
     let container = choice.and_then(|c| c.container);
-    if choice.is_some_and(|c| c.convert == Some(ConvertPreset::SmallerMp4))
-        && matches!(container, Some(Container::Mkv | Container::Webm))
-    {
-        return Err(CoreError {
-            kind: ErrorKind::Unknown,
-            detail: "the smaller-file conversion always makes an MP4".to_owned(),
-        });
-    }
     let subtitles = choice.and_then(|c| c.subtitles.clone());
-    if let Some(subtitles) = &subtitles {
-        validate_subtitles(subtitles)?;
-    }
     Ok(MediaOptions {
         quality: quality.id,
         selector: quality.selector,
