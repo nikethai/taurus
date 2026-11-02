@@ -260,6 +260,18 @@ impl Store {
             .map_err(db_err)
     }
 
+    /// When the job was added (unix secs).
+    pub fn created_at(&self, id: JobId) -> Result<Option<i64>, CoreError> {
+        self.lock()
+            .query_row(
+                "SELECT created_at FROM jobs WHERE id = ?1",
+                params![id.0],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
     /// When the job was last written (unix secs), if it is Completed: that
     /// is when it finished, as nothing writes a Completed job again.
     pub fn finished_at(&self, id: JobId) -> Result<Option<i64>, CoreError> {

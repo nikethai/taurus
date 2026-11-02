@@ -241,7 +241,10 @@ fn fake_ytdlp_on_interrupt() {
         r#"{ "stdout": ["one", "two", "three", "four"], "exit": 0,
              "write_files": [["x.mp4", 100]],
              "delay_ms_per_line": 200, "wait_for_interrupt": true,
-             "on_interrupt": { "stdout": ["interrupted"], "write_files": [["x.mp4.part", 7]], "exit": 1 } }"#,
+             "start_files": [["live.part", 3]],
+             "on_interrupt": { "stdout": ["interrupted"], "write_files": [["x.mp4.part", 7]],
+                               "rename_files": [["live.part", "live.mp4"]],
+                               "start_files": [["live.temp.mp4", 2]], "exit": 1 } }"#,
     );
     let mut child = loop {
         let spawned = Command::new(&yt)
@@ -273,6 +276,15 @@ fn fake_ytdlp_on_interrupt() {
         7
     );
     assert!(!dir.path().join("x.mp4").exists());
+    // Renamed and written as the interrupt came.
+    assert!(!dir.path().join("live.part").exists());
+    assert_eq!(std::fs::read(dir.path().join("live.mp4")).unwrap().len(), 3);
+    assert_eq!(
+        std::fs::read(dir.path().join("live.temp.mp4"))
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 fn json_quote(s: &str) -> String {

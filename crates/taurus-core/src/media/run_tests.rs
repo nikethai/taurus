@@ -452,7 +452,7 @@ mod process {
         // As yt-dlp recording a live stream: nothing printed for a while.
         let mut command = Command::new("sh");
         command
-            .args(["-c", "sleep 2.4; echo done"])
+            .args(["-c", "sleep 4; echo done"])
             .stdin(std::process::Stdio::null());
         let never = CancellationToken::new();
         let mut seen = Vec::new();
@@ -464,7 +464,10 @@ mod process {
         })
         .await
         .unwrap();
-        assert_eq!(seen, ["tick", "tick", "done"]);
+        // At least two whole seconds of ticks, however slow the start.
+        let ticks = seen.iter().filter(|s| *s == "tick").count();
+        assert!(ticks >= 2, "{seen:?}");
+        assert_eq!(seen.last().map(String::as_str), Some("done"), "{seen:?}");
     }
 
     #[tokio::test]

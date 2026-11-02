@@ -1914,12 +1914,111 @@ async fn killed_live_recording_without_progress_is_joined() {
     assert!(!rig.dest.join(part).exists(), "the part is joined and gone");
     assert!(!rig.dest.join(thumbnail).exists(), "the thumbnail was left");
     assert!(!rig.dest.join("finalized").exists(), "it was not killed");
-    let calls = download_calls(link);
     #[cfg(unix)]
-    assert!(process_gone(calls[0].pid));
+    assert!(process_gone(download_calls(link)[0].pid));
     let part = rig.dest.join(part);
     let remux = process_args_log().into_iter().any(|e| {
         e.tool == "ffmpeg" && has_run(&e.argv, &["-y", "-i", part.to_str().unwrap(), "-c", "copy"])
     });
     assert!(remux, "ffmpeg -y -i <part> -c copy <final>.mp4 was run");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recording_killed_while_yt_dlp_finalizes_it_is_kept() {
+    // A long recording stopped: yt-dlp renames its part to the final name,
+    // then rewrites the file through `<stem>.temp.mp4` (FixupM3u8, metadata,
+    // thumbnail) before reporting it, which takes longer than the grace: it
+    // is killed with neither the part nor the report there. (On Windows it
+    // is killed before it renames anything: the part is joined.)
+    let part = "Live Now [live1].mp4.part";
+    let file = "Live Now [live1].mp4";
+    let temp = "Live Now [live1].temp.mp4";
+    let thumbnail = "Live Now [live1].jpg";
+    let download = json!({
+        "stdout": [entry_line(0, 1, "live1", "Live Now", file)],
+        "start_files": [[part, 4096], [thumbnail, 10]],
+        "wait_for_interrupt": true,
+        "on_interrupt": {
+            "rename_files": [[part, file]],
+            "start_files": [[temp, 100]],
+            "stdout": ["fixing", "fixing"],
+            "delay_ms_per_line": 20_000,
+            "exit": 0,
+        },
+    });
+    let rig = MediaRig::new(&fixture("live.json"), download).await;
+    let link = "https://www.twitch.tv/killed_while_finalizing";
+    let id = recording(&rig, link).await;
+    tokio::time::timeout(Duration::from_secs(30), rig.engine.stop_recording(id))
+        .await
+        .unwrap()
+        .unwrap();
+    let view = rig.view(id);
+    assert_eq!(view.state, JobState::Completed, "{view:?}");
+    assert_eq!(view.error, None);
+    assert_eq!(view.file_name, file);
+    let kept = rig.dest.join(file);
+    assert_eq!(std::fs::metadata(&kept).unwrap().len(), 4096);
+    assert_same_paths(&media(&view).files, &[kept]);
+    for stray in [part, temp, thumbnail] {
+        assert!(!rig.dest.join(stray).exists(), "{stray} was left");
+    }
+    // Made playable by ffmpeg (it may still be MPEG-TS under its name).
+    let part = rig.dest.join(part);
+    let remux = process_args_log().into_iter().any(|e| {
+        e.tool == "ffmpeg" && has_run(&e.argv, &["-y", "-i", part.to_str().unwrap(), "-c", "copy"])
+    });
+    assert!(remux, "ffmpeg -y -i <part> -c copy <final>.mp4 was run");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resumed_playlist_leaves_no_thumbnail_of_its_earlier_run() {
+    let info = json!({
+        "_type": "playlist",
+        "id": "flock2",
+        "title": "Flock",
+        "webpage_url": "https://archive.org/details/flock2",
+        "extractor_key": "ArchiveOrg",
+        "entries": [
+            {"_type": "url", "id": "a", "title": "a"},
+            {"_type": "url", "id": "b", "title": "b"}
+        ]
+    });
+    let (one, two) = ("Flock/001 - a [a].avi", "Flock/002 - b [b].avi");
+    let (thumb_one, thumb_two) = ("Flock/001 - a [a].jpg", "Flock/002 - b [b].jpg");
+    // Paused (Unix: interrupted) after entry 1's thumbnail was written; the
+    // next run finds it there and does not write it again.
+    let download = json!({
+        "stdout": [
+            entry_line(1, 2, "a", "a", one),
+            progress_into(500, 500, &format!("{one}.part"), one),
+            entry_line(2, 2, "b", "b", two),
+            progress_into(700, 700, &format!("{two}.part"), two),
+        ],
+        "stderr": [THUMBNAIL_REFUSAL, THUMBNAIL_REFUSAL],
+        "delay_ms_per_line": 300,
+        "write_files": [[one, 500], [two, 700], [thumb_two, 10]],
+        "exit": 1,
+        "on_interrupt": { "write_files": [[thumb_one, 10]], "exit": 1 },
+    });
+    let rig = MediaRig::new(&info, download).await;
+    let link = "https://www.youtube.com/playlist?list=PLresumed_thumbnails";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    rig.until(id, "progress", |v| v.downloaded > 0).await;
+    rig.engine.pause(id).await.unwrap();
+    // Well older than the next run's start.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    rig.engine.resume(id).await.unwrap();
+    assert_eq!(
+        rig.wait(id).await,
+        JobState::Completed,
+        "{:?}",
+        rig.view(id)
+    );
+    for file in [one, two] {
+        assert!(rig.dest.join(file).is_file(), "{file}");
+    }
+    for thumb in [thumb_one, thumb_two] {
+        assert!(!rig.dest.join(thumb).exists(), "{thumb} was left behind");
+    }
 }

@@ -193,14 +193,15 @@ impl Tracker {
     /// the entries' containers (AVI, WebM, …) cannot hold: it stopped
     /// after the download and the other postprocessing, before moving the
     /// file into place. So every announced entry file that exists is
-    /// finished, and the thumbnail written beside it for embedding (`<file
-    /// stem>.jpg`, `.png` or `.webp`, written since `since`) is deleted.
+    /// finished, and what yt-dlp left beside it (see `remove_leftovers`;
+    /// `since` is when the job was added: a resumed playlist reuses a
+    /// thumbnail an earlier run wrote) is deleted.
     pub(crate) fn keep_without_thumbnails(&mut self, since: SystemTime) {
         for file in self.entry_files.clone() {
             if !file.is_file() {
                 continue;
             }
-            remove_thumbnail(&file, since);
+            remove_leftovers_of(&file, since);
             if !self.files.contains(&file) {
                 self.files.push(file);
             }
@@ -209,12 +210,14 @@ impl Tracker {
             .retain(|p| !self.files.contains(p) && p.exists());
     }
 
-    /// Deletes the thumbnails yt-dlp wrote since `since` to embed into the
-    /// announced entry files, which it did not finish (a recording it was
-    /// killed in).
-    pub(crate) fn remove_thumbnails(&self, since: SystemTime) {
+    /// Deletes what yt-dlp left beside the announced entry files when it
+    /// did not finish them (a recording it was killed in): the thumbnail
+    /// it wrote to embed (`<stem>.jpg`, `.png` or `.webp`) and the file
+    /// its postprocessors rewrite through (`<stem>.temp.<ext>`), each only
+    /// if written since `since` (when the job was added).
+    pub(crate) fn remove_leftovers(&self, since: SystemTime) {
         for file in &self.entry_files {
-            remove_thumbnail(file, since);
+            remove_leftovers_of(file, since);
         }
     }
 
@@ -312,20 +315,33 @@ impl Tracker {
     }
 }
 
-/// Deletes the thumbnail yt-dlp writes beside `file` to embed into it
-/// (`<file stem>.jpg`, `.png` or `.webp`), if it was written since `since`
-/// (an older one is not this run's).
-fn remove_thumbnail(file: &Path, since: SystemTime) {
+/// Deletes yt-dlp's leftovers of `file` (see `Tracker::remove_leftovers`)
+/// written since `since` (an older one is not this job's).
+fn remove_leftovers_of(file: &Path, since: SystemTime) {
     let since = since.checked_sub(Duration::from_secs(2)).unwrap_or(since);
-    for ext in ["jpg", "png", "webp"] {
-        let thumbnail = file.with_extension(ext);
-        let new = std::fs::metadata(&thumbnail)
-            .and_then(|m| m.modified())
-            .is_ok_and(|modified| modified >= since);
-        if new && thumbnail != file {
-            let _ = std::fs::remove_file(&thumbnail);
+    let mut leftovers: Vec<PathBuf> = ["jpg", "png", "webp"]
+        .iter()
+        .map(|ext| file.with_extension(ext))
+        .collect();
+    if let Some(ext) = file.extension() {
+        let mut temp = std::ffi::OsString::from("temp.");
+        temp.push(ext);
+        leftovers.push(file.with_extension(temp));
+    }
+    for leftover in leftovers {
+        if leftover != file && written_since(&leftover, since) {
+            let _ = std::fs::remove_file(&leftover);
         }
     }
+}
+
+/// Whether `path` is a file last written at or after `since`.
+pub(crate) fn written_since(path: &Path, since: SystemTime) -> bool {
+    std::fs::metadata(path)
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .and_then(|m| m.modified().ok())
+        .is_some_and(|modified| modified >= since)
 }
 
 /// A path yt-dlp printed (absolute, or relative to its working folder,

@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::http::JobOutcome;
-use crate::media::remux::{RemuxPlan, recorded_parts, remux_parts};
+use crate::media::remux::{RemuxPlan, recorded_parts, remux_parts, unmoved_recording};
 use crate::media::run::{Ended, MediaPhase, Output, Stop, Tracker, download_args, run_process};
 use crate::media::{
     YtDlp, classify_stderr_with, failure_detail, live_from_start_refused, only_thumbnail_refused,
@@ -100,6 +100,7 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
     } else {
         MediaPhase::Downloading
     };
+    let job_since = added_at(ctx);
     let mut retried = false;
     // From the stream's start, until yt-dlp says the site cannot do that.
     let mut from_start = options.live_from_start;
@@ -148,7 +149,11 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
         match ended.stopped {
             Some(Stop::Pause) => return Ok(JobOutcome::Paused),
             Some(Stop::Finish) => {
-                return finish_recording(ctx, &mut tracker, started, &ffmpeg).await;
+                let since = Since {
+                    run: started,
+                    job: job_since,
+                };
+                return finish_recording(ctx, &mut tracker, since, &ffmpeg).await;
             }
             None if ended.success() => {
                 tracker.finish();
@@ -157,7 +162,7 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
             }
             // Downloaded, but the container cannot hold the thumbnail.
             None if ended.status.is_some() && only_thumbnail_refused(&ended.stderr) => {
-                tracker.keep_without_thumbnails(started);
+                tracker.keep_without_thumbnails(job_since);
                 if !tracker.files.is_empty() {
                     ctx.store_partials(&tracker);
                     tracker.finish();
@@ -308,19 +313,44 @@ async fn update_after_break(ctx: &MediaJob, ended: &Ended, used: &Path) -> bool 
     other
 }
 
+/// When the run started, and when the job was added.
+#[derive(Clone, Copy)]
+struct Since {
+    run: SystemTime,
+    job: SystemTime,
+}
+
+/// When the job was added (the run's start if the store cannot say).
+fn added_at(ctx: &MediaJob) -> SystemTime {
+    match ctx.store.created_at(ctx.job.id) {
+        Ok(Some(secs)) => {
+            SystemTime::UNIX_EPOCH + Duration::from_secs(u64::try_from(secs).unwrap_or(0))
+        }
+        _ => SystemTime::now(),
+    }
+}
+
 /// The recording was stopped: keeps what yt-dlp finished, else joins its
-/// partial files (video and audio) into one playable file with ffmpeg.
+/// partial files (video and audio) into one playable file with ffmpeg;
+/// if yt-dlp was killed while finalizing it, the file it had renamed but
+/// not reported is made playable instead (see `unmoved_recording`).
 /// Nothing recorded yet (the stream had not begun) is Paused: nothing to
 /// keep, and nothing went wrong.
 async fn finish_recording(
     ctx: &MediaJob,
     tracker: &mut Tracker,
-    started: SystemTime,
+    since: Since,
     ffmpeg: &Path,
 ) -> Result<JobOutcome, CoreError> {
     tracker.files.retain(|f| f.is_file());
     if tracker.files.is_empty() {
-        let parts = recorded_parts(&ctx.job.dest_dir, tracker, started);
+        let mut parts = recorded_parts(&ctx.job.dest_dir, tracker, since.run);
+        // Nothing of its own (at most another job's, found by name).
+        if (parts.0.is_empty() || !parts.1)
+            && let Some(part) = unmoved_recording(tracker, since.run)
+        {
+            parts = (vec![part], true);
+        }
         let Some(plan) = RemuxPlan::new(parts) else {
             return Ok(JobOutcome::Paused);
         };
@@ -334,8 +364,9 @@ async fn finish_recording(
             }
         };
         tracker.files.push(file);
-        // yt-dlp did not get to embed it: the thumbnail would be left.
-        tracker.remove_thumbnails(started);
+        // yt-dlp did not finish it: its thumbnail and temporary file
+        // would be left.
+        tracker.remove_leftovers(since.job);
     }
     tracker.finish();
     ctx.update(tracker, None, true);

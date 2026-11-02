@@ -12,6 +12,7 @@ use crate::tools::tree::TreeChild;
 
 use super::process::read_tail;
 use super::run::Tracker;
+use super::tracker::written_since;
 
 /// The partial files a stopped recording left, and whether they are the
 /// run's own: nothing if the download never began (`Tracker::started`);
@@ -61,6 +62,37 @@ pub(crate) fn recorded_parts(
         .collect();
     found.sort();
     (found, false)
+}
+
+/// The recording yt-dlp was finalizing when it was killed (a long one
+/// outlasts the grace): it had renamed its part to the announced entry
+/// file, `<filename>`, but not yet reported it (TAURUS-FILE comes after
+/// its postprocessors rewrite the file, and the first of them, FixupM3u8,
+/// turns the MPEG-TS it recorded into an MP4). So the last announced entry
+/// file that was written since the run started (`since`) is this job's
+/// recording, possibly still MPEG-TS under an `.mp4` name: it is renamed
+/// back to its part, `<filename>.part`, for `remux_parts` to make it
+/// playable under its own name. `None` if there is none (or the rename
+/// failed).
+pub(crate) fn unmoved_recording(tracker: &Tracker, since: SystemTime) -> Option<PathBuf> {
+    if !tracker.started {
+        return None;
+    }
+    let since = since.checked_sub(Duration::from_secs(2)).unwrap_or(since);
+    let file = tracker
+        .entry_files
+        .iter()
+        .rfind(|f| written_since(f, since))?;
+    let mut part = file.clone().into_os_string();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    match std::fs::rename(file, &part) {
+        Ok(()) => Some(part),
+        Err(e) => {
+            tracing::warn!("could not take {}: {e}", file.display());
+            None
+        }
+    }
 }
 
 /// Where a partial recording goes once remuxed: its name without `.part`,
@@ -277,6 +309,32 @@ mod tests {
         );
         std::fs::write(&part, b"ts").unwrap();
         assert_eq!(recorded_parts(dir, &t, later), (vec![part], true));
+    }
+
+    #[test]
+    fn a_recording_renamed_but_not_reported_is_taken_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let before = SystemTime::now() - Duration::from_secs(60);
+        let file = dir.join("Live [a].mp4");
+        std::fs::write(&file, b"ts").unwrap();
+        let mut t = Tracker::new(dir, MediaPhase::WaitingForStream);
+        // Not begun: nothing of it.
+        assert!(unmoved_recording(&t, before).is_none());
+        t.apply(&format!(
+            "TAURUS-ENTRY 0 1 \"a\" \"Live\" {}",
+            serde_json::json!(file)
+        ));
+        // Older than the run: not this run's.
+        let later = SystemTime::now() + Duration::from_secs(60);
+        assert!(unmoved_recording(&t, later).is_none());
+        assert!(file.is_file());
+        let part = unmoved_recording(&t, before).unwrap();
+        assert_eq!(part, dir.join("Live [a].mp4.part"));
+        assert!(part.is_file() && !file.exists());
+        // Remuxed back under its own name.
+        let plan = RemuxPlan::new((vec![part], true)).unwrap();
+        assert_eq!(plan.out, file);
     }
 
     #[cfg(unix)]
