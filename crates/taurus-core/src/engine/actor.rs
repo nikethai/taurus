@@ -78,6 +78,12 @@ pub(super) enum Command {
         error: CoreError,
         reply: oneshot::Sender<()>,
     },
+    /// Stores the browser whose cookies a stopped media job signs in with.
+    SetMediaCookies {
+        id: JobId,
+        browser: String,
+        reply: Reply<()>,
+    },
     Remove {
         id: JobId,
         files: RemoveFiles,
@@ -322,6 +328,9 @@ impl Actor {
             Command::SignInFailed { id, error, reply } => {
                 self.sign_in_failed(id, error);
                 let _ = reply.send(());
+            }
+            Command::SetMediaCookies { id, browser, reply } => {
+                let _ = reply.send(self.set_media_cookies(id, &browser));
             }
             Command::Remove { id, files, reply } => {
                 let _ = reply.send(self.remove(id, files).await);

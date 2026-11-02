@@ -162,7 +162,10 @@ impl App {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             let result = engine.inspect(&url).await.map_err(|e| e.kind);
-            tx.send(UiMsg::Inspected { seq, result });
+            tx.send(UiMsg::Inspected {
+                seq,
+                result: Box::new(result),
+            });
         });
     }
 
@@ -467,6 +470,9 @@ mod tests {
             live: taurus_core::media::LiveStatus::NotLive,
             playlist: None,
             qualities: Vec::new(),
+            subtitle_languages: Vec::new(),
+            auto_caption_languages: Vec::new(),
+            all_qualities: Vec::new(),
         };
         assert!(add_vm(&LinkInfo::Media(media)).is_none());
     }

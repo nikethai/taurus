@@ -22,7 +22,7 @@ use super::tracker::OURS;
 pub(crate) use super::tracker::Tracker;
 #[cfg(test)]
 use super::tracker::{Change, ENTRY, FILE, POSTPROCESS, PROGRESS, local_path};
-use super::{ConvertPreset, MediaOptions, extra_args_for};
+use super::{Container, ConvertPreset, MediaOptions, cookie_and_subtitle_args, extra_args_for};
 
 /// Output name of a single video, inside the job's folder.
 pub(crate) const SINGLE_TEMPLATE: &str = "%(title).200B [%(id)s].%(ext)s";
@@ -67,6 +67,11 @@ pub(crate) fn download_args(
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["-f".into(), options.selector.clone().into()];
     let audio = options.audio_only || options.convert == Some(ConvertPreset::Mp3);
+    args.extend(cookie_and_subtitle_args(
+        options.cookies_from_browser.as_deref(),
+        options.subtitles.as_ref(),
+        audio,
+    ));
     if audio {
         let extra = match options.convert {
             Some(ConvertPreset::Mp3) => ConvertPreset::Mp3.args(),
@@ -75,7 +80,8 @@ pub(crate) fn download_args(
         };
         args.extend(extra.iter().map(OsString::from));
     } else {
-        args.extend(["--merge-output-format", "mp4"].map(OsString::from));
+        let container = options.container.unwrap_or(Container::Mp4);
+        args.extend(["--merge-output-format", container.format()].map(OsString::from));
         if options.convert == Some(ConvertPreset::SmallerMp4) {
             args.extend(ConvertPreset::SmallerMp4.args().iter().map(OsString::from));
         }

@@ -667,6 +667,7 @@ async fn audio_only_mp3_args() {
     req.media = Some(MediaChoice {
         quality: "audio-small".into(),
         convert: Some(ConvertPreset::Mp3),
+        ..Default::default()
     });
     let id = rig.engine.add(req).await.unwrap();
     assert_eq!(rig.wait(id).await, JobState::Completed);
@@ -2026,4 +2027,182 @@ async fn a_resumed_playlist_leaves_no_thumbnail_of_its_earlier_run() {
     for thumb in [thumb_one, thumb_two] {
         assert!(!rig.dest.join(thumb).exists(), "{thumb} was left behind");
     }
+}
+
+/// A download that fails to sign in, unless it is given a browser's cookies.
+fn sign_in_unless_cookies(stderr: &str, name: &str) -> Vec<Value> {
+    vec![
+        json!({ "if_arg": "--cookies-from-browser", "stdout": [file_line(name)],
+                "write_files": [[name, 10]] }),
+        json!({ "stderr": [stderr], "exit": 1 }),
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn args_for_cookies_subs_container() {
+    let rig = MediaRig::new(&video_info(), downloads("subs.mkv", 10)).await;
+    let link = "https://www.youtube.com/watch?v=args_for_cookies_subs";
+    let mut req = rig.request(link);
+    req.media = Some(taurus_core::MediaChoice {
+        quality: "best".into(),
+        cookies_from_browser: Some("chrome:Profile 1".into()),
+        subtitles: Some(taurus_core::media::SubtitleChoice {
+            languages: vec!["en".into(), "vi".into()],
+            auto_generated: true,
+            embed: true,
+        }),
+        container: Some(taurus_core::media::Container::Mkv),
+        ..Default::default()
+    });
+    let id = rig.engine.add(req).await.unwrap();
+    assert_eq!(
+        rig.wait(id).await,
+        JobState::Completed,
+        "{:?}",
+        rig.view(id)
+    );
+    let calls = download_calls(link);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    let argv = &calls[0].argv;
+    assert!(
+        has_run(
+            argv,
+            &[
+                "-f",
+                "bv*+ba/b",
+                "--cookies-from-browser",
+                "chrome:Profile 1",
+                "--write-subs",
+                "--write-auto-subs",
+                "--sub-langs",
+                "en,vi",
+                "--embed-subs",
+                "--merge-output-format",
+                "mkv",
+                "--embed-thumbnail",
+            ]
+        ),
+        "{argv:?}"
+    );
+    // The inspection never carries cookies.
+    let inspections: Vec<_> = calls_with(link)
+        .into_iter()
+        .filter(|e| e.argv.iter().any(|a| a == "-J"))
+        .collect();
+    assert!(
+        inspections
+            .iter()
+            .all(|e| !e.argv.iter().any(|a| a.starts_with("--cookies")))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bad_video_choices_are_refused_on_add() {
+    let rig = MediaRig::new(&video_info(), downloads("never.mp4", 10)).await;
+    let link = "https://www.youtube.com/watch?v=bad_video_choices";
+    for choice in [
+        taurus_core::MediaChoice {
+            cookies_from_browser: Some("netscape".into()),
+            ..Default::default()
+        },
+        taurus_core::MediaChoice {
+            subtitles: Some(taurus_core::media::SubtitleChoice {
+                languages: vec!["--exec".into()],
+                auto_generated: false,
+                embed: false,
+            }),
+            ..Default::default()
+        },
+        taurus_core::MediaChoice {
+            subtitles: Some(taurus_core::media::SubtitleChoice {
+                languages: Vec::new(),
+                auto_generated: false,
+                embed: false,
+            }),
+            ..Default::default()
+        },
+    ] {
+        let mut req = rig.request(link);
+        req.media = Some(choice);
+        let err = rig.engine.add(req).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Unknown, "{err:?}");
+    }
+    assert!(rig.engine.snapshot().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retry_with_cookies_requeues() {
+    for (stderr, kind) in [
+        (
+            "ERROR: [youtube] x: Sign in to confirm your age",
+            ErrorKind::NeedsSignIn,
+        ),
+        (
+            "ERROR: [youtube] x: Sign in to confirm you\u{2019}re not a bot",
+            ErrorKind::BlockedByBotCheck,
+        ),
+    ] {
+        let rig = MediaRig::new(
+            &video_info(),
+            Value::Array(sign_in_unless_cookies(stderr, "cookie.mp4")),
+        )
+        .await;
+        let link = format!("https://www.youtube.com/watch?v=retry_with_cookies_{kind:?}");
+        let id = rig.engine.add(rig.request(&link)).await.unwrap();
+        assert_eq!(rig.wait(id).await, JobState::Failed);
+        assert_eq!(rig.view(id).error.map(|e| e.0), Some(kind));
+        assert!(
+            !download_calls(&link)[0]
+                .argv
+                .iter()
+                .any(|a| a.starts_with("--cookies")),
+        );
+
+        // A browser that does not exist is refused, and the job is untouched.
+        let err = rig.engine.retry_with_cookies(id, "netscape".into()).await;
+        assert_eq!(err.unwrap_err().detail, "unknown browser");
+        assert_eq!(rig.view(id).state, JobState::Failed);
+        // A job that is not a video is refused.
+        assert!(
+            rig.engine
+                .retry_with_cookies(JobId(9999), "firefox".into())
+                .await
+                .is_err()
+        );
+
+        rig.engine
+            .retry_with_cookies(id, "firefox".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            rig.wait(id).await,
+            JobState::Completed,
+            "{:?}",
+            rig.view(id)
+        );
+        let calls = download_calls(&link);
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(
+            has_run(&calls[1].argv, &["--cookies-from-browser", "firefox"]),
+            "{:?}",
+            calls[1].argv
+        );
+        assert_eq!(rig.view(id).error, None);
+        assert!(rig.dest.join("cookie.mp4").is_file());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retry_with_cookies_refuses_a_job_that_is_not_stopped() {
+    let rig = MediaRig::new(&video_info(), downloads("done.mp4", 10)).await;
+    let link = "https://www.youtube.com/watch?v=retry_cookies_completed";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let err = rig
+        .engine
+        .retry_with_cookies(id, "firefox".into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Unknown);
+    assert_eq!(download_calls(link).len(), 1);
 }

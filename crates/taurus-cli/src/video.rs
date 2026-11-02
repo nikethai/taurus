@@ -90,6 +90,7 @@ impl VideoFlags {
         let choice = MediaChoice {
             quality: quality.to_string(),
             convert,
+            ..MediaChoice::default()
         };
         (choice, note)
     }
@@ -175,6 +176,9 @@ mod tests {
                     est_size: None,
                 })
                 .collect(),
+            subtitle_languages: Vec::new(),
+            auto_caption_languages: Vec::new(),
+            all_qualities: Vec::new(),
         }
     }
 

@@ -460,6 +460,7 @@ mod tests {
             playlist: false,
             live_from_start: true,
             partial_files: vec!["/d/a [x].mp4.part".into()],
+            ..Default::default()
         };
         let id = store
             .insert_job(&crate::store::NewJob {

@@ -12,7 +12,8 @@ use crate::http::JobOutcome;
 use crate::media::run::MediaPhase;
 use crate::media::thumbnail::{THUMBS_DIR, fetch_thumbnail, thumbnail_in};
 use crate::media::{
-    ConvertPreset, LiveStatus, MediaInfo, MediaOptions, own_partial_files, standard_quality,
+    Container, ConvertPreset, LiveStatus, MediaInfo, MediaOptions, SubtitleChoice,
+    own_partial_files, standard_quality, validate_browser, validate_subtitles,
 };
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob};
 
@@ -29,11 +30,21 @@ const LARGE_PLAYLIST: u32 = 50;
 
 /// How to download a media link: one of the link's
 /// [`QualityOption`](crate::media::QualityOption) ids (`best`, `1080p`,
-/// `720p`, `audio-best`, `audio-small`) and an optional conversion.
+/// `720p`, `audio-best`, `audio-small`, or a `<height>p` the link lists
+/// in `MediaInfo::all_qualities`), an optional conversion, and what only a
+/// video takes: the browser whose cookies to sign in with, subtitles and
+/// the container.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MediaChoice {
     pub quality: String,
     pub convert: Option<ConvertPreset>,
+    /// `chrome`, `firefox`, ... optionally `:<profile>`
+    /// ([`validate_browser`](crate::media::validate_browser)); an empty
+    /// string is none.
+    pub cookies_from_browser: Option<String>,
+    pub subtitles: Option<SubtitleChoice>,
+    /// `None` is MP4; audio ignores it.
+    pub container: Option<Container>,
 }
 
 /// What only a media job has.
@@ -107,6 +118,7 @@ impl Engine {
         let est_size = info
             .qualities
             .iter()
+            .chain(&info.all_qualities)
             .find(|q| q.id == options.quality)
             .and_then(|q| q.est_size)
             .filter(|_| !options.playlist && !options.live_from_start);
@@ -185,6 +197,7 @@ fn media_options(
     let quality = info
         .qualities
         .iter()
+        .chain(&info.all_qualities)
         .find(|q| q.id == id)
         .cloned()
         .or_else(|| standard_quality(id))
@@ -192,6 +205,17 @@ fn media_options(
             kind: ErrorKind::Unknown,
             detail: format!("unknown quality {id:?}"),
         })?;
+    let cookies_from_browser = choice
+        .and_then(|c| c.cookies_from_browser.as_deref())
+        .map(str::trim)
+        .filter(|b| !b.is_empty());
+    if let Some(browser) = cookies_from_browser {
+        validate_browser(browser)?;
+    }
+    let subtitles = choice.and_then(|c| c.subtitles.clone());
+    if let Some(subtitles) = &subtitles {
+        validate_subtitles(subtitles)?;
+    }
     Ok(MediaOptions {
         quality: quality.id,
         selector: quality.selector,
@@ -203,6 +227,9 @@ fn media_options(
             LiveStatus::IsLive | LiveStatus::IsUpcoming { .. }
         ),
         partial_files: Vec::new(),
+        cookies_from_browser: cookies_from_browser.map(str::to_owned),
+        subtitles,
+        container: choice.and_then(|c| c.container),
     })
 }
 

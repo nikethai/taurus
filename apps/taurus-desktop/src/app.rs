@@ -58,7 +58,7 @@ pub(crate) enum UiMsg {
     /// `Engine::inspect` answered for the add with this `seq`.
     Inspected {
         seq: u64,
-        result: Result<LinkInfo, ErrorKind>,
+        result: Box<Result<LinkInfo, ErrorKind>>,
     },
     /// `Engine::add` refused the confirmed add.
     AddFailed(ErrorKind),
@@ -388,7 +388,7 @@ impl App {
 
     fn handle(&self, msg: UiMsg) {
         match msg {
-            UiMsg::Inspected { seq, result } => self.inspected(seq, result),
+            UiMsg::Inspected { seq, result } => self.inspected(seq, *result),
             UiMsg::AddFailed(kind) => self.add_failed(kind),
             UiMsg::MediaAdded { seq, result } => self.media_added(seq, result),
             UiMsg::SettingsFailed => self.engine_settings(self.engine.settings()),

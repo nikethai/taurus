@@ -2,16 +2,14 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use super::*;
+use crate::media::{Container, SubtitleChoice};
 
 fn options(quality: &str, selector: &str, audio_only: bool) -> MediaOptions {
     MediaOptions {
         quality: quality.into(),
         selector: selector.into(),
         audio_only,
-        convert: None,
-        playlist: false,
-        live_from_start: false,
-        partial_files: Vec::new(),
+        ..MediaOptions::default()
     }
 }
 
@@ -601,4 +599,74 @@ fn tracker_records_the_jobs_partial_files() {
     t.apply(&writes("L/2 [b].mp4.part", "L/2 [b].mp4"));
     assert!(t.apply(&format!("{FILE}\"L/2 [b].mp4\"")).partials);
     assert_eq!(t.partials, [at("L/2 [b].mp4.part")]);
+}
+
+#[test]
+fn cookies_subtitles_and_container_args() {
+    let dest = Path::new("/dl");
+    let base = options("best", "bv*+ba/b", false);
+    let with = MediaOptions {
+        cookies_from_browser: Some("firefox:work".into()),
+        subtitles: Some(SubtitleChoice {
+            languages: vec!["en".into(), "vi".into()],
+            auto_generated: true,
+            embed: true,
+        }),
+        container: Some(Container::Mkv),
+        ..base.clone()
+    };
+    let args = strings(&download_args(&with, dest, "u", None, true));
+    assert_eq!(
+        &args[..11],
+        [
+            "-f",
+            "bv*+ba/b",
+            "--cookies-from-browser",
+            "firefox:work",
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-langs",
+            "en,vi",
+            "--embed-subs",
+            "--merge-output-format",
+            "mkv"
+        ]
+    );
+    // Without the auto-generated and embed choices; "all" wins.
+    let plain = MediaOptions {
+        subtitles: Some(SubtitleChoice {
+            languages: vec!["en".into(), "all".into()],
+            auto_generated: false,
+            embed: false,
+        }),
+        container: Some(Container::Webm),
+        ..base.clone()
+    };
+    let args = strings(&download_args(&plain, dest, "u", None, true));
+    assert_eq!(
+        &args[..7],
+        [
+            "-f",
+            "bv*+ba/b",
+            "--write-subs",
+            "--sub-langs",
+            "all",
+            "--merge-output-format",
+            "webm"
+        ]
+    );
+    // Audio ignores the container and never embeds; sidecar subtitles and
+    // cookies stay.
+    let audio = MediaOptions {
+        audio_only: true,
+        ..with
+    };
+    let args = strings(&download_args(&audio, dest, "u", None, true));
+    assert!(
+        !args
+            .iter()
+            .any(|a| a == "--merge-output-format" || a == "--embed-subs")
+    );
+    assert!(args.iter().any(|a| a == "--write-subs"));
+    assert!(args.iter().any(|a| a == "--cookies-from-browser"));
 }

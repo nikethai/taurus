@@ -6,6 +6,7 @@
 
 mod errors;
 mod inspect;
+mod options;
 mod partials;
 mod process;
 pub(crate) mod remux;
@@ -25,8 +26,10 @@ use crate::network::{ProxySetting, proxy_env, ytdlp_proxy_args};
 use crate::tools::{ToolKind, ToolManager};
 
 pub(crate) use errors::{classify_stderr_with, live_from_start_refused, only_thumbnail_refused};
+pub use inspect::{all_qualities, inspect, parse_info, qualities, single_video_link};
 pub(crate) use inspect::{failure_detail, fast_path_host, standard_quality};
-pub use inspect::{inspect, parse_info, qualities, single_video_link};
+pub use options::{Container, SubtitleChoice, validate_browser};
+pub(crate) use options::{cookie_and_subtitle_args, validate_subtitles};
 pub(crate) use partials::own_partial_files;
 pub use run::MediaPhase;
 
@@ -61,8 +64,9 @@ pub(crate) fn extra_args_for(id: &str) -> &'static [&'static str] {
     }
 }
 
-/// What a media job downloads and how, stored with the job.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// What a media job downloads and how, stored with the job. Rows stored
+/// before a field existed read it as unset.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MediaOptions {
     /// The chosen [`QualityOption::id`].
     pub quality: String,
@@ -82,6 +86,16 @@ pub struct MediaOptions {
     /// a restart. A file reported finished leaves the list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub partial_files: Vec<PathBuf>,
+    /// The browser (`firefox`, or `chrome:Profile 1`) whose cookies yt-dlp
+    /// signs in with; only its name goes to yt-dlp, which reads the cookies
+    /// itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cookies_from_browser: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitles: Option<SubtitleChoice>,
+    /// A video's container; `None` is MP4. Audio ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<Container>,
 }
 
 /// A conversion after the download.
@@ -140,6 +154,13 @@ pub struct MediaInfo {
     /// Set when the link is a playlist; then `title` is the playlist's.
     pub playlist: Option<PlaylistInfo>,
     pub qualities: Vec<QualityOption>,
+    /// Languages of the subtitles the uploader made, sorted.
+    pub subtitle_languages: Vec<String>,
+    /// Languages of the captions the site generates, sorted.
+    pub auto_caption_languages: Vec<String>,
+    /// One option per distinct video height, highest first, with the ids
+    /// `<height>p`; empty for a playlist or a video without a picture.
+    pub all_qualities: Vec<QualityOption>,
 }
 
 /// The flags every yt-dlp run gets: Deno as the JavaScript runtime, the
