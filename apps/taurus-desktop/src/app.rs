@@ -7,8 +7,9 @@
 //! `pump.rs`). No `invoke_from_event_loop`: tests drive the same timer with
 //! `slint::platform::update_timers_and_animations()`.
 //!
-//! The add flow lives in `add_flow.rs`, the Settings screen in
-//! `settings_flow.rs`, applying engine state to the window in `pump.rs`.
+//! The add flow lives in `add_flow.rs` (video links in `media_add.rs`),
+//! the Settings screen in `settings_flow.rs`, applying engine state to the
+//! window in `pump.rs`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -20,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use slint::{CloseRequestResponse, ComponentHandle, SharedPixelBuffer, Timer, TimerMode};
-use taurus_core::{Engine, ErrorKind, JobId, JobKind, JobState, JobView, LinkInfo, Settings};
+use taurus_core::{CoreError, Engine, ErrorKind, JobId, JobState, LinkInfo, RemoveFiles, Settings};
 
 use crate::add_flow::PendingAdd;
 use crate::bridge::{self, Coalescer};
@@ -61,6 +62,12 @@ pub(crate) enum UiMsg {
     },
     /// `Engine::add` refused the confirmed add.
     AddFailed(ErrorKind),
+    /// `Engine::add` answered the unconfirmed add of a large playlist
+    /// (the add with this `seq`).
+    MediaAdded {
+        seq: u64,
+        result: Result<(), CoreError>,
+    },
     /// Saving the settings failed: show what the engine has.
     SettingsFailed,
     /// Links from a second launch; empty means "show the window".
@@ -209,9 +216,12 @@ impl App {
         on!(ui, self, on_resume, |a, id| a.job_call(id, Job::Resume));
         // Ruling R6: resuming a Failed job is the retry.
         on!(ui, self, on_retry, |a, id| a.job_call(id, Job::Resume));
-        // Recordings arrive with video sites (M5); stopping one is a pause.
         on!(ui, self, on_stop_recording, |a, id| a
-            .job_call(id, Job::Pause));
+            .job_call(id, Job::StopRecording));
+        on!(ui, self, on_media_mode_changed, |a, mode| a
+            .media_mode_changed(&mode));
+        on!(ui, self, on_quality_cycled, |a| a.quality_cycled());
+        on!(ui, self, on_playlist_confirmed, |a| a.playlist_confirmed());
         on!(ui, self, on_remove, |a, id| a.remove(id));
         on!(ui, self, on_open_file, |a, id| a.open_file(id, false));
         on!(ui, self, on_reveal, |a, id| a.open_file(id, true));
@@ -315,13 +325,7 @@ impl App {
 
     /// "Remove from list": an unfinished download's partial file goes too.
     fn remove(&self, id: i32) {
-        let id = JobId(id.into());
-        let delete_files = self
-            .view
-            .borrow()
-            .view(id)
-            .is_some_and(remove_deletes_files);
-        self.spawn_job(id, Job::Remove { delete_files });
+        self.job_call(id, Job::Remove);
     }
 
     fn spawn_job(&self, id: JobId, job: Job) {
@@ -330,7 +334,10 @@ impl App {
             let result = match job {
                 Job::Pause => engine.pause(id).await,
                 Job::Resume => engine.resume(id).await,
-                Job::Remove { delete_files } => engine.remove(id, delete_files).await,
+                // Keeps what was recorded.
+                Job::StopRecording => engine.stop_recording(id).await,
+                // The engine decides about the files as it removes the job.
+                Job::Remove => engine.remove_with(id, RemoveFiles::IfUnfinished).await,
             };
             // A failed resume keeps the job as it was, with its error shown.
             if let Err(e) = result {
@@ -383,6 +390,7 @@ impl App {
         match msg {
             UiMsg::Inspected { seq, result } => self.inspected(seq, result),
             UiMsg::AddFailed(kind) => self.add_failed(kind),
+            UiMsg::MediaAdded { seq, result } => self.media_added(seq, result),
             UiMsg::SettingsFailed => self.engine_settings(self.engine.settings()),
             UiMsg::Forwarded(links) => self.forwarded(links),
             UiMsg::Clipboard(text) => self.clipboard_text(&text),
@@ -409,26 +417,8 @@ impl Drop for App {
 enum Job {
     Pause,
     Resume,
-    Remove { delete_files: bool },
-}
-
-/// Whether removing `view` from the list also deletes its files: yes for
-/// an unfinished download (its partial file would be left behind for
-/// good), never for a finished one. A torrent's files are finished user
-/// data once Seeding or Completed, and also when it was paused with all of
-/// its data (after seeding).
-pub fn remove_deletes_files(view: &JobView) -> bool {
-    let unfinished = matches!(
-        view.state,
-        JobState::Queued
-            | JobState::Downloading
-            | JobState::Paused
-            | JobState::Waiting
-            | JobState::Failed
-    );
-    let complete_torrent =
-        view.kind == JobKind::Torrent && view.total.is_some_and(|total| view.downloaded >= total);
-    unfinished && !complete_torrent
+    StopRecording,
+    Remove,
 }
 
 /// `path` if it exists, else its nearest existing parent (a removed file
@@ -448,33 +438,6 @@ mod tests {
     fn close_policy() {
         assert_eq!(super::close_policy(true), ClosePolicy::HideToTray);
         assert_eq!(super::close_policy(false), ClosePolicy::Quit);
-    }
-
-    #[test]
-    fn remove_deletes_only_unfinished_files() {
-        use crate::testutil::view;
-        for state in [
-            JobState::Queued,
-            JobState::Downloading,
-            JobState::Paused,
-            JobState::Waiting,
-            JobState::Failed,
-        ] {
-            assert!(remove_deletes_files(&view(1, "a.bin", state)), "{state:?}");
-        }
-        for state in [JobState::Seeding, JobState::Completed] {
-            assert!(!remove_deletes_files(&view(1, "a.bin", state)), "{state:?}");
-        }
-        // A torrent half downloaded and paused: its pieces go.
-        let mut torrent = view(2, "pack", JobState::Paused);
-        torrent.kind = JobKind::Torrent;
-        torrent.downloaded = 10;
-        assert!(remove_deletes_files(&torrent));
-        // Paused after it finished (and shared): the files are the user's.
-        torrent.downloaded = torrent.total.unwrap();
-        assert!(!remove_deletes_files(&torrent));
-        torrent.state = JobState::Seeding;
-        assert!(!remove_deletes_files(&torrent));
     }
 
     #[test]

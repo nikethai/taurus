@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use taurus_core::store::{JobKind, JobRecord, NewJob, Store};
 use taurus_core::{
     AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, JobView, LinkInfo,
-    Settings, SpeedLimit,
+    RemoveFiles, Settings, SpeedLimit,
 };
 use taurus_testkit::{FailAfter, FileSpec, TestServer, content, sha256_hex};
 use tokio::sync::broadcast;
@@ -433,6 +433,71 @@ async fn open_turns_interrupted_jobs_into_queued() {
     let store = Store::open(&fx.data_dir().join("taurus.db")).unwrap();
     let states: Vec<JobState> = store.list_jobs().unwrap().iter().map(|j| j.state).collect();
     assert_eq!(states, vec![JobState::Queued, JobState::Paused]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_if_unfinished_keeps_completed_files() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let spec = FileSpec::new(MIB);
+    let url = fx.server.serve(PATH, spec.clone());
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    assert_eq!(wait(&engine, id).await, JobState::Completed);
+
+    engine
+        .remove_with(id, RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    assert!(engine.snapshot().is_empty());
+    assert_file(&fx.dest.join("x.bin"), &spec);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_if_unfinished_deletes_partial() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let id = add_and_pause(&fx, &engine, &throttled(20 * MIB)).await;
+    assert!(fx.tapa().exists());
+
+    engine
+        .remove_with(id, RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    assert!(!fx.tapa().exists());
+    assert!(engine.snapshot().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_if_unfinished_deletes_a_running_downloads_partial() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let url = fx.server.serve(PATH, throttled(20 * MIB));
+    let id = engine.add(fx.request(&url)).await.unwrap();
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    while view(&engine, id).downloaded == 0 || !fx.tapa().exists() {
+        assert!(std::time::Instant::now() < deadline, "no progress");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(view(&engine, id).state, JobState::Downloading);
+
+    engine
+        .remove_with(id, RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    assert!(!fx.tapa().exists(), "the partial file is gone");
+    assert!(!fx.dest.join("x.bin").exists());
+    assert!(engine.snapshot().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remove_keep_leaves_partial() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    let id = add_and_pause(&fx, &engine, &throttled(20 * MIB)).await;
+
+    engine.remove_with(id, RemoveFiles::Keep).await.unwrap();
+    assert!(fx.tapa().exists());
+    assert!(engine.snapshot().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1399,8 +1464,24 @@ async fn inspect_http_file() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn inspect_web_page_fails_site_not_supported() {
+    // A web page is also tried with yt-dlp; here (a fake one) it has no
+    // extractor for it, so nothing changes. No real tool is downloaded.
+    let version = taurus_testkit::unique_version();
+    taurus_testkit::set_ytdlp_scenario(
+        &version,
+        r#"{"stderr": ["ERROR: Unsupported URL: https://example.com/blog/"], "exit": 1}"#,
+    );
+    let tools = taurus_testkit::FakeToolHost::start(
+        taurus_testkit::ToolRelease::new(&version),
+        taurus_testkit::ToolRelease::new("7.1"),
+        taurus_testkit::ToolRelease::new("2.5.0"),
+    )
+    .await;
     let fx = Fixture::new().await;
-    let engine = fx.engine().await;
+    let mut config = EngineConfig::new(fx.data_dir());
+    config.tool_sources =
+        taurus_core::tools::ToolSources::under(&url::Url::parse(&tools.base_url()).unwrap());
+    let engine = Engine::open(config).await.unwrap();
     let page = fx
         .server
         .serve_page("/blog/", 200, &[], "<html><body>Hello</body></html>");

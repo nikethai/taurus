@@ -3,7 +3,9 @@ import { Theme } from "theme.slint";
 import { Icon } from "icons.slint";
 import { AddVm } from "types.slint";
 import { Messages } from "messages.slint";
-import { IconButton, TextButton, KindBadge, LoadingDots, Card, SectionTitle } from "widgets.slint";
+import {
+    IconButton, TextButton, KindBadge, LoadingDots, Card, SectionTitle, Segmented, Segment,
+} from "widgets.slint";
 
 export component Add inherits Rectangle {
     in property <AddVm> add;
@@ -12,9 +14,23 @@ export component Add inherits Rectangle {
     callback choose-folder();
     // The duplicate's "Show it": leave and show the list.
     callback show-list();
+    // Media links: "video" | "audio"; the next quality of that mode;
+    // Download of a large playlist once asked.
+    callback media-mode-changed(string);
+    callback quality-cycled();
+    callback playlist-confirmed();
 
     property <bool> failed: !add.loading && add.error-kind != "";
     property <int> file-count: add.files-text.is-float() ? add.files-text.to-float() : -1;
+    property <bool> shown: !add.loading && !failed;
+
+    // "Some Channel · 3:32", or whichever of the two is known.
+    pure function byline(a: AddVm) -> string {
+        if (a.uploader != "" && a.duration-text != "") {
+            return @tr("{0} · {1}", a.uploader, a.duration-text);
+        }
+        return a.uploader != "" ? a.uploader : a.duration-text;
+    }
 
     VerticalLayout {
         padding: 20px;
@@ -77,9 +93,100 @@ export component Add inherits Rectangle {
             }
         }
 
-        if !root.add.loading && !root.failed: VerticalLayout {
+        if root.shown: VerticalLayout {
             spacing: 16px;
-            Card {
+            if root.add.is-media: Card {
+                HorizontalLayout {
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 14px;
+                    VerticalLayout {
+                        alignment: start;
+                        Rectangle {
+                            width: 112px;
+                            height: 63px;
+                            border-radius: 8px;
+                            clip: true;
+                            background: Theme.kind-bg(root.add.kind);
+                            if root.add.thumbnail.width > 0: Image {
+                                width: parent.width;
+                                height: parent.height;
+                                source: root.add.thumbnail;
+                                image-fit: cover;
+                                accessible-role: none;
+                            }
+                            if root.add.thumbnail.width == 0: Icon {
+                                name: root.add.kind;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                width: 28px;
+                                height: 28px;
+                                stroke: Theme.kind-fg(root.add.kind);
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: root.add.name;
+                            wrap: word-wrap;
+                            font-size: 15px;
+                            font-weight: 600;
+                            color: Theme.text;
+                        }
+                        if root.byline(root.add) != "": Text {
+                            text: root.byline(root.add);
+                            font-size: 13px;
+                            color: Theme.muted;
+                            accessible-role: text;
+                            accessible-label: self.text;
+                        }
+                        if root.add.live == "live": Text {
+                            text: @tr("Live now");
+                            font-size: 13px;
+                            font-weight: 600;
+                            color: Theme.kind-fg("live");
+                            accessible-role: text;
+                            accessible-label: self.text;
+                        }
+                        if root.add.live == "upcoming": Text {
+                            text: root.add.starts-at != "" ? @tr("Starts at {0}", root.add.starts-at) : @tr("Not started yet");
+                            font-size: 13px;
+                            color: Theme.kind-fg("live");
+                            accessible-role: text;
+                            accessible-label: self.text;
+                        }
+                        if root.add.playlist-count > 0: Text {
+                            text: @tr("Playlist · {n} video" | "Playlist · {n} videos" % root.add.playlist-count);
+                            font-size: 13px;
+                            color: Theme.muted;
+                            accessible-role: text;
+                            accessible-label: self.text;
+                        }
+                    }
+                }
+            }
+
+            if root.add.is-media && !root.add.duplicate: Segmented {
+                Segment {
+                    text: @tr("Video");
+                    selected: root.add.media-mode != "audio";
+                    clicked => {
+                        root.media-mode-changed("video");
+                    }
+                }
+                Segment {
+                    text: @tr("Audio only");
+                    selected: root.add.media-mode == "audio";
+                    clicked => {
+                        root.media-mode-changed("audio");
+                    }
+                }
+            }
+
+            if !root.add.is-media: Card {
                 HorizontalLayout {
                     padding-top: 10px;
                     padding-bottom: 10px;
@@ -155,6 +262,54 @@ export component Add inherits Rectangle {
                 }
             }
 
+            if root.add.is-media && !root.add.duplicate: VerticalLayout {
+                spacing: 8px;
+                SectionTitle {
+                    text: @tr("Quality");
+                }
+                Card {
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Text {
+                            text: root.add.quality-label;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                            font-size: 14px;
+                            color: Theme.text;
+                            accessible-role: text;
+                            accessible-label: self.text;
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            TextButton {
+                                text: @tr("Other quality");
+                                kind: "quiet";
+                                clicked => {
+                                    root.quality-cycled();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.add.needs-confirm: Rectangle {
+                background: Theme.accent-soft;
+                border-radius: 12px;
+                HorizontalLayout {
+                    padding: 14px;
+                    Text {
+                        text: @tr("This playlist has {n} video. Download it?" | "This playlist has {n} videos. Download all of them?" % root.add.playlist-count);
+                        wrap: word-wrap;
+                        font-size: 14px;
+                        color: Theme.text;
+                        accessible-role: text;
+                        accessible-label: self.text;
+                    }
+                }
+            }
+
             if root.add.duplicate: Rectangle {
                 background: Theme.accent-soft;
                 border-radius: 12px;
@@ -192,14 +347,31 @@ export component Add inherits Rectangle {
                     root.show-list();
                 }
             }
-            if !root.failed && !root.add.duplicate: TextButton {
-                text: @tr("Download");
+            if !root.failed && !root.add.duplicate && !root.add.needs-confirm: TextButton {
+                text: root.add.live != "" ? @tr("Record") : @tr("Download");
                 kind: "primary";
                 enabled: !root.add.loading;
                 clicked => {
                     root.confirmed();
                 }
             }
+            if !root.failed && root.add.needs-confirm: TextButton {
+                text: @tr("Download all");
+                kind: "primary";
+                clicked => {
+                    root.playlist-confirmed();
+                }
+            }
+        }
+
+        // The media size estimate, under the Download button.
+        if root.shown && root.add.is-media && !root.add.duplicate && root.add.size-text != "": Text {
+            text: @tr("About {0}", root.add.size-text);
+            horizontal-alignment: right;
+            font-size: 12px;
+            color: Theme.muted;
+            accessible-role: text;
+            accessible-label: self.text;
         }
     }
 }

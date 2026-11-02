@@ -1,0 +1,20 @@
+{
+  "id": "abc123",
+  "title": "A Fine Video",
+  "webpage_url": "https://www.youtube.com/watch?v=abc123",
+  "original_url": "https://youtu.be/abc123",
+  "extractor": "youtube",
+  "extractor_key": "Youtube",
+  "uploader": "Some Channel",
+  "duration": 212.0,
+  "thumbnail": "https://i.example.com/abc123/maxres.jpg",
+  "live_status": "not_live",
+  "formats": [
+    {"format_id": "sb0", "ext": "mhtml", "vcodec": "none", "acodec": "none", "filesize": 999999},
+    {"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "filesize": 3000000},
+    {"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus", "filesize": 3400000},
+    {"format_id": "247", "ext": "webm", "vcodec": "vp9", "acodec": "none", "height": 720, "filesize": 20000000},
+    {"format_id": "137", "ext": "mp4", "vcodec": "avc1.640028", "acodec": "none", "height": 1080, "filesize": 50000000},
+    {"format_id": "401", "ext": "mp4", "vcodec": "av01.0.12M.08", "acodec": "none", "height": 2160, "filesize_approx": 200000000}
+  ]
+}

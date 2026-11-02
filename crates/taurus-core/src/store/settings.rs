@@ -11,6 +11,8 @@ const SETTINGS_KEY: &str = "settings";
 /// Where `load_settings_lenient` keeps saved settings it could not read.
 const UNREADABLE_SETTINGS_KEY: &str = "settings.unreadable";
 const MEASURED_PEAK_KEY: &str = "measured_peak";
+/// Followed by a tool's name: when it was last checked for updates.
+const TOOL_CHECKED_PREFIX: &str = "tool_checked.";
 
 /// A learned connection limit older than this is forgotten: hosts change.
 const HOST_CAP_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
@@ -75,6 +77,21 @@ impl Store {
 
     pub fn save_measured_peak(&self, bps: u64, at: i64) -> Result<(), CoreError> {
         self.put_setting(MEASURED_PEAK_KEY, &format!("{bps},{at}"))
+    }
+
+    /// When `tool` was last checked for updates (unix secs), if ever.
+    pub fn tool_checked_at(&self, tool: &str) -> Result<Option<i64>, CoreError> {
+        let Some(raw) = self.setting(&format!("{TOOL_CHECKED_PREFIX}{tool}"))? else {
+            return Ok(None);
+        };
+        raw.parse().map(Some).map_err(|_| CoreError {
+            kind: ErrorKind::Unknown,
+            detail: format!("saved check time {raw:?} of {tool} is unreadable"),
+        })
+    }
+
+    pub fn save_tool_checked_at(&self, tool: &str, at: i64) -> Result<(), CoreError> {
+        self.put_setting(&format!("{TOOL_CHECKED_PREFIX}{tool}"), &at.to_string())
     }
 
     /// The learned connection limit of `host` (`host[:port]`), if one was
@@ -188,6 +205,22 @@ mod tests {
     use super::*;
     use crate::settings::{SpeedLimit, ThemeChoice, TorrentSettings, UiSettings, WhenDone};
     use crate::store::test_support::open_temp;
+
+    #[test]
+    fn tool_check_times_roundtrip() {
+        let (_dir, store) = open_temp();
+        assert_eq!(store.tool_checked_at("yt-dlp").unwrap(), None);
+        store.save_tool_checked_at("yt-dlp", 1_700_000_000).unwrap();
+        store.save_tool_checked_at("deno", 5).unwrap();
+        assert_eq!(
+            store.tool_checked_at("yt-dlp").unwrap(),
+            Some(1_700_000_000)
+        );
+        assert_eq!(store.tool_checked_at("deno").unwrap(), Some(5));
+        assert_eq!(store.tool_checked_at("ffmpeg").unwrap(), None);
+        store.put_setting("tool_checked.ffmpeg", "soon").unwrap();
+        assert!(store.tool_checked_at("ffmpeg").is_err());
+    }
 
     #[test]
     fn lenient_settings_keep_readable_torrent_fields() {

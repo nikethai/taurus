@@ -1,0 +1,9 @@
+{
+  "id": "old1",
+  "title": "Yesterday's Stream",
+  "webpage_url": "https://www.youtube.com/watch?v=old1",
+  "extractor_key": "Youtube",
+  "live_status": "was_live",
+  "was_live": true,
+  "formats": []
+}

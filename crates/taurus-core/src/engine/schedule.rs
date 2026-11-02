@@ -61,7 +61,10 @@ impl Actor {
             let busy = read(&self.views).values().any(|v| {
                 matches!(
                     v.state,
-                    JobState::Downloading | JobState::Queued | JobState::Waiting
+                    JobState::Downloading
+                        | JobState::Recording
+                        | JobState::Queued
+                        | JobState::Waiting
                 )
             });
             if self.busy && !busy {
@@ -79,7 +82,7 @@ impl Actor {
         self.job_ended = false;
         let downloading = read(&self.views)
             .values()
-            .any(|v| v.state == JobState::Downloading);
+            .any(|v| matches!(v.state, JobState::Downloading | JobState::Recording));
         self.awake.set(self.settings.keep_awake && downloading);
         self.keeping_awake
             .store(self.awake.is_requested(), Ordering::Relaxed);
@@ -143,13 +146,13 @@ impl Actor {
         }
     }
 
-    /// Running HTTP jobs, and running torrents that are not Seeding: what
-    /// `max_active` and `torrent.max_active` limit.
+    /// Running HTTP and media jobs, and running torrents that are not
+    /// Seeding: what `max_active` and `torrent.max_active` limit.
     pub(super) fn active(&self) -> (usize, usize) {
         let views = read(&self.views);
         let running = self.running.keys().filter_map(|id| views.get(id));
         running.fold((0, 0), |(http, torrents), view| match view.kind {
-            JobKind::Http => (http + 1, torrents),
+            JobKind::Http | JobKind::Media => (http + 1, torrents),
             JobKind::Torrent if view.state == JobState::Seeding => (http, torrents),
             JobKind::Torrent => (http, torrents + 1),
         })
@@ -279,7 +282,11 @@ impl Actor {
     }
 
     /// Spawns the job's download task; the job is Downloading from here on.
+    /// A media job has a runner of its own (`start_media`).
     pub(super) fn start(&mut self, id: JobId) {
+        if self.is_media(id) {
+            return self.start_media(id);
+        }
         if let Err(e) = self.store.set_state(id, JobState::Downloading) {
             // The run records its own state as it starts.
             tracing::warn!(job = id.0, "could not record the start: {e}");

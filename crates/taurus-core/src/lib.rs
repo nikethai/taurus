@@ -5,6 +5,7 @@ pub mod filename;
 pub mod fixups;
 pub mod http;
 pub mod limit;
+pub mod media;
 pub mod page;
 pub mod plan;
 pub mod progress;
@@ -12,11 +13,13 @@ pub mod settings;
 pub mod store;
 pub mod system;
 pub mod timing;
+pub mod tools;
 pub mod torrent;
 mod when_done;
 
 pub use engine::{
-    AddRequest, Engine, EngineConfig, Event, JobView, LinkInfo, TorrentView, WhenDoneHold,
+    AddRequest, Engine, EngineConfig, Event, JobView, LinkInfo, MediaChoice, MediaView,
+    RemoveFiles, TorrentView, WhenDoneHold,
 };
 pub use errors::{CoreError, ErrorKind};
 pub use settings::{

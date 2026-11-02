@@ -25,6 +25,15 @@ export struct RowVm {
     finished-minute: int,
     finished-today: bool,
     peers: int,
+    // Media jobs: "" (not media) "getting-tools" "waiting-for-stream"
+    // "downloading" "merging" "converting"
+    phase: string,
+    // Playlist entries: done and total; total 0 = not a playlist. The row
+    // words them ("2 of 5 videos").
+    entries-done: int,
+    entries-total: int,
+    // How long a recording has run, e.g. "4:05"; "" = unknown.
+    live-elapsed: string,
 }
 
 // Footer numbers: counts and the overall time left.
@@ -55,6 +64,28 @@ export struct AddVm {
     files-text: string,
     // the link is already in the list
     duplicate: bool,
+    // A video or audio link (yt-dlp): the fields below apply.
+    is-media: bool,
+    // The video's picture; empty shows a placeholder tile.
+    thumbnail: image,
+    // "video" | "audio"
+    media-mode: string,
+    // QualityOption id: "best" "1080p" "720p" "audio-best" "audio-small"
+    quality-id: string,
+    // Messages.quality(quality-id), filled in by the app
+    quality-label: string,
+    // e.g. "3:32", "" = unknown
+    duration-text: string,
+    uploader: string,
+    // "" | "live" | "upcoming"
+    live: string,
+    // When an upcoming stream starts, local time ("14:05", or
+    // "2026-11-02 14:05" on another day); "" = unknown
+    starts-at: string,
+    // Videos in the playlist; 0 = not a playlist
+    playlist-count: int,
+    // The playlist is large: Download asks first (playlist-confirmed)
+    needs-confirm: bool,
 }
 
 // Settings screen values. Keys of `setting-changed` are these field names;

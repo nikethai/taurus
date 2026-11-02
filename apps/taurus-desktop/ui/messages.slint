@@ -29,10 +29,32 @@ export global Messages {
             return @tr("This torrent has unsafe file names, so it wasn't saved.");
         } else if (kind == "already_added") {
             return @tr("This download is already in your list.");
+        } else if (kind == "media_unavailable") {
+            return @tr("This video is private or was removed.");
+        } else if (kind == "media_region_locked") {
+            return @tr("This video isn't available in your country.");
+        } else if (kind == "tool_failed") {
+            return @tr("The video tools couldn't finish this file. The pieces were kept in the folder.");
+        } else if (kind == "needs_confirmation") {
+            return @tr("This needs your confirmation.");
         } else if (kind == "file_changed_on_server") {
             return @tr("The file changed on the server, so the download started over.");
         }
         return @tr("Something went wrong. Try again.");
+    }
+
+    // Name of a media quality (QualityOption id) on the Add screen.
+    public pure function quality(id: string) -> string {
+        if (id == "1080p") {
+            return @tr("1080p");
+        } else if (id == "720p") {
+            return @tr("720p");
+        } else if (id == "audio-best") {
+            return @tr("Best");
+        } else if (id == "audio-small") {
+            return @tr("Smaller file");
+        }
+        return @tr("Best available");
     }
 
     // Time until the next attempt: "1:05" from a minute up, "45 s" below.

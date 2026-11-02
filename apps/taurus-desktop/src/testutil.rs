@@ -21,5 +21,6 @@ pub fn view(id: i64, name: &str, state: JobState) -> JobView {
         retry_at: None,
         finished_at: None,
         info_hash: None,
+        media: None,
     }
 }

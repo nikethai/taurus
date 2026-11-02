@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
 reqwest = { workspace = true }
 rusqlite = { workspace = true }
 thiserror = { workspace = true }
@@ -26,6 +26,9 @@ fs4 = { workspace = true }
 dunce = { workspace = true }
 keepawake = { workspace = true }
 librqbit = { workspace = true }
+zip = { workspace = true }
+tar = { workspace = true }
+lzma-rust2 = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -34,7 +37,14 @@ libc = { workspace = true }
 xattr = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # `test-util` pauses time in the limiter tests.

@@ -2,6 +2,7 @@
 
 use crate::format;
 use crate::{RowVm, SummaryVm};
+use taurus_core::media::MediaPhase;
 use taurus_core::{JobKind, JobState, JobView};
 
 const DISC: &[&str] = &["iso", "img", "dmg"];
@@ -15,13 +16,19 @@ const IMAGE: &[&str] = &[
 ];
 
 /// Icon family of a file: "disc", "media", "music", "archive", "image",
-/// "magnet" (any torrent job) or "file".
+/// "magnet" (any torrent job) or "file". A media job's file is "media"
+/// unless its extension says otherwise.
 pub fn kind_for(file_name: &str, job_kind: JobKind) -> &'static str {
     if job_kind == JobKind::Torrent {
         return "magnet";
     }
+    let fallback = if job_kind == JobKind::Media {
+        "media"
+    } else {
+        "file"
+    };
     let Some((_, ext)) = file_name.rsplit_once('.') else {
-        return "file";
+        return fallback;
     };
     let ext = ext.to_ascii_lowercase();
     let ext = ext.as_str();
@@ -36,7 +43,24 @@ pub fn kind_for(file_name: &str, job_kind: JobKind) -> &'static str {
             return kind;
         }
     }
-    "file"
+    fallback
+}
+
+/// Icon family of a row: a media job is "live" while it records (or waits
+/// to record), "music" when only its audio is kept, else "media"; other
+/// jobs as `kind_for` says.
+pub fn row_kind(view: &JobView) -> &'static str {
+    match &view.media {
+        Some(m)
+            if view.state == JobState::Recording
+                || (m.live && view.state != JobState::Completed) =>
+        {
+            "live"
+        }
+        Some(m) if m.audio_only => "music",
+        Some(_) => "media",
+        None => kind_for(&view.file_name, view.kind),
+    }
 }
 
 fn state_name(state: JobState) -> &'static str {
@@ -48,6 +72,17 @@ fn state_name(state: JobState) -> &'static str {
         JobState::Seeding => "seeding",
         JobState::Failed => "failed",
         JobState::Completed => "done",
+        JobState::Recording => "recording",
+    }
+}
+
+fn phase_name(phase: MediaPhase) -> &'static str {
+    match phase {
+        MediaPhase::GettingTools => "getting-tools",
+        MediaPhase::WaitingForStream => "waiting-for-stream",
+        MediaPhase::Downloading => "downloading",
+        MediaPhase::Merging => "merging",
+        MediaPhase::Converting => "converting",
     }
 }
 
@@ -88,7 +123,7 @@ pub fn row_in<Tz: chrono::TimeZone>(view: &JobView, now_unix: i64, tz: &Tz) -> R
     RowVm {
         id: view.id.0.clamp(0, i32::MAX as i64) as i32,
         name: view.file_name.as_str().into(),
-        kind: kind_for(&view.file_name, view.kind).into(),
+        kind: row_kind(view).into(),
         state: state_name(view.state).into(),
         progress,
         done_text: format::bytes(view.downloaded).into(),
@@ -113,6 +148,26 @@ pub fn row_in<Tz: chrono::TimeZone>(view: &JobView, now_unix: i64, tz: &Tz) -> R
             .torrent
             .as_ref()
             .map_or(0, |t| t.peers.min(i32::MAX as u32) as i32),
+        phase: view
+            .media
+            .as_ref()
+            .map_or("", |m| phase_name(m.phase))
+            .into(),
+        entries_done: view
+            .media
+            .as_ref()
+            .map_or(0, |m| m.entries_done.min(i32::MAX as u32) as i32),
+        entries_total: view
+            .media
+            .as_ref()
+            .map_or(0, |m| m.entries_total.min(i32::MAX as u32) as i32),
+        live_elapsed: view
+            .media
+            .as_ref()
+            .and_then(|m| m.live_elapsed_secs)
+            .map(format::duration)
+            .unwrap_or_default()
+            .into(),
     }
 }
 
@@ -191,6 +246,63 @@ mod tests {
     }
 
     #[test]
+    fn media_rows() {
+        let now = 1_793_541_900;
+        let media = |state, audio_only, live| {
+            let mut v = view(1, "A Video", state);
+            v.kind = JobKind::Media;
+            v.media = Some(taurus_core::MediaView {
+                phase: taurus_core::media::MediaPhase::Downloading,
+                audio_only,
+                live,
+                entries_done: 0,
+                entries_total: 0,
+                live_elapsed_secs: None,
+                starts_at: None,
+                thumbnail: None,
+                files: Vec::new(),
+            });
+            v
+        };
+        let row = |v: &JobView| row_of(v, now);
+        assert_eq!(
+            row(&media(JobState::Downloading, false, false)).kind,
+            "media"
+        );
+        assert_eq!(row(&media(JobState::Queued, true, false)).kind, "music");
+        let recording = row(&media(JobState::Recording, false, true));
+        assert_eq!(
+            (recording.kind.as_str(), recording.state.as_str()),
+            ("live", "recording")
+        );
+        assert_eq!(row(&media(JobState::Queued, false, true)).kind, "live");
+        assert_eq!(row(&media(JobState::Completed, false, true)).kind, "media");
+        let mut v = media(JobState::Recording, false, true);
+        let m = v.media.as_mut().unwrap();
+        m.live_elapsed_secs = Some(65);
+        m.entries_done = 2;
+        m.entries_total = 5;
+        m.phase = taurus_core::media::MediaPhase::Merging;
+        let r = row(&v);
+        assert_eq!(
+            (
+                r.phase.as_str(),
+                r.live_elapsed.as_str(),
+                r.entries_done,
+                r.entries_total
+            ),
+            ("merging", "1:05", 2, 5)
+        );
+        let plain = row(&view(2, "a.bin", JobState::Downloading));
+        assert_eq!(
+            (plain.phase.as_str(), plain.live_elapsed.as_str()),
+            ("", "")
+        );
+        assert_eq!(kind_for("A Video", JobKind::Media), "media");
+        assert_eq!(kind_for("song.mp3", JobKind::Media), "music");
+    }
+
+    #[test]
     fn row_states() {
         let now = 1_793_541_900;
         let expect = [
@@ -201,6 +313,7 @@ mod tests {
             (JobState::Seeding, "seeding"),
             (JobState::Failed, "failed"),
             (JobState::Completed, "done"),
+            (JobState::Recording, "recording"),
         ];
         for (state, name) in expect {
             assert_eq!(row_of(&view(1, "a.bin", state), now).state, name);

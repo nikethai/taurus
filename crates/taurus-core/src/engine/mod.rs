@@ -8,10 +8,16 @@
 mod actor;
 mod inspect;
 mod jobs;
+mod media;
+mod media_job;
 mod open;
+mod remove;
 mod schedule;
 mod settings;
+mod stop_requests;
+mod tool_ops;
 mod torrent;
+mod types;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -24,11 +30,12 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::checksum;
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::http::resolve;
-use crate::settings::{PowerMode, Settings, WhenDone};
+use crate::media::fast_path_host;
+use crate::settings::Settings;
 use crate::store::{JobId, JobKind, JobState, Store};
-use crate::system::{SpaceSource, available_space};
-use crate::timing::Timing;
-use crate::torrent::hub::{TorrentHub, TorrentTestNet};
+use crate::system::SpaceSource;
+use crate::tools::{ToolManager, ToolStatus};
+use crate::torrent::hub::TorrentHub;
 use crate::torrent::source::{Source, classify};
 
 use actor::Command;
@@ -36,8 +43,11 @@ use actor::Command;
 pub use actor::JobMsg;
 pub use inspect::LinkInfo;
 use jobs::{downloaded, fixed_url, vet_mirrors, view_of};
+pub use media::{MediaChoice, MediaView};
 use open::assemble;
+pub use remove::RemoveFiles;
 use schedule::check_space;
+pub use types::{AddRequest, EngineConfig, Event, JobView, TorrentView};
 
 const COMMAND_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 1024;
@@ -46,143 +56,6 @@ const LOCK_FILE: &str = "taurus.lock";
 /// Start of the detail of the error `Engine::open` returns when another
 /// engine holds the data dir.
 const IN_USE: &str = "another taurus instance is using";
-
-pub struct EngineConfig {
-    /// Holds the database, `taurus.db`, and the lock file, `taurus.lock`.
-    /// Created if missing.
-    pub data_dir: PathBuf,
-    /// Retry and countdown delays.
-    pub timing: Timing,
-    /// Whether when-done actions that touch the OS really run.
-    pub power: PowerMode,
-    /// Whether the queue runs on its own. Without it, no job starts or is
-    /// retried unless `start_now` starts it, and Waiting jobs stay Waiting
-    /// on open: for short-lived front ends that only look at or edit the
-    /// jobs.
-    pub autostart: bool,
-    /// Test-only: where free space is read from, so tests need not fill a
-    /// disk. Not for front ends.
-    #[doc(hidden)]
-    pub available_space: SpaceSource,
-    /// Test-only torrent networking; front ends leave this None.
-    #[doc(hidden)]
-    pub torrent_test: Option<TorrentTestNet>,
-}
-
-impl EngineConfig {
-    /// Default timing; when-done actions run for real.
-    pub fn new(data_dir: impl Into<PathBuf>) -> EngineConfig {
-        EngineConfig {
-            data_dir: data_dir.into(),
-            timing: Timing::default(),
-            power: PowerMode::Execute,
-            autostart: true,
-            available_space,
-            torrent_test: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct AddRequest {
-    pub url: String,
-    pub dest_dir: PathBuf,
-    /// Overrides the name the server suggests; sanitized before use. Web
-    /// downloads only: a torrent is named after itself.
-    pub file_name: Option<String>,
-    /// Defaults to `DEFAULT_CONNECTIONS`. Web downloads only.
-    pub connections: Option<u32>,
-    /// Other URLs serving the same file. Each is checked at `add`; one that
-    /// fails to resolve, serves another size or another version (by its
-    /// validators) is dropped.
-    pub mirrors: Vec<String>,
-    /// The file's expected checksum, stored with the job.
-    pub checksum: Option<String>,
-    /// Sent as `Referer` with every request of the job.
-    pub referer: Option<String>,
-    /// Torrents only: the indices of the files to download; `None` is all.
-    pub only_files: Option<Vec<usize>>,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct JobView {
-    pub id: JobId,
-    /// The link requested for the file (after link fixups and any confirm
-    /// form).
-    pub url: String,
-    /// The link as it was added.
-    pub source_url: String,
-    pub file_name: String,
-    pub dest_dir: PathBuf,
-    pub state: JobState,
-    pub total: Option<u64>,
-    pub downloaded: u64,
-    /// 0 unless the job is running.
-    pub speed_bps: u64,
-    pub resumable: bool,
-    pub error: Option<(ErrorKind, String)>,
-    pub kind: JobKind,
-    /// `None` for an HTTP job.
-    pub torrent: Option<TorrentView>,
-    /// Unix seconds of the next retry of a Waiting job; `None` otherwise.
-    pub retry_at: Option<i64>,
-    /// Unix seconds at which a Completed job finished; `None` otherwise.
-    /// For a torrent this is when seeding ended (the download itself
-    /// finished when seeding started, which the view does not carry).
-    pub finished_at: Option<i64>,
-    /// Lowercase hex info-hash of a torrent; `None` for an HTTP job.
-    pub info_hash: Option<String>,
-}
-
-/// What only a torrent has.
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct TorrentView {
-    /// Peers connected now; 0 unless the torrent runs.
-    pub peers: u32,
-    /// Bytes uploaded in all, across restarts.
-    pub uploaded: u64,
-    pub upload_bps: u64,
-    /// Uploaded bytes over the size of the selected files.
-    pub ratio: f64,
-    pub files_selected: u32,
-    pub files_total: u32,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-pub enum Event {
-    JobAdded(JobView),
-    JobUpdated(JobView),
-    Progress {
-        id: JobId,
-        downloaded: u64,
-        total: Option<u64>,
-        speed_bps: u64,
-    },
-    JobRemoved(JobId),
-    SettingsChanged(Settings),
-    /// Nothing is Downloading, Queued or Waiting any more. Sent once each
-    /// time the last such job leaves those states. The when-done action
-    /// follows only when a job finishing (Completed or Failed) made the
-    /// queue idle, not a pause or a removal.
-    QueueIdle,
-    /// A Sleep or Shutdown runs in `seconds_left` (rounded up). Sent as the
-    /// countdown starts and then every second.
-    WhenDoneCountdown {
-        action: WhenDone,
-        seconds_left: u64,
-    },
-    /// The countdown stopped before it ran out.
-    WhenDoneCancelled,
-    /// The when-done action is due: front ends carry out Notify and Quit
-    /// (`command` is `None`); for Sleep and Shutdown, `command` is the
-    /// command line that ran (or would have, in `PowerMode::DryRun`). Sleep
-    /// and Shutdown are one-shot: `when_done` is then set back to Nothing
-    /// (saved, and announced with `SettingsChanged`).
-    WhenDoneFired {
-        action: WhenDone,
-        command: Option<String>,
-    },
-}
 
 type Views = Arc<RwLock<HashMap<JobId, JobView>>>;
 
@@ -206,6 +79,10 @@ pub struct Engine {
     hub: Arc<TorrentHub>,
     /// How long a magnet link's metadata is waited for.
     metadata_timeout: Duration,
+    /// yt-dlp, ffmpeg and Deno under `data_dir/tools`.
+    tools: Arc<ToolManager>,
+    /// Holds the database, the tools and the media jobs' thumbnails.
+    data_dir: PathBuf,
 }
 
 impl Engine {
@@ -227,7 +104,16 @@ impl Engine {
         let (engine, mut actor, commands) = assemble(config).await?;
         actor.after_change();
         tokio::spawn(actor.run(commands));
+        stop_requests::watch(&engine.data_dir, &engine.commands);
         Ok(engine)
+    }
+
+    /// The tools' versions and paths as stored in `config.data_dir`, read
+    /// without opening an engine, so it works while another engine holds the
+    /// data dir. Every tool is Ready or Missing: an install in progress in
+    /// another process is not visible.
+    pub fn read_tools_status(config: &EngineConfig) -> Vec<ToolStatus> {
+        ToolManager::read_status(&config.data_dir)
     }
 
     /// Every stored job, ordered by id, read without opening an engine or
@@ -261,6 +147,17 @@ impl Engine {
     /// torrent, unless a job already has that torrent (`AlreadyAdded`); it
     /// starts once fewer than `torrent.max_active` torrents download.
     /// `only_files` selects its files; mirrors and a checksum are refused.
+    ///
+    /// A link to a well-known video site (or, with `req.media` set, any web
+    /// page yt-dlp reads) is read by yt-dlp (see `inspect`) and queued as a
+    /// media job named after the video (or playlist), with `req.media`'s
+    /// quality and conversion (`best` and none by default). A playlist of
+    /// more than 50 entries is refused with `NeedsConfirmation` and the
+    /// detail `playlist:<count>` unless `confirm_large_playlist`; a single
+    /// video whose estimated size does not fit fails like a file; mirrors
+    /// and a checksum are refused. With `req.media_info` the link is taken
+    /// as the media it describes, and not read again. It counts toward `max_active` like a web
+    /// download; see `stop_recording` for live streams.
     pub async fn add(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         self.check_running()?;
         // Resolving may take minutes: the machine must not sleep meanwhile.
@@ -280,9 +177,11 @@ impl Engine {
             kind: ErrorKind::FolderUnavailable,
             detail: format!("folder {} is not available: {e}", req.dest_dir.display()),
         })?;
+        // Each kind of add is boxed, so this future stays small for callers
+        // on a small stack (a front end's main thread: 1 MiB on Windows).
         match classify(&req.url) {
             Ok(Source::Http(_)) => {}
-            Ok(source) => return self.add_torrent(req, source).await,
+            Ok(source) => return Box::pin(self.add_torrent(req, source)).await,
             // A bad magnet link; anything else is for `resolve` to report.
             Err(e) if e.kind == ErrorKind::SiteNotSupported => return Err(e),
             Err(_) => {}
@@ -304,7 +203,18 @@ impl Engine {
             });
         }
         let referer = req.referer.clone();
-        let probe = resolve(&self.client, &fixed_url(&req.url), referer.as_deref()).await?;
+        if fast_path_host(&req.url) || req.media_info.is_some() {
+            return Box::pin(self.add_media(req)).await;
+        }
+        let url = fixed_url(&req.url);
+        let probe = match Box::pin(resolve(&self.client, &url, referer.as_deref())).await {
+            Ok(probe) => probe,
+            // A web page; yt-dlp may read it, when asked for.
+            Err(page) if page.kind == ErrorKind::SiteNotSupported && req.media.is_some() => {
+                return Box::pin(self.add_media(req)).await;
+            }
+            Err(e) => return Err(e),
+        };
         if let Some(size) = probe.size {
             check_space(
                 &self.views,
@@ -315,7 +225,13 @@ impl Engine {
                 None,
             )?;
         }
-        req.mirrors = vet_mirrors(&self.client, &probe, &req.mirrors, referer.as_deref()).await;
+        req.mirrors = Box::pin(vet_mirrors(
+            &self.client,
+            &probe,
+            &req.mirrors,
+            referer.as_deref(),
+        ))
+        .await;
         self.call(|reply| Command::Add { req, probe, reply })
             .await?
     }
@@ -348,7 +264,7 @@ impl Engine {
         // Mirrors are not checked again: one that fails is dropped while
         // the job runs.
         let probe = match job.kind {
-            JobKind::Torrent => None,
+            JobKind::Torrent | JobKind::Media => None,
             JobKind::Http => Some(
                 resolve(
                     &self.client,
@@ -378,14 +294,27 @@ impl Engine {
     /// has changed. A torrent leaves the torrent session; with
     /// `delete_files` its own files go (those whose size is still the
     /// torrent's), then the folders they leave empty, and the folder it was
-    /// given if that is empty.
+    /// given if that is empty. A media job with `delete_files` loses its
+    /// finished files and the partial files its runs recorded writing (as
+    /// yt-dlp reported them, never found by name, so never another job's),
+    /// but not a playlist's folder. With `RemoveFiles::IfUnfinished` (see
+    /// `remove_with`) an unfinished media job loses only those partial
+    /// files: what it finished (a paused playlist's done videos) is kept.
     pub async fn remove(&self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
-        self.call(|reply| Command::Remove {
-            id,
-            delete_files,
-            reply,
-        })
-        .await?
+        let files = if delete_files {
+            RemoveFiles::All
+        } else {
+            RemoveFiles::Keep
+        };
+        self.remove_with(id, files).await
+    }
+
+    /// Like `remove`, with the choice of files made by the engine: with
+    /// `RemoveFiles::IfUnfinished` it looks at the job as it is when it
+    /// removes it, so a download that finished a moment ago keeps its file.
+    pub async fn remove_with(&self, id: JobId, files: RemoveFiles) -> Result<(), CoreError> {
+        self.call(|reply| Command::Remove { id, files, reply })
+            .await?
     }
 
     /// Every job, ordered by id.

@@ -15,7 +15,9 @@ use crate::plan::DEFAULT_CONNECTIONS;
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob, Store};
 use crate::system::marks::loggable;
 
+use super::RemoveFiles;
 use super::actor::{Actor, JobMsg, Run};
+use super::media::stored_media_view;
 use super::schedule::check_space;
 use super::settings::unix_now;
 use super::torrent::{stored_downloaded, stored_torrent_view};
@@ -80,6 +82,7 @@ impl Actor {
             only_files: None,
             uploaded: 0,
             seed_started_at: None,
+            media: None,
         };
         apply_probe(&mut job, probe);
         if let Err(e) = self.store.update_job(&job) {
@@ -190,7 +193,7 @@ impl Actor {
         Ok(())
     }
 
-    pub(super) async fn remove(&mut self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
+    pub(super) async fn remove(&mut self, id: JobId, files: RemoveFiles) -> Result<(), CoreError> {
         if !read(&self.views).contains_key(&id) {
             return Err(no_such_job());
         }
@@ -201,15 +204,29 @@ impl Actor {
         self.cancel_retry(id);
         self.retry_counts.remove(&id);
         self.resolved_again.remove(&id);
-        let removed = self.delete(id, delete_files).await;
+        // Decided now, after the run stopped: it may have just finished.
+        let delete_files = files.deletes(read(&self.views).get(&id));
+        let removed = self
+            .delete(id, delete_files, files == RemoveFiles::All)
+            .await;
         self.after_change();
         removed
     }
 
-    async fn delete(&mut self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
+    /// Forgets the job; with `delete_files` deletes its files (a media
+    /// job's finished ones only with `finished_too`, see `delete_media`).
+    async fn delete(
+        &mut self,
+        id: JobId,
+        delete_files: bool,
+        finished_too: bool,
+    ) -> Result<(), CoreError> {
         match self.store.get_job(id)? {
             Some(job) if job.kind == JobKind::Torrent => {
                 self.delete_torrent(&job, delete_files).await?;
+            }
+            Some(job) if job.kind == JobKind::Media => {
+                self.delete_media(&job, delete_files, finished_too);
             }
             Some(job) if delete_files => delete_job_files(&self.store, &job)?,
             _ => {}
@@ -226,6 +243,7 @@ impl Actor {
     /// whose link expired may have it resolved again (`resolve_again`).
     pub(super) fn on_finished(&mut self, id: JobId, outcome: JobOutcome) {
         let run = self.running.remove(&id);
+        self.media_stops.remove(&id);
         // Pause, remove or shutdown is waiting for this run to end.
         let told_to_stop = run.as_ref().is_some_and(|run| run.cancel.is_cancelled());
         let known = read(&self.views).get(&id).cloned();
@@ -235,6 +253,7 @@ impl Actor {
         });
         if let Some(view) = &mut view {
             self.keep_torrent_progress(view);
+            self.keep_media_progress(view);
         }
         if let JobOutcome::Failed(e) = &outcome
             && !told_to_stop
@@ -573,6 +592,7 @@ fn view_with(store: &Store, job: &JobRecord, downloaded: u64, known: Option<&Job
         retry_at: None,
         finished_at,
         info_hash: job.info_hash.clone(),
+        media: stored_media_view(job, known.and_then(|v| v.media.as_ref())),
     }
 }
 
@@ -728,5 +748,54 @@ mod tests {
 
         assert!(!actor.running.contains_key(&id));
         assert_eq!(actor.state_of(id), Some(JobState::Failed));
+    }
+
+    /// The decision of `RemoveFiles::IfUnfinished` is the actor's, made
+    /// after the run stopped: a download that finished a moment before the
+    /// remove was handled (its last message still queued) keeps its file.
+    /// Done on the actor itself: through the engine, which of the two comes
+    /// first cannot be arranged.
+    #[tokio::test]
+    async fn a_download_finishing_as_it_is_removed_keeps_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut actor, id) =
+            actor_stopping_a_run(dir.path(), JobState::Downloading).await;
+        let file = dir.path().join("x.bin");
+        std::fs::write(&file, b"done").unwrap();
+        // The run recorded Completed, then reported it.
+        actor.store.set_state(id, JobState::Completed).unwrap();
+        actor
+            .job_tx
+            .send(JobMsg::Finished {
+                id,
+                outcome: JobOutcome::Completed(file.clone()),
+            })
+            .unwrap();
+
+        actor.remove(id, RemoveFiles::IfUnfinished).await.unwrap();
+        assert!(file.is_file(), "a finished file is the user's");
+        assert!(actor.store.get_job(id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_download_stopped_by_the_remove_loses_its_partial_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_engine, mut actor, id) =
+            actor_stopping_a_run(dir.path(), JobState::Downloading).await;
+        let partial = dir.path().join(format!("x.bin.{PARTIAL_EXT}"));
+        std::fs::write(&partial, b"half").unwrap();
+        // Stopped by the remove: the run saved its progress and paused.
+        actor.store.set_state(id, JobState::Paused).unwrap();
+        actor
+            .job_tx
+            .send(JobMsg::Finished {
+                id,
+                outcome: JobOutcome::Paused,
+            })
+            .unwrap();
+
+        actor.remove(id, RemoveFiles::IfUnfinished).await.unwrap();
+        assert!(!partial.exists());
+        assert!(actor.store.get_job(id).unwrap().is_none());
     }
 }

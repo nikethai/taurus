@@ -75,7 +75,7 @@ pub fn outcome_line(view: &JobView) -> String {
         JobState::Queued | JobState::Waiting => {
             format!("{:?} (continue with: taurus run)", view.state)
         }
-        JobState::Downloading => format!("{:?}", view.state),
+        JobState::Downloading | JobState::Recording => format!("{:?}", view.state),
     }
 }
 
@@ -139,9 +139,20 @@ fn when_done_name(action: WhenDone) -> &'static str {
     }
 }
 
-/// What a torrent row says besides its state: peers while downloading, the
-/// ratio while sharing; empty for the rest.
-fn torrent_info(view: &JobView) -> String {
+/// What a row says besides its state: a torrent's peers while downloading
+/// and ratio while sharing; a live recording's length; a playlist's
+/// entries; empty for the rest.
+fn row_info(view: &JobView) -> String {
+    if let Some(m) = &view.media {
+        return match (view.state, m.live_elapsed_secs) {
+            (JobState::Recording, Some(secs)) => {
+                format!("live {}", rough(Duration::from_secs(secs)))
+            }
+            (JobState::Recording, None) => "waiting for the stream".to_string(),
+            _ if m.entries_total > 1 => format!("{} of {} videos", m.entries_done, m.entries_total),
+            _ => String::new(),
+        };
+    }
     match (&view.torrent, view.state) {
         (Some(t), JobState::Downloading) => format!("peers {}", t.peers),
         (Some(t), JobState::Seeding) => format!("sharing \u{b7} ratio {:.2}", t.ratio),
@@ -150,12 +161,12 @@ fn torrent_info(view: &JobView) -> String {
 }
 
 /// One row per job: id, state, kind, percent, size, name; an INFO column
-/// before the name when some torrent has something to say.
+/// before the name when some torrent or media job has something to say.
 pub fn job_table(views: &[JobView]) -> String {
     if views.is_empty() {
         return "No downloads.\n".to_string();
     }
-    let infos: Vec<String> = views.iter().map(torrent_info).collect();
+    let infos: Vec<String> = views.iter().map(row_info).collect();
     let info_width = infos.iter().map(|i| i.chars().count()).max().unwrap_or(0);
     let info_column = |info: &str| match info_width {
         0 => String::new(),
@@ -180,6 +191,7 @@ pub fn job_table(views: &[JobView]) -> String {
         let kind = match view.kind {
             JobKind::Http => "http",
             JobKind::Torrent => "torrent",
+            JobKind::Media => "media",
         };
         let _ = writeln!(
             out,
@@ -270,6 +282,7 @@ mod tests {
             retry_at: None,
             finished_at: None,
             info_hash: None,
+            media: None,
         }
     }
 
@@ -412,6 +425,58 @@ mod tests {
         assert_eq!(
             lines[2],
             "  12  Downloading  http           -           -  stream.ts"
+        );
+    }
+
+    #[test]
+    fn job_table_shows_media_jobs() {
+        let media = |state: JobState, elapsed: Option<u64>, done: u32, total: u32| JobView {
+            kind: JobKind::Media,
+            total: None,
+            file_name: "A Show".to_string(),
+            media: Some(taurus_core::MediaView {
+                phase: taurus_core::media::MediaPhase::Downloading,
+                audio_only: false,
+                live: elapsed.is_some(),
+                entries_done: done,
+                entries_total: total,
+                live_elapsed_secs: elapsed,
+                starts_at: None,
+                thumbnail: None,
+                files: Vec::new(),
+            }),
+            ..view(state)
+        };
+        let table = job_table(&[
+            media(JobState::Recording, Some(125), 0, 0),
+            media(JobState::Recording, None, 0, 0),
+            media(JobState::Downloading, None, 2, 5),
+            media(JobState::Completed, None, 1, 1),
+        ]);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(
+            lines[0],
+            "  ID  STATE        KIND     PERCENT        SIZE  INFO                    NAME"
+        );
+        assert_eq!(
+            lines[1],
+            "   7  Recording    media          -           -  live 2m                 A Show"
+        );
+        assert_eq!(
+            lines[2],
+            "   7  Recording    media          -           -  waiting for the stream  A Show"
+        );
+        assert_eq!(
+            lines[3],
+            "   7  Downloading  media          -           -  2 of 5 videos           A Show"
+        );
+        assert_eq!(
+            lines[4],
+            "   7  Completed    media          -           -                          A Show"
+        );
+        assert_eq!(
+            outcome_line(&media(JobState::Recording, None, 0, 0)),
+            "Recording"
         );
     }
 

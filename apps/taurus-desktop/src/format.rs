@@ -99,6 +99,34 @@ pub fn moment<Tz: chrono::TimeZone>(at_unix: i64, now_unix: i64, tz: &Tz) -> Opt
     })
 }
 
+/// A length of time as a clock reads: "0:07", "3:32", "1:02:03".
+pub fn duration(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// When something starts, in the local time of `tz`: "14:05" on the day of
+/// `now_unix`, else "2026-11-02 14:05". `None` for a time chrono cannot
+/// represent.
+pub fn starts_at<Tz: chrono::TimeZone>(at_unix: i64, now_unix: i64, tz: &Tz) -> Option<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let local = |t| chrono::DateTime::from_timestamp(t, 0).map(|d| d.with_timezone(tz));
+    let at = local(at_unix)?;
+    let now = local(now_unix)?;
+    let pattern = if at.date_naive() == now.date_naive() {
+        "%H:%M"
+    } else {
+        "%Y-%m-%d %H:%M"
+    };
+    Some(at.format(pattern).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +192,33 @@ mod tests {
         let m = moment(now - 10 * 3600, now, &minus5).unwrap();
         assert_eq!((m.same_day, m.hour, m.month, m.day), (false, 23, 10, 31));
         assert_eq!(moment(i64::MAX, now, &Utc), None);
+    }
+
+    #[test]
+    fn durations() {
+        assert_eq!(duration(0), "0:00");
+        assert_eq!(duration(7), "0:07");
+        assert_eq!(duration(212), "3:32");
+        assert_eq!(duration(3723), "1:02:03");
+        assert_eq!(duration(36_000), "10:00:00");
+    }
+
+    #[test]
+    fn start_times_in_local_time() {
+        use chrono::{FixedOffset, Utc};
+        // 2026-11-01 14:05:00 UTC
+        let now = 1_793_541_900;
+        assert_eq!(starts_at(now + 3600, now, &Utc).as_deref(), Some("15:05"));
+        assert_eq!(
+            starts_at(now + 86_400, now, &Utc).as_deref(),
+            Some("2026-11-02 14:05")
+        );
+        // 23:00 UTC is the next day at UTC+2.
+        let plus2 = FixedOffset::east_opt(2 * 3600).unwrap();
+        assert_eq!(
+            starts_at(now + 8 * 3600 + 55 * 60, now, &plus2).as_deref(),
+            Some("2026-11-02 01:00")
+        );
+        assert_eq!(starts_at(i64::MAX, now, &Utc), None);
     }
 }

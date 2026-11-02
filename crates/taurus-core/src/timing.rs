@@ -19,7 +19,18 @@ pub struct Timing {
     pub torrent_metadata_timeout: Duration,
     /// How often a running torrent's stats are read and reported.
     pub torrent_poll: Duration,
+    /// How long yt-dlp may take to stop after the graceful interrupt
+    /// (pause, stop, shutdown) before it is killed: 10 s, but 1 s on
+    /// Windows, where the Ctrl+Break rarely reaches it (a killed run still
+    /// resumes from its partial file, and a stopped recording is remuxed).
+    pub media_stop_grace: Duration,
 }
+
+/// `Timing::media_stop_grace` by default.
+#[cfg(windows)]
+const MEDIA_STOP_GRACE: Duration = Duration::from_secs(1);
+#[cfg(not(windows))]
+const MEDIA_STOP_GRACE: Duration = Duration::from_secs(10);
 
 impl Default for Timing {
     fn default() -> Timing {
@@ -32,6 +43,7 @@ impl Default for Timing {
             when_done_countdown: Duration::from_secs(60),
             torrent_metadata_timeout: Duration::from_secs(120),
             torrent_poll: Duration::from_millis(250),
+            media_stop_grace: MEDIA_STOP_GRACE,
         }
     }
 }
@@ -50,6 +62,7 @@ impl Timing {
             // times out on a loaded machine.
             torrent_metadata_timeout: Duration::from_secs(5),
             torrent_poll: Duration::from_millis(250),
+            media_stop_grace: Duration::from_millis(300),
         }
     }
 }
@@ -69,6 +82,8 @@ mod tests {
         assert_eq!(t.when_done_countdown, Duration::from_secs(60));
         assert_eq!(t.torrent_metadata_timeout, Duration::from_secs(120));
         assert_eq!(t.torrent_poll, Duration::from_millis(250));
+        let grace = if cfg!(windows) { 1 } else { 10 };
+        assert_eq!(t.media_stop_grace, Duration::from_secs(grace));
 
         let f = Timing::fast_for_tests();
         assert_eq!(f.backoff_base, Duration::from_millis(10));
@@ -79,5 +94,6 @@ mod tests {
         assert_eq!(f.when_done_countdown, Duration::from_millis(300));
         assert_eq!(f.torrent_metadata_timeout, Duration::from_secs(5));
         assert_eq!(f.torrent_poll, Duration::from_millis(250));
+        assert_eq!(f.media_stop_grace, Duration::from_millis(300));
     }
 }

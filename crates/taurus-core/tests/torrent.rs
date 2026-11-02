@@ -23,7 +23,7 @@ use taurus_core::torrent::job::{TorrentJobContext, run_torrent_job};
 use taurus_core::torrent::source::{Source, classify};
 use taurus_core::{
     AddRequest, Engine, EngineConfig, ErrorKind, Event, JobState, JobView, LinkInfo, PowerMode,
-    Settings, Timing, TorrentSettings, WhenDone,
+    RemoveFiles, Settings, Timing, TorrentSettings, WhenDone,
 };
 use taurus_testkit::{
     FileSpec, TestServer, TorrentLeecher, TorrentSeeder, content, make_torrent_bytes,
@@ -1141,6 +1141,27 @@ async fn seeding_job_pauses_and_resumes() {
     // Resuming queues it again, without asking any server.
     rig.engine.resume(id).await.unwrap();
     events_until(&mut events, |e| updated_to(e, id, JobState::Seeding)).await;
+    rig.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remove_if_unfinished_keeps_complete_torrent_files() {
+    let (seeder, a, _) = seeder().await;
+    let rig = EngineRig::new(vec![seeder.addr], policy(None, None)).await;
+    let mut events = rig.engine.subscribe();
+    let id = rig.engine.add(rig.request(&seeder.magnet)).await.unwrap();
+    events_until(&mut events, |e| updated_to(e, id, JobState::Seeding)).await;
+
+    // Paused after it finished: all its data is there, the files are the
+    // user's.
+    rig.engine.pause(id).await.unwrap();
+    assert_eq!(rig.view(id).state, JobState::Paused);
+    rig.engine
+        .remove_with(id, RemoveFiles::IfUnfinished)
+        .await
+        .unwrap();
+    assert!(rig.engine.snapshot().is_empty());
+    assert_eq!(fs::read(rig.dest.join("pack/a.bin")).unwrap(), a);
     rig.engine.shutdown().await.unwrap();
 }
 

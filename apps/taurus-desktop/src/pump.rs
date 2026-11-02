@@ -11,7 +11,7 @@ use slint::{Model, ModelRc, VecModel};
 use taurus_core::{ErrorKind, JobId, JobState, JobView, WhenDone};
 
 use crate::app::App;
-use crate::bridge::{Flush, WhenDoneUi};
+use crate::bridge::{Flush, ToolsBanner, WhenDoneUi};
 use crate::shell_text::simple_message;
 use crate::{AppWindow, CountdownVm, RowVm, notify, rows};
 
@@ -158,6 +158,17 @@ impl App {
         }
         if let Some(settings) = flush.settings {
             self.engine_settings(settings);
+        }
+        if let Some(tools) = flush.tools {
+            let (state, percent) = match tools {
+                ToolsBanner::Hidden => ("", -1),
+                ToolsBanner::Installing { percent } => {
+                    ("installing", percent.map_or(-1, i32::from))
+                }
+                ToolsBanner::Failed => ("failed", -1),
+            };
+            ui.set_tools_banner(state.into());
+            ui.set_tools_percent(percent);
         }
         if let Some(when_done) = flush.when_done {
             self.when_done(&ui, when_done);
