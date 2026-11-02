@@ -17,6 +17,7 @@ use crate::media::{
     YtDlp, classify_stderr_with, failure_detail, live_from_start_refused, only_thumbnail_refused,
     standard_quality,
 };
+use crate::network::ProxySetting;
 use crate::plan::Segment;
 use crate::store::{JobRecord, JobState, Store};
 use crate::system::marks::mark_downloaded;
@@ -36,6 +37,8 @@ pub(super) struct MediaJob {
     /// The job's share of the speed limit (bytes per second), as it
     /// started; `None` without a limit.
     pub(super) limit_rate: Option<u64>,
+    /// The proxy setting as the job started: each yt-dlp run is given it.
+    pub(super) proxy: ProxySetting,
     /// For `Event::ToolStatus` while the tools are installed.
     pub(super) events: broadcast::Sender<Event>,
     /// Pause, removal or shutdown.
@@ -107,7 +110,7 @@ async fn drive(ctx: &MediaJob) -> Result<JobOutcome, CoreError> {
     // What the job's runs wrote and did not finish, kept across the runs.
     let mut partials = options.partial_files.clone();
     loop {
-        let yt_dlp = YtDlp::prepare(&ctx.tools).await?;
+        let yt_dlp = YtDlp::prepare(&ctx.tools, &ctx.proxy).await?;
         let mut command = yt_dlp.command();
         command
             .args(download_args(

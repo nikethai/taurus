@@ -57,14 +57,16 @@ pub(crate) fn fast_path_host(url: &str) -> bool {
 /// first if they are missing) and reads what it prints. A link yt-dlp has
 /// no extractor for is `SiteNotSupported`; its other failures are mapped by
 /// [`classify_stderr`](super::errors); a run longer than `timeout` is killed
-/// (with everything it started) and fails with `Timeout`.
+/// (with everything it started) and fails with `Timeout`. yt-dlp uses
+/// `proxy`.
 pub async fn inspect(
     tools: &crate::tools::ToolManager,
     url: &str,
+    proxy: &crate::network::ProxySetting,
     timeout: Duration,
 ) -> Result<MediaInfo, CoreError> {
     let url = url.trim();
-    let yt_dlp = YtDlp::prepare(tools).await?;
+    let yt_dlp = YtDlp::prepare(tools, proxy).await?;
     let mut command = yt_dlp.command();
     if single_video_link(url) {
         command.arg("--no-playlist");

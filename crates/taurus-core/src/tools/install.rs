@@ -15,6 +15,7 @@ use url::Url;
 
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::http::client::request_error;
+use crate::network::SharedClient;
 
 use super::CURRENT_FILE;
 use super::catalog::{Asset, ChecksumSource, Layout, parse_sidecar, parse_sums};
@@ -30,7 +31,8 @@ const HASH_VERSION_LEN: usize = 12;
 pub(super) type Report<'a> = &'a (dyn Fn(u64, Option<u64>) + Send + Sync);
 
 pub(super) struct Install<'a> {
-    pub client: &'a reqwest::Client,
+    /// Taken for each request, so a new proxy applies at once.
+    pub client: &'a SharedClient,
     /// `tools/<tool>`.
     pub dir: PathBuf,
     pub assets: Vec<Asset>,
@@ -52,10 +54,10 @@ impl Install<'_> {
         let first = &self.assets[0];
         let hash = match &first.checksum {
             ChecksumSource::SidecarOfResolved => {
-                let resolved = resolved_url(self.client, first.url.clone()).await?;
-                sidecar_hash(self.client, sidecar_of(&resolved)).await?
+                let resolved = resolved_url(&self.client.get(), first.url.clone()).await?;
+                sidecar_hash(&self.client.get(), sidecar_of(&resolved)).await?
             }
-            source => published_hash(self.client, source).await?,
+            source => published_hash(&self.client.get(), source).await?,
         };
         Ok(hash_version(&hash))
     }
@@ -94,7 +96,8 @@ impl Install<'_> {
             let name = asset.url.path_segments().and_then(|mut s| s.next_back());
             let file = incoming.join(name.filter(|n| !n.is_empty()).unwrap_or("asset"));
             let offset = done;
-            let (sha256, size) = download(self.client, asset, &file, &|n, total| {
+            let client = self.client.get();
+            let (sha256, size) = download(&client, asset, &file, &|n, total| {
                 report(offset + n, total.map(|t| offset + t));
             })
             .await?;

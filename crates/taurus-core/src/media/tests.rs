@@ -220,6 +220,7 @@ fn global_flags_for_every_run() {
     let args = global_args(
         std::path::Path::new("/t/deno/2.5.0/deno"),
         std::path::Path::new("/t/ffmpeg/abc"),
+        &crate::network::ProxySetting::System,
     );
     let args: Vec<_> = args
         .iter()
@@ -238,6 +239,12 @@ fn global_flags_for_every_run() {
             "--no-colors"
         ]
     );
+    let proxy = crate::network::ProxySetting::Manual {
+        url: "http://127.0.0.1:3128".to_string(),
+    };
+    let args = global_args(Path::new("/d"), Path::new("/f"), &proxy);
+    let tail: Vec<_> = args[args.len() - 2..].iter().collect();
+    assert_eq!(tail, ["--proxy", "http://127.0.0.1:3128"]);
 }
 
 #[test]

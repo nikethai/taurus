@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use taurus_core::errors::ErrorKind;
-use taurus_core::http::{JobContext, JobOutcome, build_client, host_key, probe, resolve, run_job};
+use taurus_core::http::{JobContext, JobOutcome, host_key, probe, resolve, run_job};
 use taurus_core::limit::Limiter;
+use taurus_core::network::{ProxySetting, build_client};
 use taurus_core::plan;
 use taurus_core::store::{JobId, JobKind, JobState, NewJob, Store};
 use taurus_core::timing::Timing;
@@ -95,7 +96,7 @@ impl Fixture {
         let (progress, _progress_rx) = mpsc::unbounded_channel();
         let ctx = JobContext {
             id,
-            client: build_client(),
+            client: build_client(&ProxySetting::System).into(),
             store: self.store.clone(),
             cancel,
             progress,
@@ -135,7 +136,9 @@ async fn probe_reads_size_ranges_name_validators() {
     spec.content_disposition = Some("attachment; filename=\"x.bin\"".into());
     let url = fx.server.serve("/dl/file.dat", spec);
 
-    let p = probe(&build_client(), &url).await.unwrap();
+    let p = probe(&build_client(&ProxySetting::System), &url)
+        .await
+        .unwrap();
     assert_eq!(p.size, Some(5_000_000));
     assert!(p.ranges);
     assert_eq!(p.file_name, "x.bin");
@@ -155,7 +158,9 @@ async fn probe_without_ranges() {
     spec.ranges = false;
     let url = fx.server.serve("/files/report.pdf", spec);
 
-    let p = probe(&build_client(), &url).await.unwrap();
+    let p = probe(&build_client(&ProxySetting::System), &url)
+        .await
+        .unwrap();
     assert!(!p.ranges);
     assert_eq!(p.size, Some(123_456));
     assert_eq!(p.file_name, "report.pdf");
@@ -165,13 +170,17 @@ async fn probe_without_ranges() {
 async fn probe_zero_byte_file_and_status_errors() {
     let fx = Fixture::new().await;
     let url = fx.server.serve("/empty.txt", FileSpec::new(0));
-    let p = probe(&build_client(), &url).await.unwrap();
+    let p = probe(&build_client(&ProxySetting::System), &url)
+        .await
+        .unwrap();
     assert_eq!((p.size, p.ranges), (Some(0), false));
 
     let mut gone = FileSpec::new(10);
     gone.fail_first = vec![404];
     let url = fx.server.serve("/gone", gone);
-    let err = probe(&build_client(), &url).await.unwrap_err();
+    let err = probe(&build_client(&ProxySetting::System), &url)
+        .await
+        .unwrap_err();
     assert_eq!(err.kind, ErrorKind::LinkExpired);
 }
 
@@ -432,7 +441,9 @@ const QUOTA_PAGE: &str = "<html><body><p>Sorry, you can't view or download this 
     try accessing the file again later.</p></body></html>";
 
 async fn resolve_err(url: &str) -> taurus_core::CoreError {
-    resolve(&build_client(), url, None).await.unwrap_err()
+    resolve(&build_client(&ProxySetting::System), url, None)
+        .await
+        .unwrap_err()
 }
 
 fn html_after(after_requests: usize, status: u16, headers: &[(&str, &str)]) -> FailAfter {
@@ -452,7 +463,9 @@ async fn resolve_follows_one_confirm_form() {
     let page = fx.server.serve_page("/drive", 200, &[], CONFIRM_PAGE);
     let file = fx.server.serve("/file", FileSpec::new(2 * MIB));
 
-    let p = resolve(&build_client(), &page, None).await.unwrap();
+    let p = resolve(&build_client(&ProxySetting::System), &page, None)
+        .await
+        .unwrap();
     assert_eq!(p.size, Some(2 * MIB as u64));
     assert!(p.ranges);
     assert_eq!(p.requested_url.as_str(), format!("{file}?confirm=t"));
@@ -478,9 +491,13 @@ async fn resolve_sends_referer_on_every_request() {
     let page = fx.server.serve_page("/drive", 200, &[], CONFIRM_PAGE);
     fx.server.serve("/file", FileSpec::new(1000));
 
-    resolve(&build_client(), &page, Some("https://ref.example/post"))
-        .await
-        .unwrap();
+    resolve(
+        &build_client(&ProxySetting::System),
+        &page,
+        Some("https://ref.example/post"),
+    )
+    .await
+    .unwrap();
     for path in ["/drive", "/file"] {
         let headers = fx.server.last_request_headers(path);
         assert!(

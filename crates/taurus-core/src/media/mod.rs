@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 use crate::errors::CoreError;
+use crate::network::{ProxySetting, ytdlp_proxy_args};
 use crate::tools::{ToolKind, ToolManager};
 
 pub(crate) use errors::{classify_stderr_with, live_from_start_refused, only_thumbnail_refused};
@@ -142,12 +143,13 @@ pub struct MediaInfo {
 }
 
 /// The flags every yt-dlp run gets: Deno as the JavaScript runtime, the
-/// folder holding ffmpeg and ffprobe, Windows-safe file names, and plain,
-/// line-by-line output without warnings or colors.
-pub fn global_args(deno: &Path, ffmpeg_dir: &Path) -> Vec<OsString> {
+/// folder holding ffmpeg and ffprobe, Windows-safe file names, plain,
+/// line-by-line output without warnings or colors, and the proxy setting
+/// ([`ytdlp_proxy_args`]).
+pub fn global_args(deno: &Path, ffmpeg_dir: &Path, proxy: &ProxySetting) -> Vec<OsString> {
     let mut js_runtime = OsString::from("deno:");
     js_runtime.push(deno);
-    vec![
+    let mut args: Vec<OsString> = vec![
         "--js-runtimes".into(),
         js_runtime,
         "--ffmpeg-location".into(),
@@ -156,7 +158,9 @@ pub fn global_args(deno: &Path, ffmpeg_dir: &Path) -> Vec<OsString> {
         "--no-warnings".into(),
         "--newline".into(),
         "--no-colors".into(),
-    ]
+    ];
+    args.extend(ytdlp_proxy_args(proxy).into_iter().map(OsString::from));
+    args
 }
 
 /// The installed yt-dlp and the global flags for it.
@@ -169,8 +173,11 @@ pub(crate) struct YtDlp {
 impl YtDlp {
     /// Installs yt-dlp and Deno if they are missing (without reporting
     /// progress; `Engine` does that first), and finds ffmpeg's folder
-    /// (which holds nothing until ffmpeg is installed).
-    pub(crate) async fn prepare(tools: &ToolManager) -> Result<YtDlp, CoreError> {
+    /// (which holds nothing until ffmpeg is installed). Its runs use `proxy`.
+    pub(crate) async fn prepare(
+        tools: &ToolManager,
+        proxy: &ProxySetting,
+    ) -> Result<YtDlp, CoreError> {
         let none = |_| {};
         let (yt_dlp, deno) = tokio::join!(
             tools.ensure(ToolKind::YtDlp, &none),
@@ -184,7 +191,7 @@ impl YtDlp {
             .and_then(|s| s.path)
             .and_then(|p| p.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| tools.tool_dir(ToolKind::Ffmpeg));
-        let global = global_args(&deno, &ffmpeg_dir);
+        let global = global_args(&deno, &ffmpeg_dir, proxy);
         Ok(YtDlp { path, global })
     }
 

@@ -2330,3 +2330,25 @@ async fn a_taken_port_falls_back_to_a_random_one() {
     assert_ne!(addr.port(), 0);
     hub.shutdown().await;
 }
+
+/// librqbit takes the SOCKS proxy URL the engine hands it (one naming no
+/// port gets 1080, which librqbit needs).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_session_starts_with_a_socks_proxy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("taurus.db")).unwrap();
+    let proxy = taurus_core::ProxySetting::Manual {
+        url: "socks5h://user:pw@127.0.0.1".to_string(),
+    };
+    let url = taurus_core::network::torrent_proxy(&proxy);
+    assert_eq!(url.as_deref(), Some("socks5h://user:pw@127.0.0.1:1080"));
+    let hub = TorrentHub::new(
+        tmp.path(),
+        &TorrentSettings::default(),
+        Some(TorrentTestNet::default()),
+        store,
+    )
+    .with_proxy(url);
+    hub.session().await.unwrap();
+    hub.shutdown().await;
+}

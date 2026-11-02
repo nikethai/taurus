@@ -414,7 +414,7 @@ mod tests {
         let (progress, _progress_rx) = mpsc::unbounded_channel();
         let ctx = JobContext {
             id,
-            client: crate::http::build_client(),
+            client: crate::network::SharedClient::new(&crate::network::ProxySetting::System),
             store,
             cancel: CancellationToken::new(),
             progress,

@@ -50,7 +50,7 @@ impl Engine {
             check_paths(&info.files)?;
             return Ok(info);
         }
-        let (_, info) = metainfo(&self.client, &source, None).await?;
+        let (_, info) = metainfo(&self.client.get(), &source, None).await?;
         Ok(info)
     }
 
@@ -83,7 +83,8 @@ impl Engine {
                 meta: None,
             },
             source => {
-                let (bytes, info) = metainfo(&self.client, &source, req.referer.as_deref()).await?;
+                let client = self.client.get();
+                let (bytes, info) = metainfo(&client, &source, req.referer.as_deref()).await?;
                 TorrentInput {
                     info_hash: info.info_hash.clone(),
                     name: info.name.clone(),

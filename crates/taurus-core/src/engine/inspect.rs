@@ -62,7 +62,8 @@ impl Engine {
         if media::fast_path_host(link) {
             return self.inspect_media(link).await;
         }
-        match resolve(&self.client, &fixed_url(link), None).await {
+        let client = self.client.get();
+        match resolve(&client, &fixed_url(link), None).await {
             Ok(probe) => Ok(LinkInfo::File {
                 url: probe.requested_url.to_string(),
                 name: probe.file_name,
@@ -99,7 +100,8 @@ impl Engine {
         );
         yt_dlp?;
         deno?;
-        media::inspect(&self.tools, link, MEDIA_TIMEOUT).await
+        let proxy = self.settings().network.proxy;
+        media::inspect(&self.tools, link, &proxy, MEDIA_TIMEOUT).await
     }
 
     /// The job that already has `input`, if any (the lowest id when several

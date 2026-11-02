@@ -366,6 +366,7 @@ impl Actor {
             let url = fixed_url(&job.source_url);
             let resolved = async {
                 let auth = secrets.auth_for(&job).await;
+                let client = client.get();
                 resolve_with(&client, &url, job.referer.as_deref(), auth.as_ref()).await
             };
             let probe = tokio::select! {

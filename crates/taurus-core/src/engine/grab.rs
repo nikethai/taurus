@@ -55,7 +55,7 @@ impl Engine {
     pub async fn grab(&self, page_url: &str, opts: GrabOptions) -> Result<GrabResult, CoreError> {
         self.check_running()?;
         let requested = parse_page_url(page_url)?;
-        let page = read_page(&self.client, &requested).await?;
+        let page = read_page(&self.client.get(), &requested).await?;
         let cut = page.cut;
         let page_url = page.url.clone();
         let want_listing = opts.subfolders;
@@ -86,7 +86,7 @@ impl Engine {
                 let client = self.client.clone();
                 let dir = page_dir.clone();
                 let read = run_bounded(batch.to_vec(), FOLDER_CONCURRENCY, move |folder| {
-                    read_folder(client.clone(), dir.clone(), folder)
+                    read_folder(client.get(), dir.clone(), folder)
                 })
                 .await;
                 for (folder, links, cut) in read.into_iter().flatten().flatten() {
@@ -115,7 +115,7 @@ impl Engine {
     /// within 10 seconds. Probes like `add` does (the first byte is asked
     /// for, never the body), four at a time.
     pub async fn probe_sizes(&self, urls: Vec<String>) -> Vec<Option<u64>> {
-        probe_sizes_with(&self.client, urls, PROBE_TIMEOUT).await
+        probe_sizes_with(&self.client.get(), urls, PROBE_TIMEOUT).await
     }
 }
 
@@ -465,7 +465,7 @@ mod tests {
         });
         let started = std::time::Instant::now();
         let sizes = probe_sizes_with(
-            &crate::http::build_client(),
+            &crate::network::build_client(&crate::network::ProxySetting::System),
             vec![
                 format!("http://{addr}/a.bin"),
                 format!("http://{addr}/b.bin"),

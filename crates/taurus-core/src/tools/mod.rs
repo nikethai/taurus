@@ -25,6 +25,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
 
 use crate::errors::{CoreError, ErrorKind};
+use crate::network::SharedClient;
 use crate::store::Store;
 
 use catalog::asset_for;
@@ -161,7 +162,8 @@ pub type Progress<'a> = &'a (dyn Fn(ToolStatus) + Send + Sync);
 pub struct ToolManager {
     root: PathBuf,
     sources: ToolSources,
-    client: reqwest::Client,
+    /// Taken for each request (see `SharedClient`).
+    client: SharedClient,
     /// Persists when each tool was last checked, if set.
     store: Option<Store>,
     /// Unix seconds of each tool's last check (this run).
@@ -177,11 +179,17 @@ pub struct ToolManager {
 }
 
 impl ToolManager {
-    pub fn new(data_dir: &Path, sources: ToolSources, client: reqwest::Client) -> ToolManager {
+    /// `client` is the engine's [`SharedClient`] (or a plain client, which
+    /// never changes).
+    pub fn new(
+        data_dir: &Path,
+        sources: ToolSources,
+        client: impl Into<SharedClient>,
+    ) -> ToolManager {
         ToolManager {
             root: data_dir.join("tools"),
             sources,
-            client,
+            client: client.into(),
             store: None,
             checked: Mutex::default(),
             states: Mutex::default(),
@@ -453,7 +461,7 @@ impl ToolManager {
             .github_api
             .join(path)
             .expect("a relative path joins onto a URL");
-        install::latest_tag(&self.client, url).await
+        install::latest_tag(&self.client.get(), url).await
     }
 
     /// The active version and its main binary, if that binary exists.

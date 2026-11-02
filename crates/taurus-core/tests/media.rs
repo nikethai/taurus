@@ -268,9 +268,14 @@ async fn media_inspect_kills_the_process_group_on_timeout() {
     let tools = ToolManager::new(tmp.path(), sources(&host), reqwest::Client::new());
     let link = "https://www.youtube.com/watch?v=times_out";
     let started = std::time::Instant::now();
-    let err = media::inspect(&tools, link, Duration::from_millis(700))
-        .await
-        .unwrap_err();
+    let err = media::inspect(
+        &tools,
+        link,
+        &Default::default(),
+        Duration::from_millis(700),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Timeout);
     assert!(
         started.elapsed() < Duration::from_secs(25),

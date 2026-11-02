@@ -59,6 +59,8 @@ pub struct TorrentHub {
     closed: AtomicBool,
     store: Store,
     settings: TorrentSettings,
+    /// A SOCKS proxy for peers and HTTP trackers (`network::torrent_proxy`).
+    proxy: Option<String>,
     data_dir: PathBuf,
     test: Option<TorrentTestNet>,
     /// The latest `set_limits`, as librqbit takes them; a session starting
@@ -89,6 +91,7 @@ impl TorrentHub {
             closed: AtomicBool::new(false),
             store,
             settings: settings.clone(),
+            proxy: None,
             data_dir: data_dir.to_path_buf(),
             test,
             limits: Mutex::new(limits_config(
@@ -98,6 +101,13 @@ impl TorrentHub {
             placement: Mutex::new(()),
             next_id: AtomicUsize::new(0),
         }
+    }
+
+    /// Sets the SOCKS proxy URL (`network::torrent_proxy`) the session
+    /// starts with; like the port, it is fixed once the hub exists.
+    pub fn with_proxy(mut self, proxy: Option<String>) -> TorrentHub {
+        self.proxy = proxy;
+        self
     }
 
     /// The session. The first call starts it and reconciles it with the
@@ -147,8 +157,14 @@ impl TorrentHub {
             detail: format!("could not prune the torrent session's list: {e}"),
         })?;
         let limits = *lock(&self.limits);
-        let session =
-            start_session(&self.data_dir, &self.settings, self.test.is_some(), limits).await?;
+        let session = start_session(
+            &self.data_dir,
+            &self.settings,
+            self.proxy.as_deref(),
+            self.test.is_some(),
+            limits,
+        )
+        .await?;
         // librqbit has already restored, and started, what it persisted.
         let restored = session.with_torrents(|it| it.map(|(id, _)| id + 1).max());
         self.next_id.store(restored.unwrap_or(0), Ordering::SeqCst);

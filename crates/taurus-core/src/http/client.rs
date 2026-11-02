@@ -1,33 +1,10 @@
-use std::time::Duration;
-
-use reqwest::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue};
-
 use crate::errors::{CoreError, ErrorKind, classify_reqwest, classify_status};
 
-const USER_AGENT: &str = concat!(
+pub(crate) const USER_AGENT: &str = concat!(
     "Taurus/",
     env!("CARGO_PKG_VERSION"),
     " (+https://github.com/nikethai/taurus)"
 );
-
-/// The one client every download uses: stable User-Agent, no content
-/// encoding (byte offsets must match the file), system proxy settings, no
-/// automatic Referer.
-pub fn build_client() -> reqwest::Client {
-    let mut headers = HeaderMap::new();
-    headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
-    reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .default_headers(headers)
-        .connect_timeout(Duration::from_secs(20))
-        .read_timeout(Duration::from_secs(60))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        // A redirect keeps the job's Referer (as browsers do) instead of
-        // naming the redirecting URL.
-        .referer(false)
-        .build()
-        .expect("static HTTP client configuration is valid")
-}
 
 /// Classifies a transport error, keeping its cause chain in the detail.
 pub(crate) fn request_error(e: reqwest::Error) -> CoreError {

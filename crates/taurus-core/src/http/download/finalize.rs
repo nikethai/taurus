@@ -127,8 +127,9 @@ async fn expected_sum(ctx: &JobContext, job: &JobRecord) -> Result<Option<Sha256
 /// The text of a `SHA256SUMS` file, fetched like the job's own requests;
 /// `None` on any error, a non-2xx answer, a body over 1 MiB, or cancel.
 async fn fetch_sums(ctx: &JobContext, job: &JobRecord, url: url::Url) -> Option<String> {
+    let client = ctx.client.get();
     let build = |url: &str| {
-        let request = ctx.client.get(url);
+        let request = client.get(url);
         match &job.referer {
             Some(referer) => request.header(REFERER, referer),
             None => request,

@@ -9,8 +9,8 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::errors::{CoreError, ErrorKind};
-use crate::http::build_client;
 use crate::limit::{Limiter, PeakTracker};
+use crate::network::{SharedClient, torrent_proxy};
 use crate::store::{JobKind, JobState, Store};
 use crate::system::AwakeGuard;
 use crate::tools::ToolManager;
@@ -67,12 +67,15 @@ pub(super) async fn assemble(
     }
     restore_thumbnails(&config.data_dir, views.values_mut());
 
-    let hub = Arc::new(TorrentHub::new(
-        &config.data_dir,
-        &settings.torrent,
-        config.torrent_test.clone(),
-        store.clone(),
-    ));
+    let hub = Arc::new(
+        TorrentHub::new(
+            &config.data_dir,
+            &settings.torrent,
+            config.torrent_test.clone(),
+            store.clone(),
+        )
+        .with_proxy(torrent_proxy(&settings.network.proxy)),
+    );
     // Torrents about to run start the session now, which makes it agree
     // with the store first. Short-lived front ends that only look at or
     // edit the jobs (no autostart) leave it for the first torrent that runs.
@@ -100,7 +103,7 @@ pub(super) async fn assemble(
             let _ = job_tx.send(JobMsg::WhenDoneFired(action));
         })
     };
-    let client = build_client();
+    let client = SharedClient::new(&settings.network.proxy);
     let secrets = Secrets::new(config.secrets.clone(), &store.database_token()?);
     let (torrent_settings, _) = watch::channel(settings.torrent.clone());
     let tools = Arc::new(

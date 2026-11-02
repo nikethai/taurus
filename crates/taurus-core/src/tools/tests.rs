@@ -8,6 +8,7 @@ use taurus_testkit::{FakeToolHost, ToolRelease, hang_pid_file, run_retrying};
 
 use super::*;
 use crate::errors::ErrorKind;
+use crate::network::{ProxySetting, build_client};
 
 const YT1: &str = "2026.01.01";
 const YT2: &str = "2026.02.01";
@@ -64,7 +65,7 @@ fn manager_for(data_dir: &Path, host: &FakeToolHost) -> ToolManager {
     ToolManager::new(
         data_dir,
         ToolSources::under(&base),
-        crate::http::build_client(),
+        build_client(&ProxySetting::System),
     )
 }
 
@@ -461,7 +462,11 @@ async fn a_withdrawn_build_keeps_the_installed_one() {
         yt_dlp: base.join("gone/").unwrap(),
         ..ToolSources::under(&base)
     };
-    let manager = ToolManager::new(f.tmp.path(), gone.clone(), crate::http::build_client());
+    let manager = ToolManager::new(
+        f.tmp.path(),
+        gone.clone(),
+        build_client(&ProxySetting::System),
+    );
     let err = manager
         .update(ToolKind::YtDlp, true, &|_| {})
         .await
@@ -480,7 +485,7 @@ async fn a_withdrawn_build_keeps_the_installed_one() {
     assert_eq!(f.host.requests(""), before);
 
     let fresh = tempfile::tempdir().unwrap();
-    let manager = ToolManager::new(fresh.path(), gone, crate::http::build_client());
+    let manager = ToolManager::new(fresh.path(), gone, build_client(&ProxySetting::System));
     let err = manager.ensure(ToolKind::YtDlp, &|_| {}).await.unwrap_err();
     assert_eq!(err.kind, ErrorKind::ToolMissing);
 }
@@ -511,7 +516,7 @@ fn check_intervals() {
 async fn every_platform_layout_installs() {
     let f = Fixture::new().await;
     let sources = ToolSources::under(&url::Url::parse(&f.host.base_url()).unwrap());
-    let client = crate::http::build_client();
+    let client = SharedClient::new(&ProxySetting::System);
     for (kind, os, arch, musl) in [
         (ToolKind::Ffmpeg, "macos", "x86_64", false),
         (ToolKind::Ffmpeg, "macos", "aarch64", false),

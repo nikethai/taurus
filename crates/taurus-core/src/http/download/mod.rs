@@ -46,7 +46,9 @@ use round::{HostLimit, RoundEnd, remember_cap, run_round};
 
 pub struct JobContext {
     pub id: JobId,
-    pub client: reqwest::Client,
+    /// The engine's client, taken for each request (so a new proxy
+    /// applies to the job's next request).
+    pub client: crate::network::SharedClient,
     pub store: Store,
     pub cancel: CancellationToken,
     /// `(job, downloaded, total, speed in bytes/s)`, at most 4 per second.

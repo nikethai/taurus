@@ -159,7 +159,7 @@ pub(super) struct Actor {
     /// Holds the data dir; released when the actor stops.
     pub(super) _lock: std::fs::File,
     pub(super) store: Store,
-    pub(super) client: reqwest::Client,
+    pub(super) client: crate::network::SharedClient,
     pub(super) views: Views,
     pub(super) events: broadcast::Sender<Event>,
     /// The jobs whose download task is running.

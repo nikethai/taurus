@@ -7,6 +7,7 @@ pub mod grab;
 pub mod http;
 pub mod limit;
 pub mod media;
+pub mod network;
 pub mod page;
 pub mod plan;
 pub mod progress;
@@ -27,7 +28,8 @@ pub use errors::{CoreError, ErrorKind};
 pub use grab::{GrabOptions, GrabResult, GrabbedLink};
 pub use secrets::Credentials;
 pub use settings::{
-    PowerMode, Settings, SpeedLimit, ThemeChoice, TorrentSettings, UiMode, UiSettings, WhenDone,
+    NetworkSettings, PowerMode, ProxySetting, Settings, SpeedLimit, ThemeChoice, TorrentSettings,
+    UiMode, UiSettings, WhenDone,
 };
 pub use store::{JobId, JobKind, JobState};
 pub use timing::Timing;

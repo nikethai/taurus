@@ -3,7 +3,7 @@
 use rusqlite::{OptionalExtension, params};
 
 use crate::errors::{CoreError, ErrorKind};
-use crate::settings::Settings;
+use crate::settings::{ProxySetting, Settings};
 
 use super::{Store, db_err, now_secs};
 
@@ -35,8 +35,8 @@ impl Store {
     /// are logged and copied to `settings.unreadable` (replacing an older
     /// copy), then each readable field is kept and the rest defaulted
     /// (everything, if the value is not a JSON object). `max_active` and
-    /// `torrent.max_active` are at least 1. Only a database error is
-    /// returned.
+    /// `torrent.max_active` are at least 1, and a manual proxy that cannot
+    /// be used becomes `System`. Only a database error is returned.
     pub fn load_settings_lenient(&self) -> Result<Settings, CoreError> {
         let Some(raw) = self.setting(SETTINGS_KEY)? else {
             return Ok(Settings::default());
@@ -51,6 +51,10 @@ impl Store {
         };
         settings.max_active = settings.max_active.max(1);
         settings.torrent.max_active = settings.torrent.max_active.max(1);
+        if let Err(e) = settings.network.proxy.check() {
+            tracing::warn!("ignoring the saved proxy ({e}); using the system settings");
+            settings.network.proxy = ProxySetting::System;
+        }
         Ok(settings)
     }
 
@@ -221,7 +225,10 @@ fn readable_fields(raw: &str) -> Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{SpeedLimit, ThemeChoice, TorrentSettings, UiSettings, WhenDone};
+    use crate::settings::{
+        NetworkSettings, ProxySetting, SpeedLimit, ThemeChoice, TorrentSettings, UiSettings,
+        WhenDone,
+    };
     use crate::store::test_support::open_temp;
 
     #[test]
@@ -317,6 +324,40 @@ mod tests {
     }
 
     #[test]
+    fn lenient_settings_and_the_network_section() {
+        let (_dir, store) = open_temp();
+        let manual = |url: &str| ProxySetting::Manual {
+            url: url.to_string(),
+        };
+        for (saved, proxy) in [
+            // Saved before the proxy setting existed.
+            (r#"{"max_active":4}"#, ProxySetting::System),
+            (r#"{"max_active":4,"network":7}"#, ProxySetting::System),
+            (
+                r#"{"max_active":4,"network":{"proxy":"Bogus"}}"#,
+                ProxySetting::System,
+            ),
+            (
+                r#"{"max_active":4,"network":{"proxy":"None","x":1}}"#,
+                ProxySetting::None,
+            ),
+            (
+                r#"{"max_active":4,"network":{"proxy":{"Manual":{"url":"http://h:1"}}}}"#,
+                manual("http://h:1"),
+            ),
+            // Reads, but cannot be used.
+            (
+                r#"{"max_active":4,"network":{"proxy":{"Manual":{"url":"nope"}}}}"#,
+                ProxySetting::System,
+            ),
+        ] {
+            store.put_setting(SETTINGS_KEY, saved).unwrap();
+            let s = store.load_settings_lenient().unwrap();
+            assert_eq!((s.max_active, s.network.proxy), (4, proxy), "{saved}");
+        }
+    }
+
+    #[test]
     fn settings_roundtrip() {
         let (_dir, store) = open_temp();
         assert_eq!(store.load_settings().unwrap(), Settings::default());
@@ -332,6 +373,11 @@ mod tests {
                 max_active: 2,
                 listen_port: Some(51413),
                 ..TorrentSettings::default()
+            },
+            network: NetworkSettings {
+                proxy: ProxySetting::Manual {
+                    url: "socks5h://127.0.0.1:9050".to_string(),
+                },
             },
             ui: UiSettings {
                 accent: "Vega".to_string(),

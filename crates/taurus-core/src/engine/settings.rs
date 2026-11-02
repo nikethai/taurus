@@ -29,9 +29,16 @@ impl Actor {
                 });
             }
         }
+        // Refused now, not at the first download.
+        settings.network.proxy.check()?;
         self.store.save_settings(&settings)?;
         if settings.when_done != self.settings.when_done {
             self.when_done.cancel();
+        }
+        // Every request from now on; the torrent session keeps the proxy it
+        // started with until the engine opens again.
+        if settings.network.proxy != self.settings.network.proxy {
+            self.client.set_proxy(&settings.network.proxy);
         }
         *write(&self.shared_settings) = settings.clone();
         // Running torrents follow the new seeding policy at once.

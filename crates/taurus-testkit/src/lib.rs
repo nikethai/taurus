@@ -1,5 +1,6 @@
 //! Test support for Taurus: a local HTTP server with scriptable behavior.
 
+mod proxy;
 mod tools;
 mod torrent;
 
@@ -241,6 +242,8 @@ fn owned_pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
 pub struct TestServer {
     base: String,
     shared: Shared,
+    /// The absolute-form request targets received, in order.
+    proxied: proxy::Proxied,
     task: JoinHandle<()>,
 }
 
@@ -251,17 +254,29 @@ impl TestServer {
             .expect("bind test server");
         let addr = listener.local_addr().expect("test server address");
         let shared: Shared = Arc::default();
+        let proxied = proxy::Proxied::default();
         let app = Router::new()
             .route("/{*path}", get(handle))
-            .with_state(shared.clone());
+            .with_state(shared.clone())
+            .layer(axum::middleware::from_fn_with_state(
+                proxied.clone(),
+                proxy::record_proxied,
+            ));
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
         TestServer {
             base: format!("http://{addr}"),
             shared,
+            proxied,
             task,
         }
+    }
+
+    /// `http://127.0.0.1:<port>`, without a trailing slash; as a proxy URL
+    /// for a server from [`TestServer::start_proxy`].
+    pub fn base_url(&self) -> &str {
+        &self.base
     }
 
     /// Registers `kind` at `path` with fresh counters and returns the full URL.
@@ -848,6 +863,27 @@ mod tests {
         let url = server.serve("/known", FileSpec::new(1));
         let resp = get(&url.replace("known", "other"), None).await;
         assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn proxy_serves_absolute_form_requests_by_path() {
+        let proxy = TestServer::start_proxy().await;
+        let spec = FileSpec::new(1000);
+        proxy.serve("/dir/x.bin", spec.clone());
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(proxy.base_url()).unwrap())
+            .build()
+            .unwrap();
+        let target = "http://unresolvable.invalid/dir/x.bin";
+        let resp = client.get(target).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.bytes().await.unwrap(), content(&spec));
+        assert_eq!(proxy.proxied_requests(), [target]);
+        assert_eq!(proxy.requests("/dir/x.bin"), 1);
+        // A request in the usual form is served, not recorded as proxied.
+        let direct = get(&format!("{}/dir/x.bin", proxy.base_url()), None).await;
+        assert_eq!(direct.status(), 200);
+        assert_eq!(proxy.proxied_requests().len(), 1);
     }
 
     #[tokio::test]

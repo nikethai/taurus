@@ -35,6 +35,7 @@ use crate::checksum;
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::http::{Auth, resolve_with};
 use crate::media::fast_path_host;
+use crate::network::SharedClient;
 use crate::settings::Settings;
 use crate::store::{JobId, JobKind, JobState, Store};
 use crate::system::SpaceSource;
@@ -76,7 +77,9 @@ pub struct Engine {
     settings: Arc<RwLock<Settings>>,
     /// The actor's keep-awake wish, copied for `keeping_awake`.
     keeping_awake: Arc<AtomicBool>,
-    client: reqwest::Client,
+    /// The HTTP client, shared with the actor and the tools; take it
+    /// (`get`) for each request.
+    client: SharedClient,
     /// Live `WhenDoneHold`s, shared with the actor.
     holds: Arc<AtomicUsize>,
     /// Tells the actor that `holds` changed.
@@ -230,7 +233,8 @@ impl Engine {
         }
         let url = fixed_url(&req.url);
         let auth = req.credentials.clone().and_then(|c| Auth::new(c, &url));
-        let resolved = resolve_with(&self.client, &url, referer.as_deref(), auth.as_ref());
+        let client = self.client.get();
+        let resolved = resolve_with(&client, &url, referer.as_deref(), auth.as_ref());
         let probe = match Box::pin(resolved).await {
             Ok(probe) => probe,
             // A web page; yt-dlp may read it, when asked for (with no
@@ -255,7 +259,7 @@ impl Engine {
             )?;
         }
         req.mirrors = Box::pin(vet_mirrors(
-            &self.client,
+            &self.client.get(),
             &probe,
             &req.mirrors,
             referer.as_deref(),
@@ -307,7 +311,8 @@ impl Engine {
                 let auth = self.secrets.auth_for(&job).await;
                 let url = fixed_url(&job.source_url);
                 let referer = job.referer.as_deref();
-                Some(resolve_with(&self.client, &url, referer, auth.as_ref()).await?)
+                let client = self.client.get();
+                Some(resolve_with(&client, &url, referer, auth.as_ref()).await?)
             }
         };
         self.call(|reply| Command::Resume { id, probe, reply })
@@ -378,9 +383,13 @@ impl Engine {
     /// then emits `SettingsChanged`. A higher `max_active` starts more
     /// Queued jobs; a lower one lets running jobs finish (likewise
     /// `torrent.max_active` for torrents). A `max_active` or
-    /// `torrent.max_active` of 0 is refused. The torrent port, DHT and UPnP
-    /// apply the next time the engine opens. Nothing changes if saving
-    /// fails.
+    /// `torrent.max_active` of 0 is refused, and so is a manual proxy that
+    /// `network::parse_proxy` refuses. A new proxy applies to every web
+    /// request from the next one on and to yt-dlp's next run (a running
+    /// video download keeps its own). The torrent port, DHT, UPnP and proxy
+    /// apply the next time the engine opens (`network::torrent_proxy_changes`
+    /// tells whether the proxy change matters to torrents). Nothing changes
+    /// if saving fails.
     pub async fn set_settings(&self, settings: Settings) -> Result<(), CoreError> {
         self.call(|reply| Command::SetSettings { settings, reply })
             .await?

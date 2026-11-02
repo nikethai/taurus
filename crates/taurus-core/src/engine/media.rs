@@ -133,7 +133,7 @@ impl Engine {
             .call(|reply| Command::AddMedia { req, add, reply })
             .await??;
         if let Some(url) = info.thumbnail_url {
-            let client = self.client.clone();
+            let client = self.client.get();
             let dir = self.data_dir.join(THUMBS_DIR);
             let tx = self.hold_tx.clone();
             tokio::spawn(async move {
@@ -285,6 +285,7 @@ impl Actor {
             store: self.store.clone(),
             grace: self.timing.media_stop_grace,
             limit_rate: self.media_rate(),
+            proxy: self.settings.network.proxy.clone(),
             events: self.events.clone(),
             cancel: cancel.clone(),
             finish: finish.clone(),

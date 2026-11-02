@@ -62,7 +62,7 @@ pub(super) struct Worker {
     pub(super) idx: usize,
     /// Index of `url` in the job's sources.
     pub(super) source: usize,
-    pub(super) client: reqwest::Client,
+    pub(super) client: crate::network::SharedClient,
     pub(super) url: String,
     pub(super) referer: Option<String>,
     /// The job's credentials, sent if `url` is on the link's origin.
@@ -152,8 +152,9 @@ impl Worker {
         if self.written >= end {
             return Ok(WorkerEnd::Complete);
         }
+        let client = self.client.get();
         let build = |url: &str| {
-            let mut request = self.client.get(url);
+            let mut request = client.get(url);
             if self.resumable {
                 request = request.header(RANGE, format!("bytes={}-{}", self.written, end - 1));
             }
