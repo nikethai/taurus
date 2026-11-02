@@ -159,19 +159,30 @@ enum ConfigAction {
     Set { key: String, value: String },
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let cli = match parse() {
         Ok(cli) => cli,
         Err(code) => return code,
     };
-    match run(cli).await {
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("error: cannot start: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let code = match runtime.block_on(run(cli)) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
-    }
+    };
+    // The engine has shut down by now. A keychain write stuck on an unanswered
+    // unlock prompt runs on a blocking thread that `#[tokio::main]` would wait
+    // for without end; give up on it instead of hanging at exit.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+    code
 }
 
 /// Parses the arguments and folds `add --file` into the URLs.

@@ -227,8 +227,6 @@ async fn remove_deletes_secret() {
     }
 }
 
-/// Credentials go to the link's own host only: not to a host a redirect
-/// leads to, nor to a mirror elsewhere.
 /// A web page with a video choice is for yt-dlp, which never gets a
 /// password: credentials there are refused as for any media link, not
 /// reported as an unsupported page.
@@ -252,6 +250,8 @@ async fn credentials_with_a_video_choice_on_a_web_page_are_refused() {
     engine.shutdown().await.unwrap();
 }
 
+/// Credentials go to the link's own host only: not to a host a redirect
+/// leads to, nor to a mirror elsewhere.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn credentials_stay_on_their_host() {
     let fx = Fixture::new().await;
