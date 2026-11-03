@@ -158,6 +158,13 @@ impl RecentSaves {
     /// The newest one's echo means every older echo has come (the engine
     /// sends them in order): those are forgotten. Anything else is a
     /// change made in the engine (the when-done reset, another program).
+    /// Forgets every save but `settings`, the engine's state after a failed
+    /// save: its echoes and later ones are shown again.
+    pub(crate) fn reset_to(&mut self, settings: &Settings) {
+        self.0.clear();
+        self.0.push_back(settings.clone());
+    }
+
     pub(crate) fn take_echo(&mut self, settings: &Settings) -> bool {
         match self.0.iter().rposition(|s| s == settings) {
             Some(i) if i + 1 == self.0.len() => {
@@ -223,6 +230,12 @@ impl SettingsWriter {
     /// See `RecentSaves::take_echo`.
     fn take_echo(&self, settings: &Settings) -> bool {
         self.recent.borrow_mut().take_echo(settings)
+    }
+
+    /// A save failed: `settings` (read back from the engine) are what it
+    /// holds now, so every remembered save is forgotten in their favour.
+    fn resync(&self, settings: &Settings) {
+        self.recent.borrow_mut().reset_to(settings);
     }
 
     /// Every change has been saved (or failed): the engine's settings are
@@ -307,6 +320,17 @@ impl App {
     /// made here is still being saved or they echo an older save.
     pub(crate) fn engine_settings(&self, settings: Settings) {
         if self.writer.idle() && self.writer.take_echo(&settings) {
+            *self.settings.borrow_mut() = settings;
+            self.push_settings();
+        }
+    }
+
+    /// A save failed: show the engine's settings again (the failed change is
+    /// not kept on screen as if saved), unless a newer change is on its way.
+    /// They usually equal an older save, so the echo check is bypassed.
+    pub(crate) fn settings_failed(&self, settings: Settings) {
+        if self.writer.idle() {
+            self.writer.resync(&settings);
             *self.settings.borrow_mut() = settings;
             self.push_settings();
         }
@@ -406,6 +430,25 @@ mod tests {
             recent.saved(s);
         }
         assert_eq!(recent.0.len(), RECENT_SAVES);
+    }
+
+    /// After a failed save the engine still holds an older save; reading it
+    /// back must be shown (not ignored as an old echo), and so must the
+    /// engine's later changes.
+    #[test]
+    fn a_failed_save_shows_the_engines_settings_again() {
+        let mut recent = RecentSaves::default();
+        let a = Settings::default();
+        let mut b = a.clone();
+        b.ui.theme = taurus_core::ThemeChoice::Dark;
+        recent.saved(a.clone());
+        recent.saved(b.clone());
+        assert!(!recent.take_echo(&a), "an old echo stays hidden");
+        recent.reset_to(&a);
+        assert!(recent.take_echo(&a), "the engine's state after a failure");
+        let mut c = a.clone();
+        c.ui.theme = taurus_core::ThemeChoice::Light;
+        assert!(recent.take_echo(&c), "a later change in the engine");
     }
 
     /// The mode switch changes `ui.mode` only; a custom speed shows as

@@ -519,7 +519,7 @@ impl App {
             UiMsg::Inspected { seq, result } => self.inspected(seq, *result),
             UiMsg::AddFailed(kind) => self.add_failed(kind),
             UiMsg::MediaAdded { seq, result } => self.media_added(seq, result),
-            UiMsg::SettingsFailed => self.engine_settings(self.engine.settings()),
+            UiMsg::SettingsFailed => self.settings_failed(self.engine.settings()),
             UiMsg::Forwarded(links) => self.forwarded(links),
             UiMsg::Clipboard(text) => self.clipboard_text(&text),
             UiMsg::Link(link) => self.offer_link(link),
