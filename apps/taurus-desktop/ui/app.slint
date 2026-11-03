@@ -296,6 +296,8 @@ export component AppWindow inherits Window {
                             horizontal-stretch: root.layout == "wide" ? 0 : 1;
                             detail: root.detail;
                             show-back: root.layout != "wide";
+                            dialog-open: root.remove-dialog.visible || root.password-dialog.visible
+                                || root.files-dialog.visible;
                             is-macos: root.is-macos;
                             back => {
                                 root.select(-1);

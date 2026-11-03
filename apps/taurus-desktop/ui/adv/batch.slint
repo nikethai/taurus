@@ -107,9 +107,22 @@ component LineRow inherits Rectangle {
 
 // Shows `LinksUi.batch` and asks the app through `LinksUi`; a page
 // line's "Find files →" is `find-files`.
-export component AdvBatch inherits Rectangle {
+export component AdvBatch inherits FocusScope {
     callback find-files(string);
     callback back();
+
+    // Escape goes back, from anywhere on the screen.
+    focus-on-tab-navigation: false;
+    init => {
+        self.focus();
+    }
+    key-pressed(event) => {
+        if (event.text == Key.Escape) {
+            root.back();
+            return accept;
+        }
+        return reject;
+    }
 
     property <BatchVm> vm: LinksUi.batch;
 

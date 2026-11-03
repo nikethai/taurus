@@ -34,7 +34,7 @@ component SectionItem inherits Pressable {
     }
 }
 
-export component AdvSettings inherits Rectangle {
+export component AdvSettings inherits FocusScope {
     // The section list and one section at a time.
     in property <bool> wide;
     callback back();
@@ -53,8 +53,19 @@ export component AdvSettings inherits Rectangle {
         return !root.wide || SettingsUi.section == key;
     }
 
+    // Escape goes back (like Back), from anywhere on the screen.
+    focus-on-tab-navigation: false;
     init => {
         SettingsUi.opened();
+        self.focus();
+    }
+    key-pressed(event) => {
+        if (event.text == Key.Escape) {
+            SettingsUi.leave();
+            root.back();
+            return accept;
+        }
+        return reject;
     }
 
     VerticalLayout {

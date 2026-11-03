@@ -8,7 +8,11 @@ export component Pressable inherits Rectangle {
     in property <bool> enabled: true;
     out property <bool> pressed: touch.pressed;
     out property <bool> hovered: touch.has-hover;
+    // Has the keyboard focus; `focus()` gives it.
+    out property <bool> focused: focus.has-focus;
     callback clicked();
+
+    forward-focus: focus;
 
     accessible-role: button;
     accessible-enabled: enabled;

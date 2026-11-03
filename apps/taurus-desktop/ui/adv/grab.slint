@@ -106,8 +106,21 @@ component GrabRow inherits Pressable {
 }
 
 // Shows `LinksUi.grab` and asks the app through `LinksUi`.
-export component AdvGrab inherits Rectangle {
+export component AdvGrab inherits FocusScope {
     callback back();
+
+    // Escape goes back, from anywhere on the screen.
+    focus-on-tab-navigation: false;
+    init => {
+        self.focus();
+    }
+    key-pressed(event) => {
+        if (event.text == Key.Escape) {
+            root.back();
+            return accept;
+        }
+        return reject;
+    }
 
     property <GrabVm> vm: LinksUi.grab;
 

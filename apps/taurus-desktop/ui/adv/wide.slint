@@ -65,7 +65,7 @@ export component AdvWide inherits Rectangle {
                         root.search-changed(text);
                     }
                 }
-                IconButton {
+                add-button := IconButton {
                     icon: root.pasting ? "close" : "plus";
                     label: root.pasting ? @tr("Close the link field") : @tr("Add a download");
                     clicked => {
@@ -80,40 +80,52 @@ export component AdvWide inherits Rectangle {
                     }
                 }
             }
-            if root.pasting: VerticalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                spacing: 6px;
-                LinkField {
-                    field-height: 44px;
-                    init => {
-                        self.focus-input();
-                    }
-                    entered(link) => {
+            // Escape from the field closes the panel; the focus goes back to "+".
+            if root.pasting: FocusScope {
+                focus-on-tab-navigation: false;
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) {
                         root.pasting = false;
-                        root.link-entered(link);
+                        add-button.focus();
+                        return accept;
                     }
+                    return reject;
                 }
-                HorizontalLayout {
-                    spacing: 4px;
-                    TextButton {
-                        text: @tr("Several links…");
-                        kind: "quiet";
-                        clicked => {
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 6px;
+                    LinkField {
+                        field-height: 44px;
+                        init => {
+                            self.focus-input();
+                        }
+                        entered(link) => {
                             root.pasting = false;
-                            root.open-batch();
+                            root.link-entered(link);
                         }
                     }
-                    TextButton {
-                        text: @tr("Grab links from a page…");
-                        kind: "quiet";
-                        clicked => {
-                            root.pasting = false;
-                            root.open-grab();
+                    HorizontalLayout {
+                        spacing: 4px;
+                        TextButton {
+                            text: @tr("Several links…");
+                            kind: "quiet";
+                            clicked => {
+                                root.pasting = false;
+                                root.open-batch();
+                            }
                         }
-                    }
-                    Rectangle {
-                        horizontal-stretch: 1;
+                        TextButton {
+                            text: @tr("Grab links from a page…");
+                            kind: "quiet";
+                            clicked => {
+                                root.pasting = false;
+                                root.open-grab();
+                            }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
                     }
                 }
             }

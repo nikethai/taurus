@@ -10,7 +10,7 @@ import { ComboBox, ListView, ScrollView } from "std-widgets.slint";
 import { SourceChip } from "row.slint";
 import { SegmentMap, Pair, SectionLabel } from "detail_parts.slint";
 
-export component DetailPane inherits Rectangle {
+export component DetailPane inherits FocusScope {
     in property <DetailVm> detail;
     // The compact layout: a Back button closes the detail.
     in property <bool> show-back;
@@ -120,7 +120,44 @@ export component DetailPane inherits Rectangle {
         root.browsers-open = false;
     }
 
-    background: Theme.panel;
+    // A dialog over the window is open; when it closes, the keys come
+    // back here.
+    in property <bool> dialog-open;
+    changed dialog-open => {
+        if (!root.dialog-open && root.detail.visible) {
+            root.focus();
+        }
+    }
+
+    // Escape closes an open choice (convert, browsers), then, compact,
+    // the detail itself. The keys reach here from anywhere in the pane.
+    focus-on-tab-navigation: false;
+    init => {
+        if (root.show-back) {
+            root.focus();
+        }
+    }
+    key-pressed(event) => {
+        if (event.text != Key.Escape) {
+            return reject;
+        }
+        if (root.convert-open || root.browsers-open) {
+            root.convert-open = false;
+            root.browsers-open = false;
+            root.focus();
+        } else if (root.show-back) {
+            root.back();
+        } else {
+            return reject;
+        }
+        return accept;
+    }
+
+    Rectangle {
+        width: root.width;
+        height: root.height;
+        background: Theme.panel;
+    }
 
     if !root.detail.visible: Text {
         x: 16px;

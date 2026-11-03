@@ -8,9 +8,9 @@ import { Icon } from "../icons.slint";
 import { AdvAddVm } from "../types.slint";
 import { Messages } from "../messages.slint";
 import { IconButton, TextButton, KindBadge, LoadingDots, Card, Segmented, Segment } from "../widgets.slint";
-import { CheckBox, ComboBox, LineEdit, ScrollView, TextEdit } from "std-widgets.slint";
+import { CheckBox, LineEdit, ScrollView, TextEdit } from "std-widgets.slint";
 import { SectionLabel } from "detail_parts.slint";
-import { TorrentPicker } from "torrent.slint";
+import { TorrentOptions } from "torrent.slint";
 import { MediaOptions, BrowserRow } from "add_media.slint";
 
 // A label over a text field.
@@ -148,68 +148,7 @@ component FileOptions inherits VerticalLayout {
     }
 }
 
-component TorrentOptions inherits VerticalLayout {
-    in property <AdvAddVm> vm;
-    callback field-changed(string, string);
-    callback toggle-file(int);
-    callback toggle-all(bool);
-    callback toggle-group(string);
-
-    pure function ratio-index(v: string) -> int {
-        if (v == "0") {
-            return 1;
-        } else if (v == "1") {
-            return 2;
-        } else if (v == "2") {
-            return 3;
-        } else if (v == "never") {
-            return 4;
-        }
-        return 0;
-    }
-
-    spacing: 12px;
-    SectionLabel {
-        text: @tr("Files");
-    }
-    TorrentPicker {
-        files: root.vm.files;
-        selected-count: root.vm.selected-count;
-        selected-size: root.vm.selected-size;
-        free-text: root.vm.free-text;
-        short-of-space: root.vm.short-of-space;
-        toggle-file(i) => {
-            root.toggle-file(i);
-        }
-        toggle-all(on) => {
-            root.toggle-all(on);
-        }
-        toggle-group(path) => {
-            root.toggle-group(path);
-        }
-    }
-    HorizontalLayout {
-        spacing: 10px;
-        Text {
-            text: @tr("Keep sharing");
-            width: 110px;
-            vertical-alignment: center;
-            font-size: 12px;
-            color: Theme.muted;
-        }
-        ComboBox {
-            horizontal-stretch: 1;
-            accessible-label: @tr("Keep sharing until ratio");
-            model: [@tr("As in Settings"), @tr("Stop when done"), @tr("Until ratio 1"), @tr("Until ratio 2"), @tr("No limit")];
-            current-index: root.ratio-index(root.vm.ratio);
-            selected => {
-                root.field-changed("ratio", ["default", "0", "1", "2", "never"][self.current-index]);
-            }
-        }
-    }
-}
-
-export component AdvAdd inherits Rectangle {
+export component AdvAdd inherits FocusScope {
     in property <AdvAddVm> vm;
     // Safari's sign-in is offered on macOS only.
     in property <bool> is-macos;
@@ -240,6 +179,20 @@ export component AdvAdd inherits Rectangle {
     property <bool> ready: options && !vm.busy && vm.checksum-ok
         && (vm.kind != "torrent" || vm.selected-count > 0);
     property <bool> sign-in-error: vm.error-kind == "needs_sign_in" || vm.error-kind == "blocked_by_bot_check";
+
+    // Escape cancels, from anywhere on the screen.
+    focus-on-tab-navigation: false;
+    init => {
+        self.focus();
+    }
+    key-pressed(event) => {
+        if (event.text == Key.Escape) {
+            root.password = "";
+            root.cancelled();
+            return accept;
+        }
+        return reject;
+    }
 
     pure function byline(a: AdvAddVm) -> string {
         if (a.uploader != "" && a.duration-text != "") {

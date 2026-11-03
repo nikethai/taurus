@@ -22,7 +22,8 @@ use taurus_core::{
 use taurus_desktop::app::App;
 use taurus_desktop::shell_text::simple_message;
 use taurus_desktop::{
-    AppWindow, BannerVm, LinksUi, Messages, RowVm, Screen, SettingsVm, Theme, WhenDoneUi,
+    AdvRowVm, AppWindow, BannerVm, DetailVm, FilesDialogVm, LinksUi, Messages, PasswordDialogVm,
+    RemoveDialogVm, RowVm, Screen, SettingsUi, SettingsVm, Theme, TorrentFileVm, WhenDoneUi,
 };
 use taurus_testkit::{
     FailAfter, FakeToolHost, FileSpec, TestServer, ToolRelease, TorrentSeeder, process_args_log,
@@ -41,6 +42,7 @@ fn ui_smoke() {
     rows_banner_and_tips_wording(&ui);
     shell_text_mirrors_messages(&ui);
     media_rows_and_tools_banner_wording(&ui);
+    keyboard_tab_enter_escape();
     let ctx = Ctx::start(&ui);
     add_flow_shows_file_and_finishes(&ui, &ctx);
     settings_change_is_saved_and_shown(&ui, &ctx);
@@ -3940,4 +3942,349 @@ fn jobs_dump(ctx: &Ctx) -> String {
             )
         })
         .collect()
+}
+
+/// Presses and lets go of `key` (a `slint::platform::Key` or a character).
+fn press(ui: &AppWindow, key: impl Into<slint::SharedString>) {
+    let text = key.into();
+    ui.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text });
+}
+
+/// Shift+Tab.
+fn press_shift_tab(ui: &AppWindow) {
+    use slint::platform::Key;
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: Key::Shift.into(),
+    });
+    press(ui, Key::Tab);
+    ui.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Shift.into(),
+    });
+}
+
+/// Keyboard use of Advanced mode, on a window of its own (no engine: the
+/// callbacks are recorded). Tab goes through the header, the tabs, each
+/// row then its action, and the footer; Escape closes the "+" panel and
+/// gives the focus back to "+". Each dialog takes the keys when it opens:
+/// Escape cancels it, Enter confirms it, Tab goes round its controls
+/// without leaving it. Escape goes back from the compact detail (after a
+/// dialog over it closed, too), Grab links, Several links, Advanced add
+/// and Advanced settings, also from a text field.
+fn keyboard_tab_enter_escape() {
+    use slint::platform::Key;
+    const WHAT: &str = "keyboard_tab_enter_escape";
+    let ui = AppWindow::new().unwrap();
+    ui.show().unwrap();
+    ui.window().set_size(TALL);
+    ui.set_layout("compact".into());
+    ui.set_screen(Screen::Downloads);
+    let calls: Rc<RefCell<Vec<String>>> = Rc::default();
+    let log = |name: &'static str| {
+        let calls = calls.clone();
+        move |id: i32| calls.borrow_mut().push(format!("{name} {id}"))
+    };
+    ui.on_select(log("select"));
+    ui.on_pause(log("pause"));
+    ui.on_resume(log("resume"));
+    ui.on_tab_changed(log("tab"));
+    let weak = ui.as_weak();
+    ui.on_open_whendone(move || {
+        weak.unwrap().global::<WhenDoneUi>().set_open(true);
+    });
+    let taken = || std::mem::take(&mut *calls.borrow_mut());
+    let rows = |rows: Vec<RowVm>| {
+        let rows: Vec<AdvRowVm> = rows
+            .into_iter()
+            .map(|row| AdvRowVm {
+                row,
+                source: "HTTP".into(),
+                ..Default::default()
+            })
+            .collect();
+        ModelRc::new(VecModel::from(rows))
+    };
+    ui.set_adv_rows(rows(vec![row(1, "downloading"), row(2, "paused")]));
+    let shows = |label: &str| {
+        refresh_tree(&ui);
+        !labelled(&ui, label).is_empty()
+    };
+    refresh_tree(&ui);
+
+    // The first Tab reaches "+": it opens the link field, Escape closes
+    // it and "+" has the focus again.
+    press(&ui, Key::Tab);
+    press(&ui, " ");
+    assert!(
+        shows("Paste a link"),
+        "{WHAT}: \"+\" did not open the field"
+    );
+    press(&ui, Key::Escape);
+    assert!(!shows("Paste a link"), "{WHAT}: Escape left the field open");
+    press(&ui, " ");
+    assert!(shows("Paste a link"), "{WHAT}: \"+\" lost the focus");
+    press(&ui, Key::Escape);
+    assert!(!shows("Paste a link"), "{WHAT}: field open again");
+
+    // Then Settings, the three tabs, and each row followed by its action.
+    // Space presses what has the focus.
+    for _ in 0..5 {
+        press(&ui, Key::Tab);
+    }
+    for _ in 0..4 {
+        press(&ui, " ");
+        press(&ui, Key::Tab);
+    }
+    assert_eq!(
+        taken(),
+        ["select 1", "pause 1", "select 2", "resume 2"],
+        "{WHAT}: Tab order through the rows"
+    );
+    // The footer's when-done button comes next.
+    press(&ui, " ");
+    assert!(ui.global::<WhenDoneUi>().get_open(), "{WHAT}: when done");
+    press(&ui, Key::Escape);
+    assert!(!ui.global::<WhenDoneUi>().get_open(), "{WHAT}: popover");
+    refresh_tree(&ui);
+
+    keyboard_remove_dialog(&ui, &calls);
+    keyboard_password_dialog(&ui, &calls);
+    keyboard_files_dialog(&ui, &calls);
+    keyboard_screens(&ui, &calls);
+}
+
+type Calls = Rc<RefCell<Vec<String>>>;
+
+/// Remove: Escape cancels, Enter removes (finished files kept), Tab goes
+/// box, Cancel, Remove and round to the box; Shift+Tab round to Remove.
+fn keyboard_remove_dialog(ui: &AppWindow, calls: &Calls) {
+    use slint::platform::Key;
+    const WHAT: &str = "keyboard_remove_dialog";
+    let taken = || std::mem::take(&mut *calls.borrow_mut());
+    let (log, weak) = (calls.clone(), ui.as_weak());
+    ui.on_confirm_remove(move |id, delete| {
+        log.borrow_mut().push(format!("remove {id} {delete}"));
+        let ui = weak.unwrap();
+        ui.set_remove_dialog(RemoveDialogVm::default());
+    });
+    let open = || {
+        ui.set_remove_dialog(RemoveDialogVm {
+            visible: true,
+            id: 7,
+            name: "a.bin".into(),
+        });
+        refresh_tree(ui);
+    };
+    let ticked = || {
+        only_with_role(ui, AccessibleRole::Checkbox, "Also delete the files", WHAT)
+            .accessible_checked()
+    };
+    open();
+    press(ui, Key::Escape);
+    assert!(!ui.get_remove_dialog().visible, "{WHAT}: Escape");
+    open();
+    press(ui, Key::Return);
+    assert_eq!(taken(), ["remove 7 false"], "{WHAT}: Enter");
+    open();
+    press(ui, Key::Tab);
+    press(ui, " ");
+    assert_eq!(ticked(), Some(true), "{WHAT}: first Tab not on the box");
+    for _ in 0..3 {
+        press(ui, Key::Tab);
+    }
+    press(ui, " ");
+    assert_eq!(ticked(), Some(false), "{WHAT}: Tab did not go round");
+    press_shift_tab(ui);
+    press(ui, " ");
+    assert_eq!(
+        taken(),
+        ["remove 7 false"],
+        "{WHAT}: Shift+Tab not on Remove"
+    );
+    assert!(!ui.get_remove_dialog().visible, "{WHAT}: still open");
+}
+
+/// Sign in: the user name field has the focus; Escape from it cancels and
+/// empties both fields; Enter there moves on to the password, Enter there
+/// signs in; Tab goes user name, password, Cancel (Sign in is off while a
+/// field is empty) and round; Shift+Tab from the user name to Cancel.
+fn keyboard_password_dialog(ui: &AppWindow, calls: &Calls) {
+    use slint::platform::Key;
+    const WHAT: &str = "keyboard_password_dialog";
+    let taken = || std::mem::take(&mut *calls.borrow_mut());
+    let (log, weak) = (calls.clone(), ui.as_weak());
+    ui.on_submit_password(move |id, user, password| {
+        log.borrow_mut()
+            .push(format!("sign in {id} {user} {password}"));
+        let ui = weak.unwrap();
+        ui.set_password_user("".into());
+        ui.set_password_text("".into());
+        ui.set_password_dialog(PasswordDialogVm::default());
+    });
+    let open = || {
+        ui.set_password_dialog(PasswordDialogVm {
+            visible: true,
+            id: 9,
+            name: "locked.bin".into(),
+            ..Default::default()
+        });
+        refresh_tree(ui);
+    };
+    let typed = || {
+        (
+            ui.get_password_user().to_string(),
+            ui.get_password_text().to_string(),
+        )
+    };
+    open();
+    press(ui, "u");
+    assert_eq!(typed(), ("u".into(), String::new()), "{WHAT}: focus");
+    press(ui, Key::Escape);
+    assert!(!ui.get_password_dialog().visible, "{WHAT}: Escape");
+    assert_eq!(typed(), (String::new(), String::new()), "{WHAT}: emptied");
+    open();
+    press(ui, "u");
+    press(ui, Key::Return);
+    press(ui, "p");
+    assert_eq!(typed(), ("u".into(), "p".into()), "{WHAT}: Enter moves on");
+    press(ui, Key::Return);
+    assert_eq!(taken(), ["sign in 9 u p"], "{WHAT}: Enter signs in");
+    open();
+    for _ in 0..3 {
+        press(ui, Key::Tab);
+    }
+    press(ui, "x");
+    assert_eq!(typed(), ("x".into(), String::new()), "{WHAT}: Tab round");
+    press_shift_tab(ui);
+    press(ui, " ");
+    assert!(!ui.get_password_dialog().visible, "{WHAT}: not on Cancel");
+    assert_eq!(taken(), Vec::<String>::new(), "{WHAT}: signed in");
+}
+
+/// "Choose files…": Escape cancels, Enter uses the files picked; Tab
+/// starts at "All", Shift+Tab from there goes round to "Use these files".
+fn keyboard_files_dialog(ui: &AppWindow, calls: &Calls) {
+    use slint::platform::Key;
+    const WHAT: &str = "keyboard_files_dialog";
+    let taken = || std::mem::take(&mut *calls.borrow_mut());
+    let log = calls.clone();
+    ui.on_files_chosen(move |id, chosen| {
+        let chosen: Vec<i32> = chosen.iter().collect();
+        log.borrow_mut().push(format!("files {id} {chosen:?}"));
+    });
+    let log = calls.clone();
+    ui.on_adv_toggle_all(move |on| log.borrow_mut().push(format!("all {on}")));
+    let file = |index: i32, name: &str| TorrentFileVm {
+        index,
+        name: name.into(),
+        path: name.into(),
+        size_text: "1 KB".into(),
+        selected: index == 0,
+        state: if index == 0 { "all" } else { "none" }.into(),
+        ..Default::default()
+    };
+    let open = || {
+        ui.set_files_dialog(FilesDialogVm {
+            visible: true,
+            id: 5,
+            name: "pack".into(),
+            files: ModelRc::new(VecModel::from(vec![file(0, "a.bin"), file(1, "b.bin")])),
+            selected_count: 1,
+            selected_size: "1 KB".into(),
+            chosen: ModelRc::new(VecModel::from(vec![0])),
+            ..Default::default()
+        });
+        refresh_tree(ui);
+    };
+    open();
+    press(ui, Key::Escape);
+    assert!(!ui.get_files_dialog().visible, "{WHAT}: Escape");
+    assert_eq!(taken(), Vec::<String>::new(), "{WHAT}: Escape used them");
+    open();
+    press(ui, Key::Return);
+    assert_eq!(taken(), ["files 5 [0]"], "{WHAT}: Enter");
+    assert!(!ui.get_files_dialog().visible, "{WHAT}: open after Enter");
+    open();
+    press(ui, Key::Tab);
+    press(ui, " ");
+    press_shift_tab(ui);
+    press(ui, " ");
+    assert_eq!(
+        taken(),
+        ["all true", "files 5 [0]"],
+        "{WHAT}: Tab to All, Shift+Tab round"
+    );
+}
+
+/// Escape goes back from Grab links (from its link field: Tab goes Back,
+/// then the field), Several links (from its links box), Advanced add and
+/// Advanced settings; and from the compact detail, also once a dialog
+/// over it was closed with Escape.
+fn keyboard_screens(ui: &AppWindow, calls: &Calls) {
+    use slint::platform::Key;
+    const WHAT: &str = "keyboard_screens";
+    let taken = || std::mem::take(&mut *calls.borrow_mut());
+    let note = |name: &'static str| {
+        let log = calls.clone();
+        move || log.borrow_mut().push(name.to_string())
+    };
+    links(ui).on_grab_closed(note("grab closed"));
+    ui.global::<SettingsUi>().on_leave(note("settings left"));
+    ui.on_add_cancelled(note("add cancelled"));
+    let back_from = |screen: Screen, field: Option<&str>, called: &[&str]| {
+        ui.set_screen(screen);
+        refresh_tree(ui);
+        if let Some(label) = field {
+            press(ui, Key::Tab);
+            press(ui, Key::Tab);
+            press(ui, "h");
+            let value = only_with_role(ui, AccessibleRole::TextInput, label, WHAT)
+                .accessible_value()
+                .unwrap_or_default();
+            assert_eq!(value.as_str(), "h", "{WHAT}: {screen:?}: Tab to {label}");
+        }
+        press(ui, Key::Escape);
+        assert_eq!(ui.get_screen(), Screen::Welcome, "{WHAT}: {screen:?}");
+        assert_eq!(taken(), called, "{WHAT}: {screen:?}");
+    };
+    back_from(Screen::Grab, Some("Page link"), &["grab closed"]);
+    links(ui).set_grab_url_text("".into());
+    back_from(Screen::Batch, Some("Links"), &[]);
+    back_from(Screen::Add, None, &["add cancelled"]);
+    back_from(Screen::Settings, None, &["settings left"]);
+
+    let (log, weak) = (calls.clone(), ui.as_weak());
+    ui.on_select(move |id| {
+        log.borrow_mut().push(format!("select {id}"));
+        let ui = weak.unwrap();
+        ui.set_detail(DetailVm::default());
+    });
+    let open = || {
+        ui.set_detail(DetailVm {
+            visible: true,
+            row: row(3, "paused"),
+            name: "file-3.zip".into(),
+            ..Default::default()
+        });
+        refresh_tree(ui);
+    };
+    ui.set_screen(Screen::Downloads);
+    open();
+    press(ui, Key::Escape);
+    assert_eq!(taken(), ["select -1"], "{WHAT}: detail");
+    open();
+    ui.set_remove_dialog(RemoveDialogVm {
+        visible: true,
+        id: 3,
+        name: "file-3.zip".into(),
+    });
+    refresh_tree(ui);
+    press(ui, Key::Escape);
+    assert!(!ui.get_remove_dialog().visible, "{WHAT}: dialog");
+    refresh_tree(ui);
+    assert_eq!(taken(), Vec::<String>::new(), "{WHAT}: detail with dialog");
+    press(ui, Key::Escape);
+    assert_eq!(taken(), ["select -1"], "{WHAT}: detail after the dialog");
 }
