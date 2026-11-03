@@ -3330,7 +3330,47 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
         SpeedLimit::Gentle,
         "{WHAT}: Custom alone changes nothing"
     );
+    // Picking Custom shows the limit in effect (Gentle's figure).
+    assert_eq!(
+        state.get_custom_text().as_str(),
+        "1.048576",
+        "{WHAT}: Custom prefill"
+    );
+    let enter = || {
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: slint::platform::Key::Return.into(),
+        });
+    };
+    // Typing saves nothing: "2", "25" are only checked; Enter writes once.
+    let mut events = ctx.engine.subscribe();
+    for typed in ["2", "25"] {
+        field.set_accessible_value(typed);
+    }
+    settle(Duration::from_millis(200));
+    assert_eq!(
+        ctx.engine.settings().speed,
+        SpeedLimit::Gentle,
+        "{WHAT}: typing wrote"
+    );
+    enter();
+    wait_until(&format!("{WHAT}: 25 saved"), || {
+        ctx.engine.settings().speed
+            == SpeedLimit::Custom {
+                bytes_per_sec: 25_000_000,
+            }
+    });
+    settle(Duration::from_millis(200));
+    let mut writes = 0;
+    loop {
+        match events.try_recv() {
+            Ok(Event::SettingsChanged(_)) => writes += 1,
+            Ok(_) | Err(TryRecvError::Lagged(_)) => {}
+            Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+        }
+    }
+    assert_eq!(writes, 1, "{WHAT}: settings writes for 25");
     field.set_accessible_value("2.5");
+    enter();
     wait_until(&format!("{WHAT}: custom saved"), || {
         ctx.engine.settings().speed
             == SpeedLimit::Custom {
@@ -3338,33 +3378,40 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
             }
     });
     assert!(!state.get_custom_invalid(), "{WHAT}: 2.5 flagged");
-    // A decimal comma is read like a point.
-    field.set_accessible_value("0,5");
-    wait_until(&format!("{WHAT}: comma saved"), || {
-        ctx.engine.settings().speed
-            == SpeedLimit::Custom {
-                bytes_per_sec: 500_000,
-            }
-    });
 
-    // Not a speed: the error shows, the setting stays.
-    for bad in ["abc", "0", "0.05", "10001"] {
+    // A comma is refused, "1,000" included.
+    for bad in ["1,000", "2,5", "abc", "0", "0.05", "10001"] {
         field.set_accessible_value(bad);
         refresh_tree(ui);
         assert!(state.get_custom_invalid(), "{WHAT}: {bad:?} not flagged");
+        assert_eq!(
+            state.get_custom_comma(),
+            bad.contains(','),
+            "{WHAT}: {bad:?}"
+        );
+        let note = if bad.contains(',') {
+            "Use a dot for decimals"
+        } else {
+            "Enter a speed from 0.1 to 10000 MB/s"
+        };
         assert!(
-            !texts_containing(ui, "Enter a speed from 0.1 to 10000 MB/s").is_empty(),
+            !texts_containing(ui, note).is_empty(),
             "{WHAT}: {bad:?} error text"
         );
+        enter();
         settle(Duration::from_millis(150));
         assert_eq!(
             ctx.engine.settings().speed,
             SpeedLimit::Custom {
-                bytes_per_sec: 500_000
+                bytes_per_sec: 2_500_000
             },
             "{WHAT}: {bad:?} changed the speed"
         );
     }
+    // A radio pick leaves the error: the field still holds bad text.
+    whendone_choice(ui, "Shut down", WHAT).invoke_accessible_default_action();
+    assert!(state.get_custom_invalid(), "{WHAT}: pick cleared the error");
+    whendone_choice(ui, "Do nothing", WHAT).invoke_accessible_default_action();
     field.set_accessible_value("0.1");
     refresh_tree(ui);
     assert!(!state.get_custom_invalid(), "{WHAT}: 0.1 flagged");
@@ -3372,13 +3419,29 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
         texts_containing(ui, "Enter a speed from").is_empty(),
         "{WHAT}: error text stays"
     );
+    enter();
+    wait_until(&format!("{WHAT}: 0.1 saved"), || {
+        ctx.engine.settings().speed
+            == SpeedLimit::Custom {
+                bytes_per_sec: 100_000,
+            }
+    });
     field.set_accessible_value("10000");
+    enter();
     wait_until(&format!("{WHAT}: 10000 saved"), || {
         ctx.engine.settings().speed
             == SpeedLimit::Custom {
                 bytes_per_sec: 10_000_000_000,
             }
     });
+
+    // Escape closes with the field focused.
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: slint::platform::Key::Escape.into(),
+    });
+    assert!(!state.get_open(), "{WHAT}: Escape with the field focused");
+    only_button(ui, "When done", WHAT).invoke_accessible_default_action();
+    assert!(state.get_open(), "{WHAT}: reopen");
 
     // The footer's speed text is the jobs' total, not the limit.
     assert_eq!(ui.get_speed_down_text().as_str(), "0 B/s", "{WHAT}: idle");

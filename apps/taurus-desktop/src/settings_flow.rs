@@ -298,6 +298,10 @@ mod tests {
         assert_eq!(s.speed, SpeedLimit::Gentle);
         assert_eq!(s.when_done, WhenDone::Sleep);
         assert_eq!(s.ui.folder, Some(PathBuf::from("/tmp/dl")));
+        assert!(apply_change(&mut s, "when-done", "Quit"));
+        assert_eq!(s.when_done, WhenDone::Quit);
+        assert_eq!(settings_vm(&s).when_done.as_str(), "quit");
+        assert!(apply_change(&mut s, "when-done", "sleep"));
         let vm = settings_vm(&s);
         assert_eq!(
             (vm.theme.as_str(), vm.accent.as_str(), vm.when_done.as_str()),

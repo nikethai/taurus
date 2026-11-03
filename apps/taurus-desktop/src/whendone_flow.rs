@@ -15,22 +15,19 @@ const BYTES_PER_MB: f64 = 1_000_000.0;
 const MIN_MB: f64 = 0.1;
 const MAX_MB: f64 = 10_000.0;
 
-/// The bytes per second for text typed as MB/s ("2.5" is 2_500_000). A
-/// decimal comma is accepted like a point ("2,5"). Only digits and one
-/// separator are allowed (no sign, exponent or "inf"); None outside 0.1
-/// to 10000.
+/// The bytes per second for text typed as MB/s ("2.5" is 2_500_000).
+/// Only digits and at most one dot are allowed: a comma is refused (is
+/// "1,000" one or a thousand?), as are signs, exponents and "inf". None
+/// outside 0.1 to 10000.
 pub fn parse_custom_speed(text: &str) -> Option<u64> {
     let text = text.trim();
-    let separators = text.chars().filter(|c| matches!(c, '.' | ',')).count();
-    let clean = separators <= 1
+    let clean = text.chars().filter(|&c| c == '.').count() <= 1
         && text.chars().any(|c| c.is_ascii_digit())
-        && text
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.' || c == ',');
+        && text.chars().all(|c| c.is_ascii_digit() || c == '.');
     if !clean {
         return None;
     }
-    let mb: f64 = text.replace(',', ".").parse().ok()?;
+    let mb: f64 = text.parse().ok()?;
     (MIN_MB..=MAX_MB)
         .contains(&mb)
         .then(|| (mb * BYTES_PER_MB).round() as u64)
@@ -72,21 +69,39 @@ impl App {
 
     /// A radio choice or a preset speed: the Settings screen's own keys.
     pub(crate) fn whendone_pick(&self, key: &str, value: &str) {
-        if let Some(ui) = self.window.upgrade() {
-            ui.global::<WhenDoneUi>().set_custom_invalid(false);
-        }
         self.setting_changed(key, value);
     }
 
-    /// The custom field's text after an edit.
-    pub(crate) fn whendone_custom(&self, text: &str) {
+    /// The Custom segment was picked: an empty field shows the limit now
+    /// in effect, in MB/s (a preset's figure is the one used without a
+    /// measured peak; Fastest has none).
+    pub(crate) fn whendone_custom_chosen(&self) {
         let Some(ui) = self.window.upgrade() else {
             return;
         };
-        let parsed = parse_custom_speed(text);
-        ui.global::<WhenDoneUi>()
-            .set_custom_invalid(parsed.is_none() && !text.trim().is_empty());
-        let Some(bytes_per_sec) = parsed else {
+        let state = ui.global::<WhenDoneUi>();
+        if !state.get_custom_text().trim().is_empty() {
+            return;
+        }
+        if let Some(bps) = self.settings.borrow().speed.bytes_per_sec(None) {
+            state.set_custom_text(custom_speed_text(bps).into());
+        }
+    }
+
+    /// The field's text after an edit: shows whether it is a speed; nothing
+    /// is saved until Enter or the field loses focus.
+    pub(crate) fn whendone_custom_typed(&self, text: &str) {
+        if let Some(ui) = self.window.upgrade() {
+            let state = ui.global::<WhenDoneUi>();
+            state.set_custom_invalid(!text.trim().is_empty() && parse_custom_speed(text).is_none());
+            state.set_custom_comma(text.contains(','));
+        }
+    }
+
+    /// The field's text was committed (Enter, or focus left it).
+    pub(crate) fn whendone_custom(&self, text: &str) {
+        self.whendone_custom_typed(text);
+        let Some(bytes_per_sec) = parse_custom_speed(text) else {
             return;
         };
         let mut next: Settings = self.settings.borrow().clone();
@@ -105,13 +120,13 @@ mod tests {
     #[test]
     fn custom_speed_is_megabytes_per_second() {
         assert_eq!(parse_custom_speed("2.5"), Some(2_500_000));
-        assert_eq!(parse_custom_speed(" 2,5 "), Some(2_500_000));
+        assert_eq!(parse_custom_speed(" 2.5 "), Some(2_500_000));
         assert_eq!(parse_custom_speed("0.1"), Some(100_000));
         assert_eq!(parse_custom_speed("10000"), Some(10_000_000_000));
         assert_eq!(parse_custom_speed("3"), Some(3_000_000));
         for bad in [
             "", "abc", "0", "0.09", "10000.1", "-1", "1e3", "inf", "nan", "1.2.3", "1,2,3", ".",
-            "1 000",
+            "1 000", "1,000", "1,5", "2,5",
         ] {
             assert_eq!(parse_custom_speed(bad), None, "{bad:?}");
         }

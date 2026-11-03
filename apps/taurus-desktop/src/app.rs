@@ -329,7 +329,11 @@ impl App {
         on!(whendone, self, on_pick_speed, |a, value| a
             .whendone_pick("speed", &value));
         on!(whendone, self, on_custom_edited, |a, text| a
+            .whendone_custom_typed(&text));
+        on!(whendone, self, on_custom_commit, |a, text| a
             .whendone_custom(&text));
+        on!(whendone, self, on_custom_chosen, |a| a
+            .whendone_custom_chosen());
 
         let weak = Rc::downgrade(self);
         ui.window().on_close_requested(move || {

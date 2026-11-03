@@ -18,12 +18,19 @@ export global WhenDoneUi {
     in-out property <string> custom-text;
     // The text last sent was not a speed from 0.1 to 10000 MB/s.
     in property <bool> custom-invalid: false;
+    // ... because it holds a comma (decimals use a dot).
+    in property <bool> custom-comma: false;
     // One of the when-done values above.
     callback pick-when-done(string);
     // "gentle" | "balanced" | "fastest"
     callback pick-speed(string);
-    // The custom field's text after each edit.
+    // The custom field's text after each edit: only checked, never saved.
     callback custom-edited(string);
+    // Enter, or the field lost focus after an edit: the text is applied.
+    callback custom-commit(string);
+    // The Custom segment was picked: the app fills an empty field with
+    // the limit now in effect, when there is one.
+    callback custom-chosen();
 
     // The footer button's label for a when-done value.
     public pure function footer-label(w: string) -> string {
@@ -96,14 +103,18 @@ export component WhenDonePopover inherits Rectangle {
         { value: "quit", label: @tr("Quit Hyades") },
     ];
 
+    // The field's text changed since it was last applied.
+    property <bool> dirty: false;
+
     background: transparent;
-    // Outside the card: closes.
-    TouchArea {
-        clicked => {
-            WhenDoneUi.open = false;
-        }
+    init => {
+        keys.focus();
     }
+
+    // Holds the whole popover, so Escape reaches it from any item inside.
     keys := FocusScope {
+        width: root.width;
+        height: root.height;
         key-pressed(event) => {
             if (event.text == Key.Escape) {
                 WhenDoneUi.open = false;
@@ -111,9 +122,12 @@ export component WhenDonePopover inherits Rectangle {
             }
             return reject;
         }
-    }
-    init => {
-        keys.focus();
+
+    // Outside the card: closes.
+    TouchArea {
+        clicked => {
+            WhenDoneUi.open = false;
+        }
     }
 
     Rectangle {
@@ -186,6 +200,7 @@ export component WhenDonePopover inherits Rectangle {
                     selected: root.custom-mode;
                     clicked => {
                         root.custom-mode = true;
+                        WhenDoneUi.custom-chosen();
                     }
                 }
             }
@@ -196,11 +211,22 @@ export component WhenDonePopover inherits Rectangle {
                     text <=> WhenDoneUi.custom-text;
                     placeholder-text: @tr("0.1 to 10000");
                     accessible-label: @tr("Custom speed in MB/s");
+                    init => {
+                        self.focus();
+                    }
                     edited(t) => {
+                        root.dirty = true;
                         WhenDoneUi.custom-edited(t);
                     }
                     accepted(t) => {
-                        WhenDoneUi.custom-edited(t);
+                        root.dirty = false;
+                        WhenDoneUi.custom-commit(t);
+                    }
+                    changed has-focus => {
+                        if (!self.has-focus && root.dirty) {
+                            root.dirty = false;
+                            WhenDoneUi.custom-commit(self.text);
+                        }
                     }
                 }
                 Text {
@@ -212,7 +238,7 @@ export component WhenDonePopover inherits Rectangle {
                 }
             }
             if root.custom-mode && WhenDoneUi.custom-invalid: Text {
-                text: @tr("Enter a speed from 0.1 to 10000 MB/s.");
+                text: WhenDoneUi.custom-comma ? @tr("Use a dot for decimals, like 2.5.") : @tr("Enter a speed from 0.1 to 10000 MB/s.");
                 wrap: word-wrap;
                 font-size: 12px;
                 color: Theme.err;
@@ -220,5 +246,6 @@ export component WhenDonePopover inherits Rectangle {
                 accessible-label: self.text;
             }
         }
+    }
     }
 }
