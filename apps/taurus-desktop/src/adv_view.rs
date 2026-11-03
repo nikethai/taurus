@@ -47,9 +47,10 @@ impl AdvState {
     }
 }
 
-/// The jobs the Advanced list shows: the tab's (compact) or the filter's
-/// (wide), whose name contains `search` (ignoring case). Finished jobs
-/// newest first, the rest in the order given (the engine's: by id).
+/// The jobs the Advanced list shows: the tab's (compact), or the filter's
+/// whose name contains `search`, ignoring case (wide; the compact layout
+/// has no search field). Finished jobs newest first, the rest in the order
+/// given (the engine's: by id).
 pub fn listed<'a>(
     views: &'a [JobView],
     layout: Layout,
@@ -64,7 +65,11 @@ pub fn listed<'a>(
             Layout::Wide => filters::matches(filter, v),
             _ => filters::tab_of(v) == tab,
         })
-        .filter(|v| search.is_empty() || v.file_name.to_lowercase().contains(&search))
+        .filter(|v| {
+            layout != Layout::Wide
+                || search.is_empty()
+                || v.file_name.to_lowercase().contains(&search)
+        })
         .collect();
     let (mut done, open): (Vec<&JobView>, Vec<&JobView>) =
         out.drain(..).partition(|v| v.state == JobState::Completed);
@@ -89,7 +94,8 @@ fn to_id(id: JobId) -> i32 {
 
 impl App {
     /// Sets the window's layout from `ui.mode` and its width; entering an
-    /// Advanced layout fills its list.
+    /// Advanced layout fills its list. Leaving the wide layout clears the
+    /// search: no other layout has a field that would show it.
     pub(crate) fn apply_layout(&self) {
         let Some(ui) = self.window.upgrade() else {
             return;
@@ -97,8 +103,14 @@ impl App {
         let layout = mode::layout_for(self.settings.borrow().ui.mode, ui.get_window_width());
         let changed = {
             let mut adv = self.adv.borrow_mut();
+            if layout != Layout::Wide {
+                adv.search.clear();
+            }
             std::mem::replace(&mut adv.layout, layout) != layout
         };
+        if layout != Layout::Wide {
+            ui.set_search_text(Default::default());
+        }
         if changed {
             ui.set_layout(layout.as_str().into());
             self.refresh_adv();
@@ -219,10 +231,12 @@ mod tests {
         assert_eq!(compact(Tab::Active, ""), [3, 5]);
         assert_eq!(compact(Tab::Waiting, ""), [4]);
         assert_eq!(compact(Tab::Done, ""), [2, 1]);
-        assert_eq!(compact(Tab::Done, " ISO "), [1]);
+        // The compact layout has no search field: no search applies.
+        assert_eq!(compact(Tab::Done, " ISO "), [2, 1]);
         let wide = |filter, search| ids(listed(&views, Layout::Wide, Tab::Done, filter, search));
         assert_eq!(wide(Filter::All, ""), [3, 4, 5, 2, 1]);
         assert_eq!(wide(Filter::All, "iso"), [3, 5, 1]);
+        assert_eq!(wide(Filter::All, " ISO "), [3, 5, 1]);
         assert_eq!(wide(Filter::Downloading, ""), [3, 5]);
         assert_eq!(wide(Filter::Torrents, ""), Vec::<i64>::new());
         let c = tab_counts(&views);

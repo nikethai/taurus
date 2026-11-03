@@ -16,6 +16,8 @@ export component AdvWide inherits Rectangle {
     in property <string> speed-down;
     in property <string> speed-up;
     in property <DetailStubVm> detail;
+    // What the list is filtered by; outlives this component.
+    in-out property <string> search-text;
     callback filter-changed(string);
     callback search-changed(string);
     callback select(int);
@@ -52,6 +54,7 @@ export component AdvWide inherits Rectangle {
                 spacing: 6px;
                 LineEdit {
                     horizontal-stretch: 1;
+                    text <=> root.search-text;
                     placeholder-text: @tr("Search downloads");
                     accessible-label: @tr("Search downloads");
                     edited(text) => {

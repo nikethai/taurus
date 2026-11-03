@@ -1498,8 +1498,10 @@ fn mode_switch_changes_nothing(ui: &AppWindow, ctx: &Ctx) {
 
 /// Widening the window past 900 px switches to the wide layout and keeps
 /// the selected download, which the detail pane shows; narrowing it back
-/// keeps it too. Ends in Simple mode with a preset speed picked there
-/// (which replaces the custom one).
+/// keeps it too. The search field and the list agree across layout and
+/// screen changes; removing the selected download clears the selection.
+/// Ends in Simple mode with a preset speed picked there (which replaces
+/// the custom one).
 fn wide_switch_keeps_selection(ui: &AppWindow, ctx: &Ctx, id: JobId) {
     const WHAT: &str = "wide_switch_keeps_selection";
     assert_eq!(ui.get_layout().as_str(), "compact", "{WHAT}: compact first");
@@ -1536,6 +1538,12 @@ fn wide_switch_keeps_selection(ui: &AppWindow, ctx: &Ctx, id: JobId) {
         shown.iter().any(|t| t == "adv.bin") && shown.iter().any(|t| t == "HTTP"),
         "{WHAT}: detail pane shows {shown:?}"
     );
+    let stub = ui.get_detail_stub();
+    assert_eq!(
+        (stub.visible, stub.name.as_str(), stub.kind.as_str()),
+        (true, "adv.bin", "file"),
+        "{WHAT}: detail kind"
+    );
     // The sidebar's counts and filters work in the wide layout.
     let paused: Vec<i32> = ctx
         .engine
@@ -1562,11 +1570,70 @@ fn wide_switch_keeps_selection(ui: &AppWindow, ctx: &Ctx, id: JobId) {
         "{WHAT}: Paused filter"
     );
 
+    // A search typed in wide filters the list and outlives its field
+    // (Settings and back).
+    let field = || only_with_role(ui, AccessibleRole::TextInput, "Search downloads", WHAT);
+    let field_text = || field().accessible_value().unwrap_or_default().to_string();
+    let ids = || {
+        ui.get_adv_rows()
+            .iter()
+            .map(|r| r.row.id)
+            .collect::<Vec<_>>()
+    };
+    field().set_accessible_value("ADV.B");
+    assert_eq!(ids(), [want], "{WHAT}: search");
+    field().set_accessible_value("no such file");
+    assert!(ids().is_empty(), "{WHAT}: search hides all");
+    field().set_accessible_value("adv.b");
+    // Element queries walk the tree, which rebuilds what `if` shows: the
+    // search field is really gone while Settings is open.
+    ui.set_screen(Screen::Settings);
+    only_with_role(ui, AccessibleRole::Button, "Back", WHAT);
+    assert!(
+        labelled(ui, "Search downloads").is_empty(),
+        "{WHAT}: search field still there on Settings"
+    );
+    ui.set_screen(Screen::Downloads);
+    assert_eq!(field_text(), "adv.b", "{WHAT}: field after Settings");
+    assert_eq!(ids(), [want], "{WHAT}: filtered after Settings");
+
+    // The compact layout has no search field: going compact clears the
+    // search, and the tab lists all of its jobs.
     ui.window().set_size(COMPACT);
     wait_until(&format!("{WHAT}: compact again"), || {
         ui.get_layout() == "compact"
     });
     assert_eq!(ui.get_selected_id(), want, "{WHAT}: selection kept back");
+    assert_eq!(ui.get_search_text().as_str(), "", "{WHAT}: search cleared");
+    assert!(
+        labelled(ui, "Search downloads").is_empty(),
+        "{WHAT}: search field still there when compact"
+    );
+    assert_eq!(
+        ui.get_adv_rows().row_count() as i32,
+        ui.get_tab_counts().waiting,
+        "{WHAT}: Waiting rows unfiltered"
+    );
+    ui.window().set_size(slint::LogicalSize::new(1200.0, 640.0));
+    wait_until(&format!("{WHAT}: wide again"), || ui.get_layout() == "wide");
+    assert_eq!(field_text(), "", "{WHAT}: field empty");
+    assert_eq!(ids(), paused, "{WHAT}: list unfiltered by search");
+
+    // Removing the selected download clears the selection and the pane.
+    ctx.rt.block_on(ctx.engine.remove(id, true)).unwrap();
+    wait_until(&format!("{WHAT}: selection cleared"), || {
+        ui.get_selected_id() == -1 && !ui.get_detail_stub().visible
+    });
+    assert!(
+        labelled(ui, "Select a download to see its details.")
+            .iter()
+            .any(|e| e.size().width > 0.0),
+        "{WHAT}: detail pane not empty"
+    );
+    ui.window().set_size(COMPACT);
+    wait_until(&format!("{WHAT}: compact at the end"), || {
+        ui.get_layout() == "compact"
+    });
 
     // Back to Simple; picking a preset there replaces the custom speed.
     ui.window().set_size(TALL);
@@ -1582,5 +1649,4 @@ fn wide_switch_keeps_selection(ui: &AppWindow, ctx: &Ctx, id: JobId) {
     });
     ui.set_screen(Screen::Downloads);
     ui.window().set_size(COMPACT);
-    ctx.rt.block_on(ctx.engine.remove(id, true)).unwrap();
 }

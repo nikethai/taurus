@@ -88,6 +88,10 @@ export component AppWindow inherits Window {
     in property <string> speed-up-text;
     // Wide layout detail pane (minimal until the full detail view).
     in property <DetailStubVm> detail-stub;
+    // Wide: the search field's text, kept here so it outlives the field
+    // (Settings, Add, a narrower window). The app clears it when the
+    // layout stops being wide: the compact layout has no search field.
+    in-out property <string> search-text;
     // The window's width, read by the app when `width-changed` fires.
     out property <length> window-width: root.width;
     callback select(int);
@@ -165,6 +169,7 @@ export component AppWindow inherits Window {
                     speed-down: root.speed-down-text;
                     speed-up: root.speed-up-text;
                     detail: root.detail-stub;
+                    search-text <=> root.search-text;
                     filter-changed(key) => {
                         root.filter-changed(key);
                     }

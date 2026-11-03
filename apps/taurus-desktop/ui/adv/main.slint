@@ -60,17 +60,9 @@ export component AdvList inherits Rectangle {
     callback stop-recording(int);
     callback open-file(int);
 
-    if root.rows.length == 0: Text {
-        x: 16px;
-        width: parent.width - 32px;
-        text: root.empty-text;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        wrap: word-wrap;
-        font-size: 13px;
-        color: Theme.muted;
-    }
-    if root.rows.length > 0: ListView {
+    // One list view for every tab and filter (it keeps its scroll
+    // position); the empty text lies over it.
+    ListView {
         for r in root.rows: HorizontalLayout {
             padding-left: 8px;
             padding-right: 8px;
@@ -96,6 +88,16 @@ export component AdvList inherits Rectangle {
                 }
             }
         }
+    }
+    if root.rows.length == 0: Text {
+        x: 16px;
+        width: parent.width - 32px;
+        text: root.empty-text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        font-size: 13px;
+        color: Theme.muted;
     }
 }
 
