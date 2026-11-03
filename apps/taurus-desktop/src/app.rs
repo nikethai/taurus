@@ -10,8 +10,8 @@
 //! The add flow lives in `add_flow.rs` (video links in `media_add.rs`,
 //! Advanced mode's Add screen in `adv_add.rs`, its Grab links screen in
 //! `grab_flow.rs` and Add several links in `batch_flow.rs`),
-//! the Settings screen in `settings_flow.rs`, applying engine state to the
-//! window in `pump.rs`.
+//! the Settings screen in `settings_flow.rs` (Advanced Settings in
+//! `adv_settings.rs`), applying engine state to the window in `pump.rs`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -30,6 +30,7 @@ use taurus_core::{
 use crate::add_flow::PendingAdd;
 use crate::adv_add::AdvAddState;
 use crate::adv_flow::AdvFlow;
+use crate::adv_settings::SettingsMsg;
 use crate::adv_view::AdvState;
 use crate::batch_flow::BatchState;
 use crate::bridge::{self, Coalescer};
@@ -103,6 +104,8 @@ pub(crate) enum UiMsg {
         run: u64,
         result: Box<Result<GrabResult, ErrorKind>>,
     },
+    /// A tool action or forgetting passwords answered (Advanced Settings).
+    Settings(SettingsMsg),
 }
 
 /// Hands links and clipboard text to the app from any thread.
@@ -334,6 +337,22 @@ impl App {
             .whendone_custom(&text));
         on!(whendone, self, on_custom_chosen, |a| a
             .whendone_custom_chosen());
+        let settings = ui.global::<crate::SettingsUi>();
+        on!(settings, self, on_opened, |a| a.adv_settings_opened());
+        on!(settings, self, on_changed, |a, key, value| a
+            .setting_changed(&key, &value));
+        on!(settings, self, on_field_edited, |a, key, text| a
+            .adv_field_edited(&key, &text));
+        on!(settings, self, on_field_commit, |a, key, text| a
+            .adv_field_commit(&key, &text));
+        on!(settings, self, on_custom_chosen, |a| a.adv_custom_chosen());
+        on!(settings, self, on_choose_folder, |a| a.choose_folder());
+        on!(settings, self, on_install_tools, |a| a.install_tools());
+        on!(settings, self, on_check_tools, |a| a.check_tools());
+        on!(settings, self, on_rollback_tool, |a, kind| a
+            .rollback_tool(&kind));
+        on!(settings, self, on_forget_passwords, |a| a
+            .forget_passwords());
 
         let weak = Rc::downgrade(self);
         ui.window().on_close_requested(move || {
@@ -502,6 +521,7 @@ impl App {
             UiMsg::OverridesRefused(id) => self.overrides_refused(id),
             UiMsg::AdvAdded { seq, result } => self.adv_added(seq, result),
             UiMsg::Grabbed { run, result } => self.grabbed(run, *result),
+            UiMsg::Settings(msg) => self.settings_msg(msg),
         }
     }
 

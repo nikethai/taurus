@@ -1,0 +1,108 @@
+// Advanced Settings: what the screen shows and what it asks of the app.
+// A global, so the window does not pass each property and callback along
+// (the app sets it with `ui.global::<SettingsUi>()`). The settings Simple
+// also shows come in `settings` and change with the same keys.
+import { SettingsVm } from "../types.slint";
+
+// What only the Advanced screen shows. Each field changes with
+// `changed(key, value)` under the key named next to it.
+export struct AdvSettingsVm {
+    // "max-active": 1 to 10
+    max-active: int,
+    // "connections": 1 | 4 | 8 | 16
+    connections: int,
+    // "auto-checksum", "keep-awake": "true" | "false"
+    auto-checksum: bool,
+    keep-awake: bool,
+    // "stop-ratio": "0" | "0.5" | "1" | "2" | "never"; "other" when saved
+    // otherwise (no choice is marked)
+    stop-ratio: string,
+    // "stop-after": "off" | "1h" | "24h" | "7d"; "other" as above
+    stop-after: string,
+    // "max-torrents": 1 to 10
+    max-torrents: int,
+    // "upnp", "dht": "true" | "false"
+    upnp: bool,
+    dht: bool,
+    // "proxy": "system" | "none"; "manual" is set with a URL (`field-commit`)
+    proxy: string,
+    // "progress-by-type": "true" | "false"
+    progress-by-type: bool,
+}
+
+// One video tool on the Engines section.
+export struct ToolRowVm {
+    // "yt-dlp" | "ffmpeg" | "deno"
+    kind: string,
+    // The active version, "" when none is installed.
+    version: string,
+    // "missing" | "installing" | "ready" | "failed"
+    state: string,
+    // Installing: done from 0 to 1, -1 while the size is unknown.
+    progress: float,
+}
+
+export global SettingsUi {
+    in property <SettingsVm> settings;
+    in property <AdvSettingsVm> vm;
+    // The wide layout's section: "downloads" | "torrents" | "network" |
+    // "engines" | "appearance" | "privacy" | "general".
+    in-out property <string> section: "downloads";
+
+    // Typed fields, filled by the app when the screen opens. Each is
+    // checked as it is edited and applied on Enter or when it loses focus
+    // (`field-commit` with the key in brackets): the custom speed in MB/s
+    // ("speed-custom"), the torrent upload and download limits in MB/s,
+    // empty for none ("upload-limit", "torrent-down-limit"), peers per
+    // torrent, empty for the default ("peers"), the listening port, empty
+    // for a random one ("port"), the manual proxy's URL ("proxy-url").
+    in-out property <string> custom-text;
+    in-out property <string> upload-text;
+    in-out property <string> down-text;
+    in-out property <string> peers-text;
+    in-out property <string> port-text;
+    in-out property <string> proxy-text;
+    // The field's text is not a value it takes (the setting is unchanged).
+    in property <bool> custom-invalid;
+    // ... because it holds a comma (decimals use a dot).
+    in property <bool> custom-comma;
+    in property <bool> upload-invalid;
+    in property <bool> down-invalid;
+    in property <bool> peers-invalid;
+    in property <bool> port-invalid;
+    // Why the engine refused the proxy URL (its own words), "" when it
+    // did not.
+    in property <string> proxy-error;
+
+    // yt-dlp, ffmpeg and Deno.
+    in property <[ToolRowVm]> tools;
+    // A tool is not installed: Install has something to do.
+    in property <bool> tools-missing;
+    // Install or Check now is running.
+    in property <bool> tools-busy;
+    // The last tool action failed: an ErrorKind name, or "no-previous"
+    // (no earlier version to roll back to); "" otherwise.
+    in property <string> tools-error;
+
+    // Forget saved passwords: "" | "busy" | "done" | "failed"; and how
+    // many were removed.
+    in property <string> forget-state;
+    in property <int> forget-count;
+
+    // The screen was opened.
+    callback opened();
+    // key, value (see AdvSettingsVm and SettingsVm).
+    callback changed(string, string);
+    // A typed field's key and text: after each edit (only checked), and
+    // on Enter or focus out (applied).
+    callback field-edited(string, string);
+    callback field-commit(string, string);
+    // The Custom speed was picked: the field shows the limit in effect.
+    callback custom-chosen();
+    callback choose-folder();
+    callback install-tools();
+    callback check-tools();
+    // ToolRowVm.kind
+    callback rollback-tool(string);
+    callback forget-passwords();
+}

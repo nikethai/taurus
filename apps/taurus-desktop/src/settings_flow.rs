@@ -69,8 +69,10 @@ fn theme_name(t: ThemeChoice) -> &'static str {
 }
 
 /// Applies one `setting-changed(key, value)` to `s`. Keys are the
-/// `SettingsVm` field names; names are matched ignoring case. False when
-/// the key or value is not one the screen sends (`s` is left as it was).
+/// `SettingsVm` field names, then Advanced Settings' own
+/// (`adv_settings::apply_adv_change`); names are matched ignoring case.
+/// False when the key or value is not one the screens send (`s` is left as
+/// it was).
 pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
     let value = value.trim();
     let flag = || match value {
@@ -128,7 +130,8 @@ pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
             Some(a) => s.ui.accent = a.to_string(),
             None => return false,
         },
-        _ => return false,
+        // Advanced Settings' own keys.
+        _ => return crate::adv_settings::apply_adv_change(s, key, value),
     }
     true
 }
@@ -203,6 +206,7 @@ impl App {
         theme.set_accent(vm.accent.clone());
         ui.set_settings(vm);
         self.push_whendone(&ui);
+        self.push_adv_settings(&ui);
         // ui.mode may have changed: Simple, compact or wide.
         self.apply_layout();
     }

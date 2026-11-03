@@ -105,10 +105,15 @@ impl App {
         result: &Result<LinkInfo, ErrorKind>,
     ) {
         p.adv = match result {
-            Ok(info) => Some(AdvPick::of(info).with_cookies(&p.adv_cookies)),
-            Err(ErrorKind::NeedsSignIn) if is_web_link(&p.url) => {
-                Some(AdvPick::signed_in_file(&p.url))
-            }
+            Ok(info) => Some(
+                AdvPick::of(info)
+                    .with_cookies(&p.adv_cookies)
+                    .with_connections(self.settings.borrow().connections),
+            ),
+            Err(ErrorKind::NeedsSignIn) if is_web_link(&p.url) => Some(
+                AdvPick::signed_in_file(&p.url)
+                    .with_connections(self.settings.borrow().connections),
+            ),
             Err(kind) => {
                 self.adv_error(ui, *kind);
                 return;

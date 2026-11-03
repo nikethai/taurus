@@ -106,7 +106,7 @@ export component AdvRow inherits Pressable {
             }
             if root.shows-bar: ProgressBar {
                 progress: root.item.row.progress;
-                bar-color: root.state == "paused" ? Theme.muted : Theme.kind-fg(root.item.row.kind);
+                bar-color: root.state == "paused" ? Theme.muted : Theme.bar(root.item.row.kind);
                 moving: root.active;
             }
             HorizontalLayout {

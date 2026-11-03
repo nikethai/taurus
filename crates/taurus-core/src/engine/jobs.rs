@@ -11,7 +11,6 @@ use crate::filename::{PARTIAL_EXT, sanitize, unique_path};
 use crate::fixups;
 use crate::http::probe::validator_change;
 use crate::http::{JobOutcome, Probe, resolve_with};
-use crate::plan::DEFAULT_CONNECTIONS;
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob, Store};
 
 use super::RemoveFiles;
@@ -38,7 +37,7 @@ impl Actor {
         let file_name = path
             .file_name()
             .map_or(name, |n| n.to_string_lossy().into_owned());
-        let connections = req.connections.unwrap_or(DEFAULT_CONNECTIONS).max(1);
+        let connections = req.connections.unwrap_or(self.settings.connections).max(1);
         // The link that served the file (a confirm form's, if one was
         // followed), so segment requests skip the page.
         let url = probe.requested_url.to_string();

@@ -190,6 +190,15 @@ impl AdvPick {
         })
     }
 
+    /// A file starts with the settings' connections per file (when it is
+    /// one the screen offers).
+    pub(crate) fn with_connections(mut self, connections: u32) -> AdvPick {
+        if CONNECTIONS.contains(&connections) {
+            self.connections = connections;
+        }
+        self
+    }
+
     /// The browser the link was read with: videos sign in with it too.
     pub(crate) fn with_cookies(mut self, browser: &str) -> AdvPick {
         if matches!(self.source, AdvSource::Media(_)) {

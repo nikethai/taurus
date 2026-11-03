@@ -70,7 +70,7 @@ export component Row inherits Rectangle {
             }
             if root.shows-bar: ProgressBar {
                 progress: root.item.progress;
-                bar-color: root.item.state == "paused" ? Theme.muted : Theme.kind-fg(root.item.kind);
+                bar-color: root.item.state == "paused" ? Theme.muted : Theme.bar(root.item.kind);
                 moving: root.active;
             }
             Text {

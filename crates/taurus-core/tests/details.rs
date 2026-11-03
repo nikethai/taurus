@@ -91,6 +91,31 @@ fn done(detail: &JobDetail) -> u64 {
     detail.segments.iter().map(|s| s.done).sum()
 }
 
+/// An add that names no connection count gets the settings' one.
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_connections_are_the_default() {
+    let server = TestServer::start().await;
+    let url = server.serve(
+        "/two.bin",
+        FileSpec {
+            bytes_per_sec: Some(MIB as u64),
+            ..FileSpec::new(8 * MIB)
+        },
+    );
+    let rig = Rig::new(|_| {}).await;
+    let settings = Settings {
+        connections: 2,
+        ..rig.engine.settings()
+    };
+    rig.engine.set_settings(settings).await.unwrap();
+    let id = rig.engine.add(rig.request(&url)).await.unwrap();
+    let running = rig
+        .detail_until(id, "running", |d| !d.segments.is_empty() && done(d) > 0)
+        .await;
+    assert_eq!(running.segments.len(), 2, "{running:?}");
+    rig.engine.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn job_detail_http_segments() {
     let server = TestServer::start().await;

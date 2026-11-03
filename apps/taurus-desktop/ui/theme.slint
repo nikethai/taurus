@@ -59,6 +59,13 @@ export global Theme {
     out property <brush> accent-text: #FFFFFF;
     out property <brush> accent-soft: accent-raw.with-alpha(dark ? 0.2 : 0.12);
     out property <brush> sel: accent-raw.with-alpha(dark ? 0.28 : 0.16);
+    // Progress bars take their file kind's color (ui.progress_by_type),
+    // else the accent.
+    in-out property <bool> by-type: true;
+
+    public pure function bar(kind: string) -> brush {
+        return by-type ? kind-fg(kind) : accent-base;
+    }
 
     // Kinds: disc, media, torrent (also magnet), archive, music, image, live;
     // anything else is "file".

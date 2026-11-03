@@ -305,7 +305,7 @@ export component DetailPane inherits Rectangle {
                                 }
                                 if f.index >= 0 && f.selected: ProgressBar {
                                     progress: f.progress;
-                                    bar-color: Theme.kind-fg(root.detail.kind);
+                                    bar-color: Theme.bar(root.detail.kind);
                                     moving: false;
                                 }
                             }

@@ -10,6 +10,8 @@ import {
 import { AdvGrab } from "adv/grab.slint";
 import { AdvBatch } from "adv/batch.slint";
 import { LinksUi } from "adv/links.slint";
+import { SettingsUi, AdvSettingsVm, ToolRowVm } from "adv/settings_ui.slint";
+import { AdvSettings } from "adv/settings.slint";
 import { WhenDoneUi, WhenDonePopover } from "adv/whendone.slint";
 import { AdvAdd } from "adv/add.slint";
 import { FilesDialog } from "adv/torrent.slint";
@@ -24,7 +26,7 @@ import { Settings } from "settings.slint";
 import { Banner } from "banner.slint";
 import { Countdown } from "countdown.slint";
 
-export { Theme, Messages, LinksUi, WhenDoneUi }
+export { Theme, Messages, LinksUi, WhenDoneUi, SettingsUi, AdvSettingsVm, ToolRowVm }
 export {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
     AdvRowVm, FilterCountVm, TabCountsVm,
@@ -85,9 +87,9 @@ export component AppWindow inherits Window {
     callback playlist-confirmed();
 
     // Advanced mode. `layout`, set by the app from ui.mode and the width:
-    // "simple" | "compact" | "wide". Settings stays the Simple screen for
-    // now; the Advanced list replaces Welcome and Downloads, and the
-    // Advanced Add screen (`adv-add`) replaces Add.
+    // "simple" | "compact" | "wide". The Advanced list replaces Welcome
+    // and Downloads, the Advanced Add screen (`adv-add`) replaces Add and
+    // Advanced Settings (`SettingsUi`) replaces Settings.
     in property <string> layout: "simple";
     // Rows of the current tab (compact) or filter and search (wide).
     in property <[AdvRowVm]> adv-rows;
@@ -204,9 +206,9 @@ export component AppWindow inherits Window {
     default-font-size: 14px;
 
     // Simple screen: one centered column, at most 640px wide. The
-    // Advanced list takes the whole window.
+    // Advanced list, and wide Advanced Settings, take the whole window.
     Rectangle {
-        width: root.advanced-list ? root.width : min(root.width, 640px);
+        width: root.advanced-list || (root.layout == "wide" && root.screen == Screen.settings) ? root.width : min(root.width, 640px);
         height: root.height;
         x: (root.width - self.width) / 2;
         y: 0;
@@ -240,40 +242,20 @@ export component AppWindow inherits Window {
                         tab <=> root.adv-tab;
                         speed-down: root.speed-down-text;
                         speed-up: root.speed-up-text;
-                        tab-changed(i) => {
-                            root.tab-changed(i);
-                        }
-                        select(id) => {
-                            root.select(id);
-                        }
-                        link-entered(link) => {
-                            root.link-entered(link);
-                        }
+                        tab-changed(i) => { root.tab-changed(i); }
+                        select(id) => { root.select(id); }
+                        link-entered(link) => { root.link-entered(link); }
                         open-whendone => { root.open-whendone(); }
-                        open-batch => {
-                            root.open-batch();
-                        }
-                        open-grab => {
-                            root.open-grab("");
-                        }
+                        open-batch => { root.open-batch(); }
+                        open-grab => { root.open-grab(""); }
                         open-settings => {
                             root.screen = Screen.settings;
                         }
-                        pause(id) => {
-                            root.pause(id);
-                        }
-                        resume(id) => {
-                            root.resume(id);
-                        }
-                        retry(id) => {
-                            root.retry(id);
-                        }
-                        stop-recording(id) => {
-                            root.stop-recording(id);
-                        }
-                        open-file(id) => {
-                            root.open-file(id);
-                        }
+                        pause(id) => { root.pause(id); }
+                        resume(id) => { root.resume(id); }
+                        retry(id) => { root.retry(id); }
+                        stop-recording(id) => { root.stop-recording(id); }
+                        open-file(id) => { root.open-file(id); }
                     }
 
                     HorizontalLayout {
@@ -285,43 +267,21 @@ export component AppWindow inherits Window {
                             speed-down: root.speed-down-text;
                             speed-up: root.speed-up-text;
                             search-text <=> root.search-text;
-                            filter-changed(key) => {
-                                root.filter-changed(key);
-                            }
-                            search-changed(text) => {
-                                root.search-changed(text);
-                            }
-                            select(id) => {
-                                root.select(id);
-                            }
-                            link-entered(link) => {
-                                root.link-entered(link);
-                            }
+                            filter-changed(key) => { root.filter-changed(key); }
+                            search-changed(text) => { root.search-changed(text); }
+                            select(id) => { root.select(id); }
+                            link-entered(link) => { root.link-entered(link); }
                             open-whendone => { root.open-whendone(); }
-                            open-batch => {
-                                root.open-batch();
-                            }
-                            open-grab => {
-                                root.open-grab("");
-                            }
+                            open-batch => { root.open-batch(); }
+                            open-grab => { root.open-grab(""); }
                             open-settings => {
                                 root.screen = Screen.settings;
                             }
-                            pause(id) => {
-                                root.pause(id);
-                            }
-                            resume(id) => {
-                                root.resume(id);
-                            }
-                            retry(id) => {
-                                root.retry(id);
-                            }
-                            stop-recording(id) => {
-                                root.stop-recording(id);
-                            }
-                            open-file(id) => {
-                                root.open-file(id);
-                            }
+                            pause(id) => { root.pause(id); }
+                            resume(id) => { root.resume(id); }
+                            retry(id) => { root.retry(id); }
+                            stop-recording(id) => { root.stop-recording(id); }
+                            open-file(id) => { root.open-file(id); }
                         }
 
                         if root.layout == "wide": Rectangle {
@@ -516,7 +476,12 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.screen == Screen.settings: Settings {
+                if root.screen == Screen.settings && root.layout != "simple": AdvSettings {
+                    wide: root.layout == "wide";
+                    back => { root.home(); }
+                }
+
+                if root.screen == Screen.settings && root.layout == "simple": Settings {
                     settings: root.settings;
                     changed(key, value) => {
                         root.setting-changed(key, value);

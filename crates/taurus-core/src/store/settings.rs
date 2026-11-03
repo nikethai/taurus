@@ -377,6 +377,7 @@ mod tests {
             when_done: WhenDone::Shutdown,
             auto_checksum: false,
             keep_awake: false,
+            connections: 4,
             torrent: TorrentSettings {
                 stop_ratio: None,
                 max_active: 2,

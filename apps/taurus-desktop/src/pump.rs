@@ -188,6 +188,7 @@ impl App {
             };
             ui.set_tools_banner(state.into());
             ui.set_tools_percent(percent);
+            self.refresh_tools(&ui);
         }
         if let Some(when_done) = flush.when_done {
             self.when_done(&ui, when_done);

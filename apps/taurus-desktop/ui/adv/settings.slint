@@ -1,0 +1,122 @@
+// Advanced Settings (CompactSettings / Settings): every section on one
+// scrolling page in the compact layout; in the wide layout a list of the
+// sections on the left and the chosen one beside it. What it shows and
+// asks of the app goes through `SettingsUi`.
+import { Theme } from "../theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { IconButton, Pressable } from "../widgets.slint";
+import { SettingsUi } from "settings_ui.slint";
+import { DownloadsSection, TorrentsSection, NetworkSection } from "settings_sections.slint";
+import { EnginesSection, AppearanceSection, PrivacySection, GeneralSection } from "settings_more.slint";
+
+component SectionItem inherits Pressable {
+    in property <string> text;
+    in property <bool> selected;
+
+    height: 34px;
+    border-radius: 8px;
+    background: selected ? Theme.sel : root.hovered ? Theme.chip : transparent;
+    accessible-role: list-item;
+    accessible-label: text;
+    accessible-item-selectable: true;
+    accessible-item-selected: selected;
+
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        text: root.text;
+        vertical-alignment: center;
+        overflow: elide;
+        font-size: 13px;
+        font-weight: root.selected ? 600 : 400;
+        color: Theme.text;
+        accessible-role: none;
+    }
+}
+
+export component AdvSettings inherits Rectangle {
+    // The section list and one section at a time.
+    in property <bool> wide;
+    callback back();
+
+    property <[{key: string, label: string}]> sections: [
+        { key: "downloads", label: @tr("Downloads") },
+        { key: "torrents", label: @tr("Torrents") },
+        { key: "network", label: @tr("Network") },
+        { key: "engines", label: @tr("Engines") },
+        { key: "appearance", label: @tr("Appearance") },
+        { key: "privacy", label: @tr("Privacy") },
+        { key: "general", label: @tr("General") },
+    ];
+
+    pure function shows(key: string) -> bool {
+        return !root.wide || SettingsUi.section == key;
+    }
+
+    init => {
+        SettingsUi.opened();
+    }
+
+    VerticalLayout {
+        padding-top: 14px;
+
+        HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 8px;
+            spacing: 8px;
+            IconButton {
+                icon: "back";
+                label: @tr("Back");
+                clicked => {
+                    root.back();
+                }
+            }
+            Text {
+                text: @tr("Settings");
+                vertical-alignment: center;
+                font-size: 20px;
+                font-weight: 700;
+                color: Theme.text;
+            }
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 1;
+            if root.wide: Rectangle {
+                width: 200px;
+                background: Theme.chip;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 2px;
+                    alignment: start;
+                    for s in root.sections: SectionItem {
+                        text: s.label;
+                        selected: SettingsUi.section == s.key;
+                        clicked => {
+                            SettingsUi.section = s.key;
+                        }
+                    }
+                }
+            }
+            ScrollView {
+                horizontal-stretch: 1;
+                VerticalLayout {
+                    padding-left: 20px;
+                    padding-right: 20px;
+                    padding-top: 8px;
+                    padding-bottom: 24px;
+                    spacing: 28px;
+                    alignment: start;
+                    if root.shows("downloads"): DownloadsSection { }
+                    if root.shows("torrents"): TorrentsSection { }
+                    if root.shows("network"): NetworkSection { }
+                    if root.shows("engines"): EnginesSection { }
+                    if root.shows("appearance"): AppearanceSection { }
+                    if root.shows("privacy"): PrivacySection { }
+                    if root.shows("general"): GeneralSection { }
+                }
+            }
+        }
+    }
+}

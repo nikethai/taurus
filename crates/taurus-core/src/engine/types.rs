@@ -70,7 +70,7 @@ pub struct AddRequest {
     /// Overrides the name the server suggests; sanitized before use. Web
     /// downloads only: a torrent is named after itself.
     pub file_name: Option<String>,
-    /// Defaults to `DEFAULT_CONNECTIONS`. Web downloads only.
+    /// Defaults to `Settings::connections`. Web downloads only.
     pub connections: Option<u32>,
     /// Other URLs serving the same file. Each is checked at `add`; one that
     /// fails to resolve, serves another size or another version (by its

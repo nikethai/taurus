@@ -58,6 +58,7 @@ fn ui_smoke() {
     large_playlist_asks_first(&media);
     convert_shows_media_time(&media);
     adv_add_media_options(&media);
+    adv_settings_engines_roll_back(&media);
     media.shutdown();
     let adv = advanced_mode_is_compact_with_tab_counts(&ui, &ctx);
     mode_switch_changes_nothing(&ui, &ctx);
@@ -73,6 +74,7 @@ fn ui_smoke() {
     batch_copies_become_mirrors(&ui, &ctx);
     add_page_offers_find_files(&ui, &ctx);
     whendone_menu_sets_when_done_and_speed(&ui, &ctx);
+    adv_settings_sections_and_values(&ui, &ctx);
     torrent_detail_files_and_overrides();
     adv_add_torrent_picker();
     quit_shuts_down_engine_cleanly(&ui, &ctx);
@@ -1667,8 +1669,9 @@ fn wide_switch_keeps_selection(ui: &AppWindow, ctx: &Ctx, id: JobId) {
         ui.get_layout() == "compact"
     });
 
-    // Back to Simple; picking a preset there replaces the custom speed.
-    ui.window().set_size(TALL);
+    // Back to Simple, from Advanced Settings' General section; picking a
+    // preset there replaces the custom speed.
+    ui.window().set_size(SETTINGS_TALL);
     ui.set_screen(Screen::Settings);
     only_with_role(ui, AccessibleRole::Switch, "Show advanced options", WHAT)
         .invoke_accessible_default_action();
@@ -3511,6 +3514,266 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     back.speed = SpeedLimit::Fastest;
     let engine = ctx.engine.clone();
     ctx.rt.block_on(engine.set_settings(back)).unwrap();
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// Tall enough for every section of the compact Advanced Settings page.
+const SETTINGS_TALL: slint::LogicalSize = slint::LogicalSize::new(420.0, 3600.0);
+const SETTINGS_WIDE: slint::LogicalSize = slint::LogicalSize::new(1200.0, 1600.0);
+const SECTIONS: [&str; 7] = [
+    "Downloads",
+    "Torrents",
+    "Network",
+    "Engines",
+    "Appearance",
+    "Privacy",
+    "General",
+];
+
+/// The labels of every text element drawn (one walk of the tree).
+fn drawn_texts(ui: &AppWindow) -> Vec<String> {
+    ElementQuery::from_root(ui)
+        .match_descendants()
+        .match_accessible_role(AccessibleRole::Text)
+        .find_all()
+        .into_iter()
+        .filter(|e| e.size().width > 0.0)
+        .filter_map(|e| e.accessible_label())
+        .map(|label| label.to_string())
+        .collect()
+}
+
+/// A text element labelled `label` is drawn.
+fn shows_text(ui: &AppWindow, label: &str) -> bool {
+    drawn_texts(ui).iter().any(|t| t == label)
+}
+
+/// Advanced mode's Settings button opens Advanced Settings: every section
+/// on one page (compact) or picked from the list (wide); stopping sharing
+/// "never", a custom speed (no comma, applied on Enter), a proxy the
+/// engine refuses (its reason shows, the setting stays), the Jade accent,
+/// and forgetting the password of one protected download.
+fn adv_settings_sections_and_values(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "adv_settings_sections_and_values";
+    advanced_tall(ui, WHAT);
+    ui.window().set_size(SETTINGS_TALL);
+    only_button(ui, "Settings", WHAT).invoke_accessible_default_action();
+    assert_eq!(ui.get_screen(), Screen::Settings, "{WHAT}: not on Settings");
+    refresh_tree(ui);
+    assert!(
+        labelled(ui, "Links and startup").is_empty(),
+        "{WHAT}: Simple's settings shown in Advanced mode"
+    );
+    let texts = drawn_texts(ui);
+    for section in SECTIONS {
+        assert!(
+            texts.iter().any(|t| t == section),
+            "{WHAT}: compact: no {section:?}"
+        );
+    }
+    let radio = |label: &str| only_with_role(ui, AccessibleRole::RadioButton, label, WHAT);
+
+    // Stop sharing at ratio: Never.
+    assert_eq!(
+        ctx.engine.settings().torrent.stop_ratio,
+        Some(1.0),
+        "{WHAT}"
+    );
+    radio("Never").invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: ratio never saved"), || {
+        ctx.engine.settings().torrent.stop_ratio.is_none()
+    });
+
+    // The custom speed follows R13: a comma is refused, Enter applies.
+    let enter = || {
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: slint::platform::Key::Return.into(),
+        });
+    };
+    let speed_before = ctx.engine.settings().speed;
+    radio("Custom").invoke_accessible_default_action();
+    refresh_tree(ui);
+    let field = only_with_role(ui, AccessibleRole::TextInput, "Custom speed in MB/s", WHAT);
+    field.set_accessible_value("1,5");
+    enter();
+    assert!(
+        shows_text(ui, "Use a dot for decimals, like 2.5."),
+        "{WHAT}: comma"
+    );
+    assert_eq!(
+        ctx.engine.settings().speed,
+        speed_before,
+        "{WHAT}: comma saved"
+    );
+    field.set_accessible_value("1.5");
+    enter();
+    wait_until(&format!("{WHAT}: custom speed saved"), || {
+        ctx.engine.settings().speed
+            == SpeedLimit::Custom {
+                bytes_per_sec: 1_500_000,
+            }
+    });
+    radio("Fastest").invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: fastest saved"), || {
+        ctx.engine.settings().speed == SpeedLimit::Fastest
+    });
+
+    // A proxy the engine refuses: its words under the field, nothing saved.
+    let proxy_before = ctx.engine.settings().network.proxy;
+    radio("Manual").invoke_accessible_default_action();
+    refresh_tree(ui);
+    let field = only_with_role(ui, AccessibleRole::TextInput, "Proxy URL", WHAT);
+    field.set_accessible_value("localhost:1");
+    enter();
+    wait_until(&format!("{WHAT}: proxy refused"), || {
+        ui.global::<taurus_desktop::SettingsUi>().get_proxy_error() != ""
+    });
+    let reason = ui
+        .global::<taurus_desktop::SettingsUi>()
+        .get_proxy_error()
+        .to_string();
+    assert!(
+        reason.starts_with("unsupported proxy"),
+        "{WHAT}: {reason:?}"
+    );
+    assert!(shows_text(ui, &reason), "{WHAT}: reason not shown");
+    settle(Duration::from_millis(200));
+    assert_eq!(
+        ctx.engine.settings().network.proxy,
+        proxy_before,
+        "{WHAT}: proxy changed"
+    );
+
+    // Accent Jade.
+    radio("Jade").invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: Jade saved"), || {
+        ctx.engine.settings().ui.accent == "Jade"
+    });
+    let accent = ui.global::<Theme>().get_accent();
+    assert!(accent.eq_ignore_ascii_case("Jade"), "{WHAT}: {accent:?}");
+
+    // After one protected download (earlier checks' passwords forgotten
+    // first), Forget removes its password.
+    ctx.rt
+        .block_on(ctx.engine.forget_saved_passwords())
+        .unwrap();
+    let mut protected = FileSpec::new(64 * 1024);
+    protected.basic_auth = Some(("settings-user".into(), "settings-Pa55".into()));
+    let request = AddRequest {
+        url: ctx.server.serve("settings-locked.bin", protected),
+        dest_dir: ctx.out(),
+        credentials: Some(taurus_core::Credentials {
+            username: "settings-user".into(),
+            password: "settings-Pa55".into(),
+        }),
+        ..Default::default()
+    };
+    ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    wait_until(&format!("{WHAT}: protected download finished"), || {
+        job_named(ctx, "settings-locked.bin").is_some_and(|v| v.state == JobState::Completed)
+    });
+    only_button(ui, "Forget saved passwords", WHAT).invoke_accessible_default_action();
+    let settings_ui = ui.global::<taurus_desktop::SettingsUi>();
+    wait_until(&format!("{WHAT}: forgotten"), || {
+        settings_ui.get_forget_state() == "done"
+    });
+    assert_eq!(settings_ui.get_forget_count(), 1, "{WHAT}: removed");
+    assert!(
+        shows_text(ui, "Removed 1"),
+        "{WHAT}: \"Removed 1\" not shown"
+    );
+
+    // Wide: the section list, one section at a time.
+    ui.window().set_size(SETTINGS_WIDE);
+    wait_until(&format!("{WHAT}: wide"), || ui.get_layout() == "wide");
+    for (section, control, role) in [
+        ("Torrents", "Listening port", AccessibleRole::TextInput),
+        ("Network", "System", AccessibleRole::RadioButton),
+        ("Engines", "Check now", AccessibleRole::Button),
+        ("Appearance", "Jade", AccessibleRole::RadioButton),
+        ("Privacy", "Forget saved passwords", AccessibleRole::Button),
+        ("General", "Show advanced options", AccessibleRole::Switch),
+        (
+            "Downloads",
+            "Verify checksums automatically",
+            AccessibleRole::Switch,
+        ),
+    ] {
+        refresh_tree(ui);
+        only_with_role(ui, AccessibleRole::ListItem, section, WHAT)
+            .invoke_accessible_default_action();
+        only_with_role(ui, role, control, WHAT);
+        let texts = drawn_texts(ui);
+        let shown: Vec<&str> = SECTIONS
+            .into_iter()
+            .filter(|s| texts.iter().any(|t| t == s))
+            .collect();
+        assert_eq!(shown, [section], "{WHAT}: wide: sections shown");
+    }
+    only_button(ui, "Back", WHAT).invoke_accessible_default_action();
+    assert_ne!(ui.get_screen(), Screen::Settings, "{WHAT}: Back");
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// The yt-dlp row's version on the Engines section.
+fn ytdlp_row_version(ui: &AppWindow) -> String {
+    ui.global::<taurus_desktop::SettingsUi>()
+        .get_tools()
+        .iter()
+        .find(|t| t.kind == "yt-dlp")
+        .map(|t| t.version.to_string())
+        .unwrap_or_default()
+}
+
+fn engine_ytdlp_version(m: &MediaCtx) -> Option<String> {
+    m.ctx
+        .engine
+        .tools_status()
+        .into_iter()
+        .find(|s| s.kind == taurus_core::tools::ToolKind::YtDlp)
+        .and_then(|s| s.version)
+}
+
+/// Engines: "Check now" fetches a newer yt-dlp, "Roll back yt-dlp" makes
+/// the version before it active again; the row follows.
+fn adv_settings_engines_roll_back(m: &MediaCtx) {
+    const WHAT: &str = "adv_settings_engines_roll_back";
+    let ui = &m.ui;
+    ui.window().set_size(SETTINGS_TALL);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    ui.set_screen(Screen::Settings);
+    refresh_tree(ui);
+    let first = engine_ytdlp_version(m).expect("yt-dlp installed by the media checks");
+    wait_until(&format!("{WHAT}: row shows {first}"), || {
+        ytdlp_row_version(ui) == first
+    });
+    assert!(shows_text(ui, &format!("Version {first}")), "{WHAT}");
+
+    let newer = unique_version();
+    set_ytdlp_scenario(&newer, &media_scenario().to_string());
+    m.host.set_release("yt-dlp", ToolRelease::new(&newer));
+    only_button(ui, "Check now", WHAT).invoke_accessible_default_action();
+    wait_for(TOOLS_WAIT, &format!("{WHAT}: {newer} active"), || {
+        engine_ytdlp_version(m).as_deref() == Some(newer.as_str()) && ytdlp_row_version(ui) == newer
+    });
+    wait_until(&format!("{WHAT}: check finished"), || {
+        !ui.global::<taurus_desktop::SettingsUi>().get_tools_busy()
+    });
+    refresh_tree(ui);
+    only_button(ui, "Roll back yt-dlp", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: {first} active again"), || {
+        engine_ytdlp_version(m).as_deref() == Some(first.as_str()) && ytdlp_row_version(ui) == first
+    });
+    assert_eq!(
+        ui.global::<taurus_desktop::SettingsUi>()
+            .get_tools_error()
+            .as_str(),
+        "",
+        "{WHAT}: error shown"
+    );
+    ui.set_screen(Screen::Downloads);
     ui.invoke_setting_changed("advanced".into(), "false".into());
     ui.window().set_size(COMPACT);
 }

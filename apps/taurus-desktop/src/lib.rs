@@ -6,6 +6,7 @@ pub mod add_flow;
 mod adv_add;
 mod adv_flow;
 mod adv_pick;
+mod adv_settings;
 mod adv_view;
 pub mod app;
 pub mod batch;
