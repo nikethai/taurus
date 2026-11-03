@@ -64,6 +64,10 @@ export component TorrentPicker inherits VerticalLayout {
     callback toggle-file(int);
     callback toggle-all(bool);
     callback toggle-group(string);
+    // The Advanced add screen's: the list takes the height the screen
+    // has left (at least three rows), so the screen itself need not
+    // scroll. Else (the dialog) it is at most 260px high.
+    in property <bool> fill;
     // Its first control ("All") has the focus; gives it the focus.
     out property <bool> first-focused: all.focused;
     public function focus-first() {
@@ -102,10 +106,13 @@ export component TorrentPicker inherits VerticalLayout {
     }
 
     Rectangle {
+        property <length> rows-height: max(root.files.length, 1) * 36px + 8px;
         border-radius: 10px;
         border-width: 1px;
         border-color: Theme.line;
-        height: min(max(root.files.length, 1) * 36px + 8px, 260px);
+        min-height: min(self.rows-height, root.fill ? 3 * 36px + 8px : 260px);
+        preferred-height: root.fill ? self.rows-height : min(self.rows-height, 260px);
+        max-height: self.preferred-height;
         ListView {
             for r in root.files: FileRow {
                 item: r;
@@ -132,6 +139,8 @@ export component TorrentPicker inherits VerticalLayout {
 // The Advanced add screen's torrent options: the picker and sharing.
 export component TorrentOptions inherits VerticalLayout {
     in property <AdvAddVm> vm;
+    // See TorrentPicker.fill.
+    in property <bool> fill;
     callback field-changed(string, string);
     callback toggle-file(int);
     callback toggle-all(bool);
@@ -155,6 +164,7 @@ export component TorrentOptions inherits VerticalLayout {
         text: @tr("Files");
     }
     TorrentPicker {
+        fill: root.fill;
         files: root.vm.files;
         selected-count: root.vm.selected-count;
         selected-size: root.vm.selected-size;

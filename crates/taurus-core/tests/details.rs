@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use taurus_core::secrets::MemoryStore;
 use taurus_core::torrent::hub::TorrentTestNet;
 use taurus_core::{
-    AddRequest, Credentials, Engine, EngineConfig, JobDetail, JobId, JobState, PasswordStore,
-    PowerMode, ProgressUnit, Settings, Timing, TorrentSettings,
+    AddRequest, Credentials, Engine, EngineConfig, Event, JobDetail, JobId, JobState,
+    PasswordStore, PowerMode, ProgressUnit, Settings, Timing, TorrentSettings,
 };
 use taurus_testkit::{FileSpec, TestServer, TorrentSeeder, content};
 
@@ -196,6 +196,7 @@ async fn job_detail_torrent_files() {
         .unwrap();
     let info = rig.engine.torrent_files(&seeder.magnet).await.unwrap();
     let index = |p: &str| info.files.iter().find(|f| f.path == p).unwrap().index;
+    let mut events = rig.engine.subscribe();
     let id = rig
         .engine
         .add(AddRequest {
@@ -225,6 +226,35 @@ async fn job_detail_torrent_files() {
         .await
         .unwrap();
     assert_eq!(state, JobState::Completed);
+    // Its progress counts the selected file's own size, as the picker and
+    // the stored job do (not the pieces librqbit fetched for it).
+    let mut totals = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let Event::Progress {
+            id: of,
+            downloaded,
+            total,
+            ..
+        } = event
+            && of == id
+        {
+            totals.push(total);
+            assert!(downloaded <= a.len() as u64, "{downloaded} of {total:?}");
+        }
+    }
+    assert!(!totals.is_empty(), "no progress reported");
+    assert!(
+        totals.iter().all(|t| *t == Some(a.len() as u64)),
+        "{totals:?} for a {}-byte file",
+        a.len()
+    );
+    let view = rig
+        .engine
+        .snapshot()
+        .into_iter()
+        .find(|v| v.id == id)
+        .unwrap();
+    assert_eq!(view.total, Some(a.len() as u64));
     // Finished, out of the session: still listed, from the store.
     let finished = rig.engine.job_detail(id).unwrap();
     let file = |p: &str| finished.files.iter().find(|f| f.path == p).unwrap();

@@ -1,6 +1,7 @@
 // Small controls shared by the screens. Colors come from Theme only.
 import { Theme } from "theme.slint";
 import { Icon } from "icons.slint";
+import { LineEdit as StdLineEdit, TextEdit as StdTextEdit } from "std-widgets.slint";
 
 // Anything clickable: mouse, keyboard (Tab, then Space or Return) and
 // assistive technology (default action) all call `clicked`. A held key
@@ -175,6 +176,85 @@ export component CheckBox inherits Pressable {
             color: Theme.text;
             accessible-role: none;
         }
+    }
+}
+
+// The std text fields with the focus line in the accent color: the std
+// field fills the component, the line is drawn over its own. Assistive
+// technology sees this component as the field.
+export component LineEdit inherits Rectangle {
+    in-out property <string> text <=> field.text;
+    in property <string> placeholder-text <=> field.placeholder-text;
+    in property <InputType> input-type <=> field.input-type;
+    in property <bool> enabled <=> field.enabled;
+    out property <bool> has-focus: field.has-focus;
+    callback edited <=> field.edited;
+    callback accepted <=> field.accepted;
+
+    accessible-role: text-input;
+    accessible-enabled: root.enabled;
+    accessible-value: root.text;
+    accessible-placeholder-text: root.placeholder-text;
+    accessible-action-set-value(v) => {
+        root.text = v;
+        root.edited(v);
+    }
+    forward-focus: field;
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    min-width: field.min-width;
+    min-height: field.min-height;
+    preferred-width: field.preferred-width;
+    preferred-height: field.preferred-height;
+
+    field := StdLineEdit {
+        width: root.width;
+        height: root.height;
+        accessible-role: none;
+    }
+    Rectangle {
+        x: 4px;
+        y: parent.height - self.height;
+        width: parent.width - 8px;
+        height: 2px;
+        border-radius: 1px;
+        background: Theme.accent-base;
+        visible: root.has-focus && root.enabled;
+    }
+}
+
+export component TextEdit inherits Rectangle {
+    in-out property <string> text <=> field.text;
+    in property <TextWrap> wrap <=> field.wrap;
+    out property <bool> has-focus: field.has-focus;
+    callback edited <=> field.edited;
+
+    accessible-role: text-input;
+    accessible-value: root.text;
+    accessible-action-set-value(v) => {
+        root.text = v;
+        root.edited(v);
+    }
+    forward-focus: field;
+    horizontal-stretch: 1;
+    min-width: field.min-width;
+    min-height: field.min-height;
+    preferred-width: field.preferred-width;
+    preferred-height: field.preferred-height;
+
+    field := StdTextEdit {
+        width: root.width;
+        height: root.height;
+        accessible-role: none;
+    }
+    Rectangle {
+        x: 4px;
+        y: parent.height - self.height;
+        width: parent.width - 8px;
+        height: 2px;
+        border-radius: 1px;
+        background: Theme.accent-base;
+        visible: root.has-focus;
     }
 }
 

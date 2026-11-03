@@ -43,6 +43,8 @@ fn ui_smoke() {
     shell_text_mirrors_messages(&ui);
     media_rows_and_tools_banner_wording(&ui);
     keyboard_tab_enter_escape();
+    wide_detail_holds_long_names();
+    torrent_add_scrolls_only_its_list();
     let ctx = Ctx::start(&ui);
     add_flow_shows_file_and_finishes(&ui, &ctx);
     settings_change_is_saved_and_shown(&ui, &ctx);
@@ -4186,6 +4188,152 @@ fn keyboard_tab_enter_escape() {
     keyboard_password_dialog(&ui, &calls);
     keyboard_files_dialog(&ui, &calls);
     keyboard_screens(&ui, &calls);
+}
+
+/// The wide layout's detail pane holds a 200-character name, a long
+/// folder and link, every action row and the sharing selects within its
+/// width: nothing in it is wider than the pane (no sideways scrolling).
+fn wide_detail_holds_long_names() {
+    const WHAT: &str = "wide_detail_holds_long_names";
+    let ui = AppWindow::new().unwrap();
+    ui.show().unwrap();
+    ui.window()
+        .set_size(slint::LogicalSize::new(1100.0, 1600.0));
+    ui.set_layout("wide".into());
+    ui.set_screen(Screen::Downloads);
+    let name: String = "Popeye_forPresident_512kb_"
+        .repeat(8)
+        .chars()
+        .take(196)
+        .chain(".mp4".chars())
+        .collect();
+    assert_eq!(name.chars().count(), 200);
+    let stat = |key: &str, value: &str| taurus_desktop::StatVm {
+        key: key.into(),
+        value: value.into(),
+    };
+    ui.set_detail(DetailVm {
+        visible: true,
+        row: row(1, "paused"),
+        name: name.as_str().into(),
+        kind: "media".into(),
+        source: "Torrent".into(),
+        big: "50%".into(),
+        size_line: "13 MB / 27 MB".into(),
+        cells: ModelRc::new(VecModel::from(vec![0.5f32; 96])),
+        has_cells: true,
+        files: ModelRc::new(VecModel::from(vec![taurus_desktop::FileRowVm {
+            index: 0,
+            name: name.as_str().into(),
+            size_text: "27 MB".into(),
+            progress: 0.5,
+            selected: true,
+        }])),
+        stats: ModelRc::new(VecModel::from(vec![
+            stat("checksum", &format!("sha256:{}", "ab".repeat(32))),
+            stat("password", "memory"),
+        ])),
+        folder: format!("/tmp/{}", "a-very-long-folder-name-".repeat(6)).into(),
+        url: format!(
+            "https://archive.org/download/{}/{name}",
+            "Popeye".repeat(12)
+        )
+        .into(),
+        can_convert: true,
+        can_retry_cookies: true,
+        can_choose_files: true,
+        ratio_override: "default".into(),
+        seed_time_override: "default".into(),
+        ..Default::default()
+    });
+    refresh_tree(&ui);
+    only_button(&ui, "Convert…", WHAT).invoke_accessible_default_action();
+    only_button(&ui, "Use my browser's sign-in", WHAT).invoke_accessible_default_action();
+    refresh_tree(&ui);
+    let pane = ElementHandle::find_by_element_type_name(&ui, "DetailPane")
+        .next()
+        .expect("the detail pane");
+    let right = pane.absolute_position().x + pane.size().width;
+    assert!(pane.size().width <= 300.5, "{WHAT}: pane {:?}", pane.size());
+    let wide: Vec<String> = pane
+        .query_descendants()
+        .find_all()
+        .into_iter()
+        .filter(|e| e.size().width > 0.0)
+        .filter(|e| e.absolute_position().x + e.size().width > right + 0.5)
+        .map(|e| {
+            format!(
+                "{:?} {:?} {}",
+                e.type_name(),
+                e.accessible_label(),
+                e.size().width
+            )
+        })
+        .collect();
+    assert!(wide.is_empty(), "{WHAT}: wider than the pane: {wide:?}");
+    // The name is all there, on several lines.
+    assert!(
+        labelled(&ui, &name)
+            .iter()
+            .any(|e| e.accessible_role() == Some(AccessibleRole::Text) && e.size().height > 40.0),
+        "{WHAT}: the name is not wrapped"
+    );
+    assert!(
+        shows_text(&ui, "Password: Saved until Hyades quits"),
+        "{WHAT}: where the password is kept"
+    );
+    ui.hide().unwrap();
+}
+
+/// The Advanced add of a torrent with many files, at 420x640: the file
+/// list shrinks to what the window has left, so the screen itself does
+/// not scroll ("Start immediately" shows without scrolling) beside the
+/// list's own scrollbar.
+fn torrent_add_scrolls_only_its_list() {
+    const WHAT: &str = "torrent_add_scrolls_only_its_list";
+    let ui = AppWindow::new().unwrap();
+    ui.show().unwrap();
+    ui.window().set_size(COMPACT);
+    ui.set_layout("compact".into());
+    ui.set_screen(Screen::Add);
+    let files: Vec<TorrentFileVm> = (0..100)
+        .map(|i| TorrentFileVm {
+            index: i,
+            name: format!("file-{i:03}.bin").into(),
+            path: format!("file-{i:03}.bin").into(),
+            size_text: "1 KB".into(),
+            selected: true,
+            state: "all".into(),
+            ..Default::default()
+        })
+        .collect();
+    ui.set_adv_add(taurus_desktop::AdvAddVm {
+        kind: "torrent".into(),
+        badge: "magnet".into(),
+        name: "pack".into(),
+        size_text: "100 KB".into(),
+        files: ModelRc::new(VecModel::from(files)),
+        selected_count: 100,
+        selected_size: "100 KB".into(),
+        ratio: "default".into(),
+        checksum_ok: true,
+        folder: "/tmp/dl".into(),
+        free_text: "1 GB".into(),
+        ..Default::default()
+    });
+    refresh_tree(&ui);
+    let start = only_with_role(&ui, AccessibleRole::Checkbox, "Start immediately", WHAT);
+    let bottom = start.absolute_position().y + start.size().height;
+    assert!(bottom <= 640.0, "{WHAT}: below the window: {bottom}");
+    let rows = ElementQuery::from_root(&ui)
+        .match_descendants()
+        .match_accessible_role(AccessibleRole::Checkbox)
+        .find_all()
+        .into_iter()
+        .filter(|e| e.accessible_label().is_some_and(|l| l.starts_with("file-")))
+        .count();
+    assert!(rows >= 3, "{WHAT}: {rows} file rows shown");
+    ui.hide().unwrap();
 }
 
 type Calls = Rc<RefCell<Vec<String>>>;

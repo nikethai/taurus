@@ -377,9 +377,9 @@ async fn watch(
         }
         let uploaded = uploads.observe(torrent, stats.uploaded_bytes);
         if checked(&stats) {
-            *downloaded = stats.progress_bytes;
+            *downloaded = selected_done(info, job.only_files.as_deref(), &stats);
         }
-        report(ctx, job.id, files, &stats, uploaded, total);
+        report(ctx, job.id, files, &stats, (*downloaded, total), uploaded);
         if committed_at.elapsed() >= COMMIT_EVERY {
             ctx.store
                 .commit_torrent_progress(job.id, *downloaded, uploaded)?;
@@ -421,23 +421,24 @@ async fn watch(
     }
 }
 
-/// Sends the torrent's progress (once librqbit has checked it, so that the
-/// numbers cover the selected files) and its stats; `files` are the counts
-/// of selected files and of all files.
+/// Sends the torrent's progress (once librqbit has checked it) and its
+/// stats; `files` are the counts of selected files and of all files;
+/// `progress` the selected files' bytes downloaded and in all.
 fn report(
     ctx: &TorrentJobContext,
     id: JobId,
     files: (u32, u32),
     stats: &TorrentStats,
+    progress: (u64, u64),
     uploaded: u64,
-    total: u64,
 ) {
+    let (downloaded, total) = progress;
     let live = stats.live.as_ref();
     if checked(stats) {
         let _ = ctx.msgs.send(JobMsg::Progress {
             id,
-            downloaded: stats.progress_bytes,
-            total: Some(stats.total_bytes),
+            downloaded,
+            total: Some(total),
             speed_bps: live.map_or(0, |l| l.download_speed.as_bytes()),
         });
     }
@@ -457,8 +458,24 @@ fn report(
     let _ = ctx.msgs.send(JobMsg::TorrentStats { id, view });
 }
 
-/// Whether librqbit has checked the torrent's files: only then do its
-/// numbers cover the selected files (and only those).
+/// The selected files' bytes downloaded, as the picker, the store and the
+/// views count them (each file's own size). librqbit's `progress_bytes`
+/// and `total_bytes` count whole pieces, so a small file selected alone
+/// can read "0 B of 1.0 MB" where the files add up to 269 KB; they stand
+/// in only when the per-file counts are missing.
+fn selected_done(info: &TorrentInfo, only: Option<&[usize]>, stats: &TorrentStats) -> u64 {
+    if stats.file_progress.len() != info.files.len() {
+        return stats.progress_bytes.min(selected_total(info, only));
+    }
+    info.files
+        .iter()
+        .filter(|f| is_selected(only, f.index))
+        .map(|f| stats.file_progress[f.index].min(f.size))
+        .fold(0u64, u64::saturating_add)
+}
+
+/// Whether librqbit has checked the torrent's files: only then are its
+/// numbers worth reporting.
 fn checked(stats: &TorrentStats) -> bool {
     matches!(
         stats.state,
@@ -543,6 +560,44 @@ fn error(kind: ErrorKind, detail: impl Into<String>) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A small file picked alone counts its own size, not the pieces
+    /// librqbit downloads for it.
+    #[test]
+    fn progress_counts_the_selected_files() {
+        let file = |index, path: &str, size| TorrentFile {
+            index,
+            path: path.into(),
+            size,
+        };
+        let info = TorrentInfo {
+            info_hash: "0".repeat(40),
+            name: "pack".into(),
+            files: vec![
+                file(0, "big.m4b", 900),
+                file(1, "a.jpg", 81),
+                file(2, "a.pdf", 185),
+            ],
+            total: 1166,
+        };
+        let mut stats = TorrentStats {
+            state: TorrentStatsState::Live,
+            file_progress: vec![512, 40, 185],
+            error: None,
+            progress_bytes: 768,
+            uploaded_bytes: 0,
+            total_bytes: 1024,
+            finished: false,
+            live: None,
+        };
+        let only = Some(&[1, 2][..]);
+        assert_eq!(selected_total(&info, only), 266);
+        assert_eq!(selected_done(&info, only, &stats), 225);
+        assert_eq!(selected_done(&info, None, &stats), 737);
+        // Without per-file counts: librqbit's, never above the files'.
+        stats.file_progress.clear();
+        assert_eq!(selected_done(&info, only, &stats), 266);
+    }
 
     #[test]
     fn uploads_add_up_across_resets() {

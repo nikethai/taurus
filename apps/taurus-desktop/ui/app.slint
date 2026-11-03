@@ -183,6 +183,7 @@ export component AppWindow inherits Window {
     function apply-look() {
         Theme.scheme = root.settings.theme != "" ? root.settings.theme.to-lowercase() : "system";
         Theme.accent = root.settings.accent != "" ? root.settings.accent.to-lowercase() : "aldebaran";
+        Theme.sync-palette();
     }
 
     changed settings => {

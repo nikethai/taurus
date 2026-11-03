@@ -7,8 +7,10 @@ import { Theme } from "../theme.slint";
 import { Icon } from "../icons.slint";
 import { AdvAddVm } from "../types.slint";
 import { Messages } from "../messages.slint";
-import { IconButton, TextButton, KindBadge, LoadingDots, Card, Segmented, Segment, CheckBox } from "../widgets.slint";
-import { LineEdit, ScrollView, TextEdit } from "std-widgets.slint";
+import {
+    IconButton, TextButton, KindBadge, LoadingDots, Card, Segmented, Segment, CheckBox, LineEdit, TextEdit,
+} from "../widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { SectionLabel } from "detail_parts.slint";
 import { TorrentOptions } from "torrent.slint";
 import { MediaOptions, BrowserRow } from "add_media.slint";
@@ -189,6 +191,13 @@ export component AdvAdd inherits FocusScope {
         && (vm.kind != "torrent" || vm.selected-count > 0)
         && !(vm.password-again && root.password == "");
     property <bool> sign-in-error: vm.error-kind == "needs_sign_in" || vm.error-kind == "blocked_by_bot_check";
+    property <string> refused: vm.refused;
+    property <bool> had-refusal: false;
+    changed refused => {
+        if (self.refused != "") {
+            self.had-refusal = true;
+        }
+    }
 
     // Escape cancels, from anywhere on the screen.
     focus-on-tab-navigation: false;
@@ -431,8 +440,11 @@ export component AdvAdd inherits FocusScope {
                     }
                 }
 
+                // Its file list shrinks to what the window has left, so
+                // the screen does not scroll beside the list's scrollbar.
                 if root.options && root.vm.kind == "torrent": TorrentOptions {
                     vm: root.vm;
+                    fill: true;
                     field-changed(f, v) => {
                         root.field-changed(f, v);
                     }
@@ -504,11 +516,16 @@ export component AdvAdd inherits FocusScope {
             }
         }
 
-        if root.vm.refused != "": HorizontalLayout {
+        // Why the engine refused the add, under the form. Once shown, the
+        // line keeps its room (two lines at least): the form does not jump
+        // when it goes, as it does when a field is typed in.
+        if root.vm.refused != "" || root.had-refusal: HorizontalLayout {
             padding-left: 20px;
             padding-right: 20px;
+            padding-top: 8px;
             Text {
-                text: Messages.simple(root.vm.refused);
+                text: root.vm.refused != "" ? Messages.simple(root.vm.refused) : "";
+                min-height: 36px;
                 wrap: word-wrap;
                 font-size: 13px;
                 color: Theme.err;

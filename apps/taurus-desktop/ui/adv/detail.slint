@@ -209,9 +209,12 @@ export component DetailPane inherits FocusScope {
                     VerticalLayout {
                         spacing: 6px;
                         horizontal-stretch: 1;
+                        // Wraps anywhere in a long name: the pane never
+                        // grows wider than the window gives it.
                         Text {
                             text: root.detail.name;
                             wrap: word-wrap;
+                            overflow: elide;
                             font-size: 15px;
                             font-weight: 700;
                             color: Theme.text;
@@ -241,6 +244,7 @@ export component DetailPane inherits FocusScope {
                     Text {
                         text: root.detail.size-line;
                         horizontal-stretch: 1;
+                        overflow: elide;
                         font-size: 12px;
                         color: Theme.muted;
                         vertical-alignment: bottom;
@@ -252,6 +256,7 @@ export component DetailPane inherits FocusScope {
                 Text {
                     text: RowText.status(root.detail.row);
                     wrap: word-wrap;
+                    overflow: elide;
                     font-size: 12px;
                     color: root.state == "failed" ? Theme.err : Theme.muted;
                     accessible-role: text;
@@ -508,8 +513,10 @@ export component DetailPane inherits FocusScope {
                             root.browsers-open = !root.browsers-open;
                         }
                     }
+                    // Two rows: they fit the wide layout's narrow pane.
                     if root.detail.can-retry-cookies && root.browsers-open: HorizontalLayout {
                         spacing: 6px;
+                        alignment: start;
                         TextButton {
                             text: @tr("Chrome");
                             kind: "quiet";
@@ -531,6 +538,10 @@ export component DetailPane inherits FocusScope {
                                 root.retry-with-browser(root.id, "safari");
                             }
                         }
+                    }
+                    if root.detail.can-retry-cookies && root.browsers-open: HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
                         TextButton {
                             text: @tr("Edge");
                             kind: "quiet";
@@ -552,8 +563,9 @@ export component DetailPane inherits FocusScope {
                             root.convert-open = !root.convert-open;
                         }
                     }
-                    if root.detail.can-convert && root.convert-open: HorizontalLayout {
+                    if root.detail.can-convert && root.convert-open: VerticalLayout {
                         spacing: 6px;
+                        alignment: start;
                         TextButton {
                             text: @tr("Convert to MP3");
                             kind: "quiet";
