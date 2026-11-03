@@ -1,0 +1,225 @@
+// The torrent file picker (CompactTorrent): files grouped by top folder,
+// with tri-state group boxes (all / some / none: checked / dash / empty),
+// the selected count and size, and the folder's free space. The Advanced
+// add screen holds it; "Choose files…" of a torrent in the list shows it
+// in a dialog (FilesDialog).
+import { Theme } from "../theme.slint";
+import { TorrentFileVm, FilesDialogVm } from "../types.slint";
+import { Pressable, TextButton } from "../widgets.slint";
+import { ListView } from "std-widgets.slint";
+
+// A check box drawn checked, with a dash, or empty.
+component TriBox inherits Rectangle {
+    // "all" | "some" | "none"
+    in property <string> state;
+
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border-width: root.state == "none" ? 1.5px : 0;
+    border-color: Theme.muted;
+    background: root.state == "none" ? transparent : Theme.accent-base;
+
+    if root.state == "all": Path {
+        width: 12px;
+        height: 12px;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 2 6.5 L 5 9.5 L 10 3";
+        stroke: Theme.accent-text;
+        stroke-width: 2px;
+        fill: transparent;
+    }
+    if root.state == "some": Rectangle {
+        width: 10px;
+        height: 2px;
+        border-radius: 1px;
+        background: Theme.accent-text;
+    }
+}
+
+// One row: a folder (its group box) or a file.
+component FileRow inherits Pressable {
+    in property <TorrentFileVm> item;
+    property <string> state: item.group ? item.state : item.selected ? "all" : "none";
+
+    height: 36px;
+    accessible-role: checkbox;
+    accessible-label: item.path;
+    accessible-checkable: true;
+    accessible-checked: root.state == "all";
+    // "some" has no checked state of its own.
+    accessible-value: root.state;
+
+    HorizontalLayout {
+        padding-left: item.in-group ? 30px : 4px;
+        padding-right: 8px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            TriBox {
+                state: root.state;
+            }
+        }
+        Text {
+            text: root.item.group ? root.item.path + "/" : root.item.name;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+            font-size: 13px;
+            font-weight: root.item.group ? 600 : 400;
+            color: root.state == "none" ? Theme.muted : Theme.text;
+            accessible-role: none;
+        }
+        Text {
+            text: root.item.size-text;
+            vertical-alignment: center;
+            font-size: 12px;
+            color: Theme.muted;
+            accessible-role: none;
+        }
+    }
+}
+
+export component TorrentPicker inherits VerticalLayout {
+    in property <[TorrentFileVm]> files;
+    in property <int> selected-count;
+    in property <string> selected-size;
+    in property <string> free-text;
+    in property <bool> short-of-space;
+    // index into the torrent's files; select all or none; a group's folder
+    callback toggle-file(int);
+    callback toggle-all(bool);
+    callback toggle-group(string);
+
+    spacing: 8px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: @tr("{n} file selected · {0}" | "{n} files selected · {0}" % root.selected-count, root.selected-size);
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            font-size: 12px;
+            color: Theme.muted;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+        TextButton {
+            text: @tr("All");
+            kind: "quiet";
+            min-width: 48px;
+            clicked => {
+                root.toggle-all(true);
+            }
+        }
+        TextButton {
+            text: @tr("None");
+            kind: "quiet";
+            min-width: 48px;
+            clicked => {
+                root.toggle-all(false);
+            }
+        }
+    }
+
+    Rectangle {
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Theme.line;
+        height: min(max(root.files.length, 1) * 36px + 8px, 260px);
+        ListView {
+            for r in root.files: FileRow {
+                item: r;
+                clicked => {
+                    if (r.group) {
+                        root.toggle-group(r.path);
+                    } else {
+                        root.toggle-file(r.index);
+                    }
+                }
+            }
+        }
+    }
+
+    if root.free-text != "": Text {
+        text: root.short-of-space ? @tr("Not enough space: {0} free", root.free-text) : @tr("{0} free", root.free-text);
+        font-size: 12px;
+        color: root.short-of-space ? Theme.err : Theme.muted;
+        accessible-role: text;
+        accessible-label: self.text;
+    }
+}
+
+// "Choose files…": the picker over the window, for a torrent in the list.
+export component FilesDialog inherits Rectangle {
+    in property <FilesDialogVm> dialog;
+    callback toggle-file(int);
+    callback toggle-all(bool);
+    callback toggle-group(string);
+    // id, the selected indices
+    callback confirm(int, [int]);
+    callback cancel();
+
+    background: Theme.scrim;
+    // Clicks do not reach the screen behind.
+    TouchArea { }
+    Rectangle {
+        width: min(root.width - 32px, 420px);
+        height: card.preferred-height;
+        background: Theme.panel;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: Theme.line;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.shadow;
+        card := VerticalLayout {
+            padding: 20px;
+            spacing: 14px;
+            Text {
+                text: @tr("Files of {0}", root.dialog.name);
+                wrap: word-wrap;
+                font-size: 15px;
+                font-weight: 700;
+                color: Theme.text;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+            TorrentPicker {
+                files: root.dialog.files;
+                selected-count: root.dialog.selected-count;
+                selected-size: root.dialog.selected-size;
+                free-text: root.dialog.free-text;
+                short-of-space: root.dialog.short-of-space;
+                toggle-file(i) => {
+                    root.toggle-file(i);
+                }
+                toggle-all(on) => {
+                    root.toggle-all(on);
+                }
+                toggle-group(path) => {
+                    root.toggle-group(path);
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                TextButton {
+                    text: @tr("Cancel");
+                    kind: "quiet";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+                TextButton {
+                    text: @tr("Use these files");
+                    kind: "primary";
+                    enabled: root.dialog.selected-count > 0;
+                    clicked => {
+                        root.confirm(root.dialog.id, root.dialog.chosen);
+                    }
+                }
+            }
+        }
+    }
+}

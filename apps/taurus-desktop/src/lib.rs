@@ -3,7 +3,9 @@
 slint::include_modules!();
 
 pub mod add_flow;
+mod adv_add;
 mod adv_flow;
+mod adv_pick;
 mod adv_view;
 pub mod app;
 pub mod bridge;
@@ -22,6 +24,7 @@ mod pump;
 pub mod rows;
 pub mod settings_flow;
 pub mod shell_text;
+mod torrent_pick;
 pub mod tray;
 
 #[cfg(test)]

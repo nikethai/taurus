@@ -7,7 +7,8 @@
 //! `pump.rs`). No `invoke_from_event_loop`: tests drive the same timer with
 //! `slint::platform::update_timers_and_animations()`.
 //!
-//! The add flow lives in `add_flow.rs` (video links in `media_add.rs`),
+//! The add flow lives in `add_flow.rs` (video links in `media_add.rs`,
+//! Advanced mode's Add screen in `adv_add.rs`),
 //! the Settings screen in `settings_flow.rs`, applying engine state to the
 //! window in `pump.rs`.
 
@@ -24,6 +25,7 @@ use slint::{CloseRequestResponse, ComponentHandle, SharedPixelBuffer, Timer, Tim
 use taurus_core::{CoreError, Engine, ErrorKind, JobId, JobState, LinkInfo, RemoveFiles, Settings};
 
 use crate::add_flow::PendingAdd;
+use crate::adv_add::AdvAddState;
 use crate::adv_flow::AdvFlow;
 use crate::adv_view::AdvState;
 use crate::bridge::{self, Coalescer};
@@ -85,6 +87,12 @@ pub(crate) enum UiMsg {
     },
     /// `Engine::set_torrent_overrides` refused the rules picked for a job.
     OverridesRefused(JobId),
+    /// `Engine::add` answered Download on the Advanced Add screen (the
+    /// add with this `seq`).
+    AdvAdded {
+        seq: u64,
+        result: Result<(), CoreError>,
+    },
 }
 
 /// Hands links and clipboard text to the app from any thread.
@@ -133,6 +141,8 @@ pub struct App {
     pub(crate) adv: RefCell<AdvState>,
     /// Advanced mode's detail and dialogs (`adv_flow.rs`).
     pub(crate) flow: AdvFlow,
+    /// Advanced mode's Add screen and file picker (`adv_add.rs`).
+    pub(crate) adv_add: AdvAddState,
     coalescer: Arc<Mutex<Coalescer>>,
     pub(crate) writer: SettingsWriter,
     /// Mirrors `settings.ui.offer_copied_links` for the clipboard thread.
@@ -188,6 +198,7 @@ impl App {
             view: RefCell::new(ViewState::default()),
             adv: RefCell::new(AdvState::default()),
             flow: AdvFlow::default(),
+            adv_add: AdvAddState::default(),
             coalescer: coalescer.clone(),
             writer,
             offer_links,
@@ -269,8 +280,16 @@ impl App {
             .files_chosen(id, indexes));
         on!(ui, self, on_set_override, |a, id, field, value| a
             .set_override(id, &field, &value));
-        // choose-files opens the torrent file picker, which comes in the
-        // next M6b task; until then it is left unconnected.
+        on!(ui, self, on_choose_files, |a, id| a.choose_files(id));
+        on!(ui, self, on_adv_field_changed, |a, field, value| a
+            .adv_field_changed(&field, &value));
+        on!(ui, self, on_adv_toggle_file, |a, index| a
+            .adv_toggle_file(index));
+        on!(ui, self, on_adv_toggle_all, |a, on| a.adv_toggle_all(on));
+        on!(ui, self, on_adv_toggle_group, |a, folder| a
+            .adv_toggle_group(&folder));
+        on!(ui, self, on_adv_add_confirmed, |a, start_now| a
+            .adv_add_confirmed(start_now));
         // open-batch, open-whendone and open-grab: their screens come in
         // later M6b tasks; until then they are left unconnected.
 
@@ -438,6 +457,7 @@ impl App {
             UiMsg::Link(link) => self.offer_link(link),
             UiMsg::SignedIn { id, result } => self.signed_in(id, result),
             UiMsg::OverridesRefused(id) => self.overrides_refused(id),
+            UiMsg::AdvAdded { seq, result } => self.adv_added(seq, result),
         }
     }
 

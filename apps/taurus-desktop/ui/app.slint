@@ -4,7 +4,10 @@ import {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
     AdvRowVm, FilterCountVm, TabCountsVm,
     DetailVm, FileRowVm, StepVm, StatVm, RemoveDialogVm, PasswordDialogVm,
+    QualityVm, LangVm, TorrentFileVm, AdvAddVm, FilesDialogVm,
 } from "types.slint";
+import { AdvAdd } from "adv/add.slint";
+import { FilesDialog } from "adv/torrent.slint";
 import { AdvCompact } from "adv/main.slint";
 import { AdvWide } from "adv/wide.slint";
 import { DetailPane } from "adv/detail.slint";
@@ -21,6 +24,7 @@ export {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
     AdvRowVm, FilterCountVm, TabCountsVm,
     DetailVm, FileRowVm, StepVm, StatVm, RemoveDialogVm, PasswordDialogVm,
+    QualityVm, LangVm, TorrentFileVm, AdvAddVm, FilesDialogVm,
 } from "types.slint";
 
 // Navigation: the UI itself moves between Welcome, Downloads and Settings,
@@ -75,8 +79,9 @@ export component AppWindow inherits Window {
     callback playlist-confirmed();
 
     // Advanced mode. `layout`, set by the app from ui.mode and the width:
-    // "simple" | "compact" | "wide". Add and Settings stay the Simple
-    // screens for now; the Advanced list replaces Welcome and Downloads.
+    // "simple" | "compact" | "wide". Settings stays the Simple screen for
+    // now; the Advanced list replaces Welcome and Downloads, and the
+    // Advanced Add screen (`adv-add`) replaces Add.
     in property <string> layout: "simple";
     // Rows of the current tab (compact) or filter and search (wide).
     in property <[AdvRowVm]> adv-rows;
@@ -136,6 +141,24 @@ export component AppWindow inherits Window {
     callback open-batch();
     callback open-whendone();
     callback open-grab(string);
+    // The Advanced Add screen. The app opens it like Add (Screen.add)
+    // and fills `adv-add`. `adv-password`: what is typed in its password
+    // field, emptied by the app as soon as it is handed to the engine.
+    in property <AdvAddVm> adv-add;
+    in-out property <string> adv-password;
+    // "Choose files…" of a torrent in the list; its Cancel closes it here.
+    in-out property <FilesDialogVm> files-dialog;
+    // field (AdvAddVm field name, or "sub-lang" (toggles a language),
+    // "user", "sign-in-browser" (reads the link again signed in)), value;
+    // booleans as "true" / "false".
+    callback adv-field-changed(string, string);
+    // The torrent picker (the Add screen's, or the files dialog while it
+    // is open): a file's index; all or none; a group's folder.
+    callback adv-toggle-file(int);
+    callback adv-toggle-all(bool);
+    callback adv-toggle-group(string);
+    // Download, and whether it starts now ("Start immediately").
+    callback adv-add-confirmed(bool);
 
     property <bool> has-rows: downloading-rows.length + finished-rows.length > 0;
 
@@ -386,7 +409,7 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.screen == Screen.add: Add {
+                if root.screen == Screen.add && root.layout == "simple": Add {
                     add: root.add;
                     confirmed => {
                         root.add-confirmed();
@@ -410,6 +433,39 @@ export component AppWindow inherits Window {
                     }
                     playlist-confirmed => {
                         root.playlist-confirmed();
+                    }
+                }
+
+                if root.screen == Screen.add && root.layout != "simple": AdvAdd {
+                    vm: root.adv-add;
+                    is-macos: root.is-macos;
+                    tools-banner: root.tools-banner;
+                    password <=> root.adv-password;
+                    field-changed(field, value) => {
+                        root.adv-field-changed(field, value);
+                    }
+                    toggle-file(i) => {
+                        root.adv-toggle-file(i);
+                    }
+                    toggle-all(on) => {
+                        root.adv-toggle-all(on);
+                    }
+                    toggle-group(path) => {
+                        root.adv-toggle-group(path);
+                    }
+                    confirmed(start-now) => {
+                        root.adv-add-confirmed(start-now);
+                    }
+                    cancelled => {
+                        root.add-cancelled();
+                        root.home();
+                    }
+                    show-list => {
+                        root.add-cancelled();
+                        root.screen = Screen.downloads;
+                    }
+                    choose-folder => {
+                        root.choose-folder();
                     }
                 }
 
@@ -451,6 +507,30 @@ export component AppWindow inherits Window {
         }
         cancel => {
             root.remove-dialog.visible = false;
+        }
+    }
+
+    if root.files-dialog.visible: FilesDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        dialog: root.files-dialog;
+        toggle-file(i) => {
+            root.adv-toggle-file(i);
+        }
+        toggle-all(on) => {
+            root.adv-toggle-all(on);
+        }
+        toggle-group(path) => {
+            root.adv-toggle-group(path);
+        }
+        confirm(id, chosen) => {
+            root.files-chosen(id, chosen);
+            root.files-dialog.visible = false;
+        }
+        cancel => {
+            root.files-dialog.visible = false;
         }
     }
 

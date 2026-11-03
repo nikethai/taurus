@@ -55,6 +55,7 @@ fn ui_smoke() {
     live_recording_shows_and_stops(&media);
     large_playlist_asks_first(&media);
     convert_shows_media_time(&media);
+    adv_add_media_options(&media);
     media.shutdown();
     let adv = advanced_mode_is_compact_with_tab_counts(&ui, &ctx);
     mode_switch_changes_nothing(&ui, &ctx);
@@ -62,7 +63,9 @@ fn ui_smoke() {
     remove_dialog_defaults_to_keep(&ui, &ctx);
     password_cleared_after_submit(&ui, &ctx);
     wide_switch_keeps_selection(&ui, &ctx, adv);
+    adv_add_file_mirrors_checksum(&ui, &ctx);
     torrent_detail_files_and_overrides();
+    adv_add_torrent_picker();
     quit_shuts_down_engine_cleanly(&ui, &ctx);
 }
 
@@ -1018,6 +1021,8 @@ fn media_scenario() -> Value {
         "uploader": "Some Channel",
         "duration": 212.0,
         "live_status": "not_live",
+        "subtitles": {"en": [{"ext": "vtt"}], "vi": [{"ext": "vtt"}]},
+        "automatic_captions": {"fr": [{"ext": "vtt"}]},
         "formats": [
             {"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a.40.2", "filesize": 3000000},
             {"format_id": "247", "ext": "webm", "vcodec": "vp9", "acodec": "none", "height": 720, "filesize": 20000000},
@@ -2208,4 +2213,407 @@ fn convert_shows_media_time(m: &MediaCtx) {
     });
     unsafe { std::env::remove_var("FAKE_FFMPEG_STEP_MS") };
     ui.invoke_setting_changed("advanced".into(), "false".into());
+}
+
+/// Another link to the fake's video (the first one is in the list).
+const ADV_VIDEO_LINK: &str = "https://www.youtube.com/watch?v=hyadesadv";
+
+/// Advanced add of a video: every height the video has is offered, and
+/// the quality, format, subtitles and browser picked reach yt-dlp.
+fn adv_add_media_options(m: &MediaCtx) {
+    const WHAT: &str = "adv_add_media_options";
+    let ui = &m.ui;
+    ui.window().set_size(TALL);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    assert_ne!(ui.get_layout().as_str(), "simple", "{WHAT}: Advanced");
+    ui.invoke_link_entered(ADV_VIDEO_LINK.into());
+    assert_eq!(ui.get_screen(), Screen::Add, "{WHAT}: not on Add");
+    wait_for(TOOLS_WAIT, &format!("{WHAT}: shows the video"), || {
+        let a = ui.get_adv_add();
+        !a.loading && a.kind == "media"
+    });
+    let a = ui.get_adv_add();
+    assert_eq!(a.error_kind.as_str(), "", "{WHAT}: {a:?}");
+    assert_eq!(
+        (
+            a.title.as_str(),
+            a.uploader.as_str(),
+            a.duration_text.as_str(),
+            a.quality_id.as_str(),
+            a.container.as_str(),
+        ),
+        ("A Fine Video", "Some Channel", "3:32", "best", "mp4"),
+        "{WHAT}: {a:?}"
+    );
+    // Every height of the fixture's formats, highest first.
+    let heights: Vec<i32> = a
+        .qualities
+        .iter()
+        .filter(|q| q.height > 0)
+        .map(|q| q.height)
+        .collect();
+    assert_eq!(heights, [1080, 720], "{WHAT}: {:?}", a.qualities);
+    let ids: Vec<String> = a.qualities.iter().map(|q| q.id.to_string()).collect();
+    assert!(
+        ids.iter().any(|id| id == "1080p") && ids.iter().any(|id| id == "720p"),
+        "{WHAT}: {ids:?}"
+    );
+    assert!(ids.iter().any(|id| id == "audio-best"), "{WHAT}: {ids:?}");
+    let langs: Vec<String> = a
+        .subtitle_langs
+        .iter()
+        .map(|l| l.code.to_string())
+        .collect();
+    assert_eq!(langs, ["en", "vi"], "{WHAT}: subtitle languages");
+    // The Advanced screen, not Simple's.
+    only_with_role(ui, AccessibleRole::Checkbox, "Start immediately", WHAT);
+    assert!(
+        labelled(ui, "Other quality").is_empty(),
+        "{WHAT}: Simple's Add screen shown"
+    );
+
+    for (field, value) in [
+        ("quality", "720p"),
+        ("container", "mkv"),
+        ("sub-lang", "en"),
+        ("embed-subs", "true"),
+        ("cookies-browser", "firefox"),
+    ] {
+        ui.invoke_adv_field_changed(field.into(), value.into());
+    }
+    let a = ui.get_adv_add();
+    assert_eq!(
+        (
+            a.quality_id.as_str(),
+            a.container.as_str(),
+            a.embed_subs,
+            a.cookies_browser.as_str(),
+        ),
+        ("720p", "mkv", true, "firefox"),
+        "{WHAT}: {a:?}"
+    );
+    let picked: Vec<String> = a
+        .subtitle_langs
+        .iter()
+        .filter(|l| l.selected)
+        .map(|l| l.code.to_string())
+        .collect();
+    assert_eq!(picked, ["en"], "{WHAT}: picked languages");
+    let p720 = only_with_role(ui, AccessibleRole::RadioButton, "720p", WHAT);
+    assert_eq!(p720.accessible_checked(), Some(true), "{WHAT}: 720p shown");
+
+    ui.invoke_adv_add_confirmed(true);
+    wait_until(&format!("{WHAT}: on the list"), || {
+        ui.get_screen() == Screen::Downloads
+    });
+    let run = || {
+        process_args_log()
+            .into_iter()
+            .filter(|e| e.tool == "yt-dlp" && !e.argv.iter().any(|a| a == "-J"))
+            .map(|e| e.argv)
+            .find(|argv| {
+                argv.windows(2)
+                    .any(|w| w == ["--merge-output-format", "mkv"])
+            })
+    };
+    wait_for(TOOLS_WAIT, &format!("{WHAT}: yt-dlp ran"), || {
+        run().is_some()
+    });
+    let argv = run().unwrap();
+    let pair = |a: &str, b: &str| argv.windows(2).any(|w| w[0] == a && w[1] == b);
+    assert!(
+        argv.windows(2)
+            .any(|w| w[0] == "-f" && w[1].starts_with("bv*[height<=720]")),
+        "{WHAT}: {argv:?}"
+    );
+    assert!(pair("--sub-langs", "en"), "{WHAT}: {argv:?}");
+    assert!(argv.iter().any(|a| a == "--embed-subs"), "{WHAT}: {argv:?}");
+    assert!(
+        pair("--cookies-from-browser", "firefox"),
+        "{WHAT}: {argv:?}"
+    );
+    wait_for(TOOLS_WAIT, &format!("{WHAT}: finished"), || {
+        m.ctx
+            .engine
+            .snapshot()
+            .iter()
+            .any(|v| v.source_url == ADV_VIDEO_LINK && v.state == JobState::Completed)
+    });
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+}
+
+/// Advanced add of a file link: its name, connections, mirror, checksum
+/// and sign-in reach the engine; the password is emptied as it is handed
+/// over and is never in the view model.
+fn adv_add_file_mirrors_checksum(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "adv_add_file_mirrors_checksum";
+    const PASSWORD: &str = "hunter2-typed";
+    let spec = FileSpec::new(1024 * 1024);
+    let url = ctx.server.serve("mirrored.bin", spec.clone());
+    let mirror = ctx.rt.block_on(TestServer::start());
+    let mirror_url = mirror.serve("mirrored.bin", spec.clone());
+    let sum = {
+        use sha2::Digest;
+        hex::encode(sha2::Sha256::digest(taurus_testkit::content(&spec)))
+    };
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    assert_eq!(ui.get_layout().as_str(), "compact", "{WHAT}: Advanced");
+    ui.invoke_link_entered(url.as_str().into());
+    assert_eq!(ui.get_screen(), Screen::Add, "{WHAT}: not on Add");
+    wait_until(&format!("{WHAT}: shows the file"), || {
+        let a = ui.get_adv_add();
+        !a.loading && a.kind == "file"
+    });
+    let a = ui.get_adv_add();
+    assert_eq!(
+        (
+            a.name.as_str(),
+            a.size_text.as_str(),
+            a.connections,
+            a.checksum_ok,
+            a.error_kind.as_str()
+        ),
+        ("mirrored.bin", "1.0 MB", 16, true, ""),
+        "{WHAT}: {a:?}"
+    );
+    for label in ["File name", "Mirrors", "Checksum", "Referer", "Password"] {
+        only_with_role(ui, AccessibleRole::TextInput, label, WHAT);
+    }
+    only_with_role(ui, AccessibleRole::Checkbox, "Start immediately", WHAT);
+
+    ui.invoke_adv_field_changed("checksum".into(), "sha256:not-a-sum".into());
+    assert!(!ui.get_adv_add().checksum_ok, "{WHAT}: bad checksum taken");
+    for (field, value) in [
+        ("mirrors", format!("{mirror_url}\n\n")),
+        ("checksum", format!("sha256:{sum}")),
+        ("connections", "4".to_string()),
+        ("name", "copy.bin".to_string()),
+        ("user", "someone".to_string()),
+    ] {
+        ui.invoke_adv_field_changed(field.into(), value.into());
+    }
+    let a = ui.get_adv_add();
+    assert!(a.checksum_ok, "{WHAT}: {a:?}");
+    assert_eq!(a.connections, 4, "{WHAT}");
+    let mirrors: Vec<String> = a.mirrors.iter().map(|m| m.to_string()).collect();
+    assert_eq!(
+        mirrors,
+        std::slice::from_ref(&mirror_url),
+        "{WHAT}: mirrors"
+    );
+    ui.set_adv_password(PASSWORD.into());
+    // "Start immediately" unticked: added and left to the queue.
+    ui.invoke_adv_add_confirmed(false);
+    assert_eq!(ui.get_adv_password().as_str(), "", "{WHAT}: password kept");
+    assert!(
+        !format!("{:?}", ui.get_adv_add()).contains(PASSWORD),
+        "{WHAT}: password in the view model"
+    );
+    wait_until(&format!("{WHAT}: on the list"), || {
+        ui.get_screen() == Screen::Downloads
+    });
+    wait_until(&format!("{WHAT}: copy.bin finished"), || {
+        job_named(ctx, "copy.bin").is_some_and(|v| v.state == JobState::Completed)
+    });
+    let id = job_named(ctx, "copy.bin").unwrap().id;
+    let detail = {
+        let _rt = ctx.rt.enter();
+        ctx.engine.job_detail(id).unwrap()
+    };
+    assert_eq!(detail.mirrors, [mirror_url], "{WHAT}: mirrors");
+    assert_eq!(
+        detail.checksum.as_deref(),
+        Some(format!("sha256:{sum}").as_str()),
+        "{WHAT}: checksum"
+    );
+    assert!(detail.has_password, "{WHAT}: no password kept");
+    let file = ctx.documents().join("copy.bin");
+    assert_eq!(
+        std::fs::metadata(&file).map(|m| m.len()).ok(),
+        Some(1024 * 1024),
+        "{WHAT}: {} not saved in full",
+        file.display()
+    );
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// The picker rows' (path, group, state) and the index of a file by path.
+fn picker_rows(files: &ModelRc<taurus_desktop::TorrentFileVm>) -> Vec<(String, bool, String)> {
+    files
+        .iter()
+        .map(|r| {
+            let state = if r.group {
+                r.state.to_string()
+            } else if r.selected {
+                "all".to_string()
+            } else {
+                "none".to_string()
+            };
+            (r.path.to_string(), r.group, state)
+        })
+        .collect()
+}
+
+fn picker_index(files: &ModelRc<taurus_desktop::TorrentFileVm>, path: &str) -> i32 {
+    files
+        .iter()
+        .find(|r| !r.group && r.path == path)
+        .unwrap_or_else(|| panic!("no file {path}"))
+        .index
+}
+
+/// Advanced add of a torrent: files grouped by folder with tri-state group
+/// boxes; the selection and the sharing rule reach the engine; "Choose
+/// files…" of the job opens the same picker, prefilled.
+fn adv_add_torrent_picker() {
+    const WHAT: &str = "adv_add_torrent_picker";
+    let rt = runtime();
+    let data = |n| taurus_testkit::content(&FileSpec::new(n));
+    let seeder = rt.block_on(TorrentSeeder::start(
+        "grouped",
+        &[
+            ("a/1.bin", data(64 * 1024)),
+            ("a/2.bin", data(48 * 1024)),
+            ("b.bin", data(32 * 1024)),
+        ],
+        None,
+    ));
+    let peer = seeder.addr;
+    let ui = AppWindow::new().unwrap();
+    let ctx = Ctx::start_with(&ui, rt, |config, settings| {
+        config.torrent_test = Some(TorrentTestNet {
+            initial_peers: vec![peer],
+            restore_in_place: false,
+        });
+        settings.torrent.stop_ratio = None;
+        settings.ui.mode = UiMode::Advanced;
+    });
+    ui.show().unwrap();
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    wait_until(&format!("{WHAT}: compact"), || ui.get_layout() == "compact");
+    ui.invoke_link_entered(seeder.magnet.as_str().into());
+    assert_eq!(ui.get_screen(), Screen::Add, "{WHAT}: not on Add");
+    wait_for(
+        Duration::from_secs(60),
+        &format!("{WHAT}: shows the torrent"),
+        || {
+            let a = ui.get_adv_add();
+            !a.loading && a.kind == "torrent"
+        },
+    );
+    let a = ui.get_adv_add();
+    assert_eq!(a.error_kind.as_str(), "", "{WHAT}: {a:?}");
+    let row = |p: &str, g: bool, s: &str| (p.to_string(), g, s.to_string());
+    assert_eq!(
+        picker_rows(&a.files),
+        [
+            row("a", true, "all"),
+            row("a/1.bin", false, "all"),
+            row("a/2.bin", false, "all"),
+            row("b.bin", false, "all"),
+        ],
+        "{WHAT}: grouped rows"
+    );
+    assert_eq!(a.selected_count, 3, "{WHAT}");
+    assert!(!a.free_text.is_empty(), "{WHAT}: free space unknown");
+    let one = picker_index(&a.files, "a/1.bin");
+    let b = picker_index(&a.files, "b.bin");
+
+    ui.invoke_adv_toggle_group("a".into());
+    let a = ui.get_adv_add();
+    assert_eq!(
+        picker_rows(&a.files),
+        [
+            row("a", true, "none"),
+            row("a/1.bin", false, "none"),
+            row("a/2.bin", false, "none"),
+            row("b.bin", false, "all"),
+        ],
+        "{WHAT}: group a off"
+    );
+    assert_eq!(a.selected_count, 1, "{WHAT}");
+    // One file of the group again: the group shows a dash.
+    ui.invoke_adv_toggle_file(one);
+    let a = ui.get_adv_add();
+    assert_eq!(picker_rows(&a.files)[0], row("a", true, "some"), "{WHAT}");
+    let group = only_with_role(&ui, AccessibleRole::Checkbox, "a", WHAT);
+    assert_eq!(
+        group.accessible_value().map(|v| v.to_string()).as_deref(),
+        Some("some"),
+        "{WHAT}: dash not shown"
+    );
+    assert_eq!(group.accessible_checked(), Some(false), "{WHAT}");
+    ui.invoke_adv_toggle_file(one);
+    assert_eq!(ui.get_adv_add().selected_count, 1, "{WHAT}");
+    ui.invoke_adv_field_changed("ratio".into(), "2".into());
+    assert_eq!(ui.get_adv_add().ratio.as_str(), "2", "{WHAT}");
+
+    ui.invoke_adv_add_confirmed(true);
+    wait_until(&format!("{WHAT}: on the list"), || {
+        ui.get_screen() == Screen::Downloads
+    });
+    let view = || {
+        ctx.engine
+            .snapshot()
+            .into_iter()
+            .find(|v| v.kind == taurus_core::JobKind::Torrent)
+    };
+    let id = view().expect("torrent added").id;
+    let files = || {
+        let _rt = ctx.rt.enter();
+        ctx.engine.job_detail(id).unwrap().files
+    };
+    wait_for(
+        Duration::from_secs(60),
+        &format!("{WHAT}: metadata"),
+        || files().len() == 3,
+    );
+    // Ruling R11: only_files is [the index of b.bin], whatever it is.
+    let engine_files = files();
+    let b_index = engine_files
+        .iter()
+        .find(|f| f.path == "b.bin")
+        .map(|f| f.index as i32);
+    assert_eq!(b_index, Some(b), "{WHAT}: picker index of b.bin");
+    let chosen: Vec<usize> = engine_files
+        .iter()
+        .filter(|f| f.selected)
+        .map(|f| f.index)
+        .collect();
+    assert_eq!(chosen, [b as usize], "{WHAT}: {engine_files:?}");
+    let overrides = view().unwrap().torrent.unwrap().overrides;
+    assert_eq!(overrides.stop_ratio, Some(Some(2.0)), "{WHAT}: ratio");
+
+    // "Choose files…": the same picker, prefilled from the job.
+    let want = id.0 as i32;
+    ui.invoke_choose_files(want);
+    let d = ui.get_files_dialog();
+    assert!(d.visible && d.id == want, "{WHAT}: {d:?}");
+    assert_eq!(
+        picker_rows(&d.files),
+        [
+            row("a", true, "none"),
+            row("a/1.bin", false, "none"),
+            row("a/2.bin", false, "none"),
+            row("b.bin", false, "all"),
+        ],
+        "{WHAT}: prefilled"
+    );
+    ui.invoke_adv_toggle_group("a".into());
+    let d = ui.get_files_dialog();
+    assert_eq!(picker_rows(&d.files)[0], row("a", true, "all"), "{WHAT}");
+    assert_eq!(d.chosen.row_count(), 3, "{WHAT}: {d:?}");
+    only_button(&ui, "Use these files", WHAT).invoke_accessible_default_action();
+    assert!(!ui.get_files_dialog().visible, "{WHAT}: dialog open");
+    wait_until(&format!("{WHAT}: all files chosen"), || {
+        view()
+            .and_then(|v| v.torrent)
+            .is_some_and(|t| t.files_selected == 3)
+    });
+    ctx.shutdown(WHAT);
+    drop(seeder);
 }

@@ -229,3 +229,103 @@ export struct PasswordDialogVm {
     busy: bool,
     wrong: bool,
 }
+
+// Advanced add: one quality of a video. `height` is the picture height of
+// a "<N>p" option (0 for best / audio-best / audio-small, worded by
+// Messages.quality); `size-text` the estimated size, "" when unknown.
+export struct QualityVm {
+    id: string,
+    height: int,
+    audio-only: bool,
+    size-text: string,
+}
+
+// Advanced add: a subtitle language (`auto`: only the site's generated
+// captions have it).
+export struct LangVm {
+    code: string,
+    auto: bool,
+    selected: bool,
+}
+
+// The torrent file picker's rows, grouped by top folder. A group row
+// (`group`, index -1) has the folder's path in `path` and `state` "all" |
+// "some" | "none" (shown checked / dash / empty); a file row has its index
+// into the torrent's files, its path inside the torrent, and `in-group`
+// when it sits under a group row (`name` is then the part after the
+// folder).
+export struct TorrentFileVm {
+    index: int,
+    name: string,
+    path: string,
+    size-text: string,
+    selected: bool,
+    group: bool,
+    state: string,
+    in-group: bool,
+}
+
+// The Advanced add screen. kind: "file" | "media" | "torrent" ("" while
+// loading or failed); badge: the KindBadge kind. busy: the add went to the
+// engine; refused: ErrorKind::as_str() of an add the engine refused (the
+// form stays). File links: connections 1 | 4 | 8 | 16; mirrors as last
+// typed, one per entry; checksum-ok: the checksum is empty or a SHA-256
+// sum; needs-user: the link asked for a user name and password. Videos:
+// quality-id one of `qualities`; container "mp4" | "mkv" | "webm";
+// cookies-browser "" | "chrome" | "firefox" | "safari" | "edge" | "brave".
+// Torrents: `files` (see TorrentFileVm); selected-size formatted; ratio
+// "default" | "0" | "1" | "2" | "never"; short-of-space: the selected
+// files do not fit. folder: "" = the OS Downloads folder; free-text: the
+// folder's free space, formatted ("" when unknown).
+export struct AdvAddVm {
+    kind: string,
+    loading: bool,
+    error-kind: string,
+    duplicate: bool,
+    badge: string,
+    busy: bool,
+    refused: string,
+    name: string,
+    size-text: string,
+    connections: int,
+    mirrors: [string],
+    checksum: string,
+    checksum-ok: bool,
+    referer: string,
+    needs-user: bool,
+    qualities: [QualityVm],
+    quality-id: string,
+    audio-only: bool,
+    container: string,
+    subtitle-langs: [LangVm],
+    auto-subs: bool,
+    embed-subs: bool,
+    cookies-browser: string,
+    title: string,
+    uploader: string,
+    duration-text: string,
+    thumbnail: image,
+    live: string,
+    playlist-count: int,
+    files: [TorrentFileVm],
+    selected-count: int,
+    selected-size: string,
+    ratio: string,
+    short-of-space: bool,
+    folder: string,
+    free-text: string,
+}
+
+// "Choose files…" of a torrent in the list: the picker over the window.
+// `chosen`: the indices of the selected files, for `files-chosen`.
+export struct FilesDialogVm {
+    visible: bool,
+    id: int,
+    name: string,
+    files: [TorrentFileVm],
+    selected-count: int,
+    selected-size: string,
+    free-text: string,
+    short-of-space: bool,
+    chosen: [int],
+}
