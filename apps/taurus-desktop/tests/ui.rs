@@ -3271,6 +3271,17 @@ fn whendone_choice(ui: &AppWindow, label: &str, what: &str) -> ElementHandle {
     only_with_role(ui, AccessibleRole::RadioButton, label, what)
 }
 
+/// Waits until the window shows when-done choice `value` (the engine's
+/// echo of an earlier change can still be on its way and put an older
+/// choice back for an instant), then rebuilds the `if` blocks.
+fn whendone_shown(ui: &AppWindow, value: &str, what: &str) {
+    let state = ui.global::<WhenDoneUi>();
+    wait_until(&format!("{what}: window shows {value}"), || {
+        state.get_when_done().as_str() == value
+    });
+    refresh_tree(ui);
+}
+
 /// The footer's when-done button opens the popover: the choice (Escape
 /// closes it) is saved and relabels the button, the sleep note shows for
 /// sleep and shutdown only, a custom speed is typed in MB/s (2.5 is
@@ -3282,6 +3293,10 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     let state = ui.global::<WhenDoneUi>();
     advanced_tall(ui, WHAT);
     assert_eq!(ctx.engine.settings().when_done, WhenDone::Nothing, "{WHAT}");
+    // The engine's settings reach the window in their own time (an older
+    // echo can trail): the footer button's label is looked up only once
+    // the window shows the choice, with `if` blocks rebuilt.
+    whendone_shown(ui, "nothing", WHAT);
     only_button(ui, "When done", WHAT).invoke_accessible_default_action();
     refresh_tree(ui);
     assert!(state.get_open(), "{WHAT}: not open");
@@ -3316,12 +3331,12 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     wait_until(&format!("{WHAT}: sleep saved"), || {
         ctx.engine.settings().when_done == WhenDone::Sleep
     });
-    refresh_tree(ui);
+    whendone_shown(ui, "sleep", WHAT);
     assert!(!texts_containing(ui, NOTE).is_empty(), "{WHAT}: sleep note");
     only_button(ui, "Then sleep", WHAT);
     assert!(labelled(ui, "When done").is_empty(), "{WHAT}: old label");
     whendone_choice(ui, "Shut down", WHAT).invoke_accessible_default_action();
-    refresh_tree(ui);
+    whendone_shown(ui, "shutdown", WHAT);
     assert!(
         !texts_containing(ui, NOTE).is_empty(),
         "{WHAT}: shutdown note"
@@ -3331,15 +3346,17 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     wait_until(&format!("{WHAT}: quit saved"), || {
         ctx.engine.settings().when_done == WhenDone::Quit
     });
-    refresh_tree(ui);
+    whendone_shown(ui, "quit", WHAT);
     assert!(texts_containing(ui, NOTE).is_empty(), "{WHAT}: quit note");
     only_button(ui, "Then quit", WHAT);
     whendone_choice(ui, "Just notify me", WHAT).invoke_accessible_default_action();
+    whendone_shown(ui, "notify", WHAT);
     only_button(ui, "Notify", WHAT);
     whendone_choice(ui, "Do nothing", WHAT).invoke_accessible_default_action();
     wait_until(&format!("{WHAT}: nothing saved"), || {
         ctx.engine.settings().when_done == WhenDone::Nothing
     });
+    whendone_shown(ui, "nothing", WHAT);
     only_button(ui, "When done", WHAT);
 
     // Presets, then Custom.
