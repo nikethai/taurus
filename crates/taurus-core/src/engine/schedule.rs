@@ -336,12 +336,15 @@ impl Actor {
             timing: self.timing.clone(),
             auto_checksum: self.settings.auto_checksum,
             auth: None,
+            live: self.details.track(id),
         };
         let tx = self.job_tx.clone();
         let secrets = self.secrets.clone();
+        let details = self.details.clone();
         tokio::spawn(async move {
             let mut ctx = ctx;
             ctx.auth = secrets.auth_for_stored(&ctx.store, id).await;
+            let live = ctx.live.clone();
             // A task of its own, so a panic still ends in `Finished`.
             let job = tokio::spawn(run_job(ctx));
             // Ends when the job drops its progress sender, i.e. when it ends.
@@ -362,6 +365,8 @@ impl Actor {
                     detail: format!("download task crashed: {e}"),
                 })
             });
+            // Before `Finished`, so a next run's table is never dropped.
+            details.untrack(id, &live);
             let _ = tx.send(JobMsg::Finished { id, outcome });
         });
         self.running.insert(

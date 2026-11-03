@@ -72,6 +72,7 @@ mod tests {
             finished_at: None,
             info_hash: None,
             media: None,
+            progress_unit: Default::default(),
         }
     }
 

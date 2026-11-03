@@ -18,6 +18,7 @@ use crate::torrent::hub::TorrentHub;
 use crate::when_done::{EngineLink, WhenDoneRunner};
 
 use super::actor::{Actor, Command, JobMsg};
+use super::detail::Details;
 use super::jobs::{downloaded, view_of};
 use super::keychain::Secrets;
 use super::media::restore_thumbnails;
@@ -103,7 +104,12 @@ pub(super) async fn assemble(
         })
     };
     let client = SharedClient::new(&settings.network.proxy);
-    let secrets = Secrets::new(config.secrets.clone(), &store.database_token()?);
+    let secrets = Secrets::new(
+        config.secrets.clone(),
+        &store.database_token()?,
+        Some(store.clone()),
+    );
+    let details = Details::new(store.clone());
     let (torrent_settings, _) = watch::channel(settings.torrent.clone());
     let tools = Arc::new(
         ToolManager::new(&config.data_dir, config.tool_sources, client.clone())
@@ -157,6 +163,7 @@ pub(super) async fn assemble(
         media_rates: HashMap::new(),
         media_global,
         secrets: secrets.clone(),
+        details: details.clone(),
     };
     let engine = Engine {
         commands,
@@ -173,6 +180,7 @@ pub(super) async fn assemble(
         tools,
         data_dir: config.data_dir,
         secrets,
+        details,
     };
     Ok((engine, actor, commands_rx))
 }

@@ -249,6 +249,8 @@ pub(super) struct Actor {
     pub(super) media_global: Option<u64>,
     /// The jobs' passwords.
     pub(super) secrets: Secrets,
+    /// Where running web downloads show their segments.
+    pub(super) details: super::detail::Details,
 }
 
 pub(super) type Rates = (Option<u64>, Option<u64>, Option<u64>);

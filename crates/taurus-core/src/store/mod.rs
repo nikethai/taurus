@@ -16,6 +16,7 @@ use crate::torrent::policy::TorrentOverrides;
 mod migrate;
 pub(crate) use migrate::OLDER_SCHEMA;
 mod rows;
+mod secret_accounts;
 mod settings;
 #[cfg(test)]
 mod test_support;

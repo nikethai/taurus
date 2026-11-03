@@ -7,8 +7,10 @@
 
 mod actor;
 mod convert;
+mod convert_guard;
 mod convert_job;
 mod cookies;
+mod detail;
 mod grab;
 mod inspect;
 mod jobs;
@@ -51,6 +53,8 @@ use crate::torrent::source::{Source, classify};
 use actor::Command;
 #[doc(hidden)]
 pub use actor::JobMsg;
+use detail::Details;
+pub use detail::{JobDetail, SegmentView, TorrentFileProgress};
 pub use inspect::LinkInfo;
 use jobs::{downloaded, fixed_url, view_of};
 use keychain::Secrets;
@@ -60,7 +64,7 @@ use open::assemble;
 pub use remove::RemoveFiles;
 use schedule::check_space;
 use sign_in::web_only;
-pub use types::{AddRequest, EngineConfig, Event, JobView, TorrentView};
+pub use types::{AddRequest, EngineConfig, Event, JobView, ProgressUnit, TorrentView};
 
 const COMMAND_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 1024;
@@ -100,6 +104,8 @@ pub struct Engine {
     data_dir: PathBuf,
     /// The jobs' passwords, shared with the actor.
     secrets: Secrets,
+    /// What `job_detail` reads beside the views, shared with the actor.
+    details: Details,
 }
 
 impl Engine {

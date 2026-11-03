@@ -1,5 +1,6 @@
-//! `taurus grab`: the files a web page (or folder listing) links to, with
-//! their sizes, and with `--add` queued as downloads.
+//! `taurus grab`: the files a web page (or folder listing) links to, listed
+//! at once; with `--sizes` their sizes as they arrive, and with `--add`
+//! queued as downloads (never waiting on a size).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -28,6 +29,9 @@ pub struct GrabArgs {
     /// With --add: the destination folder [default: the Downloads folder, else the current dir]
     #[arg(long, value_name = "PATH", requires = "add")]
     pub dir: Option<PathBuf>,
+    /// After the listing, ask the server for each file's size and print one line per file (its index and size) as each answer arrives
+    #[arg(long, conflicts_with = "add")]
+    pub sizes: bool,
 }
 
 /// Whether `link` has one of the extensions (any, when none are asked
@@ -101,13 +105,6 @@ pub async fn run(engine: &Engine, args: GrabArgs, options: Options) -> Result<Ex
         .into_iter()
         .filter(|l| wanted(l, &args.ext))
         .collect();
-    let sizes = if links.is_empty() {
-        Vec::new()
-    } else {
-        engine
-            .probe_sizes(links.iter().map(|l| l.url.clone()).collect())
-            .await
-    };
     if json {
         let rows: Vec<_> = links
             .iter()
@@ -119,7 +116,6 @@ pub async fn run(engine: &Engine, args: GrabArgs, options: Options) -> Result<Ex
                     "name": link.name,
                     "folder": link.folder,
                     "extension": link.extension,
-                    "size": sizes.get(index).copied().flatten(),
                 })
             })
             .collect();
@@ -130,10 +126,13 @@ pub async fn run(engine: &Engine, args: GrabArgs, options: Options) -> Result<Ex
     } else if links.is_empty() {
         println!("No files found.");
     } else {
-        print!("{}", render::grab_links(&links, &sizes));
+        print!("{}", render::grab_links(&links));
     }
     if found.truncated && !json {
         eprintln!("note: the page has more links than are listed");
+    }
+    if args.sizes && !links.is_empty() {
+        print_sizes(engine, &links, json).await;
     }
     if !args.add || links.is_empty() {
         return Ok(ExitCode::SUCCESS);
@@ -182,6 +181,22 @@ pub async fn run(engine: &Engine, args: GrabArgs, options: Options) -> Result<Ex
         enqueued
     };
     runner.run(enqueue).await
+}
+
+/// Probes the links' sizes and prints each as it arrives: a line of index
+/// and size, or with `json` an object `{"index", "size"}` per line.
+async fn print_sizes(engine: &Engine, links: &[GrabbedLink], json: bool) {
+    let mut sizes = engine.probe_sizes_stream(links.iter().map(|l| l.url.clone()).collect());
+    if !json {
+        println!("{}", render::GRAB_SIZES_HEADING);
+    }
+    while let Some((index, size)) = sizes.recv().await {
+        if json {
+            println!("{}", serde_json::json!({ "index": index, "size": size }));
+        } else {
+            println!("{}", render::grab_size(index, size));
+        }
+    }
 }
 
 #[cfg(test)]

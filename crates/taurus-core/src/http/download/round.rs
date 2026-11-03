@@ -99,6 +99,7 @@ pub(super) async fn run_round(
         round.on_report(report);
     }
     *segments = round.segments();
+    ctx.live.set(segments.clone(), 0);
     match round.end {
         Some(end) => end,
         None if round.slots.iter().all(|s| s.complete) => RoundEnd::Done,
@@ -361,7 +362,9 @@ impl Round<'_> {
     }
 
     fn report_progress(&self, meter: &mut ProgressMeter) {
-        let downloaded = self.slots.iter().map(|s| s.live().done).sum();
+        let live: Vec<Segment> = self.slots.iter().map(Slot::live).collect();
+        let downloaded = live.iter().map(|s| s.done).sum();
+        self.ctx.live.set(live, self.running());
         if let Some(speed) = meter.record(Instant::now(), downloaded) {
             let _ = self
                 .ctx
@@ -422,6 +425,7 @@ mod tests {
             timing: Timing::default(),
             auto_checksum: false,
             auth: None,
+            live: Default::default(),
         };
         let (tx, _rx) = mpsc::unbounded_channel();
         let tapa = dir.path().join("x.bin.tapa");

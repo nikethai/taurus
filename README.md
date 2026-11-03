@@ -40,7 +40,7 @@ taurus remove 1 --delete-files
 
 ### Links on a web page
 
-`taurus grab <PAGE_URL>` reads a web page (or an Apache/nginx style "Index of" folder listing) and lists the files it links to: index (from 0), size (`-` when the server tells none), the folder it was found in, and name. Only links whose file name has an extension that is not a web page's are listed, each once, at most 500.
+`taurus grab <PAGE_URL>` reads a web page (or an Apache/nginx style "Index of" folder listing) and lists the files it links to at once: index (from 0), the folder it was found in, and name. Only links whose file name has an extension that is not a web page's are listed, each once, at most 500. Sizes are not asked for unless you add `--sizes`: after the listing, one line per file (its index and size, `-` when the server tells none) is printed as each answer arrives, so the lines come in the order the servers answer, not the listing's.
 
 ```sh
 # List the files a page links to
@@ -52,12 +52,15 @@ taurus grab https://example.com/papers/ --ext pdf,zip
 # A folder listing: read its subfolders too (one level)
 taurus grab https://example.com/files/ --subfolders
 
+# Also ask for each file's size (printed by index as the answers arrive)
+taurus grab https://example.com/papers/ --sizes
+
 # Add every listed file to the queue and download them into a folder; a file found in
 # a subfolder goes into the same subfolder of that folder (a/x.pdf and b/x.pdf stay apart)
 taurus grab https://example.com/papers/ --ext pdf --add --dir ~/Downloads
 ```
 
-`--json` prints the listing as one object, `{"links": [{"index", "url", "name", "folder", "extension", "size"}], "truncated": bool}`. Without `--add`, nothing is queued; with `--add`, `--json` goes on to print the usual event lines after that object, one JSON value per line. Folder names come from the page, so they are checked: a name that is empty, `.`, `..` or holds a backslash makes that one file fail (the others go on, exit 1), and nothing is ever written outside `--dir`. With `--add`, a file on the page's own scheme, host and port is requested with the page (without its `#fragment`) as its Referer, like a browser following the link; a plain-http link on an https page gets none.
+`--json` prints the listing as one object, `{"links": [{"index", "url", "name", "folder", "extension"}], "truncated": bool}`; with `--sizes` it is followed by one object per size as it arrives, `{"index", "size"}` (`size` is `null` when the server tells none). Without `--add`, nothing is queued; with `--add`, `--json` goes on to print the usual event lines after that object, one JSON value per line. `--add` never waits on sizes, and does not go with `--sizes`. Folder names come from the page, so they are checked: a name that is empty, `.`, `..` or holds a backslash makes that one file fail (the others go on, exit 1), and nothing is ever written outside `--dir`. With `--add`, a file on the page's own scheme, host and port is requested with the page (without its `#fragment`) as its Referer, like a browser following the link; a plain-http link on an https page gets none.
 
 ### Protected downloads
 

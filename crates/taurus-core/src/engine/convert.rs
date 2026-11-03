@@ -9,19 +9,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::convert::{ConvertSource, ConvertSpec, output_path};
 use crate::errors::{CoreError, ErrorKind};
-use crate::filename::PARTIAL_EXT;
 use crate::http::JobOutcome;
 use crate::media::ConvertPreset;
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob};
 
 use super::actor::{Actor, Command, JobMsg, Run};
+use super::convert_guard::unfinished;
 use super::convert_job::{ConvertJob, remove_own, run_convert_job};
 use super::jobs::view_of;
-use super::{Engine, Event, JobView, io_error, no_such_job, read, write};
-
-/// Extensions of files that are still being written by a download (ours,
-/// yt-dlp's, browsers').
-const UNFINISHED_EXTS: [&str; 4] = [PARTIAL_EXT, "part", "ytdl", "crdownload"];
+use super::{Engine, Event, JobView, no_such_job, read, write};
 
 impl Engine {
     /// Converts a finished file with ffmpeg, as a queued job (it counts
@@ -33,8 +29,12 @@ impl Engine {
     /// deletes only its own partial output. The job is named after its
     /// output and Completed with that file.
     ///
-    /// A source that does not exist, is not a file or is still downloading
-    /// is refused, and so is a job that has not completed. A finished
+    /// A source that does not exist or is not a file is refused. So is,
+    /// with the detail "that file isn't finished yet", a job that has not
+    /// completed, and a file that one owns (a download's file, any file in
+    /// a torrent's folder, a conversion's output or its temporary folder)
+    /// or that ends in `.tapa`, `.part`, `.ytdl` or `.crdownload`. A file
+    /// that belongs to no job is converted. A finished
     /// playlist makes one job per finished file: this returns the first
     /// job's id, `convert_many` all of them. A torrent's files are
     /// converted by path.
@@ -76,47 +76,6 @@ impl Engine {
         })
         .await?
     }
-
-    /// The file as the engine will record it (absolute, no symlinks), if it
-    /// is a file that no download is still writing.
-    async fn check_source(&self, path: &Path) -> Result<PathBuf, CoreError> {
-        let missing = |what: &str| CoreError {
-            kind: ErrorKind::Unknown,
-            detail: format!("{what}: {}", path.display()),
-        };
-        let is_file = tokio::fs::metadata(path).await.is_ok_and(|m| m.is_file());
-        if !is_file {
-            return Err(missing("not a file that exists"));
-        }
-        let path = dunce::canonicalize(path).map_err(io_error)?;
-        let unfinished_ext = path
-            .extension()
-            .is_some_and(|e| UNFINISHED_EXTS.iter().any(|u| e.eq_ignore_ascii_case(u)));
-        if unfinished_ext || self.still_downloading(&path) {
-            return Err(missing("still downloading"));
-        }
-        Ok(path)
-    }
-
-    /// Whether an unfinished job is writing the file `path`: by its name in
-    /// the job's folder, or, for a torrent, anywhere inside the torrent's
-    /// own folder (its name), where it writes all its files.
-    fn still_downloading(&self, path: &Path) -> bool {
-        let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
-            return false;
-        };
-        read(&self.views).values().any(|v| {
-            let unfinished = v.kind != JobKind::Convert
-                && !matches!(v.state, JobState::Completed | JobState::Seeding);
-            let writes = match v.kind {
-                JobKind::Torrent => {
-                    !v.file_name.is_empty() && path.starts_with(v.dest_dir.join(&v.file_name))
-                }
-                _ => v.dest_dir == dir && name == v.file_name.as_str(),
-            };
-            unfinished && writes
-        })
-    }
 }
 
 /// The files a finished job holds, for converting: a web download's or a
@@ -127,7 +86,7 @@ fn finished_files(view: &JobView) -> Result<Vec<PathBuf>, CoreError> {
         detail: detail.to_string(),
     };
     if view.state != JobState::Completed {
-        return Err(refuse("the job has not finished downloading"));
+        return Err(unfinished());
     }
     match view.kind {
         JobKind::Http | JobKind::Convert => Ok(vec![view.dest_dir.join(&view.file_name)]),

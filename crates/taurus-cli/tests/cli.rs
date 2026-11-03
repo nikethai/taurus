@@ -1235,7 +1235,7 @@ async fn grab_lists_and_adds() {
     let (page, pdf, _) = serve_files_page(&fx);
     let dir = fx.out.to_str().unwrap();
 
-    // Everything linked that is a file, with its size.
+    // Everything linked that is a file, listed without asking for sizes.
     let all = fx.run(&["grab", &page]).await;
     assert_exit(&all, 0);
     let text = String::from_utf8_lossy(&all.stdout);
@@ -1243,8 +1243,10 @@ async fn grab_lists_and_adds() {
         assert!(text.contains(name), "{text}");
     }
     assert!(!text.contains("about.html"), "{text}");
+    assert!(!text.contains("SIZE"), "{text}");
+    assert_eq!(fx.server.requests("/files/a.pdf"), 0);
 
-    // --ext narrows it; --json gives index, size, folder and name.
+    // --ext narrows it; --json gives index, folder and name.
     let output = fx.run(&["--json", "grab", &page, "--ext", "PDF"]).await;
     assert_exit(&output, 0);
     let grabbed: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -1253,10 +1255,45 @@ async fn grab_lists_and_adds() {
     assert_eq!(names, ["a.pdf", "c.pdf"]);
     assert_eq!(rows[0]["index"], 0);
     assert_eq!(rows[1]["index"], 1);
-    assert_eq!(rows[0]["size"], 2000);
-    assert_eq!(rows[1]["size"], 4000);
+    assert_eq!(rows[0].get("size"), None);
     assert_eq!(rows[0]["folder"], "/");
     assert_eq!(grabbed["truncated"], false);
+
+    // --sizes: after the listing, one line per size as it arrives, by index.
+    let output = fx.run(&["grab", &page, "--ext", "pdf", "--sizes"]).await;
+    assert_exit(&output, 0);
+    let text = String::from_utf8_lossy(&output.stdout);
+    let (listing, sizes) = text.split_once("INDEX        SIZE\n").expect("sizes");
+    assert!(
+        listing.contains("a.pdf") && listing.contains("c.pdf"),
+        "{text}"
+    );
+    let mut lines: Vec<&str> = sizes.lines().collect();
+    lines.sort();
+    assert_eq!(lines, ["    0     2.0 KiB", "    1     3.9 KiB"], "{text}");
+    // With --json, one object per size after the listing.
+    let output = fx
+        .run(&["--json", "grab", &page, "--ext", "pdf", "--sizes"])
+        .await;
+    assert_exit(&output, 0);
+    let values: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(values.len(), 3, "{values:?}");
+    assert_eq!(values[0]["links"].as_array().unwrap().len(), 2);
+    let mut sizes: Vec<(u64, u64)> = values[1..]
+        .iter()
+        .map(|v| (v["index"].as_u64().unwrap(), v["size"].as_u64().unwrap()))
+        .collect();
+    sizes.sort();
+    assert_eq!(sizes, [(0, 2000), (1, 4000)]);
+    // --add never waits on sizes: the two do not go together.
+    assert_exit(
+        &fx.run(&["grab", &page, "--sizes", "--add", "--dir", dir])
+            .await,
+        1,
+    );
 
     // Listing alone downloads nothing and queues nothing.
     assert!(fs::read_dir(&fx.out).unwrap().next().is_none());

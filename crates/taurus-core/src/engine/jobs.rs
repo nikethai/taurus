@@ -20,7 +20,7 @@ use super::media::stored_media_view;
 use super::schedule::check_space;
 use super::settings::unix_now;
 use super::torrent::{stored_downloaded, stored_torrent_view};
-use super::{AddRequest, Event, JobView, io_error, no_such_job, read, write};
+use super::{AddRequest, Event, JobView, ProgressUnit, io_error, no_such_job, read, write};
 
 impl Actor {
     pub(super) fn add(&mut self, mut req: AddRequest, probe: &Probe) -> Result<JobId, CoreError> {
@@ -315,6 +315,7 @@ impl Actor {
             }
             view.finished_at = (state == JobState::Completed).then(unix_now);
             view.state = state;
+            view.progress_unit = ProgressUnit::of(view.kind, state);
             view.speed_bps = 0;
             write(&self.views).insert(id, view.clone());
             self.emit(Event::JobUpdated(view));
@@ -569,6 +570,7 @@ fn view_with(store: &Store, job: &JobRecord, downloaded: u64, known: Option<&Job
         finished_at,
         info_hash: job.info_hash.clone(),
         media: stored_media_view(job, known.and_then(|v| v.media.as_ref())),
+        progress_unit: ProgressUnit::of(job.kind, job.state),
     }
 }
 

@@ -158,7 +158,7 @@ impl Store {
         Ok(token)
     }
 
-    fn setting(&self, key: &str) -> Result<Option<String>, CoreError> {
+    pub(super) fn setting(&self, key: &str) -> Result<Option<String>, CoreError> {
         self.lock()
             .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
                 row.get(0)
@@ -167,7 +167,7 @@ impl Store {
             .map_err(db_err)
     }
 
-    fn put_setting(&self, key: &str, value: &str) -> Result<(), CoreError> {
+    pub(super) fn put_setting(&self, key: &str, value: &str) -> Result<(), CoreError> {
         self.lock()
             .execute(
                 "INSERT INTO settings (key, value) VALUES (?1, ?2) \

@@ -23,8 +23,8 @@ mod when_done;
 
 pub use convert::ConvertSource;
 pub use engine::{
-    AddRequest, Engine, EngineConfig, Event, JobView, LinkInfo, MediaChoice, MediaView,
-    RemoveFiles, TorrentView, WhenDoneHold,
+    AddRequest, Engine, EngineConfig, Event, JobDetail, JobView, LinkInfo, MediaChoice, MediaView,
+    ProgressUnit, RemoveFiles, SegmentView, TorrentFileProgress, TorrentView, WhenDoneHold,
 };
 pub use errors::{CoreError, ErrorKind};
 pub use grab::{GrabOptions, GrabResult, GrabbedLink};

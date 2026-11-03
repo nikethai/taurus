@@ -20,6 +20,21 @@ pub(crate) mod probe;
 pub(crate) use args::extension;
 pub use args::{ffmpeg_args, output_path};
 
+/// Start of the name of a convert job's private temporary folder,
+/// `.hyades-convert-<job>-<n>` (see `engine::convert_job`).
+pub(crate) const TEMP_PREFIX: &str = ".hyades-convert-";
+
+/// The convert job whose private temporary folder is named `name`, if it
+/// is named like one.
+pub(crate) fn temp_folder_job(name: &str) -> Option<JobId> {
+    let (job, n) = name.strip_prefix(TEMP_PREFIX)?.split_once('-')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(job) || !digits(n) {
+        return None;
+    }
+    job.parse().ok().map(JobId)
+}
+
 /// What to convert.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConvertSource {
@@ -52,6 +67,23 @@ mod tests {
 
     fn none() -> HashSet<String> {
         HashSet::new()
+    }
+
+    #[test]
+    fn temp_folder_names() {
+        assert_eq!(temp_folder_job(".hyades-convert-12-0"), Some(JobId(12)));
+        assert_eq!(temp_folder_job(".hyades-convert-3-41"), Some(JobId(3)));
+        for other in [
+            ".hyades-convert-12",
+            ".hyades-convert--1",
+            ".hyades-convert-a-1",
+            ".hyades-convert-1-x",
+            ".hyades-convert-1-2-3",
+            "hyades-convert-1-0",
+            "song.webm",
+        ] {
+            assert_eq!(temp_folder_job(other), None, "{other}");
+        }
     }
 
     #[test]

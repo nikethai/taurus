@@ -129,6 +129,30 @@ pub struct JobView {
     pub info_hash: Option<String>,
     /// `None` unless the job is a media job.
     pub media: Option<MediaView>,
+    /// What `downloaded` and `total` count.
+    pub progress_unit: ProgressUnit,
+}
+
+/// What a view's `downloaded` and `total` count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub enum ProgressUnit {
+    /// Bytes: every job but a conversion under way.
+    #[default]
+    Bytes,
+    /// Milliseconds of media time: a convert job until it completes (a
+    /// completed one counts its file's bytes).
+    Millis,
+}
+
+impl ProgressUnit {
+    /// The unit of a job of `kind` in `state`.
+    pub fn of(kind: JobKind, state: JobState) -> ProgressUnit {
+        if kind == JobKind::Convert && state != JobState::Completed {
+            ProgressUnit::Millis
+        } else {
+            ProgressUnit::Bytes
+        }
+    }
 }
 
 /// What only a torrent has.

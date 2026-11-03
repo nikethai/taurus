@@ -13,13 +13,16 @@ use taurus_core::media::ConvertPreset;
 use taurus_core::tools::ToolSources;
 use taurus_core::{
     AddRequest, ConvertSource, Engine, EngineConfig, ErrorKind, Event, JobId, JobKind, JobState,
-    JobView, Timing,
+    JobView, ProgressUnit, Timing,
 };
 use taurus_testkit::{
     FakeToolHost, ToolRelease, make_torrent_bytes, process_args_log, set_ytdlp_scenario,
     unique_version,
 };
 use tokio::sync::MutexGuard;
+
+/// Why a file that a job is still writing is refused.
+const UNFINISHED: &str = "that file isn't finished yet";
 
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -485,7 +488,7 @@ async fn sources_that_cannot_be_converted_are_refused() {
     // Still downloading, by its extension.
     let part = rig.file("video.mp4.part", 10);
     let err = mp3(ConvertSource::Path(part)).await.unwrap_err();
-    assert!(err.detail.contains("still downloading"), "{err}");
+    assert!(err.detail.contains(UNFINISHED), "{err}");
     assert_eq!(rig.names(), ["video.mp4.part"]);
     assert!(rig.engine.snapshot().is_empty());
 }
@@ -511,7 +514,7 @@ async fn a_job_still_downloading_is_refused() {
         .convert(ConvertSource::Job(id), ConvertPreset::Mp3)
         .await
         .unwrap_err();
-    assert!(err.detail.contains("not finished"), "{err}");
+    assert!(err.detail.contains(UNFINISHED), "{err}");
     assert_eq!(rig.engine.snapshot().len(), 1);
 }
 
@@ -549,7 +552,7 @@ async fn a_file_of_a_torrent_still_downloading_is_refused() {
             .convert(ConvertSource::Path(inside), ConvertPreset::Mp3)
             .await
             .unwrap_err();
-        assert!(err.detail.contains("still downloading"), "{err}");
+        assert!(err.detail.contains(UNFINISHED), "{err}");
     }
     assert_eq!(rig.engine.snapshot().len(), 1);
     // A file beside the folder, with a name that starts like it, is not the
@@ -559,6 +562,87 @@ async fn a_file_of_a_torrent_still_downloading_is_refused() {
         .convert(ConvertSource::Path(beside), ConvertPreset::Mp3)
         .await
         .unwrap();
+}
+
+/// A running conversion's output and private temporary folder are its own
+/// until it completes, and a partial download is never converted; a file
+/// of no job is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn convert_refuses_unfinished_sources() {
+    let _serial = serial().await;
+    let _slow = Env::set("FAKE_FFMPEG_STEP_MS", "400");
+    let rig = Rig::new().await;
+    let source = rig.file("song.webm", 4000);
+    let id = rig
+        .engine
+        .convert(ConvertSource::Path(source.clone()), ConvertPreset::Mp3)
+        .await
+        .unwrap();
+    rig.until(id, "ffmpeg under way", |v| v.downloaded > 0)
+        .await;
+    let temp = std::fs::read_dir(&rig.dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.is_dir())
+        .expect("the temporary folder");
+    let inside = std::fs::read_dir(&temp)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .next()
+        .unwrap_or_else(|| temp.join("out.mp3"));
+    let output = rig.dir.join("song (mp3).mp3");
+    for path in [output, inside, rig.file("big.iso.tapa", 10)] {
+        let err = rig
+            .engine
+            .convert(ConvertSource::Path(path.clone()), ConvertPreset::Mp3)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Unknown, "{path:?}");
+        assert_eq!(err.detail, UNFINISHED, "{path:?}");
+    }
+    let unfinished_job = rig
+        .engine
+        .convert(ConvertSource::Job(id), ConvertPreset::Mp3)
+        .await
+        .unwrap_err();
+    assert_eq!(unfinished_job.detail, UNFINISHED);
+    // A file that belongs to no job is converted.
+    let free = rig.file("free.webm", 400);
+    rig.engine
+        .convert(ConvertSource::Path(free), ConvertPreset::Mp3)
+        .await
+        .unwrap();
+}
+
+/// A conversion counts milliseconds of media time while it runs; once
+/// completed it shows its file's size, in bytes, like every other job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn convert_progress_unit_is_millis() {
+    let _serial = serial().await;
+    let slow = Env::set("FAKE_FFMPEG_STEP_MS", "300");
+    let rig = Rig::new().await;
+    let source = rig.file("song.webm", 4000);
+    let id = rig
+        .engine
+        .convert(ConvertSource::Path(source), ConvertPreset::Mp3)
+        .await
+        .unwrap();
+    assert_eq!(rig.view(id).progress_unit, ProgressUnit::Millis);
+    let running = rig
+        .until(id, "ffmpeg under way", |v| v.downloaded > 0)
+        .await;
+    assert_eq!(running.progress_unit, ProgressUnit::Millis);
+    assert_eq!(running.total, Some(3000));
+    let json = serde_json::to_value(&running).unwrap();
+    assert_eq!(json["progress_unit"], "Millis");
+    drop(slow);
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let done = rig.view(id);
+    assert_eq!(done.progress_unit, ProgressUnit::Bytes);
+    assert_eq!(done.total, Some(4000));
+    // Stored, as a fresh read shows it.
+    let stored = Engine::read_snapshot(&EngineConfig::new(rig.tmp.path().join("data"))).unwrap();
+    assert_eq!(stored[0].progress_unit, ProgressUnit::Bytes);
 }
 
 fn no_room(_: &Path) -> std::io::Result<u64> {
