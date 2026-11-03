@@ -20,6 +20,11 @@ const MAX_MB: f64 = 10_000.0;
 /// "1,000" one or a thousand?), as are signs, exponents and "inf". None
 /// outside 0.1 to 10000.
 pub fn parse_custom_speed(text: &str) -> Option<u64> {
+    parse_mb_per_sec(text, MIN_MB)
+}
+
+/// As `parse_custom_speed`, with `min_mb` as the lowest speed taken.
+pub fn parse_mb_per_sec(text: &str, min_mb: f64) -> Option<u64> {
     let text = text.trim();
     let clean = text.chars().filter(|&c| c == '.').count() <= 1
         && text.chars().any(|c| c.is_ascii_digit())
@@ -28,7 +33,7 @@ pub fn parse_custom_speed(text: &str) -> Option<u64> {
         return None;
     }
     let mb: f64 = text.parse().ok()?;
-    (MIN_MB..=MAX_MB)
+    (min_mb..=MAX_MB)
         .contains(&mb)
         .then(|| (mb * BYTES_PER_MB).round() as u64)
 }

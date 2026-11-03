@@ -29,6 +29,7 @@ use taurus_core::{
 
 use crate::add_flow::PendingAdd;
 use crate::adv_add::AdvAddState;
+use crate::adv_fields::FieldsState;
 use crate::adv_flow::AdvFlow;
 use crate::adv_settings::SettingsMsg;
 use crate::adv_view::AdvState;
@@ -160,6 +161,8 @@ pub struct App {
     pub(crate) grab: GrabState,
     /// Advanced mode's Add several links (`batch_flow.rs`).
     pub(crate) batch: BatchState,
+    /// Advanced Settings' typed fields (`adv_fields.rs`).
+    pub(crate) fields: FieldsState,
     coalescer: Arc<Mutex<Coalescer>>,
     pub(crate) writer: SettingsWriter,
     /// Mirrors `settings.ui.offer_copied_links` for the clipboard thread.
@@ -218,6 +221,7 @@ impl App {
             adv_add: AdvAddState::default(),
             grab: GrabState::default(),
             batch: BatchState::default(),
+            fields: FieldsState::default(),
             coalescer: coalescer.clone(),
             writer,
             offer_links,
@@ -340,7 +344,8 @@ impl App {
         let settings = ui.global::<crate::SettingsUi>();
         on!(settings, self, on_opened, |a| a.adv_settings_opened());
         on!(settings, self, on_changed, |a, key, value| a
-            .setting_changed(&key, &value));
+            .adv_changed(&key, &value));
+        on!(settings, self, on_leave, |a| a.adv_settings_leave());
         on!(settings, self, on_field_edited, |a, key, text| a
             .adv_field_edited(&key, &text));
         on!(settings, self, on_field_commit, |a, key, text| a

@@ -4,6 +4,8 @@
 pub const MIN_SEGMENT: u64 = 1_048_576;
 /// Default cap on parallel connections per download.
 pub const DEFAULT_CONNECTIONS: u32 = 16;
+/// The connections per file a setting may ask for (`Settings::connections`).
+pub const CONNECTIONS_RANGE: std::ops::RangeInclusive<u32> = 1..=DEFAULT_CONNECTIONS;
 
 /// A byte range `[start, end)` of the file; `done` bytes from `start` are complete.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

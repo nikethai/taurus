@@ -119,13 +119,19 @@ export component NumberRow inherits HorizontalLayout {
     in property <int> maximum: 10;
     callback changed(int);
 
+    // A step breaks the box's binding to `value`: later changes (the
+    // engine's, or a refused save put back) are copied in.
+    changed value => {
+        spin.value = root.value;
+    }
+
     spacing: 12px;
     FieldLabel {
         text: root.label;
         vertical-alignment: center;
         horizontal-stretch: 1;
     }
-    SpinBox {
+    spin := SpinBox {
         width: 120px;
         minimum: root.minimum;
         maximum: root.maximum;

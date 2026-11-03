@@ -16,8 +16,8 @@ use taurus_core::secrets::MemoryStore;
 use taurus_core::tools::ToolSources;
 use taurus_core::torrent::hub::TorrentTestNet;
 use taurus_core::{
-    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, PowerMode, Settings,
-    SpeedLimit, ThemeChoice, Timing, UiMode, WhenDone,
+    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, PowerMode, ProxySetting,
+    Settings, SpeedLimit, ThemeChoice, Timing, UiMode, WhenDone,
 };
 use taurus_desktop::app::App;
 use taurus_desktop::shell_text::simple_message;
@@ -3538,6 +3538,11 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     back.speed = SpeedLimit::Fastest;
     let engine = ctx.engine.clone();
     ctx.rt.block_on(engine.set_settings(back)).unwrap();
+    // The UI's copy takes the engine's echo first: the mode switch below
+    // saves that copy, and must not write the custom speed back.
+    wait_until(&format!("{WHAT}: fastest echoed"), || {
+        ui.get_settings().speed == "fastest"
+    });
     ui.invoke_setting_changed("advanced".into(), "false".into());
     ui.window().set_size(COMPACT);
 }
@@ -3598,13 +3603,13 @@ fn adv_settings_sections_and_values(ui: &AppWindow, ctx: &Ctx) {
     }
     let radio = |label: &str| only_with_role(ui, AccessibleRole::RadioButton, label, WHAT);
 
-    // Stop sharing at ratio: Never.
+    // Stop sharing at ratio: Never stop.
     assert_eq!(
         ctx.engine.settings().torrent.stop_ratio,
         Some(1.0),
         "{WHAT}"
     );
-    radio("Never").invoke_accessible_default_action();
+    radio("Never stop").invoke_accessible_default_action();
     wait_until(&format!("{WHAT}: ratio never saved"), || {
         ctx.engine.settings().torrent.stop_ratio.is_none()
     });
@@ -3668,6 +3673,69 @@ fn adv_settings_sections_and_values(ui: &AppWindow, ctx: &Ctx) {
         proxy_before,
         "{WHAT}: proxy changed"
     );
+    // Manual is only pending until a URL is applied: the saved proxy stays
+    // the one marked; a URL the engine takes makes Manual the one.
+    // "System" is also a theme: the Network section's comes first.
+    let checked = |label: &str| {
+        labelled(ui, label)
+            .into_iter()
+            .find(|e| e.accessible_role() == Some(AccessibleRole::RadioButton))
+            .and_then(|e| e.accessible_checked())
+            == Some(true)
+    };
+    assert!(checked("System") && !checked("Manual"), "{WHAT}: pending");
+    assert!(
+        shows_text(ui, "Not in use yet: press Enter to use this proxy."),
+        "{WHAT}: pending note"
+    );
+    field.set_accessible_value("http://127.0.0.1:1");
+    enter();
+    wait_until(&format!("{WHAT}: manual proxy saved"), || {
+        ctx.engine.settings().network.proxy
+            == ProxySetting::Manual {
+                url: "http://127.0.0.1:1".into(),
+            }
+    });
+    refresh_tree(ui);
+    assert!(checked("Manual") && !checked("System"), "{WHAT}: manual");
+    labelled(ui, "System")
+        .into_iter()
+        .find(|e| e.accessible_role() == Some(AccessibleRole::RadioButton))
+        .expect("the proxy's System")
+        .invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: system proxy again"), || {
+        ctx.engine.settings().network.proxy == ProxySetting::System
+    });
+
+    // A step of a number box is saved; a later change from elsewhere shows
+    // in the box, and in a typed field with no edit pending.
+    let state = ui.global::<taurus_desktop::SettingsUi>();
+    let spin = only_with_role(
+        ui,
+        AccessibleRole::Spinbox,
+        "Active downloads at once",
+        WHAT,
+    );
+    spin.invoke_accessible_increment_action();
+    wait_until(&format!("{WHAT}: max active stepped"), || {
+        ctx.engine.settings().max_active == 4
+    });
+    let mut outside = ctx.engine.settings();
+    outside.max_active = 7;
+    outside.torrent.listen_port = Some(7000);
+    ctx.rt.block_on(ctx.engine.set_settings(outside)).unwrap();
+    wait_until(&format!("{WHAT}: outside change shown"), || {
+        state.get_vm().max_active == 7
+            && spin.accessible_value().as_deref() == Some("7")
+            && state.get_port_text() == "7000"
+    });
+    let mut back = ctx.engine.settings();
+    back.max_active = 3;
+    back.torrent.listen_port = None;
+    ctx.rt.block_on(ctx.engine.set_settings(back)).unwrap();
+    wait_until(&format!("{WHAT}: put back"), || {
+        state.get_vm().max_active == 3 && state.get_port_text() == ""
+    });
 
     // Accent Jade.
     radio("Jade").invoke_accessible_default_action();
@@ -3735,6 +3803,43 @@ fn adv_settings_sections_and_values(ui: &AppWindow, ctx: &Ctx) {
             .collect();
         assert_eq!(shown, [section], "{WHAT}: wide: sections shown");
     }
+
+    // An edit not applied yet is applied when the section changes (as
+    // Enter would), or flagged and kept when it is no value it takes; the
+    // field never shows an unsaved value as if it were saved.
+    let section = |name: &str| {
+        refresh_tree(ui);
+        only_with_role(ui, AccessibleRole::ListItem, name, WHAT).invoke_accessible_default_action();
+        refresh_tree(ui);
+    };
+    let port_field = || only_with_role(ui, AccessibleRole::TextInput, "Listening port", WHAT);
+    section("Torrents");
+    port_field().set_accessible_value("6000");
+    section("Network");
+    wait_until(&format!("{WHAT}: port applied on section change"), || {
+        ctx.engine.settings().torrent.listen_port == Some(6000)
+    });
+    section("Torrents");
+    assert_eq!(
+        port_field().accessible_value().as_deref(),
+        Some("6000"),
+        "{WHAT}: port field"
+    );
+    port_field().set_accessible_value("80");
+    section("Network");
+    section("Torrents");
+    assert_eq!(
+        ctx.engine.settings().torrent.listen_port,
+        Some(6000),
+        "{WHAT}: bad port saved"
+    );
+    assert_eq!(port_field().accessible_value().as_deref(), Some("80"));
+    assert!(state.get_port_invalid(), "{WHAT}: bad port not flagged");
+    port_field().set_accessible_value("");
+    section("Downloads");
+    wait_until(&format!("{WHAT}: random port again"), || {
+        ctx.engine.settings().torrent.listen_port.is_none()
+    });
     only_button(ui, "Back", WHAT).invoke_accessible_default_action();
     assert_ne!(ui.get_screen(), Screen::Settings, "{WHAT}: Back");
     ui.invoke_setting_changed("advanced".into(), "false".into());

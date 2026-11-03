@@ -405,7 +405,8 @@ impl Engine {
     /// then emits `SettingsChanged`. A higher `max_active` starts more
     /// Queued jobs; a lower one lets running jobs finish (likewise
     /// `torrent.max_active` for torrents). A `max_active` or
-    /// `torrent.max_active` of 0 is refused, and so is a manual proxy that
+    /// `torrent.max_active` of 0 is refused, and so are connections per
+    /// file outside 1 to 16 and a manual proxy that
     /// `network::parse_proxy` refuses. A new proxy applies to every web
     /// request from the next one on and to yt-dlp's next run (a running
     /// video download keeps its own) and to the torrent session's next

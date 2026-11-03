@@ -156,11 +156,11 @@ export component TorrentsSection inherits VerticalLayout {
     }
 
     property <[{value: string, label: string}]> ratios: [
-        { value: "0", label: @tr("0") },
+        { value: "0", label: @tr("Don't share") },
         { value: "0.5", label: @tr("0.5") },
         { value: "1", label: @tr("1") },
         { value: "2", label: @tr("2") },
-        { value: "never", label: @tr("Never") },
+        { value: "never", label: @tr("Never stop") },
     ];
     property <[{value: string, label: string}]> times: [
         { value: "off", label: @tr("Off") },
@@ -168,7 +168,7 @@ export component TorrentsSection inherits VerticalLayout {
         { value: "24h", label: @tr("24 h") },
         { value: "7d", label: @tr("7 d") },
     ];
-    property <string> limit-error: @tr("Enter a speed from 0.1 to 10000 MB/s, or leave it empty for no limit.");
+    property <string> limit-error: @tr("Enter a speed from 0.01 to 10000 MB/s, or leave it empty for no limit.");
     property <string> restart-note: @tr("Applies the next time Hyades starts.");
 
     spacing: 10px;
@@ -282,7 +282,8 @@ export component TorrentsSection inherits VerticalLayout {
 }
 
 export component NetworkSection inherits VerticalLayout {
-    // Typing a proxy URL, or already on a manual proxy.
+    // The URL field is shown: Manual was picked, or is the saved proxy.
+    // Only the saved proxy is marked as chosen.
     property <bool> manual-mode: SettingsUi.vm.proxy == "manual";
     // Manual was picked here: its field takes the focus.
     property <bool> picked-manual: false;
@@ -297,7 +298,7 @@ export component NetworkSection inherits VerticalLayout {
     Segmented {
         Segment {
             text: @tr("System");
-            selected: !root.manual-mode && SettingsUi.vm.proxy == "system";
+            selected: SettingsUi.vm.proxy == "system";
             clicked => {
                 root.manual-mode = false;
                 SettingsUi.changed("proxy", "system");
@@ -305,7 +306,7 @@ export component NetworkSection inherits VerticalLayout {
         }
         Segment {
             text: @tr("None");
-            selected: !root.manual-mode && SettingsUi.vm.proxy == "none";
+            selected: SettingsUi.vm.proxy == "none";
             clicked => {
                 root.manual-mode = false;
                 SettingsUi.changed("proxy", "none");
@@ -313,7 +314,7 @@ export component NetworkSection inherits VerticalLayout {
         }
         Segment {
             text: @tr("Manual");
-            selected: root.manual-mode;
+            selected: SettingsUi.vm.proxy == "manual";
             clicked => {
                 root.picked-manual = true;
                 root.manual-mode = true;
@@ -336,5 +337,8 @@ export component NetworkSection inherits VerticalLayout {
         commit(t) => {
             SettingsUi.field-commit("proxy-url", t);
         }
+    }
+    if root.manual-mode && SettingsUi.vm.proxy != "manual": Hint {
+        text: @tr("Not in use yet: press Enter to use this proxy.");
     }
 }

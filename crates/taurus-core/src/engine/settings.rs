@@ -7,6 +7,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::network::torrent_proxy;
+use crate::plan::CONNECTIONS_RANGE;
 use crate::settings::{Settings, SpeedLimit, WhenDone};
 use crate::torrent::policy::{split_rate, torrent_rate};
 
@@ -30,6 +31,16 @@ impl Actor {
                     detail: format!("{name} must be at least 1"),
                 });
             }
+        }
+        if !CONNECTIONS_RANGE.contains(&settings.connections) {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: format!(
+                    "connections must be from {} to {}",
+                    CONNECTIONS_RANGE.start(),
+                    CONNECTIONS_RANGE.end()
+                ),
+            });
         }
         // Refused now, not at the first download.
         settings.network.proxy.check()?;

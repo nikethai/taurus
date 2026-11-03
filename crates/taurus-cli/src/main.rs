@@ -63,7 +63,7 @@ enum Command {
         /// Destination folder [default: the Downloads folder, else the current dir]
         #[arg(long, value_name = "PATH")]
         dir: Option<PathBuf>,
-        /// Maximum parallel connections per download [default: 16]
+        /// Maximum parallel connections per download [default: the saved setting, 16 unless changed]
         #[arg(long, value_name = "N")]
         connections: Option<u32>,
         /// File name to save as, instead of the server's (one URL only)

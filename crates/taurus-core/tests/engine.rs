@@ -764,6 +764,43 @@ async fn saved_max_active_zero_loads_as_one() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn saved_connections_out_of_range_load_as_the_default() {
+    for raw in [r#"{"connections":0}"#, r#"{"connections":5000}"#] {
+        let (settings, backup) = open_with_raw_settings(raw).await;
+        assert_eq!(settings.connections, 16, "{raw}");
+        assert_eq!(backup, None, "{raw}");
+    }
+    let (settings, _) = open_with_raw_settings(r#"{"connections":4}"#).await;
+    assert_eq!(settings.connections, 4);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connections_outside_one_to_sixteen_are_refused() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    for connections in [0, 17, 5000] {
+        let settings = Settings {
+            connections,
+            ..Settings::default()
+        };
+        assert!(
+            engine.set_settings(settings).await.is_err(),
+            "{connections}"
+        );
+        assert_eq!(engine.settings(), Settings::default(), "{connections}");
+    }
+    for connections in [1, 16] {
+        let settings = Settings {
+            connections,
+            ..Settings::default()
+        };
+        engine.set_settings(settings).await.unwrap();
+        assert_eq!(engine.settings().connections, connections);
+    }
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn settings_are_saved_and_announced() {
     let fx = Fixture::new().await;
     let engine = fx.engine().await;

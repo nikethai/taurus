@@ -3,6 +3,7 @@
 use rusqlite::{OptionalExtension, params};
 
 use crate::errors::{CoreError, ErrorKind};
+use crate::plan::{CONNECTIONS_RANGE, DEFAULT_CONNECTIONS};
 use crate::settings::{ProxySetting, Settings};
 
 use super::{Store, db_err, now_secs};
@@ -35,8 +36,9 @@ impl Store {
     /// are logged and copied to `settings.unreadable` (replacing an older
     /// copy), then each readable field is kept and the rest defaulted
     /// (everything, if the value is not a JSON object). `max_active` and
-    /// `torrent.max_active` are at least 1, and a manual proxy that cannot
-    /// be used becomes `System`. Only a database error is returned.
+    /// `torrent.max_active` are at least 1, connections per file outside 1
+    /// to 16 become the default (16), and a manual proxy that cannot be
+    /// used becomes `System`. Only a database error is returned.
     pub fn load_settings_lenient(&self) -> Result<Settings, CoreError> {
         let Some(raw) = self.setting(SETTINGS_KEY)? else {
             return Ok(Settings::default());
@@ -51,6 +53,13 @@ impl Store {
         };
         settings.max_active = settings.max_active.max(1);
         settings.torrent.max_active = settings.torrent.max_active.max(1);
+        if !CONNECTIONS_RANGE.contains(&settings.connections) {
+            tracing::warn!(
+                "ignoring the saved connections per file ({}); using the default",
+                settings.connections
+            );
+            settings.connections = DEFAULT_CONNECTIONS;
+        }
         if let Err(e) = settings.network.proxy.check() {
             tracing::warn!("ignoring the saved proxy ({e}); using the system settings");
             settings.network.proxy = ProxySetting::System;

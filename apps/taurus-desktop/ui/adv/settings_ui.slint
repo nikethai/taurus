@@ -91,6 +91,9 @@ export global SettingsUi {
 
     // The screen was opened.
     callback opened();
+    // The wide layout's section is about to change, or the screen to
+    // close: typed edits not applied yet are applied (as Enter would).
+    callback leave();
     // key, value (see AdvSettingsVm and SettingsVm).
     callback changed(string, string);
     // A typed field's key and text: after each edit (only checked), and

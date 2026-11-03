@@ -4,6 +4,7 @@ slint::include_modules!();
 
 pub mod add_flow;
 mod adv_add;
+mod adv_fields;
 mod adv_flow;
 mod adv_pick;
 mod adv_settings;

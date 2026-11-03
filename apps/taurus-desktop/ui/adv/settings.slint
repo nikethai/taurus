@@ -69,6 +69,7 @@ export component AdvSettings inherits Rectangle {
                 icon: "back";
                 label: @tr("Back");
                 clicked => {
+                    SettingsUi.leave();
                     root.back();
                 }
             }
@@ -94,6 +95,7 @@ export component AdvSettings inherits Rectangle {
                         text: s.label;
                         selected: SettingsUi.section == s.key;
                         clicked => {
+                            SettingsUi.leave();
                             SettingsUi.section = s.key;
                         }
                     }

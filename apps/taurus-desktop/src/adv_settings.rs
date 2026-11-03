@@ -13,7 +13,7 @@ use taurus_core::{ErrorKind, ProxySetting, Settings, SpeedLimit};
 
 use crate::app::{App, UiMsg};
 use crate::settings_flow::settings_vm;
-use crate::whendone_flow::{custom_speed_text, parse_custom_speed};
+use crate::whendone_flow::{custom_speed_text, parse_custom_speed, parse_mb_per_sec};
 use crate::{AdvSettingsVm, AppWindow, Screen, SettingsUi, Theme, ToolRowVm};
 
 const MAX_ACTIVE: RangeInclusive<u32> = 1..=10;
@@ -22,7 +22,8 @@ const MAX_TORRENTS: RangeInclusive<u32> = 1..=10;
 const PEERS: RangeInclusive<u32> = 1..=1000;
 /// Ports below 1024 need special rights on most systems.
 const PORTS: RangeInclusive<u16> = 1024..=65535;
-/// "Stop sharing at ratio" choices; `None` never stops.
+/// "Stop sharing at ratio" choices ("0" is "Don't share"); `None` never
+/// stops.
 const RATIOS: [(&str, Option<f64>); 5] = [
     ("0", Some(0.0)),
     ("0.5", Some(0.5)),
@@ -70,12 +71,16 @@ pub fn adv_settings_vm(s: &Settings) -> AdvSettingsVm {
     }
 }
 
-/// A limit typed in MB/s: empty is none, else as the custom speed.
+/// The lowest torrent upload or download limit, in MB/s (10 KB/s).
+const MIN_LIMIT_MB: f64 = 0.01;
+
+/// A limit typed in MB/s: empty is none, else as the custom speed (the
+/// same characters) from 0.01 to 10000.
 pub fn parse_limit(text: &str) -> Option<Option<u64>> {
     if text.trim().is_empty() {
         return Some(None);
     }
-    parse_custom_speed(text).map(Some)
+    parse_mb_per_sec(text, MIN_LIMIT_MB).map(Some)
 }
 
 /// A limit as its field shows it ("" for none).
@@ -228,6 +233,8 @@ impl App {
         let state = ui.global::<SettingsUi>();
         state.set_settings(settings_vm(&s));
         state.set_vm(adv_settings_vm(&s));
+        drop(s);
+        self.fill_fields(&state);
     }
 
     /// The screen opened: its fields show the saved values, with no error.
@@ -235,106 +242,11 @@ impl App {
         let Some(ui) = self.window.upgrade() else {
             return;
         };
-        let s = self.settings.borrow().clone();
         let state = ui.global::<SettingsUi>();
-        state.set_custom_text(
-            match s.speed {
-                SpeedLimit::Custom { bytes_per_sec } => custom_speed_text(bytes_per_sec),
-                _ => String::new(),
-            }
-            .into(),
-        );
-        let t = &s.torrent;
-        state.set_upload_text(limit_text(t.upload_limit_bps).into());
-        state.set_down_text(limit_text(t.download_limit_bps).into());
-        let text = |n: Option<String>| n.unwrap_or_default().into();
-        state.set_peers_text(text(t.peer_limit.map(|n| n.to_string())));
-        state.set_port_text(text(t.listen_port.map(|n| n.to_string())));
-        state.set_proxy_text(match &s.network.proxy {
-            ProxySetting::Manual { url } => url.into(),
-            _ => Default::default(),
-        });
-        for key in [
-            "speed-custom",
-            "upload-limit",
-            "torrent-down-limit",
-            "peers",
-            "port",
-        ] {
-            set_invalid(&state, key, false, false);
-        }
-        state.set_proxy_error(Default::default());
+        self.reset_fields(&state);
         state.set_tools_error(Default::default());
         state.set_forget_state(Default::default());
         self.refresh_tools(&ui);
-    }
-
-    /// The Custom speed was picked: the field shows the limit in effect
-    /// now (empty for Fastest), as the popover does.
-    pub(crate) fn adv_custom_chosen(&self) {
-        if let Some(ui) = self.window.upgrade() {
-            let state = ui.global::<SettingsUi>();
-            let limit = self.engine.effective_speed_limit();
-            state.set_custom_text(limit.map(custom_speed_text).unwrap_or_default().into());
-            set_invalid(&state, "speed-custom", false, false);
-        }
-    }
-
-    /// A typed field changed: only checked (an empty custom speed is not
-    /// flagged); nothing is saved.
-    pub(crate) fn adv_field_edited(&self, key: &str, text: &str) {
-        if key == "proxy-url" {
-            return;
-        }
-        let ok = apply_adv_change(&mut self.settings.borrow().clone(), key, text);
-        if let Some(ui) = self.window.upgrade() {
-            let blank = key == "speed-custom" && text.trim().is_empty();
-            set_invalid(
-                &ui.global::<SettingsUi>(),
-                key,
-                !ok && !blank,
-                text.contains(','),
-            );
-        }
-    }
-
-    /// A typed field was committed (Enter, or focus left it after an edit):
-    /// saved when it is a value it takes, else flagged and nothing changes.
-    pub(crate) fn adv_field_commit(&self, key: &str, text: &str) {
-        if key == "proxy-url" {
-            return self.proxy_commit(text);
-        }
-        self.adv_field_edited(key, text);
-        let mut next = self.settings.borrow().clone();
-        if apply_adv_change(&mut next, key, text) && next != *self.settings.borrow() {
-            self.change_settings(key, next);
-        }
-    }
-
-    /// A manual proxy: kept only if the engine takes it (its check, the one
-    /// `Engine::set_settings` runs); otherwise its reason shows under the
-    /// field and the old setting stays.
-    fn proxy_commit(&self, text: &str) {
-        let Some(ui) = self.window.upgrade() else {
-            return;
-        };
-        let state = ui.global::<SettingsUi>();
-        let url = text.trim();
-        if url.is_empty() {
-            return state.set_proxy_error(Default::default());
-        }
-        let proxy = ProxySetting::Manual {
-            url: url.to_owned(),
-        };
-        if let Err(e) = proxy.check() {
-            return state.set_proxy_error(e.detail.into());
-        }
-        state.set_proxy_error(Default::default());
-        let mut next = self.settings.borrow().clone();
-        if next.network.proxy != proxy {
-            next.network.proxy = proxy;
-            self.change_settings("proxy", next);
-        }
     }
 
     /// The tools' versions and states, while Settings is open.
@@ -432,22 +344,6 @@ impl App {
     }
 }
 
-/// Flags (or clears) the typed field `key`'s error; `comma` for the custom
-/// speed's "use a dot" note.
-fn set_invalid(state: &SettingsUi<'_>, key: &str, invalid: bool, comma: bool) {
-    match key {
-        "speed-custom" => {
-            state.set_custom_invalid(invalid);
-            state.set_custom_comma(invalid && comma);
-        }
-        "upload-limit" => state.set_upload_invalid(invalid),
-        "torrent-down-limit" => state.set_down_invalid(invalid),
-        "peers" => state.set_peers_invalid(invalid),
-        "port" => state.set_port_invalid(invalid),
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,6 +433,10 @@ mod tests {
     #[test]
     fn typed_fields() {
         let mut s = Settings::default();
+        // Limits go down to 0.01 MB/s (10 KB/s); the custom speed to 0.1.
+        assert!(apply_adv_change(&mut s, "upload-limit", "0.01"));
+        assert_eq!(s.torrent.upload_limit_bps, Some(10_000));
+        assert!(!apply_adv_change(&mut s, "speed-custom", "0.01"));
         assert!(apply_adv_change(&mut s, "upload-limit", "0.5"));
         assert!(apply_adv_change(&mut s, "torrent-down-limit", "2"));
         assert!(apply_adv_change(&mut s, "peers", "80"));
@@ -561,6 +461,8 @@ mod tests {
         for (key, value) in [
             ("upload-limit", "1,5"),
             ("upload-limit", "abc"),
+            ("upload-limit", "0.009"),
+            ("upload-limit", "10000.1"),
             ("torrent-down-limit", "0"),
             ("peers", "0"),
             ("peers", "1001"),

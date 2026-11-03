@@ -88,7 +88,8 @@ pub struct Settings {
     pub when_done: WhenDone,
     pub auto_checksum: bool,
     pub keep_awake: bool,
-    /// Connections per file for an add that names none.
+    /// Connections per file for an add that names none, 1 to 16
+    /// (`plan::CONNECTIONS_RANGE`).
     pub connections: u32,
     pub torrent: TorrentSettings,
     pub network: NetworkSettings,
