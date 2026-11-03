@@ -83,6 +83,8 @@ pub(crate) enum UiMsg {
         id: i32,
         result: Result<(), ErrorKind>,
     },
+    /// `Engine::set_torrent_overrides` refused the rules picked for a job.
+    OverridesRefused(JobId),
 }
 
 /// Hands links and clipboard text to the app from any thread.
@@ -435,6 +437,7 @@ impl App {
             UiMsg::Clipboard(text) => self.clipboard_text(&text),
             UiMsg::Link(link) => self.offer_link(link),
             UiMsg::SignedIn { id, result } => self.signed_in(id, result),
+            UiMsg::OverridesRefused(id) => self.overrides_refused(id),
         }
     }
 

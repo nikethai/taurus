@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::app::{App, UiMsg};
 use crate::clipboard;
-use crate::detail::{detail_vm, with_override};
+use crate::detail::{detail_vm, link_of, with_override};
 use crate::pump::{set_model, unix_now};
 use crate::{
     AppWindow, DetailVm, FileRowVm, PasswordDialogVm, RemoveDialogVm, Screen, StatVm, StepVm,
@@ -38,6 +38,9 @@ pub(crate) struct AdvFlow {
     files: Rc<VecModel<FileRowVm>>,
     steps: Rc<VecModel<StepVm>>,
     stats: Rc<VecModel<StatVm>>,
+    /// The job the detail shows (whether or not its details could be
+    /// fetched).
+    shown: Cell<Option<JobId>>,
     /// The selected job's details, as last fetched.
     last: RefCell<Option<JobDetail>>,
     poll: Timer,
@@ -50,6 +53,9 @@ pub(crate) struct AdvFlow {
     /// Sharing rules go to the engine one after another, in the order
     /// they were picked (a worker task, started on first use).
     overrides_tx: RefCell<Option<mpsc::UnboundedSender<(JobId, TorrentOverrides)>>>,
+    /// Bumped when the engine refused sharing rules: the selects show the
+    /// engine's values again (`DetailVm.overrides-epoch`).
+    overrides_epoch: Cell<i32>,
 }
 
 impl Default for AdvFlow {
@@ -59,12 +65,14 @@ impl Default for AdvFlow {
             files: Rc::new(VecModel::default()),
             steps: Rc::new(VecModel::default()),
             stats: Rc::new(VecModel::default()),
+            shown: Cell::new(None),
             last: RefCell::new(None),
             poll: Timer::default(),
             offered: Cell::new(None),
             clipboard: RefCell::new(clipboard::Writer::default()),
             wanted: RefCell::new(None),
             overrides_tx: RefCell::new(None),
+            overrides_epoch: Cell::new(0),
         }
     }
 }
@@ -93,8 +101,7 @@ impl App {
             self.hide_detail(ui);
             return;
         };
-        let fresh = self.flow.last.borrow().as_ref().map(|d| d.id) != Some(view.id);
-        if fresh {
+        if self.flow.shown.replace(Some(view.id)) != Some(view.id) {
             self.flow.offered.set(None);
             self.flow.wanted.borrow_mut().take();
             *self.flow.last.borrow_mut() = self.fetch(view.id);
@@ -108,6 +115,7 @@ impl App {
     /// No detail: the timer stops.
     pub(crate) fn hide_detail(&self, ui: &AppWindow) {
         self.flow.poll.stop();
+        self.flow.shown.set(None);
         self.flow.last.borrow_mut().take();
         if ui.get_detail().visible {
             ui.set_detail(DetailVm::default());
@@ -125,12 +133,10 @@ impl App {
         let Some(ui) = self.window.upgrade() else {
             return;
         };
-        let on_screen = ui.window().is_visible()
-            && matches!(ui.get_screen(), Screen::Downloads | Screen::Welcome);
         let Some(id) = self.adv.borrow().selected() else {
             return;
         };
-        if !on_screen {
+        if !on_screen(&ui) {
             return;
         }
         let view = self.view.borrow().view(id).cloned();
@@ -172,12 +178,23 @@ impl App {
         vm.files = ModelRc::from(f.files.clone());
         vm.steps = ModelRc::from(f.steps.clone());
         vm.stats = ModelRc::from(f.stats.clone());
+        vm.overrides_epoch = f.overrides_epoch.get();
+        // The engine shows the sharing rules last picked: nothing pending.
+        let caught_up = matches!(
+            (&*f.wanted.borrow(), &view.torrent),
+            (Some((id, o)), Some(t)) if *id == view.id && *o == t.overrides
+        );
+        if caught_up {
+            f.wanted.borrow_mut().take();
+        }
         let needs_password = vm.needs_password;
         if ui.get_detail() != vm {
             ui.set_detail(vm);
         }
-        // A download that wants a password asks for it once when shown.
+        // A download that wants a password asks for it once, when its
+        // detail is on screen.
         if needs_password
+            && on_screen(ui)
             && self.flow.offered.get() != Some(view.id)
             && !ui.get_password_dialog().visible
         {
@@ -190,14 +207,19 @@ impl App {
         self.view.borrow().view(job_id(id)).cloned()
     }
 
-    /// "Copy link": the link as it was added. The clipboard watcher is told
-    /// first, so the link is not offered back as a download.
+    /// "Copy link": the link as it was added, without any user name or
+    /// password in it (a conversion has no link). The clipboard watcher is
+    /// told first, so the link is not offered back as a download.
     pub(crate) fn copy_link(&self, id: i32) {
         let Some(view) = self.job_view(id) else {
             return;
         };
-        self.we_copied(&view.source_url);
-        if let Err(e) = self.flow.clipboard.borrow_mut().set(&view.source_url) {
+        let link = link_of(&view);
+        if link.is_empty() {
+            return;
+        }
+        self.we_copied(&link);
+        if let Err(e) = self.flow.clipboard.borrow_mut().set(&link) {
             eprintln!("hyades: cannot copy the link: {e}");
         }
     }
@@ -227,7 +249,9 @@ impl App {
         });
     }
 
-    /// The Remove dialog's answer: the files stay unless `delete_files`.
+    /// The Remove dialog's answer (ruling R10): finished files stay unless
+    /// `delete_files`; an unfinished download's partial files always go
+    /// (nothing could clean them up later).
     pub(crate) fn confirm_remove(&self, id: i32, delete_files: bool) {
         if let Some(ui) = self.window.upgrade() {
             ui.set_remove_dialog(RemoveDialogVm::default());
@@ -235,7 +259,7 @@ impl App {
         let files = if delete_files {
             RemoveFiles::All
         } else {
-            RemoveFiles::Keep
+            RemoveFiles::IfUnfinished
         };
         let engine = self.engine.clone();
         self.rt.spawn(async move {
@@ -354,11 +378,12 @@ impl App {
         let mut tx = self.flow.overrides_tx.borrow_mut();
         let tx = tx.get_or_insert_with(|| {
             let (tx, mut rx) = mpsc::unbounded_channel::<(JobId, TorrentOverrides)>();
-            let engine = self.engine.clone();
+            let (engine, ui_tx) = (self.engine.clone(), self.tx.clone());
             self.rt.spawn(async move {
                 while let Some((id, overrides)) = rx.recv().await {
                     if let Err(e) = engine.set_torrent_overrides(id, overrides).await {
                         eprintln!("hyades: sharing rules {}: {e}", id.0);
+                        ui_tx.send(UiMsg::OverridesRefused(id));
                     }
                 }
             });
@@ -366,4 +391,21 @@ impl App {
         });
         let _ = tx.send((view.id, overrides));
     }
+
+    /// The engine refused sharing rules for `id`: the next pick builds on
+    /// the engine's values again, and the selects show them.
+    pub(crate) fn overrides_refused(&self, id: JobId) {
+        if self.flow.shown.get() != Some(id) {
+            return;
+        }
+        self.flow.wanted.borrow_mut().take();
+        let epoch = &self.flow.overrides_epoch;
+        epoch.set(epoch.get().wrapping_add(1));
+        self.refresh_adv();
+    }
+}
+
+/// The Advanced list's screen is on view, in a shown window.
+fn on_screen(ui: &AppWindow) -> bool {
+    ui.window().is_visible() && matches!(ui.get_screen(), Screen::Downloads | Screen::Welcome)
 }

@@ -88,10 +88,11 @@ pub fn detail_vm(view: &JobView, detail: &JobDetail, now: i64) -> DetailVm {
         steps: model(steps_of(view)),
         stats: model(stats_of(view, detail)),
         folder: view.dest_dir.display().to_string().into(),
-        url: view.source_url.as_str().into(),
+        url: link_of(view).into(),
         can_convert: view.state == JobState::Completed
             && match view.kind {
-                JobKind::Media => true,
+                // The engine converts the files it knows of.
+                JobKind::Media => !detail.media_files.is_empty(),
                 JobKind::Http => matches!(kind, "media" | "music"),
                 _ => false,
             },
@@ -101,7 +102,25 @@ pub fn detail_vm(view: &JobView, detail: &JobDetail, now: i64) -> DetailVm {
         can_choose_files: view.kind == JobKind::Torrent && !detail.files.is_empty(),
         ratio_override: ratio_text(overrides.stop_ratio).into(),
         seed_time_override: secs_text(overrides.stop_after_secs).into(),
+        overrides_epoch: 0,
         row,
+    }
+}
+
+/// The link a job was added with, as the detail shows and copies it:
+/// without any user name or password in it. A conversion has none ("").
+pub fn link_of(view: &JobView) -> String {
+    if view.kind == JobKind::Convert {
+        return String::new();
+    }
+    match url::Url::parse(&view.source_url) {
+        Ok(mut url) if !url.username().is_empty() || url.password().is_some() => {
+            // Only fails for links that cannot have a user (no host).
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.to_string()
+        }
+        _ => view.source_url.clone(),
     }
 }
 
@@ -456,6 +475,15 @@ mod tests {
         let mut locked = view(2, "p.bin", JobState::Failed);
         locked.error = Some((ErrorKind::NeedsSignIn, String::new()));
         assert!(detail_vm(&locked, &detail(2), 0).needs_password);
+        // A link's user name and password are never shown.
+        let mut secret = view(8, "s.bin", JobState::Paused);
+        secret.source_url = "https://ann:pw@example.org/s.bin?x=1".into();
+        assert_eq!(
+            detail_vm(&secret, &detail(8), 0).url.as_str(),
+            "https://example.org/s.bin?x=1"
+        );
+        secret.source_url = "magnet:?xt=urn:btih:abc".into();
+        assert_eq!(link_of(&secret), "magnet:?xt=urn:btih:abc");
         let mut done = view(3, "clip.mp4", JobState::Completed);
         done.downloaded = 1000;
         let vm = detail_vm(&done, &detail(3), 0);
@@ -557,6 +585,8 @@ mod tests {
         video.error = None;
         let mut d = detail(6);
         d.media_files = vec![PathBuf::from("/tmp/A Video.mp4")];
+        // Without its files known, a finished video cannot be converted.
+        assert!(!detail_vm(&video, &detail(6), 0).can_convert);
         let vm = detail_vm(&video, &d, 0);
         assert!(vm.can_convert && !vm.can_retry_cookies);
         assert!(items(&vm.steps).iter().all(|s| s.state == "done"));
@@ -579,6 +609,8 @@ mod tests {
             ("33%", "0:01 / 0:03")
         );
         assert!(!vm.has_cells && items(&vm.stats).is_empty());
+        // Its "link" is a file on disk: none shown.
+        assert_eq!(vm.url.as_str(), "");
         convert.downloaded = 4000;
         let vm = detail_vm(&convert, &detail(7), 0);
         assert_eq!(

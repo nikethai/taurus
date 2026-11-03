@@ -195,50 +195,11 @@ export component AppWindow inherits Window {
             Rectangle {
                 vertical-stretch: 1;
 
-                if root.advanced-list: HorizontalLayout {
-                    if root.layout == "wide": AdvWide {
-                        horizontal-stretch: 1;
-                        rows: root.adv-rows;
-                        counts: root.filter-counts;
-                        filter <=> root.filter;
-                        speed-down: root.speed-down-text;
-                        speed-up: root.speed-up-text;
-                        search-text <=> root.search-text;
-                        filter-changed(key) => {
-                            root.filter-changed(key);
-                        }
-                        search-changed(text) => {
-                            root.search-changed(text);
-                        }
-                        select(id) => {
-                            root.select(id);
-                        }
-                        link-entered(link) => {
-                            root.link-entered(link);
-                        }
-                        open-settings => {
-                            root.screen = Screen.settings;
-                        }
-                        pause(id) => {
-                            root.pause(id);
-                        }
-                        resume(id) => {
-                            root.resume(id);
-                        }
-                        retry(id) => {
-                            root.retry(id);
-                        }
-                        stop-recording(id) => {
-                            root.stop-recording(id);
-                        }
-                        open-file(id) => {
-                            root.open-file(id);
-                        }
-                    }
-
-                    // Compact: the list, or the selected download's detail.
-                    if root.layout != "wide" && !root.detail.visible: AdvCompact {
-                        horizontal-stretch: 1;
+                if root.advanced-list: Rectangle {
+                    // Compact: the list, hidden (not torn down, so it keeps
+                    // its scroll position) under an open detail.
+                    if root.layout != "wide": AdvCompact {
+                        visible: !root.detail.visible;
                         rows: root.adv-rows;
                         counts: root.tab-counts;
                         tab <=> root.adv-tab;
@@ -273,57 +234,102 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    if root.layout == "wide": Rectangle {
-                        width: 1px;
-                        background: Theme.line;
-                    }
+                    HorizontalLayout {
+                        if root.layout == "wide": AdvWide {
+                            horizontal-stretch: 1;
+                            rows: root.adv-rows;
+                            counts: root.filter-counts;
+                            filter <=> root.filter;
+                            speed-down: root.speed-down-text;
+                            speed-up: root.speed-up-text;
+                            search-text <=> root.search-text;
+                            filter-changed(key) => {
+                                root.filter-changed(key);
+                            }
+                            search-changed(text) => {
+                                root.search-changed(text);
+                            }
+                            select(id) => {
+                                root.select(id);
+                            }
+                            link-entered(link) => {
+                                root.link-entered(link);
+                            }
+                            open-settings => {
+                                root.screen = Screen.settings;
+                            }
+                            pause(id) => {
+                                root.pause(id);
+                            }
+                            resume(id) => {
+                                root.resume(id);
+                            }
+                            retry(id) => {
+                                root.retry(id);
+                            }
+                            stop-recording(id) => {
+                                root.stop-recording(id);
+                            }
+                            open-file(id) => {
+                                root.open-file(id);
+                            }
+                        }
 
-                    if root.layout == "wide" || root.detail.visible: DetailPane {
-                        // Wide: a 300 px pane; compact: the whole window.
-                        min-width: root.layout == "wide" ? 300px : 0px;
-                        max-width: root.layout == "wide" ? 300px : 100000px;
-                        horizontal-stretch: root.layout == "wide" ? 0 : 1;
-                        detail: root.detail;
-                        show-back: root.layout != "wide";
-                        is-macos: root.is-macos;
-                        back => {
-                            root.select(-1);
+                        if root.layout == "wide": Rectangle {
+                            width: 1px;
+                            background: Theme.line;
                         }
-                        pause(id) => {
-                            root.pause(id);
-                        }
-                        resume(id) => {
-                            root.resume(id);
-                        }
-                        retry(id) => {
-                            root.retry(id);
-                        }
-                        open-file(id) => {
-                            root.open-file(id);
-                        }
-                        reveal(id) => {
-                            root.reveal(id);
-                        }
-                        copy-link(id) => {
-                            root.copy-link(id);
-                        }
-                        convert(id, preset) => {
-                            root.convert(id, preset);
-                        }
-                        ask-remove(id) => {
-                            root.ask-remove(id);
-                        }
-                        retry-with-browser(id, browser) => {
-                            root.retry-with-browser(id, browser);
-                        }
-                        ask-password(id) => {
-                            root.ask-password(id);
-                        }
-                        choose-files(id) => {
-                            root.choose-files(id);
-                        }
-                        set-override(id, field, value) => {
-                            root.set-override(id, field, value);
+
+                        if root.layout == "wide" || root.detail.visible: DetailPane {
+                            // Wide: a 300 px pane; compact: the whole window.
+                            min-width: root.layout == "wide" ? 300px : 0px;
+                            max-width: root.layout == "wide" ? 300px : 100000px;
+                            horizontal-stretch: root.layout == "wide" ? 0 : 1;
+                            detail: root.detail;
+                            show-back: root.layout != "wide";
+                            is-macos: root.is-macos;
+                            back => {
+                                root.select(-1);
+                            }
+                            pause(id) => {
+                                root.pause(id);
+                            }
+                            resume(id) => {
+                                root.resume(id);
+                            }
+                            retry(id) => {
+                                root.retry(id);
+                            }
+                            open-file(id) => {
+                                root.open-file(id);
+                            }
+                            reveal(id) => {
+                                root.reveal(id);
+                            }
+                            stop-recording(id) => {
+                                root.stop-recording(id);
+                            }
+                            copy-link(id) => {
+                                root.copy-link(id);
+                            }
+                            convert(id, preset) => {
+                                root.convert(id, preset);
+                            }
+                            ask-remove(id) => {
+                                root.ask-remove(id);
+                            }
+                            retry-with-browser(id, browser) => {
+                                root.retry-with-browser(id, browser);
+                            }
+                            ask-password(id) => {
+                                root.ask-password(id);
+                            }
+                            choose-files(id) => {
+                                root.choose-files(id);
+                            }
+                            set-override(id, field, value) => {
+                                root.set-override(id, field, value);
+                            }
                         }
                     }
                 }

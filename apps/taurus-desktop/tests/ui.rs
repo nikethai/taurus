@@ -1711,7 +1711,17 @@ fn http_detail_shows_cells(ui: &AppWindow, ctx: &Ctx, id: JobId) {
     // The detail is fetched again only while the window is shown.
     ui.show().unwrap();
     ui.window().set_size(TALL);
+    // The list's own state (here its open link field; also its scroll
+    // position) outlives the detail laid over it.
+    only_button(ui, "Add a download", WHAT).invoke_accessible_default_action();
+    let link_field = || {
+        labelled(ui, "Paste a link")
+            .iter()
+            .any(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+    };
+    assert!(link_field(), "{WHAT}: no link field");
     open_detail(ui, "Waiting", "adv.bin", WHAT);
+    assert!(!link_field(), "{WHAT}: the list shows under the detail");
     assert_eq!(ui.get_selected_id(), id.0 as i32, "{WHAT}: selected");
     let detail = ui.get_detail();
     assert_eq!(
@@ -1735,6 +1745,14 @@ fn http_detail_shows_cells(ui: &AppWindow, ctx: &Ctx, id: JobId) {
         ui.get_detail().row.state == "paused"
     });
 
+    // Sharing rules the engine refuses (not a torrent) bring the
+    // engine's values back.
+    let epoch = ui.get_detail().overrides_epoch;
+    ui.invoke_set_override(id.0 as i32, "ratio".into(), "2".into());
+    wait_until(&format!("{WHAT}: refused rules reset"), || {
+        ui.get_detail().overrides_epoch != epoch
+    });
+
     // "Copy link": the watcher does not offer it; other links still are.
     let url = ui.get_detail().url.to_string();
     assert!(url.ends_with("/adv.bin"), "{WHAT}: {url}");
@@ -1751,14 +1769,71 @@ fn http_detail_shows_cells(ui: &AppWindow, ctx: &Ctx, id: JobId) {
     ui.invoke_banner_dismiss();
 
     close_detail(ui, WHAT);
+    assert!(
+        link_field(),
+        "{WHAT}: the list was rebuilt under the detail"
+    );
+    only_button(ui, "Close the link field", WHAT).invoke_accessible_default_action();
     ui.window().set_size(COMPACT);
 }
 
-/// The Remove dialog keeps the files unless "Also delete the files" is
-/// ticked, which it is not when the dialog opens.
+/// Files in the output folder whose names start with `prefix` (a
+/// download's file and its partial file).
+fn files_starting(ctx: &Ctx, prefix: &str) -> Vec<String> {
+    std::fs::read_dir(ctx.out())
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.starts_with(prefix))
+        .collect()
+}
+
+/// The Remove dialog (ruling R10) keeps a finished download's file unless
+/// "Also delete the files" is ticked, which it is not when the dialog
+/// opens; an unfinished download's partial file goes either way.
 fn remove_dialog_defaults_to_keep(ui: &AppWindow, ctx: &Ctx) {
     const WHAT: &str = "remove_dialog_defaults_to_keep";
     ui.window().set_size(TALL);
+
+    // Unfinished, paused part-way: removed unticked, its partial file goes.
+    let mut spec = FileSpec::new(20 * 1024 * 1024);
+    spec.bytes_per_sec = Some(256 * 1024);
+    let url = ctx.server.serve("part.bin", spec);
+    let request = AddRequest {
+        url,
+        dest_dir: ctx.out(),
+        ..Default::default()
+    };
+    let id = ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    wait_until(&format!("{WHAT}: part.bin under way"), || {
+        job_named(ctx, "part.bin")
+            .is_some_and(|v| v.state == JobState::Downloading && v.downloaded > 0)
+    });
+    ctx.rt.block_on(ctx.engine.pause(id)).unwrap();
+    wait_until(&format!("{WHAT}: part.bin paused"), || {
+        job_named(ctx, "part.bin").is_some_and(|v| v.state == JobState::Paused)
+    });
+    assert!(
+        !files_starting(ctx, "part.bin").is_empty(),
+        "{WHAT}: no partial file"
+    );
+    open_detail(ui, "Waiting", "part.bin", WHAT);
+    only_button(ui, "Remove…", WHAT).invoke_accessible_default_action();
+    let delete = only_with_role(ui, AccessibleRole::Checkbox, "Also delete the files", WHAT);
+    assert_eq!(delete.accessible_checked(), Some(false), "{WHAT}: ticked");
+    only_button(ui, "Remove", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: part.bin removed"), || {
+        job_named(ctx, "part.bin").is_none()
+    });
+    wait_for(
+        Duration::from_secs(10),
+        &format!("{WHAT}: partial file deleted"),
+        || files_starting(ctx, "part.bin").is_empty(),
+    );
+    wait_until(&format!("{WHAT}: detail closed after part.bin"), || {
+        !ui.get_detail().visible
+    });
+
+    // Finished: kept unticked, deleted ticked.
     for (name, tick) in [("keep.bin", false), ("gone.bin", true)] {
         let url = ctx.server.serve(name, FileSpec::new(64 * 1024));
         let request = AddRequest {
@@ -1818,6 +1893,13 @@ fn remove_dialog_defaults_to_keep(ui: &AppWindow, ctx: &Ctx) {
     });
     open_detail(ui, "Done", "stay.bin", WHAT);
     only_button(ui, "Remove…", WHAT).invoke_accessible_default_action();
+    // Unticked again after the ticked removal above.
+    let delete = only_with_role(ui, AccessibleRole::Checkbox, "Also delete the files", WHAT);
+    assert_eq!(
+        delete.accessible_checked(),
+        Some(false),
+        "{WHAT}: still ticked"
+    );
     only_button(ui, "Cancel", WHAT).invoke_accessible_default_action();
     assert!(!ui.get_remove_dialog().visible, "{WHAT}: cancel");
     settle(Duration::from_millis(300));
@@ -1872,21 +1954,69 @@ fn password_cleared_after_submit(ui: &AppWindow, ctx: &Ctx) {
     });
     assert_eq!(ui.get_password_dialog().name.as_str(), "locked.bin");
     let field = |label: &str| only_with_role(ui, AccessibleRole::TextInput, label, WHAT);
+    let value = |label: &str| {
+        field(label)
+            .accessible_value()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let empty = |when: &str| {
+        assert_eq!(
+            ui.get_password_text().as_str(),
+            "",
+            "{WHAT}: {when}: password kept"
+        );
+        assert_eq!(
+            ui.get_password_user().as_str(),
+            "",
+            "{WHAT}: {when}: user kept"
+        );
+    };
+
+    // Cancel empties both fields; "Enter password…" asks again, empty.
     field("User name").set_accessible_value(USER);
-    field("Password").set_accessible_value(PASSWORD);
-    assert_eq!(ui.get_password_text().as_str(), PASSWORD, "{WHAT}: typed");
-    only_button(ui, "Sign in", WHAT).invoke_accessible_default_action();
-    // Emptied as soon as they are handed over, while the dialog waits.
-    assert_eq!(ui.get_password_text().as_str(), "", "{WHAT}: password kept");
-    assert_eq!(ui.get_password_user().as_str(), "", "{WHAT}: user kept");
-    if ui.get_password_dialog().visible {
-        let shown = field("Password").accessible_value().unwrap_or_default();
-        assert_eq!(shown.as_str(), "", "{WHAT}: password field not empty");
-    }
+    field("Password").set_accessible_value("typed-then-cancelled");
+    only_button(ui, "Cancel", WHAT).invoke_accessible_default_action();
+    assert!(!ui.get_password_dialog().visible, "{WHAT}: cancel");
+    empty("after Cancel");
+    settle(Duration::from_millis(700));
     assert!(
-        !format!("{:?}", ui.get_password_dialog()).contains(PASSWORD),
-        "{WHAT}: the dialog's view model holds the password"
+        !ui.get_password_dialog().visible,
+        "{WHAT}: asked again by itself"
     );
+    only_button(ui, "Enter password…", WHAT).invoke_accessible_default_action();
+    assert!(ui.get_password_dialog().visible, "{WHAT}: Enter password…");
+    assert_eq!(
+        (value("User name"), value("Password")),
+        (String::new(), String::new())
+    );
+
+    // A wrong password: emptied at once, the dialog waits, then says so.
+    let submit = |password: &str| {
+        field("User name").set_accessible_value(USER);
+        field("Password").set_accessible_value(password);
+        assert_eq!(ui.get_password_text().as_str(), password, "{WHAT}: typed");
+        only_button(ui, "Sign in", WHAT).invoke_accessible_default_action();
+        // Emptied as soon as they are handed over, while the dialog waits
+        // (the engine's answer arrives on a later tick).
+        empty("after Sign in");
+        let dialog = ui.get_password_dialog();
+        assert!(dialog.visible && dialog.busy, "{WHAT}: {dialog:?}");
+        assert_eq!(value("Password"), "", "{WHAT}: password field not empty");
+        assert_eq!(value("User name"), "", "{WHAT}: user field not empty");
+    };
+    submit("not-it");
+    wait_until(&format!("{WHAT}: refused"), || {
+        let d = ui.get_password_dialog();
+        d.visible && !d.busy && d.wrong
+    });
+    empty("after the refusal");
+    assert!(
+        !labelled(ui, "That user name or password didn't work. Try again.").is_empty(),
+        "{WHAT}: refusal not shown"
+    );
+    // The right one.
+    submit(PASSWORD);
     wait_until(&format!("{WHAT}: dialog closed"), || {
         !ui.get_password_dialog().visible
     });

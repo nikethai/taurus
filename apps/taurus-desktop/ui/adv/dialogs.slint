@@ -1,5 +1,6 @@
 // Advanced mode dialogs, laid over the whole window: removing a download
-// (keeping its files unless asked) and signing in to a protected one.
+// (finished files stay unless asked; an unfinished download's partial
+// files go) and signing in to a protected one.
 import { Theme } from "../theme.slint";
 import { RemoveDialogVm, PasswordDialogVm } from "../types.slint";
 import { TextButton } from "../widgets.slint";
@@ -29,11 +30,13 @@ component Scrim inherits Rectangle {
 
 export component RemoveDialog inherits Scrim {
     in property <RemoveDialogVm> dialog;
-    // id, whether the files go too
+    // id, whether finished files go too (an unfinished download's
+    // partial files always do)
     callback confirm(int, bool);
     callback cancel();
 
-    // Unticked each time the dialog opens: files are kept unless asked.
+    // Unticked each time the dialog opens: finished files are kept unless
+    // asked.
     property <bool> delete-files: false;
 
     Text {

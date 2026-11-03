@@ -182,7 +182,8 @@ export struct StatVm {
 // the percent done ("42%", "" when the size is unknown); `size-line` the
 // amounts done and in all ("120 MB / 400 MB", or media time "1:23 / 4:56"
 // for a conversion). `cells`: a web download's segment map, 0..1 per cell
-// (96 cells) when `has-cells`. Overrides: "default" | "never" | a number
+// (96 cells) when `has-cells`. `url`: the link without any user name or
+// password ("" for a conversion). Overrides: "default" | "never" | a number
 // (ratio; seed time in seconds).
 export struct DetailVm {
     visible: bool,
@@ -205,6 +206,9 @@ export struct DetailVm {
     can-choose-files: bool,
     ratio-override: string,
     seed-time-override: string,
+    // Changes when the engine refused the sharing rules picked: the
+    // selects show the engine's values again.
+    overrides-epoch: int,
 }
 
 // "Remove <name> from the list?"

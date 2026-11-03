@@ -8,71 +8,7 @@ import { RowText } from "../row_text.slint";
 import { IconButton, TextButton, KindBadge, ProgressBar } from "../widgets.slint";
 import { ComboBox, ListView, ScrollView } from "std-widgets.slint";
 import { SourceChip } from "row.slint";
-
-// Cells per row of the segment map; 96 cells make 4 rows.
-global Map {
-    out property <int> columns: 24;
-    out property <length> cell-height: 10px;
-    out property <length> gap: 2px;
-}
-
-// A web download's segment map: how much of each part is written.
-component SegmentMap inherits Rectangle {
-    in property <[float]> cells;
-    in property <string> kind;
-    in property <string> percent;
-
-    property <length> cell-width: (self.width - (Map.columns - 1) * Map.gap) / Map.columns;
-    height: ceil(cells.length / Map.columns) * (Map.cell-height + Map.gap) - Map.gap;
-    accessible-role: progress-indicator;
-    accessible-label: @tr("Segment map");
-    accessible-value: percent;
-
-    for c[i] in root.cells: Rectangle {
-        x: mod(i, Map.columns) * (root.cell-width + Map.gap);
-        y: floor(i / Map.columns) * (Map.cell-height + Map.gap);
-        width: root.cell-width;
-        height: Map.cell-height;
-        border-radius: 2px;
-        background: Theme.track;
-        Rectangle {
-            border-radius: parent.border-radius;
-            background: Theme.kind-fg(root.kind);
-            opacity: c <= 0 ? 0 : 0.35 + 0.65 * c;
-        }
-    }
-}
-
-// "label  value" on one line.
-component Pair inherits HorizontalLayout {
-    in property <string> label;
-    in property <string> value;
-
-    spacing: 10px;
-    Text {
-        text: root.label;
-        width: 96px;
-        font-size: 12px;
-        color: Theme.muted;
-        accessible-role: none;
-    }
-    Text {
-        text: root.value;
-        horizontal-stretch: 1;
-        wrap: word-wrap;
-        font-size: 12px;
-        color: Theme.text;
-        accessible-role: text;
-        accessible-label: @tr("{0}: {1}", root.label, root.value);
-    }
-}
-
-component SectionLabel inherits Text {
-    font-size: 12px;
-    font-weight: 600;
-    color: Theme.muted;
-    accessible-role: none;
-}
+import { SegmentMap, Pair, SectionLabel } from "detail_parts.slint";
 
 export component DetailPane inherits Rectangle {
     in property <DetailVm> detail;
@@ -86,6 +22,7 @@ export component DetailPane inherits Rectangle {
     callback retry(int);
     callback open-file(int);
     callback reveal(int);
+    callback stop-recording(int);
     callback copy-link(int);
     // "mp3" | "smaller-mp4"
     callback convert(int, string);
@@ -390,10 +327,16 @@ export component DetailPane inherits Rectangle {
                     // The engine's answer wins over what was picked.
                     property <string> ratio-value: root.detail.ratio-override;
                     property <string> seed-value: root.detail.seed-time-override;
+                    property <int> epoch: root.detail.overrides-epoch;
                     changed ratio-value => {
                         ratio.current-index = root.ratio-index(self.ratio-value);
                     }
                     changed seed-value => {
+                        seed.current-index = root.seed-index(self.seed-value);
+                    }
+                    // The engine refused a pick: show what it has.
+                    changed epoch => {
+                        ratio.current-index = root.ratio-index(self.ratio-value);
                         seed.current-index = root.seed-index(self.seed-value);
                     }
                     spacing: 8px;
@@ -474,6 +417,13 @@ export component DetailPane inherits Rectangle {
                                 root.pause(root.id);
                             }
                         }
+                        if root.state == "recording": TextButton {
+                            text: @tr("Stop recording");
+                            horizontal-stretch: 1;
+                            clicked => {
+                                root.stop-recording(root.id);
+                            }
+                        }
                         if root.state == "done": TextButton {
                             text: @tr("Open");
                             horizontal-stretch: 1;
@@ -491,7 +441,7 @@ export component DetailPane inherits Rectangle {
                     }
                     HorizontalLayout {
                         spacing: 8px;
-                        TextButton {
+                        if root.detail.url != "": TextButton {
                             text: @tr("Copy link");
                             horizontal-stretch: 1;
                             clicked => {
