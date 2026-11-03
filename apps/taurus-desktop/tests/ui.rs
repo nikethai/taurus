@@ -21,7 +21,9 @@ use taurus_core::{
 };
 use taurus_desktop::app::App;
 use taurus_desktop::shell_text::simple_message;
-use taurus_desktop::{AppWindow, BannerVm, LinksUi, Messages, RowVm, Screen, SettingsVm, Theme};
+use taurus_desktop::{
+    AppWindow, BannerVm, LinksUi, Messages, RowVm, Screen, SettingsVm, Theme, WhenDoneUi,
+};
 use taurus_testkit::{
     FailAfter, FakeToolHost, FileSpec, TestServer, ToolRelease, TorrentSeeder, process_args_log,
     set_ytdlp_scenario, unique_version,
@@ -70,6 +72,7 @@ fn ui_smoke() {
     grab_500_links_streams_sizes(&ui, &ctx);
     batch_copies_become_mirrors(&ui, &ctx);
     add_page_offers_find_files(&ui, &ctx);
+    whendone_menu_sets_when_done_and_speed(&ui, &ctx);
     torrent_detail_files_and_overrides();
     adv_add_torrent_picker();
     quit_shuts_down_engine_cleanly(&ui, &ctx);
@@ -3226,6 +3229,169 @@ fn grab_keeps_subfolders(ui: &AppWindow, ctx: &Ctx) {
         "{WHAT}: jobs added"
     );
     assert!(job_named(ctx, "y.pdf").is_none(), "{WHAT}: y.pdf added");
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// Walks the element tree, so `if` blocks that opened or closed are
+/// rebuilt before anything is asserted about them.
+fn refresh_tree(ui: &AppWindow) {
+    let _ = ElementQuery::from_root(ui).match_descendants().find_all();
+}
+
+fn whendone_choice(ui: &AppWindow, label: &str, what: &str) -> ElementHandle {
+    refresh_tree(ui);
+    only_with_role(ui, AccessibleRole::RadioButton, label, what)
+}
+
+/// The footer's when-done button opens the popover: the choice (Escape
+/// closes it) is saved and relabels the button, the sleep note shows for
+/// sleep and shutdown only, a custom speed is typed in MB/s (2.5 is
+/// 2_500_000 bytes), and a value that is no speed shows an error and
+/// changes nothing.
+fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "whendone_menu_sets_when_done_and_speed";
+    const NOTE: &str = "You get 60 seconds to cancel";
+    let state = ui.global::<WhenDoneUi>();
+    advanced_tall(ui, WHAT);
+    assert_eq!(ctx.engine.settings().when_done, WhenDone::Nothing, "{WHAT}");
+    only_button(ui, "When done", WHAT).invoke_accessible_default_action();
+    refresh_tree(ui);
+    assert!(state.get_open(), "{WHAT}: not open");
+    // Escape closes it.
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: slint::platform::Key::Escape.into(),
+    });
+    assert!(!state.get_open(), "{WHAT}: Escape did not close");
+    refresh_tree(ui);
+    assert!(
+        labelled(ui, "Do nothing").is_empty(),
+        "{WHAT}: still drawn after Escape"
+    );
+
+    only_button(ui, "When done", WHAT).invoke_accessible_default_action();
+    for label in [
+        "Do nothing",
+        "Just notify me",
+        "Put the computer to sleep",
+        "Shut down",
+        "Quit Hyades",
+    ] {
+        whendone_choice(ui, label, WHAT);
+    }
+    for label in ["Gentle", "Balanced", "Fastest", "Custom"] {
+        only_with_role(ui, AccessibleRole::RadioButton, label, WHAT);
+    }
+    assert!(texts_containing(ui, NOTE).is_empty(), "{WHAT}: early note");
+
+    // Then sleep: saved, the footer says so, the note shows.
+    whendone_choice(ui, "Put the computer to sleep", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: sleep saved"), || {
+        ctx.engine.settings().when_done == WhenDone::Sleep
+    });
+    refresh_tree(ui);
+    assert!(!texts_containing(ui, NOTE).is_empty(), "{WHAT}: sleep note");
+    only_button(ui, "Then sleep", WHAT);
+    assert!(labelled(ui, "When done").is_empty(), "{WHAT}: old label");
+    whendone_choice(ui, "Shut down", WHAT).invoke_accessible_default_action();
+    refresh_tree(ui);
+    assert!(
+        !texts_containing(ui, NOTE).is_empty(),
+        "{WHAT}: shutdown note"
+    );
+    only_button(ui, "Then shut down", WHAT);
+    whendone_choice(ui, "Quit Hyades", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: quit saved"), || {
+        ctx.engine.settings().when_done == WhenDone::Quit
+    });
+    refresh_tree(ui);
+    assert!(texts_containing(ui, NOTE).is_empty(), "{WHAT}: quit note");
+    only_button(ui, "Then quit", WHAT);
+    whendone_choice(ui, "Just notify me", WHAT).invoke_accessible_default_action();
+    only_button(ui, "Notify", WHAT);
+    whendone_choice(ui, "Do nothing", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: nothing saved"), || {
+        ctx.engine.settings().when_done == WhenDone::Nothing
+    });
+    only_button(ui, "When done", WHAT);
+
+    // Presets, then Custom.
+    only_with_role(ui, AccessibleRole::RadioButton, "Gentle", WHAT)
+        .invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: gentle saved"), || {
+        ctx.engine.settings().speed == SpeedLimit::Gentle
+    });
+    only_with_role(ui, AccessibleRole::RadioButton, "Custom", WHAT)
+        .invoke_accessible_default_action();
+    refresh_tree(ui);
+    let field = only_with_role(ui, AccessibleRole::TextInput, "Custom speed in MB/s", WHAT);
+    assert_eq!(
+        ctx.engine.settings().speed,
+        SpeedLimit::Gentle,
+        "{WHAT}: Custom alone changes nothing"
+    );
+    field.set_accessible_value("2.5");
+    wait_until(&format!("{WHAT}: custom saved"), || {
+        ctx.engine.settings().speed
+            == SpeedLimit::Custom {
+                bytes_per_sec: 2_500_000,
+            }
+    });
+    assert!(!state.get_custom_invalid(), "{WHAT}: 2.5 flagged");
+    // A decimal comma is read like a point.
+    field.set_accessible_value("0,5");
+    wait_until(&format!("{WHAT}: comma saved"), || {
+        ctx.engine.settings().speed
+            == SpeedLimit::Custom {
+                bytes_per_sec: 500_000,
+            }
+    });
+
+    // Not a speed: the error shows, the setting stays.
+    for bad in ["abc", "0", "0.05", "10001"] {
+        field.set_accessible_value(bad);
+        refresh_tree(ui);
+        assert!(state.get_custom_invalid(), "{WHAT}: {bad:?} not flagged");
+        assert!(
+            !texts_containing(ui, "Enter a speed from 0.1 to 10000 MB/s").is_empty(),
+            "{WHAT}: {bad:?} error text"
+        );
+        settle(Duration::from_millis(150));
+        assert_eq!(
+            ctx.engine.settings().speed,
+            SpeedLimit::Custom {
+                bytes_per_sec: 500_000
+            },
+            "{WHAT}: {bad:?} changed the speed"
+        );
+    }
+    field.set_accessible_value("0.1");
+    refresh_tree(ui);
+    assert!(!state.get_custom_invalid(), "{WHAT}: 0.1 flagged");
+    assert!(
+        texts_containing(ui, "Enter a speed from").is_empty(),
+        "{WHAT}: error text stays"
+    );
+    field.set_accessible_value("10000");
+    wait_until(&format!("{WHAT}: 10000 saved"), || {
+        ctx.engine.settings().speed
+            == SpeedLimit::Custom {
+                bytes_per_sec: 10_000_000_000,
+            }
+    });
+
+    // The footer's speed text is the jobs' total, not the limit.
+    assert_eq!(ui.get_speed_down_text().as_str(), "0 B/s", "{WHAT}: idle");
+    state.set_open(false);
+    refresh_tree(ui);
+    assert!(
+        labelled(ui, "Do nothing").is_empty(),
+        "{WHAT}: still drawn once closed"
+    );
+    let mut back = ctx.engine.settings();
+    back.speed = SpeedLimit::Fastest;
+    let engine = ctx.engine.clone();
+    ctx.rt.block_on(engine.set_settings(back)).unwrap();
     ui.invoke_setting_changed("advanced".into(), "false".into());
     ui.window().set_size(COMPACT);
 }

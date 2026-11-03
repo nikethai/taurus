@@ -29,6 +29,7 @@ pub mod settings_flow;
 pub mod shell_text;
 mod torrent_pick;
 pub mod tray;
+mod whendone_flow;
 
 #[cfg(test)]
 mod testutil;

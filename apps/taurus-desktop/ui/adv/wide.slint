@@ -30,6 +30,8 @@ export component AdvWide inherits Rectangle {
     callback retry(int);
     callback stop-recording(int);
     callback open-file(int);
+    // The footer's when-done button.
+    callback open-whendone();
 
     property <bool> pasting: false;
 
@@ -141,6 +143,7 @@ export component AdvWide inherits Rectangle {
             SpeedFooter {
                 down: root.speed-down;
                 up: root.speed-up;
+                open-whendone => { root.open-whendone(); }
             }
         }
     }

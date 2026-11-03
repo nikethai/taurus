@@ -322,8 +322,14 @@ impl App {
             .batch_edited(&text));
         on!(links, self, on_batch_mirrors, |a, on| a.batch_mirrors(on));
         on!(links, self, on_batch_add, |a| a.batch_add());
-        // open-whendone: its menu comes in a later M6b task; until then it
-        // is left unconnected.
+        on!(ui, self, on_open_whendone, |a| a.open_whendone());
+        let whendone = ui.global::<crate::WhenDoneUi>();
+        on!(whendone, self, on_pick_when_done, |a, value| a
+            .whendone_pick("when-done", &value));
+        on!(whendone, self, on_pick_speed, |a, value| a
+            .whendone_pick("speed", &value));
+        on!(whendone, self, on_custom_edited, |a, text| a
+            .whendone_custom(&text));
 
         let weak = Rc::downgrade(self);
         ui.window().on_close_requested(move || {

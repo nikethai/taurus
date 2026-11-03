@@ -10,6 +10,7 @@ import {
 import { AdvGrab } from "adv/grab.slint";
 import { AdvBatch } from "adv/batch.slint";
 import { LinksUi } from "adv/links.slint";
+import { WhenDoneUi, WhenDonePopover } from "adv/whendone.slint";
 import { AdvAdd } from "adv/add.slint";
 import { FilesDialog } from "adv/torrent.slint";
 import { AdvCompact } from "adv/main.slint";
@@ -23,7 +24,7 @@ import { Settings } from "settings.slint";
 import { Banner } from "banner.slint";
 import { Countdown } from "countdown.slint";
 
-export { Theme, Messages, LinksUi }
+export { Theme, Messages, LinksUi, WhenDoneUi }
 export {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
     AdvRowVm, FilterCountVm, TabCountsVm,
@@ -144,7 +145,8 @@ export component AppWindow inherits Window {
     callback set-override(int, string, string);
     // Several links (Screen.batch) and grab links (Screen.grab, with the
     // page's link, "" for none yet): the app opens them; the screens talk
-    // to it through `LinksUi`. The when-done menu: a later screen.
+    // to it through `LinksUi`. The footer's when-done button; the popover reads
+    // and asks through `WhenDoneUi`.
     callback open-batch();
     callback open-whendone();
     callback open-grab(string);
@@ -247,6 +249,7 @@ export component AppWindow inherits Window {
                         link-entered(link) => {
                             root.link-entered(link);
                         }
+                        open-whendone => { root.open-whendone(); }
                         open-batch => {
                             root.open-batch();
                         }
@@ -294,6 +297,7 @@ export component AppWindow inherits Window {
                             link-entered(link) => {
                                 root.link-entered(link);
                             }
+                            open-whendone => { root.open-whendone(); }
                             open-batch => {
                                 root.open-batch();
                             }
@@ -593,5 +597,12 @@ export component AppWindow inherits Window {
             root.password-user = "";
             root.password-text = "";
         }
+    }
+
+    if WhenDoneUi.open: WhenDonePopover {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
     }
 }

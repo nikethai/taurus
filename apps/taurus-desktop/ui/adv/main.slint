@@ -7,6 +7,7 @@ import { ListView } from "std-widgets.slint";
 import { IconButton, Pressable, TextButton } from "../widgets.slint";
 import { LinkField } from "../welcome.slint";
 import { AdvRow } from "row.slint";
+import { WhenDoneUi } from "whendone.slint";
 
 component AdvTab inherits Pressable {
     in property <string> text;
@@ -105,6 +106,8 @@ export component AdvList inherits Rectangle {
 export component SpeedFooter inherits Rectangle {
     in property <string> down;
     in property <string> up;
+    // The when-done button: opens the when-done and speed popover.
+    callback open-whendone();
 
     height: 36px;
     Rectangle {
@@ -133,6 +136,24 @@ export component SpeedFooter inherits Rectangle {
             accessible-role: text;
             accessible-label: self.text;
         }
+        Pressable {
+            width: whendone-label.preferred-width + 20px;
+            border-radius: 8px;
+            background: self.pressed ? Theme.track : self.hovered ? Theme.chip : transparent;
+            accessible-label: whendone-label.text;
+            clicked => {
+                root.open-whendone();
+            }
+            whendone-label := Text {
+                text: WhenDoneUi.footer-label(WhenDoneUi.when-done);
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                font-size: 12px;
+                font-weight: 600;
+                color: Theme.accent-strong;
+                accessible-role: none;
+            }
+        }
     }
 }
 
@@ -154,6 +175,8 @@ export component AdvCompact inherits Rectangle {
     callback retry(int);
     callback stop-recording(int);
     callback open-file(int);
+    // The footer's when-done button.
+    callback open-whendone();
 
     property <bool> pasting: false;
 
@@ -298,6 +321,7 @@ export component AdvCompact inherits Rectangle {
         SpeedFooter {
             down: root.speed-down;
             up: root.speed-up;
+            open-whendone => { root.open-whendone(); }
         }
     }
 }

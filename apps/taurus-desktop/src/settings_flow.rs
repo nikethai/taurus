@@ -112,6 +112,7 @@ pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
                 "notify" => WhenDone::Notify,
                 "sleep" => WhenDone::Sleep,
                 "shutdown" => WhenDone::Shutdown,
+                "quit" => WhenDone::Quit,
                 _ => return false,
             }
         }
@@ -201,6 +202,7 @@ impl App {
         theme.set_scheme(vm.theme.clone());
         theme.set_accent(vm.accent.clone());
         ui.set_settings(vm);
+        self.push_whendone(&ui);
         // ui.mode may have changed: Simple, compact or wide.
         self.apply_layout();
     }
@@ -239,7 +241,7 @@ impl App {
     }
 
     /// `next` (changed at `key`) becomes the UI's settings and is saved.
-    fn change_settings(&self, key: &str, next: Settings) {
+    pub(crate) fn change_settings(&self, key: &str, next: Settings) {
         if key == "open-at-login"
             && self.os_shell.get()
             && let Err(e) = login::set_open_at_login(next.ui.open_at_login)
