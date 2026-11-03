@@ -348,8 +348,10 @@ export struct GrabRowVm {
 // "all" | "video" | "docs" | "archives" | "images"; ext-filter: as typed;
 // counts: links of each chip on the whole page; shown-count: rows shown
 // now (chip and extension); selected-size: the known sizes of the
-// selected links, formatted; truncated: links were left out (more than
-// the grab returns).
+// selected links, formatted; unknown-count: selected links whose size is
+// not known (yet); unsafe-count: selected links whose subfolder name is
+// not safe to create (they are not downloaded); truncated: links were
+// left out (more than the grab returns).
 export struct GrabVm {
     page-url: string,
     loading: bool,
@@ -365,6 +367,8 @@ export struct GrabVm {
     shown-count: int,
     selected-count: int,
     selected-size: string,
+    unknown-count: int,
+    unsafe-count: int,
     all-shown-selected: bool,
     truncated: bool,
 }

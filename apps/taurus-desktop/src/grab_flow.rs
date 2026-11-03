@@ -1,4 +1,5 @@
-//! Advanced mode's Grab links and Add several links screens.
+//! Advanced mode's Grab links screen (and `add_all`, which Add several
+//! links in `batch_flow.rs` uses too).
 //!
 //! Grab links: `Engine::grab` reads the page (on the runtime); its links
 //! go into the list at once, without sizes, and `probe_sizes_stream` then
@@ -8,26 +9,22 @@
 //! Every grab has a run number; a new page, the Subfolders switch or
 //! leaving the screen starts a new run and drops the old probes (their
 //! receiver), so nothing of an older run reaches the list.
-//!
-//! Several links: the text is parsed (`batch.rs`) after each edit; "Add N
-//! downloads" adds them in order.
 
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use slint::{Model, ModelRc, VecModel};
+use taurus_core::grab::folder_in;
 use taurus_core::{
-    AddRequest, CoreError, ErrorKind, GrabOptions, GrabResult, GrabbedLink, JobKind,
+    AddRequest, CoreError, Engine, ErrorKind, GrabOptions, GrabResult, GrabbedLink, JobKind,
 };
 use tokio::sync::mpsc::{self, error::TryRecvError};
 
-use crate::add_flow::add_job;
 use crate::app::{App, UiMsg};
-use crate::batch::{self, BatchLine, LineKind};
-use crate::pump::set_model;
 use slint::ComponentHandle;
 
-use crate::{AppWindow, BatchLineVm, BatchVm, GrabRowVm, GrabVm, LinksUi, Screen, format, rows};
+use crate::{AppWindow, GrabRowVm, GrabVm, LinksUi, Screen, format, rows};
 
 /// Extensions listed under "Docs".
 const DOCS: &[&str] = &[
@@ -169,7 +166,9 @@ impl Grab {
         }
     }
 
-    fn vm(&self) -> GrabVm {
+    /// The screen's view model; `base` is the download folder the
+    /// links' subfolders are checked against.
+    fn vm(&self, base: &Path) -> GrabVm {
         let count = |chip: &str| {
             let n = self.chips.iter().filter(|c| **c == chip).count();
             n.min(i32::MAX as usize) as i32
@@ -178,6 +177,14 @@ impl Grab {
             .filter(|&i| self.selected[i])
             .collect();
         let size: u64 = picked.iter().filter_map(|&i| self.sizes[i].flatten()).sum();
+        let unknown = picked
+            .iter()
+            .filter(|&&i| self.sizes[i].flatten().is_none())
+            .count();
+        let refused = picked
+            .iter()
+            .filter(|&&i| folder_in(base, &self.links[i].folder).is_err())
+            .count();
         GrabVm {
             page_url: self.page_url.as_str().into(),
             loading: self.loading,
@@ -193,56 +200,33 @@ impl Grab {
             shown_count: self.shown.len().min(i32::MAX as usize) as i32,
             selected_count: picked.len().min(i32::MAX as usize) as i32,
             selected_size: format::bytes(size).into(),
+            unknown_count: unknown.min(i32::MAX as usize) as i32,
+            unsafe_count: refused.min(i32::MAX as usize) as i32,
             all_shown_selected: self.shown.iter().all(|&i| self.selected[i]),
             truncated: self.truncated,
         }
     }
 }
 
-/// Several links: the text as last edited and what it says.
-#[derive(Default)]
-struct Batch {
-    text: String,
-    mirrors: bool,
-    lines: Vec<BatchLine>,
-}
-
-/// Both screens' state; the list models are the window's.
+/// The Grab links screen's state; the list model is the window's.
 #[derive(Default)]
 pub(crate) struct GrabState {
     rows: Rc<VecModel<GrabRowVm>>,
     grab: RefCell<Grab>,
-    batch_lines: Rc<VecModel<BatchLineVm>>,
-    batch: RefCell<Batch>,
 }
 
 impl GrabState {
     pub fn install(&self, ui: &AppWindow) {
         let links = ui.global::<LinksUi>();
         links.set_grab_rows(ModelRc::from(self.rows.clone()));
-        links.set_batch_lines(ModelRc::from(self.batch_lines.clone()));
-    }
-}
-
-/// The kind a download is sorted by (see `add_flow::sort_folder`).
-fn sort_kind(line: &BatchLine) -> &'static str {
-    match line.kind {
-        LineKind::Torrent => "magnet",
-        LineKind::Media => "media",
-        _ => {
-            let name = url::Url::parse(&line.text)
-                .ok()
-                .and_then(|u| u.path_segments()?.next_back().map(str::to_string))
-                .unwrap_or_default();
-            rows::kind_for(&name, JobKind::Http)
-        }
     }
 }
 
 impl App {
     fn render_grab(&self, ui: &AppWindow) {
+        let base = self.default_destination("").0;
         ui.global::<LinksUi>()
-            .set_grab(self.grab.grab.borrow().vm());
+            .set_grab(self.grab.grab.borrow().vm(&base));
     }
 
     /// Opens Grab links, reading `url` when it is not empty. An Add
@@ -262,6 +246,7 @@ impl App {
             g.page_url = url.trim().to_string();
             self.grab.rows.set_vec(Vec::new());
         }
+        ui.global::<LinksUi>().set_grab_url_text(url.trim().into());
         ui.set_screen(Screen::Grab);
         if url.trim().is_empty() {
             self.render_grab(&ui);
@@ -382,6 +367,11 @@ impl App {
         match key {
             "subfolders" => {
                 g.subfolders = value == "true";
+                // The link as it reads in the field now (typed or not).
+                let typed = ui.global::<LinksUi>().get_grab_url_text();
+                if !typed.trim().is_empty() {
+                    g.page_url = typed.trim().to_string();
+                }
                 if !g.page_url.is_empty() {
                     drop(g);
                     return self.start_grab(&ui);
@@ -436,29 +426,41 @@ impl App {
         self.render_grab(&ui);
     }
 
-    /// Download N: one web download per ticked link, in page order.
+    /// Download N: one web download per ticked link, in page order, each
+    /// in its subfolder (as listed) of the folder its kind is sorted into.
+    /// A link whose subfolder name is not safe (`grab::folder_in`) is left
+    /// out alone; the footer said so before.
     pub(crate) fn grab_download(&self) {
-        let picked: Vec<(String, String)> = {
+        let picked: Vec<GrabbedLink> = {
             let g = self.grab.grab.borrow();
             (0..g.links.len())
                 .filter(|&i| g.selected[i])
-                .map(|i| (g.links[i].url.clone(), g.links[i].name.clone()))
+                .map(|i| g.links[i].clone())
                 .collect()
         };
         if picked.is_empty() {
             return;
         }
+        let base = self.default_destination("").0;
         let requests = picked
             .into_iter()
-            .map(|(url, name)| {
-                let (dest_dir, sorted) =
-                    self.default_destination(rows::kind_for(&name, JobKind::Http));
+            .filter_map(|link| {
+                let kind = rows::kind_for(&link.name, JobKind::Http);
+                let sort_dest = self.default_destination(kind).0;
+                let dest_dir = match folder_in(&sort_dest, &link.folder) {
+                    Ok(dir) => dir,
+                    Err(e) => {
+                        eprintln!("hyades: {}: {}", link.url, e.detail);
+                        return None;
+                    }
+                };
+                let root = (dest_dir != base).then(|| base.clone());
                 let request = AddRequest {
-                    url,
+                    url: link.url,
                     dest_dir,
                     ..Default::default()
                 };
-                (request, sorted)
+                Some((request, root))
             })
             .collect();
         self.grab_closed();
@@ -475,91 +477,19 @@ impl App {
         self.next_queued();
     }
 
-    /// Opens Add several links, empty.
-    pub(crate) fn open_batch(&self) {
-        let Some(ui) = self.window.upgrade() else {
-            return;
-        };
-        *self.grab.batch.borrow_mut() = Batch::default();
-        self.render_batch(&ui);
-        ui.set_screen(Screen::Batch);
-    }
-
-    pub(crate) fn batch_edited(&self, text: &str) {
-        self.grab.batch.borrow_mut().text = text.to_string();
-        self.reparse_batch();
-    }
-
-    pub(crate) fn batch_mirrors(&self, on: bool) {
-        self.grab.batch.borrow_mut().mirrors = on;
-        self.reparse_batch();
-    }
-
-    fn reparse_batch(&self) {
-        let Some(ui) = self.window.upgrade() else {
-            return;
-        };
-        {
-            let mut b = self.grab.batch.borrow_mut();
-            b.lines = batch::parse_batch(&b.text, b.mirrors);
-        }
-        self.render_batch(&ui);
-    }
-
-    fn render_batch(&self, ui: &AppWindow) {
-        let b = self.grab.batch.borrow();
-        let number = |n: usize| n.min(i32::MAX as usize) as i32;
-        let lines = b.lines.iter().map(|l| BatchLineVm {
-            n: number(l.n),
-            text: l.text.as_str().into(),
-            kind: l.kind.key().into(),
-            mirror_of: l.mirror_of.map_or(0, number),
-        });
-        set_model(&self.grab.batch_lines, lines, |l| l.n);
-        ui.global::<LinksUi>().set_batch(BatchVm {
-            add_count: number(b.lines.iter().filter(|l| batch::is_added(l)).count()),
-            mirrors: b.mirrors,
-        });
-    }
-
-    /// "Add N downloads": every added line, in order, each in the folder
-    /// its kind is sorted into.
-    pub(crate) fn batch_add(&self) {
-        let lines = std::mem::take(&mut self.grab.batch.borrow_mut().lines);
-        let base = self.default_destination("").0;
-        let requests: Vec<(AddRequest, bool)> = batch::to_requests(&lines, &base)
-            .into_iter()
-            .zip(lines.iter().filter(|l| batch::is_added(l)))
-            .map(|(mut request, line)| {
-                let (dest_dir, sorted) = self.default_destination(sort_kind(line));
-                request.dest_dir = dest_dir;
-                (request, sorted)
-            })
-            .collect();
-        if requests.is_empty() {
-            self.grab.batch.borrow_mut().lines = lines;
-            return;
-        }
-        *self.grab.batch.borrow_mut() = Batch::default();
-        if let Some(ui) = self.window.upgrade() {
-            self.render_batch(&ui);
-        }
-        self.add_all(requests);
-    }
-
     /// Shows the list and adds `requests` one after the other; the first
-    /// refusal, if any, is shown as an add the engine refused.
-    fn add_all(&self, requests: Vec<(AddRequest, bool)>) {
+    /// refusal, if any, is shown as an add the engine refused. A request
+    /// with a `root` folder gets its `dest_dir` (below `root`) made first,
+    /// when `root` exists (a missing drive is reported, not created).
+    pub(crate) fn add_all(&self, requests: Vec<(AddRequest, Option<PathBuf>)>) {
         if let Some(ui) = self.window.upgrade() {
             ui.set_screen(Screen::Downloads);
         }
         let (engine, tx) = (self.engine.clone(), self.tx.clone());
         self.rt.spawn(async move {
             let mut refused = None;
-            for (request, sorted) in requests {
-                if let Err(CoreError { kind, detail }) =
-                    add_job(engine.clone(), request, sorted).await
-                {
+            for (request, root) in requests {
+                if let Err(CoreError { kind, detail }) = add_below(&engine, request, root).await {
                     eprintln!("hyades: add failed: {detail}");
                     refused.get_or_insert(kind);
                 }
@@ -569,6 +499,21 @@ impl App {
             }
         });
     }
+}
+
+/// Adds `request`, its folder made first below `root` when `root` exists.
+async fn add_below(
+    engine: &Engine,
+    request: AddRequest,
+    root: Option<PathBuf>,
+) -> Result<taurus_core::JobId, CoreError> {
+    if let Some(root) = root
+        && root.is_dir()
+        && request.dest_dir.starts_with(&root)
+    {
+        let _ = tokio::fs::create_dir_all(&request.dest_dir).await;
+    }
+    engine.add(request).await
 }
 
 #[cfg(test)]

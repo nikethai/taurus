@@ -8,8 +8,8 @@
 //! `slint::platform::update_timers_and_animations()`.
 //!
 //! The add flow lives in `add_flow.rs` (video links in `media_add.rs`,
-//! Advanced mode's Add screen in `adv_add.rs`, its Grab links and Add
-//! several links screens in `grab_flow.rs`),
+//! Advanced mode's Add screen in `adv_add.rs`, its Grab links screen in
+//! `grab_flow.rs` and Add several links in `batch_flow.rs`),
 //! the Settings screen in `settings_flow.rs`, applying engine state to the
 //! window in `pump.rs`.
 
@@ -31,6 +31,7 @@ use crate::add_flow::PendingAdd;
 use crate::adv_add::AdvAddState;
 use crate::adv_flow::AdvFlow;
 use crate::adv_view::AdvState;
+use crate::batch_flow::BatchState;
 use crate::bridge::{self, Coalescer};
 use crate::grab_flow::GrabState;
 use crate::links::ClipboardFilter;
@@ -152,8 +153,10 @@ pub struct App {
     pub(crate) flow: AdvFlow,
     /// Advanced mode's Add screen and file picker (`adv_add.rs`).
     pub(crate) adv_add: AdvAddState,
-    /// Advanced mode's Grab links and Add several links (`grab_flow.rs`).
+    /// Advanced mode's Grab links (`grab_flow.rs`).
     pub(crate) grab: GrabState,
+    /// Advanced mode's Add several links (`batch_flow.rs`).
+    pub(crate) batch: BatchState,
     coalescer: Arc<Mutex<Coalescer>>,
     pub(crate) writer: SettingsWriter,
     /// Mirrors `settings.ui.offer_copied_links` for the clipboard thread.
@@ -211,6 +214,7 @@ impl App {
             flow: AdvFlow::default(),
             adv_add: AdvAddState::default(),
             grab: GrabState::default(),
+            batch: BatchState::default(),
             coalescer: coalescer.clone(),
             writer,
             offer_links,
@@ -226,6 +230,7 @@ impl App {
         app.view.borrow().install(window);
         app.adv.borrow().install(window);
         app.grab.install(window);
+        app.batch.install(window);
         app.push_settings();
         let screen = if app.engine.snapshot().is_empty() {
             crate::Screen::Welcome

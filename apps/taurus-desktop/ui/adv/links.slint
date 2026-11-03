@@ -9,6 +9,9 @@ export global LinksUi {
     // rest of the screen.
     in property <GrabVm> grab;
     in property <[GrabRowVm]> grab-rows;
+    // The page link field's text, as typed (the app sets it when it opens
+    // the screen); the Subfolders switch reads the link written there.
+    in-out property <string> grab-url-text;
     // Read this page (the screen's link field).
     callback grab-page(string);
     // "subfolders" ("true" | "false"), "chip" (GrabVm.chip), "ext" (as typed)

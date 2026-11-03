@@ -2,11 +2,11 @@
 //! at once; with `--sizes` their sizes as they arrive, and with `--add`
 //! queued as downloads (never waiting on a size).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Args;
-use taurus_core::filename::sanitize;
+use taurus_core::grab::folder_in;
 use taurus_core::{AddRequest, Engine, GrabOptions, GrabbedLink};
 
 use crate::runner::{Enqueued, Options, Runner};
@@ -42,32 +42,6 @@ fn wanted(link: &GrabbedLink, exts: &[String]) -> bool {
             exts.iter()
                 .any(|e| e.trim().trim_start_matches('.').eq_ignore_ascii_case(have))
         })
-}
-
-/// Where the files of a link's `folder` (`/`, or `/talks/` for a scanned
-/// subfolder) go: below `dest_dir`, one folder per segment. The names come
-/// from a web page (percent-decoded, so they can hold `/`, a backslash or `..`):
-/// a segment that is empty, `.`, `..` or holds a backslash is refused, the
-/// others are made safe for a file system, and the result must still be
-/// inside `dest_dir`.
-fn folder_in(dest_dir: &Path, folder: &str) -> std::result::Result<PathBuf, String> {
-    let unsafe_folder = || "a folder name on the page is not safe to create".to_string();
-    let mut path = dest_dir.to_path_buf();
-    let relative = folder.trim_matches('/');
-    if relative.is_empty() {
-        return Ok(path);
-    }
-    for segment in relative.split('/') {
-        if matches!(segment, "" | "." | "..") || segment.contains('\\') {
-            return Err(unsafe_folder());
-        }
-        path.push(sanitize(segment));
-    }
-    if path.starts_with(dest_dir) {
-        Ok(path)
-    } else {
-        Err(unsafe_folder())
-    }
 }
 
 /// The page's address as the Referer of `link`, when both are on one origin
@@ -151,7 +125,7 @@ pub async fn run(engine: &Engine, args: GrabArgs, options: Options) -> Result<Ex
                     Ok(()) => Ok(folder),
                     Err(e) => Err(format!("cannot create {}: {e}", folder.display())),
                 },
-                Err(e) => Err(e),
+                Err(e) => Err(e.detail),
             };
             let folder = match folder {
                 Ok(folder) => folder,
@@ -209,28 +183,6 @@ mod tests {
             name: name.to_string(),
             folder: "/".to_string(),
             extension: extension.map(String::from),
-        }
-    }
-
-    #[test]
-    fn folders_stay_inside_the_destination() {
-        let dest = Path::new("/data/dl");
-        assert_eq!(folder_in(dest, "/").unwrap(), dest);
-        assert_eq!(folder_in(dest, "/2023/").unwrap(), dest.join("2023"));
-        assert_eq!(folder_in(dest, "/a/b/").unwrap(), dest.join("a").join("b"));
-        // A name the file system would not take is made safe.
-        assert_eq!(folder_in(dest, "/a:b/").unwrap(), dest.join("a_b"));
-        for hostile in [
-            "/../",
-            "/x/../../escape/",
-            "/a//b/",
-            "/./",
-            "/a\\b/",
-            "/..\\..\\x/",
-            "/ok/../",
-        ] {
-            let error = folder_in(dest, hostile).unwrap_err();
-            assert!(error.contains("not safe"), "{hostile}: {error}");
         }
     }
 

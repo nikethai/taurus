@@ -144,7 +144,7 @@ export component AdvGrab inherits Rectangle {
                 spacing: 8px;
                 url := LineEdit {
                     horizontal-stretch: 1;
-                    text: root.vm.page-url;
+                    text <=> LinksUi.grab-url-text;
                     placeholder-text: @tr("Link to a web page or folder listing");
                     accessible-label: @tr("Page link");
                     accepted(t) => {
@@ -306,12 +306,29 @@ export component AdvGrab inherits Rectangle {
             }
         }
 
+        if root.listed && root.vm.unsafe-count > 0: HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 8px;
+            Text {
+                text: @tr("{n} ticked file is in a folder whose name isn't safe to create, so it won't be downloaded." | "{n} ticked files are in folders whose names aren't safe to create, so they won't be downloaded." % root.vm.unsafe-count);
+                wrap: word-wrap;
+                font-size: 12px;
+                color: Theme.err;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+        }
+
         HorizontalLayout {
             padding: 20px;
             padding-top: 10px;
             spacing: 10px;
             Text {
-                text: root.listed ? @tr("{n} selected · {0}" | "{n} selected · {0}" % root.vm.selected-count, root.vm.selected-size) : "";
+                text: !root.listed ? ""
+                    : root.vm.selected-count > 0 && root.vm.unknown-count == root.vm.selected-count ? @tr("{n} selected · size unknown" | "{n} selected · size unknown" % root.vm.selected-count)
+                    : root.vm.unknown-count > 0 ? @tr("{n} selected · at least {0}" | "{n} selected · at least {0}" % root.vm.selected-count, root.vm.selected-size)
+                    : @tr("{n} selected · {0}" | "{n} selected · {0}" % root.vm.selected-count, root.vm.selected-size);
                 vertical-alignment: center;
                 horizontal-stretch: 1;
                 font-size: 12px;

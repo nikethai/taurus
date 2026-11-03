@@ -9,6 +9,7 @@ mod adv_pick;
 mod adv_view;
 pub mod app;
 pub mod batch;
+mod batch_flow;
 pub mod bridge;
 pub mod clipboard;
 pub mod detail;

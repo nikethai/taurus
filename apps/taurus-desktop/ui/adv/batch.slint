@@ -10,8 +10,9 @@ import { LinksUi } from "links.slint";
 
 // What a line is, in its kind's colors.
 component KindChip inherits Rectangle {
-    // BatchLineVm.kind
+    // BatchLineVm.kind, and its words
     in property <string> kind;
+    in property <string> text;
     property <string> badge: kind == "torrent" ? "magnet" : kind == "media" ? "media" : kind == "page" ? "disc" : "file";
 
     height: 20px;
@@ -25,8 +26,7 @@ component KindChip inherits Rectangle {
         height: parent.height;
         horizontal-alignment: center;
         vertical-alignment: center;
-        text: root.kind == "http" ? @tr("File") : root.kind == "torrent" ? @tr("Torrent")
-            : root.kind == "media" ? @tr("Video") : root.kind == "page" ? @tr("Page") : @tr("Not a link");
+        text: root.text;
         font-size: 11px;
         font-weight: 600;
         color: root.kind == "invalid" ? Theme.err : Theme.kind-fg(root.badge);
@@ -38,10 +38,23 @@ component LineRow inherits Rectangle {
     in property <BatchLineVm> item;
     callback find-files(string);
 
+    pure function kind-text(kind: string) -> string {
+        if (kind == "http") {
+            return @tr("File");
+        } else if (kind == "torrent") {
+            return @tr("Torrent");
+        } else if (kind == "media") {
+            return @tr("Video");
+        } else if (kind == "page") {
+            return @tr("Page");
+        }
+        return @tr("Not a link");
+    }
+
     height: 52px;
     accessible-role: list-item;
     accessible-label: item.text;
-    accessible-value: item.kind;
+    accessible-value: root.kind-text(item.kind);
 
     HorizontalLayout {
         padding-left: 8px;
@@ -51,6 +64,7 @@ component LineRow inherits Rectangle {
             alignment: center;
             KindChip {
                 kind: root.item.kind;
+                text: root.kind-text(root.item.kind);
             }
         }
         VerticalLayout {

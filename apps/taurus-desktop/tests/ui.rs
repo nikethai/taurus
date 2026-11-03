@@ -66,6 +66,7 @@ fn ui_smoke() {
     adv_add_file_mirrors_checksum(&ui, &ctx);
     grab_listing_chip_counts(&ui, &ctx);
     grab_download_adds_three(&ui, &ctx);
+    grab_keeps_subfolders(&ui, &ctx);
     grab_500_links_streams_sizes(&ui, &ctx);
     batch_copies_become_mirrors(&ui, &ctx);
     add_page_offers_find_files(&ui, &ctx);
@@ -2871,6 +2872,19 @@ fn grab_500_links_streams_sizes(ui: &AppWindow, ctx: &Ctx) {
         "{WHAT}: a size arrived with the rows"
     );
     assert!(!links(ui).get_grab().truncated, "{WHAT}: truncated");
+    // Every link ticked before any size is known: the footer says so.
+    links(ui).invoke_grab_select_shown();
+    let g = links(ui).get_grab();
+    assert_eq!(
+        (g.selected_count, g.unknown_count),
+        (500, 500),
+        "{WHAT}: {g:?}"
+    );
+    assert!(
+        !texts_containing(ui, "500 selected · size unknown").is_empty(),
+        "{WHAT}: footer before sizes"
+    );
+    let mut said_at_least = false;
 
     // Sizes fill in over many ticks.
     let mut seen = vec![0usize];
@@ -2886,7 +2900,15 @@ fn grab_500_links_streams_sizes(ui: &AppWindow, ctx: &Ctx) {
         if now != *seen.last().unwrap() {
             seen.push(now);
         }
+        if !said_at_least && now > 0 && now < N && links(ui).get_grab().unknown_count > 0 {
+            assert!(
+                !texts_containing(ui, "500 selected · at least").is_empty(),
+                "{WHAT}: footer while sizes come"
+            );
+            said_at_least = true;
+        }
     }
+    assert!(said_at_least, "{WHAT}: no partial footer seen");
     eprintln!(
         "{WHAT}: sizes arrived in {} steps; longest update_timers_and_animations call {:?} (aim 50 ms)",
         seen.len() - 1,
@@ -2908,6 +2930,14 @@ fn grab_500_links_streams_sizes(ui: &AppWindow, ctx: &Ctx) {
     );
     let last = rows.row_data(N - 1).unwrap();
     assert_eq!(last.size_text.as_str(), "1.5 KB", "{WHAT}: last row");
+    // 1000 + ... + 1499 bytes, all known.
+    wait_until(&format!("{WHAT}: footer total"), || {
+        links(ui).get_grab().unknown_count == 0
+    });
+    assert!(
+        !texts_containing(ui, "500 selected · 625 KB").is_empty(),
+        "{WHAT}: footer total"
+    );
 
     // A new page while the old one's sizes are still coming: only the
     // new page's sizes are shown.
@@ -2998,6 +3028,14 @@ fn batch_copies_become_mirrors(ui: &AppWindow, ctx: &Ctx) {
         "{WHAT}: lines"
     );
     assert_eq!(links(ui).get_batch().add_count, 2, "{WHAT}: two downloads");
+    for (text, kind) in [(first.as_str(), "File"), ("not a link", "Not a link")] {
+        let line = only_with_role(ui, AccessibleRole::ListItem, text, WHAT);
+        assert_eq!(
+            line.accessible_value().map(|v| v.to_string()).as_deref(),
+            Some(kind),
+            "{WHAT}: {text} read as"
+        );
+    }
     only_with_role(ui, AccessibleRole::Switch, "Treat copies as mirrors", WHAT)
         .invoke_accessible_default_action();
     assert!(links(ui).get_batch().mirrors, "{WHAT}: mirrors on");
@@ -3082,6 +3120,112 @@ fn add_page_offers_find_files(ui: &AppWindow, ctx: &Ctx) {
     });
     links(ui).invoke_grab_closed();
     ui.set_adv_page_url("".into());
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// Grabbed files keep the listing's subfolders: `a/x.pdf` and `b/x.pdf`
+/// land in their own folders (of the sort folder). A subfolder whose name
+/// is not safe to create (`c\d`) is named in the footer, and its file
+/// alone is left out. The Subfolders switch reads the link as typed in the
+/// field, not the page read before.
+fn grab_keeps_subfolders(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "grab_keeps_subfolders";
+    let listing = format!("{}/listing/", ctx.server.base_url());
+    ctx.server.serve("twin/a/x.pdf", FileSpec::new(3000));
+    ctx.server.serve("twin/b/x.pdf", FileSpec::new(4000));
+    // Asked for as `c%5Cd/`, which the server reads as `c\d/`.
+    ctx.server.serve("twin/c\\d/y.pdf", FileSpec::new(5000));
+    let index = |title: &str, links: &str| {
+        format!(
+            "<html><head><title>{title}</title></head><body><h1>{title}</h1>{links}</body></html>"
+        )
+    };
+    for (dir, file) in [("a", "x.pdf"), ("b", "x.pdf"), ("c\\d", "y.pdf")] {
+        ctx.server.serve_page(
+            &format!("twin/{dir}/"),
+            200,
+            &[],
+            &index(
+                "Index of a folder",
+                &format!(r#"<a href="{file}">{file}</a>"#),
+            ),
+        );
+    }
+    let twin = ctx.server.serve_page(
+        "twin/",
+        200,
+        &[],
+        &index(
+            "Index of /twin/",
+            r#"<a href="../">Parent</a> <a href="a/">a/</a> <a href="b/">b/</a> <a href="c%5Cd/">c\d/</a>"#,
+        ),
+    );
+    advanced_tall(ui, WHAT);
+    ui.invoke_open_grab(listing.as_str().into());
+    wait_until(&format!("{WHAT}: listing read"), || {
+        let g = links(ui).get_grab();
+        !g.loading && g.count_all == 9
+    });
+    // Typed in the field, not entered: the switch reads it.
+    let field = only_with_role(ui, AccessibleRole::TextInput, "Page link", WHAT);
+    field.set_accessible_value(twin.as_str());
+    assert_eq!(
+        links(ui).get_grab_url_text().as_str(),
+        twin,
+        "{WHAT}: field"
+    );
+    only_with_role(ui, AccessibleRole::Switch, "Subfolders", WHAT)
+        .invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: twin read with subfolders"), || {
+        let g = links(ui).get_grab();
+        !g.loading && g.page_url == twin && g.count_all == 3
+    });
+    let mut rows: Vec<(String, String)> = links(ui)
+        .get_grab_rows()
+        .iter()
+        .map(|r| (r.folder.to_string(), r.name.to_string()))
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            ("/a/".to_string(), "x.pdf".to_string()),
+            ("/b/".to_string(), "x.pdf".to_string()),
+            ("/c\\d/".to_string(), "y.pdf".to_string()),
+        ],
+        "{WHAT}: rows"
+    );
+    only_button(ui, "Select all shown", WHAT).invoke_accessible_default_action();
+    let g = links(ui).get_grab();
+    assert_eq!((g.selected_count, g.unsafe_count), (3, 1), "{WHAT}: {g:?}");
+    assert!(
+        !texts_containing(ui, "1 ticked file is in a folder whose name isn't safe").is_empty(),
+        "{WHAT}: no unsafe note"
+    );
+    let before = ctx.engine.snapshot().len();
+    only_button(ui, "Download 3", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Downloads,
+        "{WHAT}: not on the list"
+    );
+    for (dir, size) in [("a", 3000), ("b", 4000)] {
+        let file = ctx.documents().join(dir).join("x.pdf");
+        wait_until(&format!("{WHAT}: {}", file.display()), || {
+            std::fs::metadata(&file).is_ok_and(|m| m.len() == size)
+                && ctx.engine.snapshot().iter().any(|v| {
+                    v.dest_dir == ctx.documents().join(dir) && v.state == JobState::Completed
+                })
+        });
+    }
+    settle(Duration::from_millis(300));
+    assert_eq!(
+        ctx.engine.snapshot().len(),
+        before + 2,
+        "{WHAT}: jobs added"
+    );
+    assert!(job_named(ctx, "y.pdf").is_none(), "{WHAT}: y.pdf added");
     ui.invoke_setting_changed("advanced".into(), "false".into());
     ui.window().set_size(COMPACT);
 }

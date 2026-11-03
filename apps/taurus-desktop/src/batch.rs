@@ -1,6 +1,6 @@
 //! "Add several links": the pasted text read line by line, each line
 //! sorted by what it links to, and the downloads it makes. Pure: the
-//! screen is in `grab_flow.rs`.
+//! screen is in `batch_flow.rs`.
 
 use std::collections::HashMap;
 use std::path::Path;
