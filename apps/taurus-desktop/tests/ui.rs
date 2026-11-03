@@ -3216,14 +3216,38 @@ fn grab_keeps_subfolders(ui: &AppWindow, ctx: &Ctx) {
         Screen::Downloads,
         "{WHAT}: not on the list"
     );
+    // The engine records `dest_dir` canonicalized (`/private/var/...` on
+    // macOS, long names instead of `RUNNER~1` on Windows): folders are
+    // compared canonicalized on both sides.
+    let same_dir = |a: &std::path::Path, b: &std::path::Path| {
+        matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
+    };
     for (dir, size) in [("a", 3000), ("b", 4000)] {
-        let file = ctx.documents().join(dir).join("x.pdf");
-        wait_until(&format!("{WHAT}: {}", file.display()), || {
-            std::fs::metadata(&file).is_ok_and(|m| m.len() == size)
-                && ctx.engine.snapshot().iter().any(|v| {
-                    v.dest_dir == ctx.documents().join(dir) && v.state == JobState::Completed
-                })
-        });
+        let folder = ctx.documents().join(dir);
+        let file = folder.join("x.pdf");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            slint::platform::update_timers_and_animations();
+            let landed = std::fs::metadata(&file).is_ok_and(|m| m.len() == size);
+            let done = ctx.engine.snapshot().iter().any(|v| {
+                v.url.ends_with(&format!("/twin/{dir}/x.pdf"))
+                    && v.state == JobState::Completed
+                    && same_dir(&v.dest_dir, &folder)
+            });
+            if landed && done {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{WHAT}: {} timed out (file there: {landed}); jobs: {}",
+                file.display(),
+                jobs_dump(ctx)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     settle(Duration::from_millis(300));
     assert_eq!(
@@ -3776,4 +3800,22 @@ fn adv_settings_engines_roll_back(m: &MediaCtx) {
     ui.set_screen(Screen::Downloads);
     ui.invoke_setting_changed("advanced".into(), "false".into());
     ui.window().set_size(COMPACT);
+}
+
+/// Every job's link, folder, name, state and error, for failure messages.
+fn jobs_dump(ctx: &Ctx) -> String {
+    ctx.engine
+        .snapshot()
+        .iter()
+        .map(|v| {
+            format!(
+                "\n  {} -> {} / {} [{:?}] {:?}",
+                v.url,
+                v.dest_dir.display(),
+                v.file_name,
+                v.state,
+                v.error
+            )
+        })
+        .collect()
 }
