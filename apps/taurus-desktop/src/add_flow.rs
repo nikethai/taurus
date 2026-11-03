@@ -141,6 +141,9 @@ impl App {
         self.seq.set(seq);
         let folder = self.settings.borrow().ui.folder.clone();
         *self.pending.borrow_mut() = Some(PendingAdd::new(seq, url.clone()));
+        // A web page: Advanced offers "Find files →" (grab links) for it.
+        let page = crate::batch::line_kind(&url) == crate::batch::LineKind::Page;
+        ui.set_adv_page_url(if page { url.as_str().into() } else { "".into() });
         if let Some(id) = self.engine.find_by_url(&url) {
             let view = self.view.borrow();
             let existing = view.view(id);
@@ -229,6 +232,14 @@ impl App {
         );
         let sorted = p.folder.is_none() && s.ui.sort_by_type && sort_folder(kind).is_some();
         (dest, sorted)
+    }
+
+    /// Where a download of `kind` goes when no folder was picked for it,
+    /// and whether that is a type subfolder (made when missing).
+    pub(crate) fn default_destination(&self, kind: &str) -> (PathBuf, bool) {
+        let s = self.settings.borrow();
+        let dest = destination(None, s.ui.folder.as_deref(), s.ui.sort_by_type, kind);
+        (dest, s.ui.sort_by_type && sort_folder(kind).is_some())
     }
 
     /// "Save to" on the Add screen: the real destination, type subfolder
@@ -325,6 +336,7 @@ impl App {
         let seq = self.seq.get() + 1;
         self.seq.set(seq);
         *self.pending.borrow_mut() = Some(PendingAdd::new(seq, String::new()));
+        ui.set_adv_page_url("".into());
         ui.set_add(AddVm {
             error_kind: kind.as_str().into(),
             ..Default::default()

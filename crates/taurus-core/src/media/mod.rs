@@ -26,10 +26,11 @@ use crate::network::{ProxySetting, proxy_env, ytdlp_proxy_args};
 use crate::tools::{ToolKind, ToolManager};
 
 pub(crate) use errors::{classify_stderr_with, live_from_start_refused, only_thumbnail_refused};
+pub(crate) use inspect::failure_detail;
 pub use inspect::{
-    all_qualities, inspect, parse_info, qualities, single_video_link, standard_quality,
+    all_qualities, fast_path_host, inspect, parse_info, qualities, single_video_link,
+    standard_quality,
 };
-pub(crate) use inspect::{failure_detail, fast_path_host};
 pub use options::{Container, SubtitleChoice, validate_browser};
 pub(crate) use options::{cookie_and_subtitle_args, validate_subtitles};
 pub(crate) use partials::own_partial_files;

@@ -9,7 +9,7 @@ import { Pressable, TextButton } from "../widgets.slint";
 import { ListView } from "std-widgets.slint";
 
 // A check box drawn checked, with a dash, or empty.
-component TriBox inherits Rectangle {
+export component TriBox inherits Rectangle {
     // "all" | "some" | "none"
     in property <string> state;
 

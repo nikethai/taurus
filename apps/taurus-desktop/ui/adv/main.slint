@@ -4,7 +4,7 @@
 import { Theme } from "../theme.slint";
 import { AdvRowVm, TabCountsVm } from "../types.slint";
 import { ListView } from "std-widgets.slint";
-import { IconButton, Pressable } from "../widgets.slint";
+import { IconButton, Pressable, TextButton } from "../widgets.slint";
 import { LinkField } from "../welcome.slint";
 import { AdvRow } from "row.slint";
 
@@ -145,6 +145,9 @@ export component AdvCompact inherits Rectangle {
     callback tab-changed(int);
     callback select(int);
     callback link-entered(string);
+    // The "+" panel's other ways to add: several links, links of a page.
+    callback open-batch();
+    callback open-grab();
     callback open-settings();
     callback pause(int);
     callback resume(int);
@@ -191,9 +194,10 @@ export component AdvCompact inherits Rectangle {
             }
         }
 
-        if root.pasting: HorizontalLayout {
+        if root.pasting: VerticalLayout {
             padding-left: 16px;
             padding-right: 16px;
+            spacing: 6px;
             LinkField {
                 field-height: 44px;
                 init => {
@@ -202,6 +206,28 @@ export component AdvCompact inherits Rectangle {
                 entered(link) => {
                     root.pasting = false;
                     root.link-entered(link);
+                }
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                TextButton {
+                    text: @tr("Several links…");
+                    kind: "quiet";
+                    clicked => {
+                        root.pasting = false;
+                        root.open-batch();
+                    }
+                }
+                TextButton {
+                    text: @tr("Grab links from a page…");
+                    kind: "quiet";
+                    clicked => {
+                        root.pasting = false;
+                        root.open-grab();
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
                 }
             }
         }

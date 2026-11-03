@@ -1,0 +1,332 @@
+// Grab links (CompactGrab): the files a web page or folder listing links
+// to, sorted into type chips, filtered by extension, with their sizes as
+// they are probed, and "Download N" for the ticked ones.
+import { Theme } from "../theme.slint";
+import { GrabVm, GrabRowVm } from "../types.slint";
+import { Messages } from "../messages.slint";
+import { IconButton, TextButton, KindBadge, LoadingDots, Pressable, Toggle } from "../widgets.slint";
+import { LineEdit, ListView } from "std-widgets.slint";
+import { TriBox } from "torrent.slint";
+import { LinksUi } from "links.slint";
+
+// A type chip with its count, in its kind's colors.
+component Chip inherits Pressable {
+    in property <string> text;
+    in property <int> count;
+    in property <bool> selected;
+    // KindBadge kind for the colors; "" = the accent.
+    in property <string> kind;
+
+    height: 28px;
+    border-radius: 14px;
+    background: selected ? (kind == "" ? Theme.accent-soft : Theme.kind-bg(kind))
+        : root.hovered ? Theme.track : Theme.chip;
+    accessible-role: tab;
+    accessible-label: text;
+    accessible-value: count;
+    accessible-item-selectable: true;
+    accessible-item-selected: selected;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 5px;
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: 12px;
+            font-weight: root.selected ? 600 : 400;
+            color: root.selected ? (root.kind == "" ? Theme.accent-strong : Theme.kind-fg(root.kind)) : Theme.text;
+            accessible-role: none;
+        }
+        Text {
+            text: root.count;
+            vertical-alignment: center;
+            font-size: 11px;
+            font-weight: 600;
+            color: root.kind == "" ? Theme.accent-strong : Theme.kind-fg(root.kind);
+            accessible-role: none;
+        }
+    }
+}
+
+component GrabRow inherits Pressable {
+    in property <GrabRowVm> item;
+
+    height: 44px;
+    accessible-role: checkbox;
+    accessible-label: item.name;
+    accessible-checkable: true;
+    accessible-checked: item.selected;
+    accessible-value: item.size-text;
+
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 8px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            TriBox {
+                state: root.item.selected ? "all" : "none";
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            KindBadge {
+                kind: root.item.kind;
+                size: 28px;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.name;
+                overflow: elide;
+                font-size: 13px;
+                color: Theme.text;
+                accessible-role: none;
+            }
+            if root.item.folder != "/": Text {
+                text: root.item.folder;
+                overflow: elide;
+                font-size: 11px;
+                color: Theme.muted;
+                accessible-role: none;
+            }
+        }
+        Text {
+            text: !root.item.probed ? "" : root.item.size-text != "" ? root.item.size-text : @tr("Size unknown");
+            vertical-alignment: center;
+            font-size: 12px;
+            color: Theme.muted;
+            accessible-role: none;
+        }
+    }
+}
+
+// Shows `LinksUi.grab` and asks the app through `LinksUi`.
+export component AdvGrab inherits Rectangle {
+    callback back();
+
+    property <GrabVm> vm: LinksUi.grab;
+
+    property <bool> listed: !vm.loading && vm.error-kind == "" && vm.page-url != "";
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding: 14px;
+            padding-left: 20px;
+            spacing: 8px;
+            IconButton {
+                icon: "back";
+                label: @tr("Back");
+                clicked => {
+                    root.back();
+                }
+            }
+            Text {
+                text: @tr("Grab links");
+                vertical-alignment: center;
+                font-size: 20px;
+                font-weight: 700;
+                color: Theme.text;
+            }
+        }
+
+        VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            spacing: 10px;
+            vertical-stretch: 1;
+
+            HorizontalLayout {
+                spacing: 8px;
+                url := LineEdit {
+                    horizontal-stretch: 1;
+                    text: root.vm.page-url;
+                    placeholder-text: @tr("Link to a web page or folder listing");
+                    accessible-label: @tr("Page link");
+                    accepted(t) => {
+                        LinksUi.grab-page(t);
+                    }
+                }
+                TextButton {
+                    text: @tr("Find files");
+                    enabled: url.text != "" && !root.vm.loading;
+                    clicked => {
+                        LinksUi.grab-page(url.text);
+                    }
+                }
+            }
+
+            Toggle {
+                label: @tr("Subfolders");
+                hint: @tr("Also look one level into the folders of a listing");
+                checked: root.vm.subfolders;
+                clicked => {
+                    LinksUi.grab-option("subfolders", root.vm.subfolders ? "false" : "true");
+                }
+            }
+
+            if root.vm.loading: VerticalLayout {
+                padding-top: 32px;
+                spacing: 16px;
+                LoadingDots { }
+                Text {
+                    text: @tr("Reading the page…");
+                    horizontal-alignment: center;
+                    font-size: 14px;
+                    color: Theme.muted;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+            }
+
+            if !root.vm.loading && root.vm.error-kind != "": Text {
+                text: root.vm.error-kind == "site_not_supported" ? @tr("This link isn't a web page, so it has no links to find.") : Messages.simple(root.vm.error-kind);
+                wrap: word-wrap;
+                font-size: 14px;
+                color: Theme.err;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+
+            if root.listed: HorizontalLayout {
+                spacing: 6px;
+                accessible-role: tab-list;
+                Chip {
+                    text: @tr("All");
+                    count: root.vm.count-all;
+                    selected: root.vm.chip == "all";
+                    clicked => {
+                        LinksUi.grab-option("chip", "all");
+                    }
+                }
+                Chip {
+                    text: @tr("Video");
+                    kind: "media";
+                    count: root.vm.count-video;
+                    selected: root.vm.chip == "video";
+                    clicked => {
+                        LinksUi.grab-option("chip", "video");
+                    }
+                }
+                Chip {
+                    text: @tr("Docs");
+                    kind: "file";
+                    count: root.vm.count-docs;
+                    selected: root.vm.chip == "docs";
+                    clicked => {
+                        LinksUi.grab-option("chip", "docs");
+                    }
+                }
+                Chip {
+                    text: @tr("Archives");
+                    kind: "archive";
+                    count: root.vm.count-archives;
+                    selected: root.vm.chip == "archives";
+                    clicked => {
+                        LinksUi.grab-option("chip", "archives");
+                    }
+                }
+                Chip {
+                    text: @tr("Images");
+                    kind: "image";
+                    count: root.vm.count-images;
+                    selected: root.vm.chip == "images";
+                    clicked => {
+                        LinksUi.grab-option("chip", "images");
+                    }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+            }
+
+            if root.listed: HorizontalLayout {
+                spacing: 8px;
+                LineEdit {
+                    horizontal-stretch: 1;
+                    text: root.vm.ext-filter;
+                    placeholder-text: @tr("Extensions, like pdf zip");
+                    accessible-label: @tr("Filter by extension");
+                    edited(t) => {
+                        LinksUi.grab-option("ext", t);
+                    }
+                }
+                TextButton {
+                    text: root.vm.all-shown-selected && root.vm.shown-count > 0 ? @tr("Clear shown") : @tr("Select all shown");
+                    kind: "quiet";
+                    enabled: root.vm.shown-count > 0;
+                    clicked => {
+                        LinksUi.grab-select-shown();
+                    }
+                }
+            }
+
+            if root.listed && root.vm.truncated: Text {
+                text: @tr("This page links to more files than can be listed; only the first ones are shown.");
+                wrap: word-wrap;
+                font-size: 12px;
+                color: Theme.muted;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+
+            if root.listed: Rectangle {
+                vertical-stretch: 1;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: Theme.line;
+                ListView {
+                    for r in LinksUi.grab-rows: GrabRow {
+                        item: r;
+                        clicked => {
+                            LinksUi.grab-toggle(r.index);
+                        }
+                    }
+                }
+                if LinksUi.grab-rows.length == 0: Text {
+                    x: 16px;
+                    width: parent.width - 32px;
+                    text: root.vm.count-all == 0 ? @tr("No files found on this page.") : @tr("No files match.");
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    font-size: 13px;
+                    color: Theme.muted;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+            }
+
+            if !root.listed: Rectangle {
+                vertical-stretch: 1;
+            }
+        }
+
+        HorizontalLayout {
+            padding: 20px;
+            padding-top: 10px;
+            spacing: 10px;
+            Text {
+                text: root.listed ? @tr("{n} selected · {0}" | "{n} selected · {0}" % root.vm.selected-count, root.vm.selected-size) : "";
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                font-size: 12px;
+                color: Theme.muted;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+            TextButton {
+                text: @tr("Download {n}" | "Download {n}" % root.vm.selected-count);
+                kind: "primary";
+                enabled: root.listed && root.vm.selected-count > 0;
+                clicked => {
+                    LinksUi.grab-download();
+                }
+            }
+        }
+    }
+}

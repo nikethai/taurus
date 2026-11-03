@@ -51,6 +51,9 @@ pub struct FileSpec {
     /// `Authorization` answers 401 with `WWW-Authenticate: Basic
     /// realm="test"` (checked before anything else).
     pub basic_auth: Option<(String, String)>,
+    /// Every request waits this long before it is answered at all
+    /// (headers too), like a slow server.
+    pub delay: Option<std::time::Duration>,
 }
 
 impl FileSpec {
@@ -72,6 +75,7 @@ impl FileSpec {
             fail_after: None,
             extra_headers: Vec::new(),
             basic_auth: None,
+            delay: None,
         }
     }
 }

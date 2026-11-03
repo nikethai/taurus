@@ -8,7 +8,8 @@
 //! `slint::platform::update_timers_and_animations()`.
 //!
 //! The add flow lives in `add_flow.rs` (video links in `media_add.rs`,
-//! Advanced mode's Add screen in `adv_add.rs`),
+//! Advanced mode's Add screen in `adv_add.rs`, its Grab links and Add
+//! several links screens in `grab_flow.rs`),
 //! the Settings screen in `settings_flow.rs`, applying engine state to the
 //! window in `pump.rs`.
 
@@ -22,13 +23,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use slint::{CloseRequestResponse, ComponentHandle, SharedPixelBuffer, Timer, TimerMode};
-use taurus_core::{CoreError, Engine, ErrorKind, JobId, JobState, LinkInfo, RemoveFiles, Settings};
+use taurus_core::{
+    CoreError, Engine, ErrorKind, GrabResult, JobId, JobState, LinkInfo, RemoveFiles, Settings,
+};
 
 use crate::add_flow::PendingAdd;
 use crate::adv_add::AdvAddState;
 use crate::adv_flow::AdvFlow;
 use crate::adv_view::AdvState;
 use crate::bridge::{self, Coalescer};
+use crate::grab_flow::GrabState;
 use crate::links::ClipboardFilter;
 use crate::pump::ViewState;
 use crate::settings_flow::SettingsWriter;
@@ -93,6 +97,11 @@ pub(crate) enum UiMsg {
         seq: u64,
         result: Result<(), CoreError>,
     },
+    /// `Engine::grab` answered the grab with this run number.
+    Grabbed {
+        run: u64,
+        result: Box<Result<GrabResult, ErrorKind>>,
+    },
 }
 
 /// Hands links and clipboard text to the app from any thread.
@@ -143,6 +152,8 @@ pub struct App {
     pub(crate) flow: AdvFlow,
     /// Advanced mode's Add screen and file picker (`adv_add.rs`).
     pub(crate) adv_add: AdvAddState,
+    /// Advanced mode's Grab links and Add several links (`grab_flow.rs`).
+    pub(crate) grab: GrabState,
     coalescer: Arc<Mutex<Coalescer>>,
     pub(crate) writer: SettingsWriter,
     /// Mirrors `settings.ui.offer_copied_links` for the clipboard thread.
@@ -199,6 +210,7 @@ impl App {
             adv: RefCell::new(AdvState::default()),
             flow: AdvFlow::default(),
             adv_add: AdvAddState::default(),
+            grab: GrabState::default(),
             coalescer: coalescer.clone(),
             writer,
             offer_links,
@@ -213,6 +225,7 @@ impl App {
         window.set_is_macos(cfg!(target_os = "macos"));
         app.view.borrow().install(window);
         app.adv.borrow().install(window);
+        app.grab.install(window);
         app.push_settings();
         let screen = if app.engine.snapshot().is_empty() {
             crate::Screen::Welcome
@@ -290,8 +303,22 @@ impl App {
             .adv_toggle_group(&folder));
         on!(ui, self, on_adv_add_confirmed, |a, start_now| a
             .adv_add_confirmed(start_now));
-        // open-batch, open-whendone and open-grab: their screens come in
-        // later M6b tasks; until then they are left unconnected.
+        on!(ui, self, on_open_grab, |a, url| a.open_grab(&url));
+        on!(ui, self, on_open_batch, |a| a.open_batch());
+        let links = ui.global::<crate::LinksUi>();
+        on!(links, self, on_grab_page, |a, url| a.grab_page(&url));
+        on!(links, self, on_grab_option, |a, key, value| a
+            .grab_option(&key, &value));
+        on!(links, self, on_grab_toggle, |a, index| a.grab_toggle(index));
+        on!(links, self, on_grab_select_shown, |a| a.grab_select_shown());
+        on!(links, self, on_grab_download, |a| a.grab_download());
+        on!(links, self, on_grab_closed, |a| a.grab_closed());
+        on!(links, self, on_batch_edited, |a, text| a
+            .batch_edited(&text));
+        on!(links, self, on_batch_mirrors, |a, on| a.batch_mirrors(on));
+        on!(links, self, on_batch_add, |a| a.batch_add());
+        // open-whendone: its menu comes in a later M6b task; until then it
+        // is left unconnected.
 
         let weak = Rc::downgrade(self);
         ui.window().on_close_requested(move || {
@@ -431,8 +458,9 @@ impl App {
         });
     }
 
-    /// One refresh: messages first, then engine state when due.
+    /// One refresh: grabbed sizes, messages, then engine state when due.
     fn tick(&self) {
+        self.grab_sizes();
         while let Ok(msg) = self.rx.try_recv() {
             self.handle(msg);
             if self.quitting.get() {
@@ -458,6 +486,7 @@ impl App {
             UiMsg::SignedIn { id, result } => self.signed_in(id, result),
             UiMsg::OverridesRefused(id) => self.overrides_refused(id),
             UiMsg::AdvAdded { seq, result } => self.adv_added(seq, result),
+            UiMsg::Grabbed { run, result } => self.grabbed(run, *result),
         }
     }
 

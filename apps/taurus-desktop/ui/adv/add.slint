@@ -228,6 +228,10 @@ export component AdvAdd inherits Rectangle {
     callback cancelled();
     callback show-list();
     callback choose-folder();
+    // The link is a web page ("" otherwise): "Find files →" finds the
+    // files it links to (grab links) while it is looked at or failed.
+    in property <string> page-url;
+    callback find-files(string);
 
     property <bool> failed: !vm.loading && vm.error-kind != "";
     property <bool> shown: !vm.loading && !failed;
@@ -287,6 +291,33 @@ export component AdvAdd inherits Rectangle {
                             color: Theme.muted;
                             accessible-role: text;
                             accessible-label: self.text;
+                        }
+                    }
+                }
+
+                if root.page-url != "" && !root.shown: Rectangle {
+                    background: Theme.accent-soft;
+                    border-radius: 12px;
+                    HorizontalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+                        Text {
+                            text: @tr("This looks like a web page. Find the files it links to?");
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                            font-size: 13px;
+                            color: Theme.text;
+                            accessible-role: text;
+                            accessible-label: self.text;
+                        }
+                        TextButton {
+                            text: @tr("Find files →");
+                            kind: "primary";
+                            clicked => {
+                                root.password = "";
+                                root.find-files(root.page-url);
+                            }
                         }
                     }
                 }

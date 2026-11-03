@@ -45,7 +45,7 @@ export struct SummaryVm {
     all-paused: bool,
 }
 
-export enum Screen { welcome, downloads, add, settings }
+export enum Screen { welcome, downloads, add, settings, grab, batch }
 
 // The Add screen: what the pasted link turned out to be.
 export struct AddVm {
@@ -328,4 +328,60 @@ export struct FilesDialogVm {
     free-text: string,
     short-of-space: bool,
     chosen: [int],
+}
+
+// Grab links: one link of the page. index: into the grab's links;
+// folder "/" (the page) or "/sub/" (a subfolder of a listing); kind: the
+// KindBadge kind; size-text "" until its size probe answered (`probed`),
+// and "" too when the server told no size.
+export struct GrabRowVm {
+    index: int,
+    name: string,
+    folder: string,
+    kind: string,
+    size-text: string,
+    probed: bool,
+    selected: bool,
+}
+
+// Grab links. error-kind: ErrorKind::as_str() of a failed grab; chip
+// "all" | "video" | "docs" | "archives" | "images"; ext-filter: as typed;
+// counts: links of each chip on the whole page; shown-count: rows shown
+// now (chip and extension); selected-size: the known sizes of the
+// selected links, formatted; truncated: links were left out (more than
+// the grab returns).
+export struct GrabVm {
+    page-url: string,
+    loading: bool,
+    error-kind: string,
+    subfolders: bool,
+    chip: string,
+    ext-filter: string,
+    count-all: int,
+    count-video: int,
+    count-docs: int,
+    count-archives: int,
+    count-images: int,
+    shown-count: int,
+    selected-count: int,
+    selected-size: string,
+    all-shown-selected: bool,
+    truncated: bool,
+}
+
+// Several links: one line that holds something. n: its line number;
+// kind "http" | "torrent" | "media" | "page" | "invalid"; mirror-of: the
+// line number of the line it is a copy of, 0 for none.
+export struct BatchLineVm {
+    n: int,
+    text: string,
+    kind: string,
+    mirror-of: int,
+}
+
+// Several links: add-count: downloads "Add" makes; mirrors: "Treat
+// copies as mirrors" is on.
+export struct BatchVm {
+    add-count: int,
+    mirrors: bool,
 }

@@ -4,7 +4,7 @@
 import { Theme } from "../theme.slint";
 import { AdvRowVm, FilterCountVm } from "../types.slint";
 import { LineEdit } from "std-widgets.slint";
-import { IconButton } from "../widgets.slint";
+import { IconButton, TextButton } from "../widgets.slint";
 import { LinkField } from "../welcome.slint";
 import { AdvList, SpeedFooter } from "main.slint";
 import { Sidebar } from "sidebar.slint";
@@ -21,6 +21,9 @@ export component AdvWide inherits Rectangle {
     callback search-changed(string);
     callback select(int);
     callback link-entered(string);
+    // The "+" panel's other ways to add: several links, links of a page.
+    callback open-batch();
+    callback open-grab();
     callback open-settings();
     callback pause(int);
     callback resume(int);
@@ -75,9 +78,10 @@ export component AdvWide inherits Rectangle {
                     }
                 }
             }
-            if root.pasting: HorizontalLayout {
+            if root.pasting: VerticalLayout {
                 padding-left: 16px;
                 padding-right: 16px;
+                spacing: 6px;
                 LinkField {
                     field-height: 44px;
                     init => {
@@ -86,6 +90,28 @@ export component AdvWide inherits Rectangle {
                     entered(link) => {
                         root.pasting = false;
                         root.link-entered(link);
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    TextButton {
+                        text: @tr("Several links…");
+                        kind: "quiet";
+                        clicked => {
+                            root.pasting = false;
+                            root.open-batch();
+                        }
+                    }
+                    TextButton {
+                        text: @tr("Grab links from a page…");
+                        kind: "quiet";
+                        clicked => {
+                            root.pasting = false;
+                            root.open-grab();
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
                     }
                 }
             }

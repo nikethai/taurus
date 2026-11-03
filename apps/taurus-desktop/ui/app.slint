@@ -5,7 +5,11 @@ import {
     AdvRowVm, FilterCountVm, TabCountsVm,
     DetailVm, FileRowVm, StepVm, StatVm, RemoveDialogVm, PasswordDialogVm,
     QualityVm, LangVm, TorrentFileVm, AdvAddVm, FilesDialogVm,
+    GrabRowVm, GrabVm, BatchLineVm, BatchVm,
 } from "types.slint";
+import { AdvGrab } from "adv/grab.slint";
+import { AdvBatch } from "adv/batch.slint";
+import { LinksUi } from "adv/links.slint";
 import { AdvAdd } from "adv/add.slint";
 import { FilesDialog } from "adv/torrent.slint";
 import { AdvCompact } from "adv/main.slint";
@@ -19,12 +23,13 @@ import { Settings } from "settings.slint";
 import { Banner } from "banner.slint";
 import { Countdown } from "countdown.slint";
 
-export { Theme, Messages }
+export { Theme, Messages, LinksUi }
 export {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
     AdvRowVm, FilterCountVm, TabCountsVm,
     DetailVm, FileRowVm, StepVm, StatVm, RemoveDialogVm, PasswordDialogVm,
     QualityVm, LangVm, TorrentFileVm, AdvAddVm, FilesDialogVm,
+    GrabRowVm, GrabVm, BatchLineVm, BatchVm,
 } from "types.slint";
 
 // Navigation: the UI itself moves between Welcome, Downloads and Settings,
@@ -137,10 +142,15 @@ export component AppWindow inherits Window {
     callback files-chosen(int, [int]);
     // field "ratio" | "seed-time"; value "default" | "never" | a number
     callback set-override(int, string, string);
-    // Several links, the when-done menu and grab links: later screens.
+    // Several links (Screen.batch) and grab links (Screen.grab, with the
+    // page's link, "" for none yet): the app opens them; the screens talk
+    // to it through `LinksUi`. The when-done menu: a later screen.
     callback open-batch();
     callback open-whendone();
     callback open-grab(string);
+    // The Add screen: the link is a web page ("" otherwise); "Find files →"
+    // opens grab links with it.
+    in property <string> adv-page-url;
     // The Advanced Add screen. The app opens it like Add (Screen.add)
     // and fills `adv-add`. `adv-password`: what is typed in its password
     // field, emptied by the app as soon as it is handed to the engine.
@@ -237,6 +247,12 @@ export component AppWindow inherits Window {
                         link-entered(link) => {
                             root.link-entered(link);
                         }
+                        open-batch => {
+                            root.open-batch();
+                        }
+                        open-grab => {
+                            root.open-grab("");
+                        }
                         open-settings => {
                             root.screen = Screen.settings;
                         }
@@ -277,6 +293,12 @@ export component AppWindow inherits Window {
                             }
                             link-entered(link) => {
                                 root.link-entered(link);
+                            }
+                            open-batch => {
+                                root.open-batch();
+                            }
+                            open-grab => {
+                                root.open-grab("");
                             }
                             open-settings => {
                                 root.screen = Screen.settings;
@@ -438,6 +460,11 @@ export component AppWindow inherits Window {
 
                 if root.screen == Screen.add && root.layout != "simple": AdvAdd {
                     vm: root.adv-add;
+                    page-url: root.adv-page-url;
+                    find-files(url) => {
+                        root.adv-password = "";
+                        root.open-grab(url);
+                    }
                     is-macos: root.is-macos;
                     tools-banner: root.tools-banner;
                     password <=> root.adv-password;
@@ -466,6 +493,22 @@ export component AppWindow inherits Window {
                     }
                     choose-folder => {
                         root.choose-folder();
+                    }
+                }
+
+                if root.screen == Screen.grab: AdvGrab {
+                    back => {
+                        LinksUi.grab-closed();
+                        root.home();
+                    }
+                }
+
+                if root.screen == Screen.batch: AdvBatch {
+                    find-files(url) => {
+                        root.open-grab(url);
+                    }
+                    back => {
+                        root.home();
                     }
                 }
 

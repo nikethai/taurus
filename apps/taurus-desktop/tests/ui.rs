@@ -21,7 +21,7 @@ use taurus_core::{
 };
 use taurus_desktop::app::App;
 use taurus_desktop::shell_text::simple_message;
-use taurus_desktop::{AppWindow, BannerVm, Messages, RowVm, Screen, SettingsVm, Theme};
+use taurus_desktop::{AppWindow, BannerVm, LinksUi, Messages, RowVm, Screen, SettingsVm, Theme};
 use taurus_testkit::{
     FailAfter, FakeToolHost, FileSpec, TestServer, ToolRelease, TorrentSeeder, process_args_log,
     set_ytdlp_scenario, unique_version,
@@ -64,6 +64,11 @@ fn ui_smoke() {
     password_cleared_after_submit(&ui, &ctx);
     wide_switch_keeps_selection(&ui, &ctx, adv);
     adv_add_file_mirrors_checksum(&ui, &ctx);
+    grab_listing_chip_counts(&ui, &ctx);
+    grab_download_adds_three(&ui, &ctx);
+    grab_500_links_streams_sizes(&ui, &ctx);
+    batch_copies_become_mirrors(&ui, &ctx);
+    add_page_offers_find_files(&ui, &ctx);
     torrent_detail_files_and_overrides();
     adv_add_torrent_picker();
     quit_shuts_down_engine_cleanly(&ui, &ctx);
@@ -2616,4 +2621,467 @@ fn adv_add_torrent_picker() {
     });
     ctx.shutdown(WHAT);
     drop(seeder);
+}
+
+/// The Grab links and Add several links screens' global.
+fn links(ui: &AppWindow) -> LinksUi<'_> {
+    ui.global::<LinksUi>()
+}
+
+/// A folder listing ("Index of /listing/") on the test server, with one
+/// subfolder; returns the page's link. Nine files on the page (2 videos,
+/// 3 documents, 1 archive, 2 images, 1 program) and a disc image in the
+/// subfolder.
+fn serve_listing(ctx: &Ctx) -> String {
+    const FILES: [(&str, usize); 9] = [
+        ("a.mp4", 2000),
+        ("b.mkv", 3000),
+        ("c.pdf", 4000),
+        ("d.txt", 500),
+        ("e.docx", 6000),
+        ("f.zip", 7000),
+        ("g.png", 800),
+        ("h.jpg", 900),
+        ("i.exe", 10_000),
+    ];
+    let mut links = String::from(r#"<a href="../">Parent Directory</a> <a href="sub/">sub/</a> "#);
+    for (name, size) in FILES {
+        ctx.server
+            .serve(&format!("listing/{name}"), FileSpec::new(size));
+        links.push_str(&format!(r#"<a href="{name}">{name}</a> "#));
+    }
+    ctx.server.serve("listing/sub/j.iso", FileSpec::new(1200));
+    let page = |title: &str, links: &str| {
+        format!(
+            "<html><head><title>{title}</title></head><body><h1>{title}</h1>{links}</body></html>"
+        )
+    };
+    ctx.server.serve_page(
+        "listing/sub/",
+        200,
+        &[],
+        &page(
+            "Index of /listing/sub/",
+            r#"<a href="../">Parent Directory</a> <a href="j.iso">j.iso</a>"#,
+        ),
+    );
+    ctx.server
+        .serve_page("listing/", 200, &[], &page("Index of /listing/", &links))
+}
+
+/// The grab rows' names, in order.
+fn grab_names(ui: &AppWindow) -> Vec<String> {
+    links(ui)
+        .get_grab_rows()
+        .iter()
+        .map(|r| r.name.to_string())
+        .collect()
+}
+
+/// Advanced on, in a window tall enough that every element is in view.
+fn advanced_tall(ui: &AppWindow, what: &str) {
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    assert_eq!(ui.get_layout().as_str(), "compact", "{what}: Advanced");
+}
+
+/// Grab links opened from the "+" panel: a folder listing's links are
+/// counted by type chip, the Subfolders switch reads it again with its
+/// subfolder, and a chip and an extension filter narrow the list.
+fn grab_listing_chip_counts(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "grab_listing_chip_counts";
+    let url = serve_listing(ctx);
+    advanced_tall(ui, WHAT);
+    only_button(ui, "Add a download", WHAT).invoke_accessible_default_action();
+    only_button(ui, "Grab links from a page…", WHAT).invoke_accessible_default_action();
+    assert_eq!(ui.get_screen(), Screen::Grab, "{WHAT}: not on Grab");
+    assert_eq!(
+        links(ui).get_grab().page_url.as_str(),
+        "",
+        "{WHAT}: no page yet"
+    );
+
+    links(ui).invoke_grab_page(url.as_str().into());
+    wait_until(&format!("{WHAT}: page listed"), || {
+        let g = links(ui).get_grab();
+        !g.loading && g.count_all == 9
+    });
+    let g = links(ui).get_grab();
+    assert_eq!(g.error_kind.as_str(), "", "{WHAT}: {g:?}");
+    let chip_counts = |what: &str| {
+        let counts: Vec<(String, String)> = ["All", "Video", "Docs", "Archives", "Images"]
+            .iter()
+            .map(|label| {
+                let chip = only_with_role(ui, AccessibleRole::Tab, label, what);
+                let value = chip
+                    .accessible_value()
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                (label.to_string(), value)
+            })
+            .collect();
+        counts
+    };
+    let expect = |all: u32, archives: u32| -> Vec<(String, String)> {
+        [
+            ("All", all),
+            ("Video", 2),
+            ("Docs", 3),
+            ("Archives", archives),
+            ("Images", 2),
+        ]
+        .iter()
+        .map(|(l, n)| (l.to_string(), n.to_string()))
+        .collect()
+    };
+    assert_eq!(chip_counts(WHAT), expect(9, 1), "{WHAT}: chips");
+    assert_eq!(grab_names(ui).len(), 9, "{WHAT}: rows");
+
+    let switch = only_with_role(ui, AccessibleRole::Switch, "Subfolders", WHAT);
+    switch.invoke_accessible_default_action();
+    assert!(links(ui).get_grab().subfolders, "{WHAT}: Subfolders on");
+    wait_until(&format!("{WHAT}: subfolder read"), || {
+        let g = links(ui).get_grab();
+        !g.loading && g.count_all == 10
+    });
+    assert_eq!(chip_counts(WHAT), expect(10, 2), "{WHAT}: chips with sub/");
+    let iso = links(ui)
+        .get_grab_rows()
+        .iter()
+        .find(|r| r.name == "j.iso")
+        .unwrap_or_else(|| panic!("{WHAT}: no j.iso"));
+    assert_eq!(iso.folder.as_str(), "/sub/", "{WHAT}: folder");
+
+    only_with_role(ui, AccessibleRole::Tab, "Docs", WHAT).invoke_accessible_default_action();
+    assert_eq!(grab_names(ui), ["c.pdf", "d.txt", "e.docx"], "{WHAT}: Docs");
+    links(ui).invoke_grab_option("ext".into(), ".PDF zip".into());
+    assert_eq!(grab_names(ui), ["c.pdf"], "{WHAT}: Docs + pdf");
+    only_with_role(ui, AccessibleRole::Tab, "All", WHAT).invoke_accessible_default_action();
+    assert_eq!(grab_names(ui), ["c.pdf", "f.zip"], "{WHAT}: All + pdf zip");
+    links(ui).invoke_grab_option("ext".into(), "".into());
+    assert_eq!(grab_names(ui).len(), 10, "{WHAT}: no filter");
+
+    only_button(ui, "Back", WHAT).invoke_accessible_default_action();
+    assert_ne!(ui.get_screen(), Screen::Grab, "{WHAT}: still on Grab");
+    assert_eq!(
+        links(ui).get_grab_rows().row_count(),
+        0,
+        "{WHAT}: rows kept"
+    );
+}
+
+/// "Download 3" with three links ticked through the list adds three web
+/// downloads, which finish.
+fn grab_download_adds_three(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "grab_download_adds_three";
+    let url = format!("{}/listing/", ctx.server.base_url());
+    let before = ctx.engine.snapshot().len();
+    advanced_tall(ui, WHAT);
+    ui.invoke_open_grab(url.as_str().into());
+    assert_eq!(ui.get_screen(), Screen::Grab, "{WHAT}: not on Grab");
+    wait_until(&format!("{WHAT}: page listed"), || {
+        let g = links(ui).get_grab();
+        !g.loading && g.count_all == 9
+    });
+    for name in ["a.mp4", "c.pdf", "f.zip"] {
+        only_with_role(ui, AccessibleRole::Checkbox, name, WHAT).invoke_accessible_default_action();
+    }
+    let g = links(ui).get_grab();
+    assert_eq!(g.selected_count, 3, "{WHAT}: {g:?}");
+    let ticked: Vec<String> = links(ui)
+        .get_grab_rows()
+        .iter()
+        .filter(|r| r.selected)
+        .map(|r| r.name.to_string())
+        .collect();
+    assert_eq!(ticked, ["a.mp4", "c.pdf", "f.zip"], "{WHAT}: ticked rows");
+    // The footer counts the sizes once they are known (2000 + 4000 + 7000).
+    wait_until(&format!("{WHAT}: selected size"), || {
+        links(ui).get_grab().selected_size == "13 KB"
+    });
+    only_button(ui, "Download 3", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Downloads,
+        "{WHAT}: not on the list"
+    );
+    for name in ["a.mp4", "c.pdf", "f.zip"] {
+        wait_until(&format!("{WHAT}: {name} finished"), || {
+            job_named(ctx, name).is_some_and(|v| v.state == JobState::Completed)
+        });
+    }
+    assert_eq!(
+        ctx.engine.snapshot().len(),
+        before + 3,
+        "{WHAT}: jobs added"
+    );
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// Review Focus 4 (ruling R8): a page of 500 links lists all 500 rows
+/// before any size is known; the sizes (each probe answered slowly) then
+/// fill in over many later ticks, row by row, and no call to
+/// `update_timers_and_animations` takes more than 200 ms (50 ms is the
+/// aim; the longest is logged). Another page read while sizes are still
+/// coming gets none of the old page's sizes.
+fn grab_500_links_streams_sizes(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "grab_500_links_streams_sizes";
+    const N: usize = 500;
+    let mut anchors = String::new();
+    for i in 0..N {
+        let mut spec = FileSpec::new(1000 + i);
+        spec.delay = Some(Duration::from_millis(15));
+        ctx.server.serve(&format!("g500/f{i:03}.bin"), spec);
+        anchors.push_str(&format!(r#"<a href="f{i:03}.bin">f{i:03}.bin</a>"#));
+    }
+    let url = ctx.server.serve_page(
+        "g500/page.html",
+        200,
+        &[],
+        &format!("<html><body>{anchors}</body></html>"),
+    );
+    advanced_tall(ui, WHAT);
+    ui.invoke_open_grab(url.as_str().into());
+
+    let longest = std::cell::Cell::new(Duration::ZERO);
+    let tick = || {
+        let start = Instant::now();
+        slint::platform::update_timers_and_animations();
+        longest.set(longest.get().max(start.elapsed()));
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let probed = |ui: &AppWindow| {
+        links(ui)
+            .get_grab_rows()
+            .iter()
+            .filter(|r| r.probed)
+            .count()
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while links(ui).get_grab_rows().row_count() < N {
+        assert!(Instant::now() < deadline, "{WHAT}: rows never listed");
+        tick();
+    }
+    let rows = links(ui).get_grab_rows();
+    assert_eq!(rows.row_count(), N, "{WHAT}: rows");
+    assert!(
+        rows.iter().all(|r| !r.probed && r.size_text.is_empty()),
+        "{WHAT}: a size arrived with the rows"
+    );
+    assert!(!links(ui).get_grab().truncated, "{WHAT}: truncated");
+
+    // Sizes fill in over many ticks.
+    let mut seen = vec![0usize];
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while *seen.last().unwrap() < N {
+        assert!(
+            Instant::now() < deadline,
+            "{WHAT}: only {} of {N} sizes",
+            seen.last().unwrap()
+        );
+        tick();
+        let now = probed(ui);
+        if now != *seen.last().unwrap() {
+            seen.push(now);
+        }
+    }
+    eprintln!(
+        "{WHAT}: sizes arrived in {} steps; longest update_timers_and_animations call {:?} (aim 50 ms)",
+        seen.len() - 1,
+        longest.get()
+    );
+    assert!(seen.len() > 4, "{WHAT}: sizes arrived in {seen:?}");
+    assert!(
+        longest.get() <= Duration::from_millis(200),
+        "{WHAT}: a timer call took {:?}",
+        longest.get()
+    );
+    let rows = links(ui).get_grab_rows();
+    assert_eq!(rows.row_count(), N, "{WHAT}: rows rebuilt");
+    let first = rows.row_data(0).unwrap();
+    assert_eq!(
+        (first.name.as_str(), first.size_text.as_str()),
+        ("f000.bin", "1.0 KB"),
+        "{WHAT}: first row"
+    );
+    let last = rows.row_data(N - 1).unwrap();
+    assert_eq!(last.size_text.as_str(), "1.5 KB", "{WHAT}: last row");
+
+    // A new page while the old one's sizes are still coming: only the
+    // new page's sizes are shown.
+    links(ui).invoke_grab_page(url.as_str().into());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !(links(ui).get_grab_rows().row_count() == N && probed(ui) > 0) {
+        assert!(Instant::now() < deadline, "{WHAT}: second run");
+        tick();
+    }
+    let mut small = FileSpec::new(5_000_000);
+    small.delay = Some(Duration::from_millis(5));
+    ctx.server.serve("g2/one.bin", small.clone());
+    ctx.server.serve("g2/two.bin", small);
+    let other = ctx.server.serve_page(
+        "g2/index.html",
+        200,
+        &[],
+        r#"<html><body><a href="one.bin">one</a> <a href="two.bin">two</a></body></html>"#,
+    );
+    links(ui).invoke_grab_page(other.as_str().into());
+    let sizes = |ui: &AppWindow| -> Vec<String> {
+        links(ui)
+            .get_grab_rows()
+            .iter()
+            .map(|r| r.size_text.to_string())
+            .collect()
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while sizes(ui) != ["5.0 MB", "5.0 MB"] {
+        assert!(
+            Instant::now() < deadline,
+            "{WHAT}: new page sizes {:?}",
+            sizes(ui)
+        );
+        let rows = links(ui).get_grab_rows();
+        assert!(rows.row_count() <= 2, "{WHAT}: old rows back");
+        assert!(
+            rows.iter()
+                .all(|r| r.size_text.is_empty() || r.size_text == "5.0 MB"),
+            "{WHAT}: an old size reached the new page: {:?}",
+            sizes(ui)
+        );
+        tick();
+    }
+    settle(Duration::from_millis(300));
+    assert_eq!(sizes(ui), ["5.0 MB", "5.0 MB"], "{WHAT}: sizes changed");
+    links(ui).invoke_grab_closed();
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// Add several links, opened from the "+" panel: the same file on two
+/// servers, with "Treat copies as mirrors" on, is one download with one
+/// mirror; a web page line offers "Find files →", which opens Grab links.
+fn batch_copies_become_mirrors(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "batch_copies_become_mirrors";
+    let spec = FileSpec::new(512 * 1024);
+    let first = ctx.server.serve("bm/twin.bin", spec.clone());
+    let mirror = ctx.rt.block_on(TestServer::start());
+    let second = mirror.serve("elsewhere/TWIN.bin", spec);
+    let page = format!("{}/listing/", ctx.server.base_url());
+    advanced_tall(ui, WHAT);
+    only_button(ui, "Add a download", WHAT).invoke_accessible_default_action();
+    only_button(ui, "Several links…", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Batch,
+        "{WHAT}: not on Several links"
+    );
+    only_with_role(ui, AccessibleRole::TextInput, "Links", WHAT);
+
+    links(ui)
+        .invoke_batch_edited(format!("# two copies\n{first}\n\n{second}\nnot a link\n").into());
+    let lines = |ui: &AppWindow| -> Vec<(i32, String, i32)> {
+        links(ui)
+            .get_batch_lines()
+            .iter()
+            .map(|l| (l.n, l.kind.to_string(), l.mirror_of))
+            .collect()
+    };
+    assert_eq!(
+        lines(ui),
+        [
+            (2, "http".to_string(), 0),
+            (4, "http".to_string(), 0),
+            (5, "invalid".to_string(), 0)
+        ],
+        "{WHAT}: lines"
+    );
+    assert_eq!(links(ui).get_batch().add_count, 2, "{WHAT}: two downloads");
+    only_with_role(ui, AccessibleRole::Switch, "Treat copies as mirrors", WHAT)
+        .invoke_accessible_default_action();
+    assert!(links(ui).get_batch().mirrors, "{WHAT}: mirrors on");
+    assert_eq!(lines(ui)[1], (4, "http".to_string(), 2), "{WHAT}: mirror");
+    assert_eq!(links(ui).get_batch().add_count, 1, "{WHAT}: one download");
+
+    // A page line: "Find files →" opens Grab links with it.
+    links(ui).invoke_batch_edited(format!("{page}\n").into());
+    assert_eq!(lines(ui), [(1, "page".to_string(), 0)], "{WHAT}: page line");
+    only_button(ui, "Find files →", WHAT).invoke_accessible_default_action();
+    assert_eq!(ui.get_screen(), Screen::Grab, "{WHAT}: Grab not opened");
+    assert_eq!(
+        links(ui).get_grab().page_url.as_str(),
+        page,
+        "{WHAT}: page link"
+    );
+    wait_until(&format!("{WHAT}: page listed"), || {
+        let g = links(ui).get_grab();
+        !g.loading && g.count_all == 9
+    });
+    links(ui).invoke_grab_closed();
+
+    let before = ctx.engine.snapshot().len();
+    ui.invoke_open_batch();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Batch,
+        "{WHAT}: not on Several links"
+    );
+    assert_eq!(
+        links(ui).get_batch_lines().row_count(),
+        0,
+        "{WHAT}: old lines"
+    );
+    links(ui).invoke_batch_edited(format!("{first}\n{second}\n").into());
+    links(ui).invoke_batch_mirrors(true);
+    only_button(ui, "Add 1 download", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Downloads,
+        "{WHAT}: not on the list"
+    );
+    wait_until(&format!("{WHAT}: twin.bin finished"), || {
+        job_named(ctx, "twin.bin").is_some_and(|v| v.state == JobState::Completed)
+    });
+    settle(Duration::from_millis(300));
+    assert_eq!(ctx.engine.snapshot().len(), before + 1, "{WHAT}: one job");
+    let id = job_named(ctx, "twin.bin").unwrap().id;
+    let detail = {
+        let _rt = ctx.rt.enter();
+        ctx.engine.job_detail(id).unwrap()
+    };
+    assert_eq!(detail.mirrors, [second], "{WHAT}: mirrors");
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// The Add screen offers "Find files →" for a web page link; it leaves
+/// the Add screen for Grab links with that link.
+fn add_page_offers_find_files(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "add_page_offers_find_files";
+    let page = format!("{}/listing/", ctx.server.base_url());
+    advanced_tall(ui, WHAT);
+    // As `link_entered` leaves it for a page link that failed to read.
+    ui.set_adv_page_url(page.as_str().into());
+    ui.set_adv_add(taurus_desktop::AdvAddVm {
+        error_kind: "site_not_supported".into(),
+        checksum_ok: true,
+        ..Default::default()
+    });
+    ui.set_screen(Screen::Add);
+    only_button(ui, "Find files →", WHAT).invoke_accessible_default_action();
+    assert_eq!(ui.get_screen(), Screen::Grab, "{WHAT}: Grab not opened");
+    assert_eq!(
+        links(ui).get_grab().page_url.as_str(),
+        page,
+        "{WHAT}: page link"
+    );
+    wait_until(&format!("{WHAT}: page listed"), || {
+        let g = links(ui).get_grab();
+        !g.loading && g.count_all == 9
+    });
+    links(ui).invoke_grab_closed();
+    ui.set_adv_page_url("".into());
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
 }
