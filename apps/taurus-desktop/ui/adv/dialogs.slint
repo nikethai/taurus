@@ -1,0 +1,153 @@
+// Advanced mode dialogs, laid over the whole window: removing a download
+// (keeping its files unless asked) and signing in to a protected one.
+import { Theme } from "../theme.slint";
+import { RemoveDialogVm, PasswordDialogVm } from "../types.slint";
+import { TextButton } from "../widgets.slint";
+import { CheckBox, LineEdit } from "std-widgets.slint";
+
+// Dims the window and holds the dialog's card in its middle.
+component Scrim inherits Rectangle {
+    background: Theme.scrim;
+    // Clicks do not reach the screen behind.
+    TouchArea { }
+    Rectangle {
+        width: min(root.width - 32px, 380px);
+        height: card.preferred-height;
+        background: Theme.panel;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: Theme.line;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.shadow;
+        card := VerticalLayout {
+            padding: 20px;
+            spacing: 14px;
+            @children
+        }
+    }
+}
+
+export component RemoveDialog inherits Scrim {
+    in property <RemoveDialogVm> dialog;
+    // id, whether the files go too
+    callback confirm(int, bool);
+    callback cancel();
+
+    // Unticked each time the dialog opens: files are kept unless asked.
+    property <bool> delete-files: false;
+
+    Text {
+        text: @tr("Remove {0} from the list?", root.dialog.name);
+        wrap: word-wrap;
+        font-size: 15px;
+        font-weight: 700;
+        color: Theme.text;
+        accessible-role: text;
+        accessible-label: self.text;
+    }
+    CheckBox {
+        text: @tr("Also delete the files");
+        checked <=> root.delete-files;
+    }
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        TextButton {
+            text: @tr("Cancel");
+            kind: "quiet";
+            clicked => {
+                root.cancel();
+            }
+        }
+        TextButton {
+            text: @tr("Remove");
+            kind: "primary";
+            clicked => {
+                root.confirm(root.dialog.id, root.delete-files);
+            }
+        }
+    }
+}
+
+export component PasswordDialog inherits Scrim {
+    in property <PasswordDialogVm> dialog;
+    // What is typed; the app empties both as soon as it has them.
+    in-out property <string> user;
+    in-out property <string> password;
+    // id, user name, password
+    callback submit(int, string, string);
+    callback cancel();
+
+    property <bool> ready: !root.dialog.busy && root.user != "" && root.password != "";
+
+    function send() {
+        if (root.ready) {
+            root.submit(root.dialog.id, root.user, root.password);
+        }
+    }
+
+    Text {
+        text: @tr("Sign in to download {0}", root.dialog.name);
+        wrap: word-wrap;
+        font-size: 15px;
+        font-weight: 700;
+        color: Theme.text;
+        accessible-role: text;
+        accessible-label: self.text;
+    }
+    if root.dialog.wrong: Text {
+        text: @tr("That user name or password didn't work. Try again.");
+        wrap: word-wrap;
+        font-size: 12px;
+        color: Theme.err;
+        accessible-role: text;
+        accessible-label: self.text;
+    }
+    LineEdit {
+        text <=> root.user;
+        enabled: !root.dialog.busy;
+        placeholder-text: @tr("User name");
+        accessible-label: @tr("User name");
+        init => {
+            self.focus();
+        }
+    }
+    LineEdit {
+        input-type: InputType.password;
+        text <=> root.password;
+        enabled: !root.dialog.busy;
+        placeholder-text: @tr("Password");
+        accessible-label: @tr("Password");
+        accepted => {
+            root.send();
+        }
+    }
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        if root.dialog.busy: Text {
+            text: @tr("Signing in…");
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            font-size: 12px;
+            color: Theme.muted;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+        TextButton {
+            text: @tr("Cancel");
+            kind: "quiet";
+            clicked => {
+                root.cancel();
+            }
+        }
+        TextButton {
+            text: @tr("Sign in");
+            kind: "primary";
+            enabled: root.ready;
+            clicked => {
+                root.send();
+            }
+        }
+    }
+}

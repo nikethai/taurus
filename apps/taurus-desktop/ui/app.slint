@@ -2,10 +2,13 @@ import { Theme } from "theme.slint";
 import { Messages } from "messages.slint";
 import {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
-    AdvRowVm, FilterCountVm, TabCountsVm, DetailStubVm,
+    AdvRowVm, FilterCountVm, TabCountsVm,
+    DetailVm, FileRowVm, StepVm, StatVm, RemoveDialogVm, PasswordDialogVm,
 } from "types.slint";
 import { AdvCompact } from "adv/main.slint";
 import { AdvWide } from "adv/wide.slint";
+import { DetailPane } from "adv/detail.slint";
+import { RemoveDialog, PasswordDialog } from "adv/dialogs.slint";
 import { Welcome } from "welcome.slint";
 import { Downloads } from "downloads.slint";
 import { Add } from "add.slint";
@@ -16,7 +19,8 @@ import { Countdown } from "countdown.slint";
 export { Theme, Messages }
 export {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
-    AdvRowVm, FilterCountVm, TabCountsVm, DetailStubVm,
+    AdvRowVm, FilterCountVm, TabCountsVm,
+    DetailVm, FileRowVm, StepVm, StatVm, RemoveDialogVm, PasswordDialogVm,
 } from "types.slint";
 
 // Navigation: the UI itself moves between Welcome, Downloads and Settings,
@@ -86,8 +90,18 @@ export component AppWindow inherits Window {
     in property <TabCountsVm> tab-counts;
     in property <string> speed-down-text;
     in property <string> speed-up-text;
-    // Wide layout detail pane (minimal until the full detail view).
-    in property <DetailStubVm> detail-stub;
+    // The selected download's details: the wide layout's pane, or over
+    // the whole compact layout (Back selects nothing).
+    in property <DetailVm> detail;
+    // Safari's sign-in is offered on macOS only.
+    in property <bool> is-macos;
+    // Dialogs the app opens; their Cancel closes them here.
+    in-out property <RemoveDialogVm> remove-dialog;
+    in-out property <PasswordDialogVm> password-dialog;
+    // What is typed in the sign-in dialog. The app sets both to "" as soon
+    // as it hands them to the engine; no view model ever holds them.
+    in-out property <string> password-user;
+    in-out property <string> password-text;
     // Wide: the search field's text, kept here so it outlives the field
     // (Settings, Add, a narrower window). The app clears it when the
     // layout stops being wide: the compact layout has no search field.
@@ -99,6 +113,25 @@ export component AppWindow inherits Window {
     callback tab-changed(int);
     callback search-changed(string);
     callback width-changed();
+    // Detail and dialog actions take the job id.
+    callback copy-link(int);
+    // "mp3" | "smaller-mp4"
+    callback convert(int, string);
+    callback ask-remove(int);
+    // Remove dialog: whether the files are deleted too.
+    callback confirm-remove(int, bool);
+    // "chrome" | "firefox" | "safari" | "edge" | "brave"
+    callback retry-with-browser(int, string);
+    // "Enter password…": opens the sign-in dialog.
+    callback ask-password(int);
+    // id, user name, password
+    callback submit-password(int, string, string);
+    // Torrent files: open the picker (prefilled), and what it chose
+    // (indices into the torrent's files).
+    callback choose-files(int);
+    callback files-chosen(int, [int]);
+    // field "ratio" | "seed-time"; value "default" | "never" | a number
+    callback set-override(int, string, string);
     // Several links, the when-done menu and grab links: later screens.
     callback open-batch();
     callback open-whendone();
@@ -162,78 +195,136 @@ export component AppWindow inherits Window {
             Rectangle {
                 vertical-stretch: 1;
 
-                if root.advanced-list && root.layout == "wide": AdvWide {
-                    rows: root.adv-rows;
-                    counts: root.filter-counts;
-                    filter <=> root.filter;
-                    speed-down: root.speed-down-text;
-                    speed-up: root.speed-up-text;
-                    detail: root.detail-stub;
-                    search-text <=> root.search-text;
-                    filter-changed(key) => {
-                        root.filter-changed(key);
+                if root.advanced-list: HorizontalLayout {
+                    if root.layout == "wide": AdvWide {
+                        horizontal-stretch: 1;
+                        rows: root.adv-rows;
+                        counts: root.filter-counts;
+                        filter <=> root.filter;
+                        speed-down: root.speed-down-text;
+                        speed-up: root.speed-up-text;
+                        search-text <=> root.search-text;
+                        filter-changed(key) => {
+                            root.filter-changed(key);
+                        }
+                        search-changed(text) => {
+                            root.search-changed(text);
+                        }
+                        select(id) => {
+                            root.select(id);
+                        }
+                        link-entered(link) => {
+                            root.link-entered(link);
+                        }
+                        open-settings => {
+                            root.screen = Screen.settings;
+                        }
+                        pause(id) => {
+                            root.pause(id);
+                        }
+                        resume(id) => {
+                            root.resume(id);
+                        }
+                        retry(id) => {
+                            root.retry(id);
+                        }
+                        stop-recording(id) => {
+                            root.stop-recording(id);
+                        }
+                        open-file(id) => {
+                            root.open-file(id);
+                        }
                     }
-                    search-changed(text) => {
-                        root.search-changed(text);
-                    }
-                    select(id) => {
-                        root.select(id);
-                    }
-                    link-entered(link) => {
-                        root.link-entered(link);
-                    }
-                    open-settings => {
-                        root.screen = Screen.settings;
-                    }
-                    pause(id) => {
-                        root.pause(id);
-                    }
-                    resume(id) => {
-                        root.resume(id);
-                    }
-                    retry(id) => {
-                        root.retry(id);
-                    }
-                    stop-recording(id) => {
-                        root.stop-recording(id);
-                    }
-                    open-file(id) => {
-                        root.open-file(id);
-                    }
-                }
 
-                if root.advanced-list && root.layout != "wide": AdvCompact {
-                    rows: root.adv-rows;
-                    counts: root.tab-counts;
-                    tab <=> root.adv-tab;
-                    speed-down: root.speed-down-text;
-                    speed-up: root.speed-up-text;
-                    tab-changed(i) => {
-                        root.tab-changed(i);
+                    // Compact: the list, or the selected download's detail.
+                    if root.layout != "wide" && !root.detail.visible: AdvCompact {
+                        horizontal-stretch: 1;
+                        rows: root.adv-rows;
+                        counts: root.tab-counts;
+                        tab <=> root.adv-tab;
+                        speed-down: root.speed-down-text;
+                        speed-up: root.speed-up-text;
+                        tab-changed(i) => {
+                            root.tab-changed(i);
+                        }
+                        select(id) => {
+                            root.select(id);
+                        }
+                        link-entered(link) => {
+                            root.link-entered(link);
+                        }
+                        open-settings => {
+                            root.screen = Screen.settings;
+                        }
+                        pause(id) => {
+                            root.pause(id);
+                        }
+                        resume(id) => {
+                            root.resume(id);
+                        }
+                        retry(id) => {
+                            root.retry(id);
+                        }
+                        stop-recording(id) => {
+                            root.stop-recording(id);
+                        }
+                        open-file(id) => {
+                            root.open-file(id);
+                        }
                     }
-                    select(id) => {
-                        root.select(id);
+
+                    if root.layout == "wide": Rectangle {
+                        width: 1px;
+                        background: Theme.line;
                     }
-                    link-entered(link) => {
-                        root.link-entered(link);
-                    }
-                    open-settings => {
-                        root.screen = Screen.settings;
-                    }
-                    pause(id) => {
-                        root.pause(id);
-                    }
-                    resume(id) => {
-                        root.resume(id);
-                    }
-                    retry(id) => {
-                        root.retry(id);
-                    }
-                    stop-recording(id) => {
-                        root.stop-recording(id);
-                    }
-                    open-file(id) => {
-                        root.open-file(id);
+
+                    if root.layout == "wide" || root.detail.visible: DetailPane {
+                        // Wide: a 300 px pane; compact: the whole window.
+                        min-width: root.layout == "wide" ? 300px : 0px;
+                        max-width: root.layout == "wide" ? 300px : 100000px;
+                        horizontal-stretch: root.layout == "wide" ? 0 : 1;
+                        detail: root.detail;
+                        show-back: root.layout != "wide";
+                        is-macos: root.is-macos;
+                        back => {
+                            root.select(-1);
+                        }
+                        pause(id) => {
+                            root.pause(id);
+                        }
+                        resume(id) => {
+                            root.resume(id);
+                        }
+                        retry(id) => {
+                            root.retry(id);
+                        }
+                        open-file(id) => {
+                            root.open-file(id);
+                        }
+                        reveal(id) => {
+                            root.reveal(id);
+                        }
+                        copy-link(id) => {
+                            root.copy-link(id);
+                        }
+                        convert(id, preset) => {
+                            root.convert(id, preset);
+                        }
+                        ask-remove(id) => {
+                            root.ask-remove(id);
+                        }
+                        retry-with-browser(id, browser) => {
+                            root.retry-with-browser(id, browser);
+                        }
+                        ask-password(id) => {
+                            root.ask-password(id);
+                        }
+                        choose-files(id) => {
+                            root.choose-files(id);
+                        }
+                        set-override(id, field, value) => {
+                            root.set-override(id, field, value);
+                        }
                     }
                 }
 
@@ -340,6 +431,38 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    if root.remove-dialog.visible: RemoveDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        dialog: root.remove-dialog;
+        confirm(id, delete-files) => {
+            root.confirm-remove(id, delete-files);
+        }
+        cancel => {
+            root.remove-dialog.visible = false;
+        }
+    }
+
+    if root.password-dialog.visible: PasswordDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        dialog: root.password-dialog;
+        user <=> root.password-user;
+        password <=> root.password-text;
+        submit(id, user, password) => {
+            root.submit-password(id, user, password);
+        }
+        cancel => {
+            root.password-dialog.visible = false;
+            root.password-user = "";
+            root.password-text = "";
         }
     }
 }

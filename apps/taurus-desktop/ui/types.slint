@@ -150,11 +150,78 @@ export struct TabCountsVm {
     done: int,
 }
 
-// The wide layout's detail pane until the full detail view (M6b Task 3):
-// the selected job's name, icon kind and source.
-export struct DetailStubVm {
+// Advanced detail: a torrent file (index into the torrent's files, path
+// inside it, size, 0..1 downloaded, selected) or a finished media file
+// (index -1, size "" and progress 1).
+export struct FileRowVm {
+    index: int,
+    name: string,
+    size-text: string,
+    progress: float,
+    selected: bool,
+}
+
+// A media job's step. key: tools waiting download finish record;
+// state: done current failed todo.
+export struct StepVm {
+    key: string,
+    state: string,
+}
+
+// One "label: value" line of the detail. key (worded by the detail pane):
+// speed connections segments peers uploaded upload-speed ratio files
+// entries recorded mirrors checksum referer password (value ""); value is
+// a formatted number or the text itself.
+export struct StatVm {
+    key: string,
+    value: string,
+}
+
+// The selected download's details (Advanced: the wide layout's pane, or
+// the compact layout's full-window detail). `row` as in the list; `big`
+// the percent done ("42%", "" when the size is unknown); `size-line` the
+// amounts done and in all ("120 MB / 400 MB", or media time "1:23 / 4:56"
+// for a conversion). `cells`: a web download's segment map, 0..1 per cell
+// (96 cells) when `has-cells`. Overrides: "default" | "never" | a number
+// (ratio; seed time in seconds).
+export struct DetailVm {
     visible: bool,
+    row: RowVm,
     name: string,
     kind: string,
     source: string,
+    big: string,
+    size-line: string,
+    cells: [float],
+    has-cells: bool,
+    files: [FileRowVm],
+    steps: [StepVm],
+    stats: [StatVm],
+    folder: string,
+    url: string,
+    can-convert: bool,
+    can-retry-cookies: bool,
+    needs-password: bool,
+    can-choose-files: bool,
+    ratio-override: string,
+    seed-time-override: string,
+}
+
+// "Remove <name> from the list?"
+export struct RemoveDialogVm {
+    visible: bool,
+    id: int,
+    name: string,
+}
+
+// The sign-in dialog of a protected download. Never holds the typed user
+// name or password (AppWindow.password-user / password-text do, until
+// they are handed over). busy: waiting for the engine; wrong: the last
+// try was refused.
+export struct PasswordDialogVm {
+    visible: bool,
+    id: int,
+    name: string,
+    busy: bool,
+    wrong: bool,
 }

@@ -24,6 +24,7 @@ use slint::{CloseRequestResponse, ComponentHandle, SharedPixelBuffer, Timer, Tim
 use taurus_core::{CoreError, Engine, ErrorKind, JobId, JobState, LinkInfo, RemoveFiles, Settings};
 
 use crate::add_flow::PendingAdd;
+use crate::adv_flow::AdvFlow;
 use crate::adv_view::AdvState;
 use crate::bridge::{self, Coalescer};
 use crate::links::ClipboardFilter;
@@ -77,6 +78,11 @@ pub(crate) enum UiMsg {
     Clipboard(String),
     /// Look at this link next (the next one of a forwarded batch).
     Link(String),
+    /// `Engine::set_credentials` answered for the sign-in dialog of `id`.
+    SignedIn {
+        id: i32,
+        result: Result<(), ErrorKind>,
+    },
 }
 
 /// Hands links and clipboard text to the app from any thread.
@@ -123,6 +129,8 @@ pub struct App {
     pub(crate) view: RefCell<ViewState>,
     /// Advanced mode's list (`adv_view.rs`).
     pub(crate) adv: RefCell<AdvState>,
+    /// Advanced mode's detail and dialogs (`adv_flow.rs`).
+    pub(crate) flow: AdvFlow,
     coalescer: Arc<Mutex<Coalescer>>,
     pub(crate) writer: SettingsWriter,
     /// Mirrors `settings.ui.offer_copied_links` for the clipboard thread.
@@ -177,6 +185,7 @@ impl App {
             settings: RefCell::new(settings),
             view: RefCell::new(ViewState::default()),
             adv: RefCell::new(AdvState::default()),
+            flow: AdvFlow::default(),
             coalescer: coalescer.clone(),
             writer,
             offer_links,
@@ -188,6 +197,7 @@ impl App {
         let pixels = SharedPixelBuffer::clone_from_slice(&icon::app_icon_rgba(size), size, size);
         window.set_app_icon(slint::Image::from_rgba8(pixels));
         window.set_has_tray(has_tray);
+        window.set_is_macos(cfg!(target_os = "macos"));
         app.view.borrow().install(window);
         app.adv.borrow().install(window);
         app.push_settings();
@@ -198,6 +208,7 @@ impl App {
         };
         window.set_screen(screen);
 
+        app.start_detail_poll();
         app.connect(window);
         *app.bridge.borrow_mut() = Some(bridge::spawn(&app.engine, &app.rt, coalescer));
         let weak = Rc::downgrade(&app);
@@ -242,6 +253,22 @@ impl App {
         on!(ui, self, on_filter_changed, |a, key| a.adv_filter(&key));
         on!(ui, self, on_tab_changed, |a, tab| a.adv_tab(tab));
         on!(ui, self, on_search_changed, |a, text| a.adv_search(&text));
+        on!(ui, self, on_copy_link, |a, id| a.copy_link(id));
+        on!(ui, self, on_convert, |a, id, preset| a.convert(id, &preset));
+        on!(ui, self, on_ask_remove, |a, id| a.ask_remove(id));
+        on!(ui, self, on_confirm_remove, |a, id, delete| a
+            .confirm_remove(id, delete));
+        on!(ui, self, on_retry_with_browser, |a, id, browser| a
+            .retry_with_browser(id, &browser));
+        on!(ui, self, on_ask_password, |a, id| a.ask_password(id));
+        on!(ui, self, on_submit_password, |a, id, user, password| a
+            .submit_password(id, user, password));
+        on!(ui, self, on_files_chosen, |a, id, indexes| a
+            .files_chosen(id, indexes));
+        on!(ui, self, on_set_override, |a, id, field, value| a
+            .set_override(id, &field, &value));
+        // choose-files opens the torrent file picker, which comes in the
+        // next M6b task; until then it is left unconnected.
         // open-batch, open-whendone and open-grab: their screens come in
         // later M6b tasks; until then they are left unconnected.
 
@@ -407,6 +434,7 @@ impl App {
             UiMsg::Forwarded(links) => self.forwarded(links),
             UiMsg::Clipboard(text) => self.clipboard_text(&text),
             UiMsg::Link(link) => self.offer_link(link),
+            UiMsg::SignedIn { id, result } => self.signed_in(id, result),
         }
     }
 

@@ -1,7 +1,7 @@
 //! Advanced mode's list in the window: the layout (from `ui.mode` and the
 //! window width), the rows of the current tab or filter and search, the
-//! counts, the footer speeds, the selection and the wide layout's detail
-//! pane. Refreshed with the Simple lists, from the app's 100 ms timer.
+//! counts, the footer speeds and the selection, whose detail `adv_flow.rs`
+//! shows. Refreshed with the Simple lists, from the app's 100 ms timer.
 
 use std::rc::Rc;
 
@@ -12,7 +12,7 @@ use crate::app::App;
 use crate::filters::{self, Filter, Tab};
 use crate::mode::{self, Layout};
 use crate::pump::{set_model, unix_now};
-use crate::{AdvRowVm, AppWindow, DetailStubVm, FilterCountVm, TabCountsVm, rows};
+use crate::{AdvRowVm, AppWindow, FilterCountVm, TabCountsVm, rows};
 
 pub(crate) struct AdvState {
     rows: Rc<VecModel<AdvRowVm>>,
@@ -44,6 +44,12 @@ impl AdvState {
     pub fn install(&self, ui: &AppWindow) {
         ui.set_adv_rows(ModelRc::from(self.rows.clone()));
         ui.set_filter_counts(ModelRc::from(self.counts.clone()));
+    }
+
+    /// The selected job. It stays selected (and in the detail) while the
+    /// tab, filter or search hides it; only its removal clears it.
+    pub fn selected(&self) -> Option<JobId> {
+        self.selected
     }
 }
 
@@ -127,6 +133,8 @@ impl App {
         let views = view.views();
         let mut adv = self.adv.borrow_mut();
         if adv.layout == Layout::Simple {
+            drop(adv);
+            self.hide_detail(&ui);
             return;
         }
         if adv
@@ -161,15 +169,8 @@ impl App {
         let (down, up) = rows::speeds(views);
         ui.set_speed_down_text(down.into());
         ui.set_speed_up_text(up.into());
-        let detail = selected
-            .and_then(|id| views.iter().find(|v| v.id == id))
-            .map_or_else(DetailStubVm::default, |v| DetailStubVm {
-                visible: true,
-                name: v.file_name.as_str().into(),
-                kind: rows::row_kind(v).into(),
-                source: rows::source_of(v.kind).into(),
-            });
-        ui.set_detail_stub(detail);
+        drop(adv);
+        self.show_detail(&ui, views, selected);
     }
 
     pub(crate) fn adv_select(&self, id: i32) {

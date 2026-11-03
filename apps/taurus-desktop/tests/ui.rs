@@ -5,12 +5,14 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
 use serde_json::{Value, json};
 use slint::platform::WindowEvent;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
+use taurus_core::secrets::MemoryStore;
 use taurus_core::tools::ToolSources;
 use taurus_core::torrent::hub::TorrentTestNet;
 use taurus_core::{
@@ -52,10 +54,15 @@ fn ui_smoke() {
     media_add_picks_quality_and_finishes(&media);
     live_recording_shows_and_stops(&media);
     large_playlist_asks_first(&media);
+    convert_shows_media_time(&media);
     media.shutdown();
     let adv = advanced_mode_is_compact_with_tab_counts(&ui, &ctx);
     mode_switch_changes_nothing(&ui, &ctx);
+    http_detail_shows_cells(&ui, &ctx, adv);
+    remove_dialog_defaults_to_keep(&ui, &ctx);
+    password_cleared_after_submit(&ui, &ctx);
     wide_switch_keeps_selection(&ui, &ctx, adv);
+    torrent_detail_files_and_overrides();
     quit_shuts_down_engine_cleanly(&ui, &ctx);
 }
 
@@ -281,6 +288,8 @@ impl Ctx {
         let tmp = tempfile::tempdir().unwrap();
         let server = rt.block_on(TestServer::start());
         let mut config = EngineConfig::new(tmp.path().join("data"));
+        // Never the computer's keychain.
+        config.secrets = Arc::new(MemoryStore::new());
         let out = tmp.path().join("out");
         std::fs::create_dir_all(&out).unwrap();
         let mut settings = Settings::default();
@@ -1519,11 +1528,17 @@ fn wide_switch_keeps_selection(ui: &AppWindow, ctx: &Ctx, id: JobId) {
             .iter()
             .any(|r| r.row.id == want && r.selected)
     });
+    // Compact: the detail opens over the list.
+    only_with_role(ui, AccessibleRole::Button, "Back", WHAT);
+    assert!(
+        labelled(ui, "Waiting").is_empty(),
+        "{WHAT}: the list is still shown under the detail"
+    );
 
     ui.window().set_size(slint::LogicalSize::new(1200.0, 640.0));
     wait_until(&format!("{WHAT}: wide"), || ui.get_layout() == "wide");
     assert_eq!(ui.get_selected_id(), want, "{WHAT}: selection kept");
-    let detail = ElementHandle::find_by_element_type_name(ui, "DetailStub")
+    let detail = ElementHandle::find_by_element_type_name(ui, "DetailPane")
         .next()
         .unwrap_or_else(|| panic!("{WHAT}: no detail pane"));
     assert!(detail.size().width > 0.0, "{WHAT}: detail pane hidden");
@@ -1538,9 +1553,9 @@ fn wide_switch_keeps_selection(ui: &AppWindow, ctx: &Ctx, id: JobId) {
         shown.iter().any(|t| t == "adv.bin") && shown.iter().any(|t| t == "HTTP"),
         "{WHAT}: detail pane shows {shown:?}"
     );
-    let stub = ui.get_detail_stub();
+    let shown = ui.get_detail();
     assert_eq!(
-        (stub.visible, stub.name.as_str(), stub.kind.as_str()),
+        (shown.visible, shown.name.as_str(), shown.kind.as_str()),
         (true, "adv.bin", "file"),
         "{WHAT}: detail kind"
     );
@@ -1604,6 +1619,9 @@ fn wide_switch_keeps_selection(ui: &AppWindow, ctx: &Ctx, id: JobId) {
         ui.get_layout() == "compact"
     });
     assert_eq!(ui.get_selected_id(), want, "{WHAT}: selection kept back");
+    // ...with its detail still open, now over the whole window.
+    assert!(ui.get_detail().visible, "{WHAT}: detail closed");
+    only_with_role(ui, AccessibleRole::Button, "Back", WHAT);
     assert_eq!(ui.get_search_text().as_str(), "", "{WHAT}: search cleared");
     assert!(
         labelled(ui, "Search downloads").is_empty(),
@@ -1622,7 +1640,7 @@ fn wide_switch_keeps_selection(ui: &AppWindow, ctx: &Ctx, id: JobId) {
     // Removing the selected download clears the selection and the pane.
     ctx.rt.block_on(ctx.engine.remove(id, true)).unwrap();
     wait_until(&format!("{WHAT}: selection cleared"), || {
-        ui.get_selected_id() == -1 && !ui.get_detail_stub().visible
+        ui.get_selected_id() == -1 && !ui.get_detail().visible
     });
     assert!(
         labelled(ui, "Select a download to see its details.")
@@ -1649,4 +1667,385 @@ fn wide_switch_keeps_selection(ui: &AppWindow, ctx: &Ctx, id: JobId) {
     });
     ui.set_screen(Screen::Downloads);
     ui.window().set_size(COMPACT);
+}
+
+/// Opens the detail of `name` in the compact layout: its tab, then its row.
+fn open_detail(ui: &AppWindow, tab: &str, name: &str, what: &str) {
+    assert_eq!(ui.get_layout().as_str(), "compact", "{what}: compact");
+    ui.set_screen(Screen::Downloads);
+    only_with_role(ui, AccessibleRole::Tab, tab, what).invoke_accessible_default_action();
+    wait_until(&format!("{what}: {name} listed"), || {
+        labelled(ui, name)
+            .iter()
+            .any(|e| e.accessible_role() == Some(AccessibleRole::ListItem))
+    });
+    only_with_role(ui, AccessibleRole::ListItem, name, what).invoke_accessible_default_action();
+    wait_until(&format!("{what}: detail of {name}"), || {
+        let d = ui.get_detail();
+        d.visible && d.name == name
+    });
+}
+
+/// Back closes the compact detail: nothing selected, the list again.
+fn close_detail(ui: &AppWindow, what: &str) {
+    only_with_role(ui, AccessibleRole::Button, "Back", what).invoke_accessible_default_action();
+    assert_eq!(ui.get_selected_id(), -1, "{what}: still selected");
+    assert!(!ui.get_detail().visible, "{what}: detail still shown");
+    only_with_role(ui, AccessibleRole::Tab, "Active", what);
+}
+
+/// The id of the job named `name`.
+fn job_named(ctx: &Ctx, name: &str) -> Option<taurus_core::JobView> {
+    ctx.engine
+        .snapshot()
+        .into_iter()
+        .find(|v| v.file_name == name)
+}
+
+/// Selecting a web download in the compact layout opens its detail over
+/// the list: the segment map fills in as it downloads (the detail is
+/// fetched again while shown), its Resume and Pause work, and "Copy link"
+/// keeps the clipboard watcher from offering the link back.
+fn http_detail_shows_cells(ui: &AppWindow, ctx: &Ctx, id: JobId) {
+    const WHAT: &str = "http_detail_shows_cells";
+    // The detail is fetched again only while the window is shown.
+    ui.show().unwrap();
+    ui.window().set_size(TALL);
+    open_detail(ui, "Waiting", "adv.bin", WHAT);
+    assert_eq!(ui.get_selected_id(), id.0 as i32, "{WHAT}: selected");
+    let detail = ui.get_detail();
+    assert_eq!(
+        (detail.source.as_str(), detail.row.state.as_str()),
+        ("HTTP", "paused"),
+        "{WHAT}"
+    );
+    assert!(detail.has_cells, "{WHAT}: no segment map");
+    assert_eq!(detail.cells.row_count(), 96, "{WHAT}: cells");
+    let map = only_with_role(ui, AccessibleRole::ProgressIndicator, "Segment map", WHAT);
+    assert!(map.size().width > 0.0, "{WHAT}: segment map hidden");
+    let filled = || ui.get_detail().cells.iter().sum::<f32>();
+    let before = filled();
+
+    only_button(ui, "Resume", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: the map fills in"), || {
+        ui.get_detail().row.state == "downloading" && filled() > before + 1.0
+    });
+    only_button(ui, "Pause", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: paused again"), || {
+        ui.get_detail().row.state == "paused"
+    });
+
+    // "Copy link": the watcher does not offer it; other links still are.
+    let url = ui.get_detail().url.to_string();
+    assert!(url.ends_with("/adv.bin"), "{WHAT}: {url}");
+    only_button(ui, "Copy link", WHAT).invoke_accessible_default_action();
+    ctx.app.sender().clipboard(url);
+    settle(Duration::from_millis(300));
+    assert!(!ui.get_banner().visible, "{WHAT}: copied link offered");
+    ctx.app
+        .sender()
+        .clipboard("https://example.org/other.iso".into());
+    wait_until(&format!("{WHAT}: other link offered"), || {
+        ui.get_banner().visible
+    });
+    ui.invoke_banner_dismiss();
+
+    close_detail(ui, WHAT);
+    ui.window().set_size(COMPACT);
+}
+
+/// The Remove dialog keeps the files unless "Also delete the files" is
+/// ticked, which it is not when the dialog opens.
+fn remove_dialog_defaults_to_keep(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "remove_dialog_defaults_to_keep";
+    ui.window().set_size(TALL);
+    for (name, tick) in [("keep.bin", false), ("gone.bin", true)] {
+        let url = ctx.server.serve(name, FileSpec::new(64 * 1024));
+        let request = AddRequest {
+            url,
+            dest_dir: ctx.out(),
+            ..Default::default()
+        };
+        let id = ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+        wait_until(&format!("{WHAT}: {name} finished"), || {
+            job_named(ctx, name).is_some_and(|v| v.state == JobState::Completed)
+        });
+        let file = ctx.out().join(name);
+        assert!(file.is_file(), "{WHAT}: {name} not saved");
+        open_detail(ui, "Done", name, WHAT);
+        only_button(ui, "Remove…", WHAT).invoke_accessible_default_action();
+        let dialog = ui.get_remove_dialog();
+        assert_eq!(
+            (dialog.visible, dialog.id, dialog.name.as_str()),
+            (true, id.0 as i32, name),
+            "{WHAT}: dialog"
+        );
+        let question = format!("Remove {name} from the list?");
+        assert!(
+            labelled(ui, &question).iter().any(|e| e.size().width > 0.0),
+            "{WHAT}: no {question:?}"
+        );
+        let delete = only_with_role(ui, AccessibleRole::Checkbox, "Also delete the files", WHAT);
+        assert_eq!(
+            delete.accessible_checked(),
+            Some(false),
+            "{WHAT}: ticked when opened"
+        );
+        if tick {
+            delete.invoke_accessible_default_action();
+            assert_eq!(delete.accessible_checked(), Some(true), "{WHAT}: tick");
+        }
+        only_button(ui, "Remove", WHAT).invoke_accessible_default_action();
+        assert!(!ui.get_remove_dialog().visible, "{WHAT}: dialog stays");
+        wait_until(&format!("{WHAT}: {name} removed"), || {
+            job_named(ctx, name).is_none()
+        });
+        wait_until(&format!("{WHAT}: detail closed after {name}"), || {
+            ui.get_selected_id() == -1 && !ui.get_detail().visible
+        });
+        assert_eq!(file.is_file(), !tick, "{WHAT}: {name} on disk");
+    }
+    // Cancel changes nothing.
+    let url = ctx.server.serve("stay.bin", FileSpec::new(1024));
+    let request = AddRequest {
+        url,
+        dest_dir: ctx.out(),
+        ..Default::default()
+    };
+    ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    wait_until(&format!("{WHAT}: stay.bin finished"), || {
+        job_named(ctx, "stay.bin").is_some_and(|v| v.state == JobState::Completed)
+    });
+    open_detail(ui, "Done", "stay.bin", WHAT);
+    only_button(ui, "Remove…", WHAT).invoke_accessible_default_action();
+    only_button(ui, "Cancel", WHAT).invoke_accessible_default_action();
+    assert!(!ui.get_remove_dialog().visible, "{WHAT}: cancel");
+    settle(Duration::from_millis(300));
+    assert!(
+        job_named(ctx, "stay.bin").is_some(),
+        "{WHAT}: cancel removed"
+    );
+    close_detail(ui, WHAT);
+    ui.window().set_size(COMPACT);
+}
+
+/// A protected download that failed for want of a password asks for it
+/// when its detail opens; submitting hands it to the engine and empties
+/// both fields at once, and the download then finishes.
+fn password_cleared_after_submit(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "password_cleared_after_submit";
+    const USER: &str = "hyades-user";
+    const PASSWORD: &str = "s3cr3t-Pa55";
+    const SIZE: usize = 512 * 1024;
+    // The probe when adding succeeds; the download is then refused (401):
+    // the job fails with NeedsSignIn. Then the file wants the password.
+    let mut spec = FileSpec::new(SIZE);
+    spec.fail_after = Some(FailAfter {
+        after_requests: 1,
+        status: 401,
+        headers: vec![("WWW-Authenticate".into(), "Basic realm=\"test\"".into())],
+    });
+    let url = ctx.server.serve("locked.bin", spec);
+    let request = AddRequest {
+        url,
+        dest_dir: ctx.out(),
+        ..Default::default()
+    };
+    ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    wait_until(&format!("{WHAT}: locked.bin needs a password"), || {
+        job_named(ctx, "locked.bin").is_some_and(|v| {
+            v.state == JobState::Failed
+                && v.error
+                    .as_ref()
+                    .is_some_and(|(k, _)| *k == ErrorKind::NeedsSignIn)
+        })
+    });
+    let mut protected = FileSpec::new(SIZE);
+    protected.basic_auth = Some((USER.into(), PASSWORD.into()));
+    ctx.server.replace("locked.bin", protected);
+
+    ui.window().set_size(TALL);
+    open_detail(ui, "Waiting", "locked.bin", WHAT);
+    assert!(ui.get_detail().needs_password, "{WHAT}: needs-password");
+    wait_until(&format!("{WHAT}: dialog shown"), || {
+        ui.get_password_dialog().visible
+    });
+    assert_eq!(ui.get_password_dialog().name.as_str(), "locked.bin");
+    let field = |label: &str| only_with_role(ui, AccessibleRole::TextInput, label, WHAT);
+    field("User name").set_accessible_value(USER);
+    field("Password").set_accessible_value(PASSWORD);
+    assert_eq!(ui.get_password_text().as_str(), PASSWORD, "{WHAT}: typed");
+    only_button(ui, "Sign in", WHAT).invoke_accessible_default_action();
+    // Emptied as soon as they are handed over, while the dialog waits.
+    assert_eq!(ui.get_password_text().as_str(), "", "{WHAT}: password kept");
+    assert_eq!(ui.get_password_user().as_str(), "", "{WHAT}: user kept");
+    if ui.get_password_dialog().visible {
+        let shown = field("Password").accessible_value().unwrap_or_default();
+        assert_eq!(shown.as_str(), "", "{WHAT}: password field not empty");
+    }
+    assert!(
+        !format!("{:?}", ui.get_password_dialog()).contains(PASSWORD),
+        "{WHAT}: the dialog's view model holds the password"
+    );
+    wait_until(&format!("{WHAT}: dialog closed"), || {
+        !ui.get_password_dialog().visible
+    });
+    wait_until(&format!("{WHAT}: locked.bin finished"), || {
+        job_named(ctx, "locked.bin").is_some_and(|v| v.state == JobState::Completed)
+    });
+    let file = ctx.out().join("locked.bin");
+    assert_eq!(
+        std::fs::metadata(&file).map(|m| m.len()).ok(),
+        Some(SIZE as u64),
+        "{WHAT}: not saved in full"
+    );
+    // The detail follows: it no longer asks for a password.
+    wait_until(&format!("{WHAT}: detail done"), || {
+        let d = ui.get_detail();
+        d.row.state == "done" && !d.needs_password
+    });
+    assert!(!ui.get_password_dialog().visible, "{WHAT}: asked again");
+    close_detail(ui, WHAT);
+    ui.window().set_size(COMPACT);
+}
+
+/// A torrent's detail lists its files; the file picker's choice
+/// (`files-chosen`) and the sharing selects reach the engine.
+fn torrent_detail_files_and_overrides() {
+    const WHAT: &str = "torrent_detail_files_and_overrides";
+    let rt = runtime();
+    let data = |n| taurus_testkit::content(&FileSpec::new(n));
+    let seeder = rt.block_on(TorrentSeeder::start(
+        "pack",
+        &[("a.bin", data(128 * 1024)), ("b.bin", data(64 * 1024))],
+        None,
+    ));
+    let peer = seeder.addr;
+    let ui = AppWindow::new().unwrap();
+    let ctx = Ctx::start_with(&ui, rt, |config, settings| {
+        config.torrent_test = Some(TorrentTestNet {
+            initial_peers: vec![peer],
+            restore_in_place: false,
+        });
+        settings.torrent.stop_ratio = None;
+        settings.ui.mode = UiMode::Advanced;
+    });
+    ui.show().unwrap();
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    wait_until(&format!("{WHAT}: compact"), || ui.get_layout() == "compact");
+    let request = AddRequest {
+        url: seeder.magnet.clone(),
+        dest_dir: ctx.out(),
+        ..Default::default()
+    };
+    let id = ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    let view = || {
+        ctx.engine
+            .snapshot()
+            .into_iter()
+            .find(|v| v.id == id)
+            .unwrap()
+    };
+    wait_for(Duration::from_secs(60), &format!("{WHAT}: sharing"), || {
+        view().state == JobState::Seeding
+    });
+    open_detail(&ui, "Active", "pack", WHAT);
+    wait_until(&format!("{WHAT}: two files"), || {
+        let d = ui.get_detail();
+        d.files.row_count() == 2 && d.files.iter().all(|f| f.selected && f.progress == 1.0)
+    });
+    let d = ui.get_detail();
+    assert!(d.can_choose_files && !d.has_cells, "{WHAT}: {d:?}");
+    let names: Vec<String> = d.files.iter().map(|f| f.name.to_string()).collect();
+    assert_eq!(names, ["a.bin", "b.bin"], "{WHAT}");
+    only_button(&ui, "Choose files…", WHAT);
+
+    // The picker's answer: only b.bin.
+    let want = id.0 as i32;
+    ui.invoke_files_chosen(want, ModelRc::new(VecModel::from(vec![1])));
+    wait_until(&format!("{WHAT}: one file chosen"), || {
+        view().torrent.is_some_and(|t| t.files_selected == 1)
+    });
+    wait_until(&format!("{WHAT}: the detail shows it"), || {
+        let files: Vec<bool> = ui.get_detail().files.iter().map(|f| f.selected).collect();
+        files == [false, true]
+    });
+
+    // Sharing rules: each select keeps the other's value.
+    assert_eq!(
+        (
+            ui.get_detail().ratio_override.as_str(),
+            ui.get_detail().seed_time_override.as_str()
+        ),
+        ("default", "default"),
+        "{WHAT}"
+    );
+    ui.invoke_set_override(want, "ratio".into(), "2".into());
+    ui.invoke_set_override(want, "seed-time".into(), "3600".into());
+    wait_until(&format!("{WHAT}: overrides saved"), || {
+        let o = view().torrent.unwrap().overrides;
+        o.stop_ratio == Some(Some(2.0)) && o.stop_after_secs == Some(Some(3600))
+    });
+    wait_until(&format!("{WHAT}: overrides shown"), || {
+        let d = ui.get_detail();
+        d.ratio_override == "2" && d.seed_time_override == "3600"
+    });
+    ui.invoke_set_override(want, "ratio".into(), "default".into());
+    wait_until(&format!("{WHAT}: ratio back to the setting"), || {
+        let o = view().torrent.unwrap().overrides;
+        o.stop_ratio.is_none() && o.stop_after_secs == Some(Some(3600))
+    });
+    ctx.shutdown(WHAT);
+    drop(seeder);
+}
+
+/// Converting a finished song from its Advanced detail (the fake ffmpeg)
+/// adds a Convert row whose progress is media time.
+fn convert_shows_media_time(m: &MediaCtx) {
+    const WHAT: &str = "convert_shows_media_time";
+    const SONG: &str = "A Fine Video [abc123].mp3";
+    let ui = &m.ui;
+    // Slow enough that the row is seen under way. Only this test runs in
+    // the process, and nothing else reads the environment meanwhile.
+    unsafe { std::env::set_var("FAKE_FFMPEG_STEP_MS", "500") };
+    ui.show().unwrap();
+    ui.window().set_size(TALL);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    open_detail(ui, "Done", SONG, WHAT);
+    assert!(ui.get_detail().can_convert, "{WHAT}: cannot convert");
+    only_button(ui, "Convert…", WHAT).invoke_accessible_default_action();
+    assert!(
+        labelled(ui, "Make a smaller MP4").is_empty(),
+        "{WHAT}: a song offered as a video"
+    );
+    only_button(ui, "Convert to MP3", WHAT).invoke_accessible_default_action();
+    close_detail(ui, WHAT);
+    let converting = || {
+        ui.get_adv_rows()
+            .iter()
+            .find(|r| r.source == "Convert" && r.row.state == "downloading")
+    };
+    wait_for(TOOLS_WAIT, &format!("{WHAT}: converting"), || {
+        only_with_role(ui, AccessibleRole::Tab, "Active", WHAT).invoke_accessible_default_action();
+        converting().is_some_and(|r| r.row.done_text != "0:00")
+    });
+    let row = converting().unwrap().row;
+    assert_eq!(row.total_text.as_str(), "0:03", "{WHAT}: {row:?}");
+    let status = format!("{} of 0:03", row.done_text);
+    assert!(
+        !texts_containing(ui, &status).is_empty(),
+        "{WHAT}: no {status:?} shown"
+    );
+    let out = m.music().join("A Fine Video [abc123] (mp3).mp3");
+    wait_for(TOOLS_WAIT, &format!("{WHAT}: converted"), || {
+        out.is_file()
+            && m.ctx
+                .engine
+                .snapshot()
+                .iter()
+                .any(|v| v.kind == taurus_core::JobKind::Convert && v.state == JobState::Completed)
+    });
+    unsafe { std::env::remove_var("FAKE_FFMPEG_STEP_MS") };
+    ui.invoke_setting_changed("advanced".into(), "false".into());
 }

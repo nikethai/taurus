@@ -25,6 +25,8 @@ export global Theme {
     out property <brush> err: dark ? #F2705F : #C02B1E;
     // Soft shadow under floating cards (banner, countdown).
     out property <color> shadow: dark ? #00000066 : #0000001F;
+    // Dims the window behind a dialog.
+    out property <color> scrim: dark ? #000000A0 : #00000059;
 
     // Swatch color of an accent by name; unknown names are Aldebaran.
     public pure function accent-of(name: string) -> color {

@@ -3,10 +3,12 @@
 slint::include_modules!();
 
 pub mod add_flow;
+mod adv_flow;
 mod adv_view;
 pub mod app;
 pub mod bridge;
 pub mod clipboard;
+pub mod detail;
 pub mod filters;
 pub mod format;
 pub mod icon;
