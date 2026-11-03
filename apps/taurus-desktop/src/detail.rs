@@ -120,7 +120,23 @@ pub fn link_of(view: &JobView) -> String {
             let _ = url.set_password(None);
             url.to_string()
         }
-        _ => view.source_url.clone(),
+        Ok(_) => view.source_url.clone(),
+        Err(_) => strip_userinfo(&view.source_url),
+    }
+}
+
+/// A link the URL parser refuses, without a `user[:password]@` after its
+/// `scheme://` (plain string handling: the authority ends at the first
+/// `/`, `?` or `#`; its last `@` ends the user part).
+fn strip_userinfo(link: &str) -> String {
+    let Some(i) = link.find("://") else {
+        return link.to_owned();
+    };
+    let (head, rest) = link.split_at(i + 3);
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    match authority.rfind('@') {
+        Some(at) => format!("{head}{}", &rest[at + 1..]),
+        None => link.to_owned(),
     }
 }
 
@@ -484,6 +500,15 @@ mod tests {
         );
         secret.source_url = "magnet:?xt=urn:btih:abc".into();
         assert_eq!(link_of(&secret), "magnet:?xt=urn:btih:abc");
+        // One the URL parser refuses (a space in the host) loses its user
+        // part all the same; an "@" later in the link stays.
+        secret.source_url = "https://ann:p@ss@exa mple.org/a@b?c=d@e".into();
+        assert!(url::Url::parse(&secret.source_url).is_err());
+        assert_eq!(link_of(&secret), "https://exa mple.org/a@b?c=d@e");
+        secret.source_url = "https://exa mple.org/a@b".into();
+        assert_eq!(link_of(&secret), "https://exa mple.org/a@b");
+        assert_eq!(strip_userinfo("ftp://u@host"), "ftp://host");
+        assert_eq!(strip_userinfo("not a link@all"), "not a link@all");
         let mut done = view(3, "clip.mp4", JobState::Completed);
         done.downloaded = 1000;
         let vm = detail_vm(&done, &detail(3), 0);

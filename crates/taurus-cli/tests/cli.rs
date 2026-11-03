@@ -545,8 +545,14 @@ async fn add_torrent_file_with_files_and_seeding_note() {
     let torrent = fx.tmp.path().join("pack.torrent");
     fs::write(&torrent, &seeder.torrent_bytes).unwrap();
 
+    // a.bin's index: the seeder lists files in directory-listing order,
+    // which differs between file systems.
+    let info = taurus_core::torrent::hub::info_from_bytes(&seeder.torrent_bytes).unwrap();
+    let a_index = info.files.iter().find(|f| f.path == "a.bin").unwrap().index;
+
     let mut cmd = fx.taurus_with_peer(&seeder);
-    cmd.args(["add", torrent.to_str().unwrap(), "--files", "0"])
+    let a_index = a_index.to_string();
+    cmd.args(["add", torrent.to_str().unwrap(), "--files", &a_index])
         .args(["--dir", fx.out.to_str().unwrap()]);
     let output = output(cmd).await;
 

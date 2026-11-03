@@ -2087,20 +2087,50 @@ fn torrent_detail_files_and_overrides() {
     });
     let d = ui.get_detail();
     assert!(d.can_choose_files && !d.has_cells, "{WHAT}: {d:?}");
-    let names: Vec<String> = d.files.iter().map(|f| f.name.to_string()).collect();
-    assert_eq!(names, ["a.bin", "b.bin"], "{WHAT}");
+    // Torrent index order, whatever it is: the seeder's torrent lists the
+    // files in directory-listing order, which differs between file systems
+    // (APFS lists b.bin first).
+    let engine_files = {
+        let _rt = ctx.rt.enter();
+        ctx.engine.job_detail(id).unwrap().files
+    };
+    let mut paths: Vec<&str> = engine_files.iter().map(|f| f.path.as_str()).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, ["a.bin", "b.bin"], "{WHAT}: {engine_files:?}");
+    let rows: Vec<(i32, String)> = d
+        .files
+        .iter()
+        .map(|f| (f.index, f.name.to_string()))
+        .collect();
+    let by_index: Vec<(i32, String)> = (0..engine_files.len())
+        .map(|i| {
+            let f = engine_files.iter().find(|f| f.index == i).unwrap();
+            (i as i32, f.path.clone())
+        })
+        .collect();
+    assert_eq!(rows, by_index, "{WHAT}: rows not in index order");
     only_button(&ui, "Choose files…", WHAT);
 
     // The picker's answer: only b.bin.
     let want = id.0 as i32;
-    ui.invoke_files_chosen(want, ModelRc::new(VecModel::from(vec![1])));
+    let b = by_index.iter().find(|(_, p)| p == "b.bin").unwrap().0;
+    ui.invoke_files_chosen(want, ModelRc::new(VecModel::from(vec![b])));
     wait_until(&format!("{WHAT}: one file chosen"), || {
         view().torrent.is_some_and(|t| t.files_selected == 1)
     });
+    let only_b: Vec<bool> = by_index.iter().map(|(_, p)| p == "b.bin").collect();
     wait_until(&format!("{WHAT}: the detail shows it"), || {
         let files: Vec<bool> = ui.get_detail().files.iter().map(|f| f.selected).collect();
-        files == [false, true]
+        files == only_b
     });
+    let chosen = {
+        let _rt = ctx.rt.enter();
+        ctx.engine.job_detail(id).unwrap().files
+    };
+    assert!(
+        chosen.iter().all(|f| f.selected == (f.path == "b.bin")),
+        "{WHAT}: {chosen:?}"
+    );
 
     // Sharing rules: each select keeps the other's value.
     assert_eq!(
