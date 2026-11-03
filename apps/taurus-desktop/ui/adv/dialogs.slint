@@ -4,14 +4,16 @@
 // confirms, Tab goes round the dialog's controls.
 import { Theme } from "../theme.slint";
 import { RemoveDialogVm, PasswordDialogVm } from "../types.slint";
-import { TextButton } from "../widgets.slint";
-import { CheckBox, LineEdit } from "std-widgets.slint";
+import { TextButton, CheckBox } from "../widgets.slint";
+import { LineEdit } from "std-widgets.slint";
 
 // Dims the window and holds the dialog's card in its middle. Keys from
 // anywhere in the card: Escape is `escape`; an Enter no field or button
 // took is `enter`; Tab after the last control and Shift+Tab before the
 // first go round (`wrap`), so the focus stays in the dialog. The dialog
-// says where its ends are (`first-focused`, `last-focused`).
+// says where its ends are (`first-focused`, `last-focused`). Only a new
+// press of Enter confirms: the auto-repeats of the Enter held down on
+// the button that opened the dialog are ignored.
 export component Scrim inherits Rectangle {
     in property <length> card-width: 380px;
     in property <bool> first-focused;
@@ -37,7 +39,9 @@ export component Scrim inherits Rectangle {
                 return accept;
             }
             if (event.text == Key.Return) {
-                root.enter();
+                if (!event.repeat) {
+                    root.enter();
+                }
                 return accept;
             }
             if (event.text == Key.Tab && !event.modifiers.shift && root.last-focused) {
@@ -82,7 +86,7 @@ export component RemoveDialog inherits Scrim {
     // asked.
     property <bool> delete-files: false;
 
-    first-focused: delete.has-focus;
+    first-focused: delete.focused;
     last-focused: remove.focused;
     init => {
         root.take-focus();
@@ -110,6 +114,7 @@ export component RemoveDialog inherits Scrim {
         accessible-role: text;
         accessible-label: self.text;
     }
+    // Space or Return on the box ticks it; it never removes.
     delete := CheckBox {
         text: @tr("Also delete the files");
         checked <=> root.delete-files;

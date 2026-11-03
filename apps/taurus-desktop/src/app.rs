@@ -35,6 +35,7 @@ use crate::adv_settings::SettingsMsg;
 use crate::adv_view::AdvState;
 use crate::batch_flow::BatchState;
 use crate::bridge::{self, Coalescer};
+use crate::detail::warn;
 use crate::grab_flow::GrabState;
 use crate::links::ClipboardFilter;
 use crate::pump::ViewState;
@@ -467,7 +468,7 @@ impl App {
             };
             // A failed resume keeps the job as it was, with its error shown.
             if let Err(e) = result {
-                eprintln!("hyades: {job:?} {id:?}: {e}");
+                warn(format_args!("{job:?} {id:?}: {e}"));
             }
         });
     }

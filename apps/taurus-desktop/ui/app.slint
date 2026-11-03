@@ -193,6 +193,22 @@ export component AppWindow inherits Window {
         root.width-changed();
     }
 
+    // A typed password never outlives the Advanced add screen or the
+    // sign-in dialog, whatever closes them (Back, Escape, a mode switch).
+    property <bool> adv-add-open: root.screen == Screen.add && root.layout != "simple";
+    changed adv-add-open => {
+        if (!self.adv-add-open) {
+            root.adv-password = "";
+        }
+    }
+    property <bool> password-open: root.password-dialog.visible;
+    changed password-open => {
+        if (!self.password-open) {
+            root.password-user = "";
+            root.password-text = "";
+        }
+    }
+
     property <bool> advanced-list: root.layout != "simple"
         && (root.screen == Screen.welcome || root.screen == Screen.downloads);
 

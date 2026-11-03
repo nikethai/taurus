@@ -7,8 +7,8 @@ import { Theme } from "../theme.slint";
 import { Icon } from "../icons.slint";
 import { AdvAddVm } from "../types.slint";
 import { Messages } from "../messages.slint";
-import { IconButton, TextButton, KindBadge, LoadingDots, Card, Segmented, Segment } from "../widgets.slint";
-import { CheckBox, LineEdit, ScrollView, TextEdit } from "std-widgets.slint";
+import { IconButton, TextButton, KindBadge, LoadingDots, Card, Segmented, Segment, CheckBox } from "../widgets.slint";
+import { LineEdit, ScrollView, TextEdit } from "std-widgets.slint";
 import { SectionLabel } from "detail_parts.slint";
 import { TorrentOptions } from "torrent.slint";
 import { MediaOptions, BrowserRow } from "add_media.slint";
@@ -139,10 +139,11 @@ component FileOptions inherits VerticalLayout {
                 root.field-changed("user", t);
             }
         }
+        // After a refused add, the password goes with it: type it again.
         LineEdit {
             input-type: InputType.password;
             text <=> root.password;
-            placeholder-text: @tr("Password");
+            placeholder-text: root.vm.password-again ? @tr("Type the password again") : @tr("Password");
             accessible-label: @tr("Password");
         }
     }
@@ -177,7 +178,8 @@ export component AdvAdd inherits FocusScope {
     property <bool> options: shown && !vm.duplicate;
     property <bool> start-now: true;
     property <bool> ready: options && !vm.busy && vm.checksum-ok
-        && (vm.kind != "torrent" || vm.selected-count > 0);
+        && (vm.kind != "torrent" || vm.selected-count > 0)
+        && !(vm.password-again && root.password == "");
     property <bool> sign-in-error: vm.error-kind == "needs_sign_in" || vm.error-kind == "blocked_by_bot_check";
 
     // Escape cancels, from anywhere on the screen.

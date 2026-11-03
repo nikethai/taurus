@@ -66,6 +66,9 @@ pub(crate) struct AdvPick {
     pub(crate) busy: bool,
     /// The engine refused the add: why.
     pub(crate) refused: Option<ErrorKind>,
+    /// A refused add took the typed password with it: with a user name,
+    /// it must be typed again before the next Download.
+    pub(crate) password_again: bool,
 }
 
 /// The qualities a video offers: the link's best, one option per height,
@@ -148,6 +151,7 @@ impl AdvPick {
             ratio: "default".to_owned(),
             busy: false,
             refused: None,
+            password_again: false,
         };
         match &pick.source {
             AdvSource::File { suggested, .. } => pick.name = suggested.clone(),
@@ -238,6 +242,13 @@ impl AdvPick {
                 AdvSource::Media(_) => true,
                 AdvSource::Torrent(_) => self.picker.selected_count() > 0,
             }
+    }
+
+    /// The password field must be filled again (see `password_again`).
+    pub(crate) fn wants_password_again(&self) -> bool {
+        self.password_again
+            && matches!(self.source, AdvSource::File { .. })
+            && !self.user.trim().is_empty()
     }
 
     /// "file" | "media" | "torrent".
@@ -372,6 +383,7 @@ impl AdvPick {
                 vm.checksum_ok = self.checksum_ok();
                 vm.referer = self.referer.as_str().into();
                 vm.needs_user = *needs_user;
+                vm.password_again = self.wants_password_again();
             }
             AdvSource::Media(info) => {
                 let audio = self.audio_only();
@@ -696,6 +708,12 @@ mod tests {
             (creds.username.as_str(), creds.password.as_str()),
             ("me", "pw")
         );
+
+        // After a refusal the password is asked again, with a user name only.
+        pick.password_again = true;
+        assert!(pick.wants_password_again() && pick.vm().password_again);
+        assert!(pick.set("user", " "));
+        assert!(!pick.wants_password_again() && !pick.vm().password_again);
 
         let signed = AdvPick::signed_in_file("https://h/files/secret.zip?k=1");
         let vm = signed.vm();

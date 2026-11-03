@@ -22,6 +22,7 @@ use taurus_core::{
 use tokio::sync::mpsc::{self, error::TryRecvError};
 
 use crate::app::{App, UiMsg};
+use crate::detail::warn;
 use slint::ComponentHandle;
 
 use crate::{AppWindow, GrabRowVm, GrabVm, LinksUi, Screen, format, rows};
@@ -450,7 +451,7 @@ impl App {
                 let dest_dir = match folder_in(&sort_dest, &link.folder) {
                     Ok(dir) => dir,
                     Err(e) => {
-                        eprintln!("hyades: {}: {}", link.url, e.detail);
+                        warn(format_args!("{}: {}", link.url, e.detail));
                         return None;
                     }
                 };
@@ -490,7 +491,7 @@ impl App {
             let mut refused = None;
             for (request, root) in requests {
                 if let Err(CoreError { kind, detail }) = add_below(&engine, request, root).await {
-                    eprintln!("hyades: add failed: {detail}");
+                    warn(format_args!("add failed: {detail}"));
                     refused.get_or_insert(kind);
                 }
             }

@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::app::{App, UiMsg};
 use crate::clipboard;
-use crate::detail::{detail_vm, link_of, with_override};
+use crate::detail::{detail_vm, link_of, warn, with_override};
 use crate::pump::{set_model, unix_now};
 use crate::{
     AppWindow, DetailVm, FileRowVm, PasswordDialogVm, RemoveDialogVm, Screen, StatVm, StepVm,
@@ -233,7 +233,7 @@ impl App {
         let engine = self.engine.clone();
         self.rt.spawn(async move {
             if let Err(e) = engine.convert(ConvertSource::Job(job_id(id)), preset).await {
-                eprintln!("hyades: convert {id}: {e}");
+                warn(format_args!("convert {id}: {e}"));
             }
         });
     }
@@ -264,7 +264,7 @@ impl App {
         let engine = self.engine.clone();
         self.rt.spawn(async move {
             if let Err(e) = engine.remove_with(job_id(id), files).await {
-                eprintln!("hyades: remove {id}: {e}");
+                warn(format_args!("remove {id}: {e}"));
             }
         });
     }
@@ -273,7 +273,7 @@ impl App {
         let (engine, browser) = (self.engine.clone(), browser.to_owned());
         self.rt.spawn(async move {
             if let Err(e) = engine.retry_with_cookies(job_id(id), browser).await {
-                eprintln!("hyades: sign in with the browser {id}: {e}");
+                warn(format_args!("sign in with the browser {id}: {e}"));
             }
         });
     }
@@ -316,7 +316,7 @@ impl App {
         self.rt.spawn(async move {
             let result = engine.set_credentials(job_id(id), creds).await;
             if let Err(e) = &result {
-                eprintln!("hyades: sign in {id}: {e}");
+                warn(format_args!("sign in {id}: {e}"));
             }
             tx.send(UiMsg::SignedIn {
                 id,
@@ -355,7 +355,7 @@ impl App {
         let engine = self.engine.clone();
         self.rt.spawn(async move {
             if let Err(e) = engine.set_torrent_files(job_id(id), only).await {
-                eprintln!("hyades: choose files {id}: {e}");
+                warn(format_args!("choose files {id}: {e}"));
             }
         });
     }
@@ -382,7 +382,7 @@ impl App {
             self.rt.spawn(async move {
                 while let Some((id, overrides)) = rx.recv().await {
                     if let Err(e) = engine.set_torrent_overrides(id, overrides).await {
-                        eprintln!("hyades: sharing rules {}: {e}", id.0);
+                        warn(format_args!("sharing rules {}: {e}", id.0));
                         ui_tx.send(UiMsg::OverridesRefused(id));
                     }
                 }

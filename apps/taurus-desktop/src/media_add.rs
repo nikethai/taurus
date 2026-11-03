@@ -18,6 +18,7 @@ use taurus_core::{CoreError, ErrorKind, JobView, MediaChoice};
 
 use crate::add_flow::{PendingAdd, add_job};
 use crate::app::{App, UiMsg};
+use crate::detail::warn;
 use crate::{AddVm, AppWindow, Messages, Screen, format, rows};
 
 /// A playlist with more videos than this is added only once confirmed
@@ -317,7 +318,7 @@ impl App {
                 ui.set_add(self.media_shown(&ui, p));
             }
             Err(CoreError { kind, detail }) => {
-                eprintln!("hyades: add failed: {detail}");
+                warn(format_args!("add failed: {detail}"));
                 p.kind = None;
                 ui.set_add(AddVm {
                     error_kind: kind.as_str().into(),

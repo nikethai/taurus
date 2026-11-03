@@ -69,6 +69,7 @@ fn ui_smoke() {
     password_cleared_after_submit(&ui, &ctx);
     wide_switch_keeps_selection(&ui, &ctx, adv);
     adv_add_file_mirrors_checksum(&ui, &ctx);
+    adv_add_password_never_lingers(&ui, &ctx);
     grab_listing_chip_counts(&ui, &ctx);
     grab_download_adds_three(&ui, &ctx);
     grab_keeps_subfolders(&ui, &ctx);
@@ -1919,6 +1920,26 @@ fn remove_dialog_defaults_to_keep(ui: &AppWindow, ctx: &Ctx) {
         Some(false),
         "{WHAT}: still ticked"
     );
+    // The repeats of an Enter held since before the dialog opened, then
+    // Return on the box: nothing is removed, the dialog stays.
+    for _ in 0..3 {
+        ui.window().dispatch_event(WindowEvent::KeyPressRepeated {
+            text: slint::platform::Key::Return.into(),
+        });
+    }
+    press(ui, slint::platform::Key::Tab);
+    press(ui, slint::platform::Key::Return);
+    settle(Duration::from_millis(300));
+    assert!(
+        ui.get_remove_dialog().visible,
+        "{WHAT}: dialog closed by keys"
+    );
+    assert!(
+        job_named(ctx, "stay.bin").is_some(),
+        "{WHAT}: removed by a held Enter or Return on the box"
+    );
+    let delete = only_with_role(ui, AccessibleRole::Checkbox, "Also delete the files", WHAT);
+    assert_eq!(delete.accessible_checked(), Some(true), "{WHAT}: Return");
     only_button(ui, "Cancel", WHAT).invoke_accessible_default_action();
     assert!(!ui.get_remove_dialog().visible, "{WHAT}: cancel");
     settle(Duration::from_millis(300));
@@ -2450,6 +2471,97 @@ fn adv_add_file_mirrors_checksum(ui: &AppWindow, ctx: &Ctx) {
         "{WHAT}: {} not saved in full",
         file.display()
     );
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// The Advanced add's password: emptied by Escape, by the screen going
+/// (a mode switch, or any other screen), not by a Download that cannot go
+/// yet; after a refused add the field says to type it again and an empty
+/// one is not sent.
+fn adv_add_password_never_lingers(ui: &AppWindow, ctx: &Ctx) {
+    use slint::platform::Key;
+    const WHAT: &str = "adv_add_password_never_lingers";
+    const USER: &str = "lingers-user";
+    const PASSWORD: &str = "l1ngers-Pa55";
+    let mut spec = FileSpec::new(64 * 1024);
+    spec.basic_auth = Some((USER.into(), PASSWORD.into()));
+    let url = ctx.server.serve("guarded.bin", spec);
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    let open = || {
+        ui.invoke_link_entered(url.as_str().into());
+        wait_until(&format!("{WHAT}: asks to sign in"), || {
+            let a = ui.get_adv_add();
+            !a.loading && a.kind == "file" && a.needs_user
+        });
+        refresh_tree(ui);
+    };
+    let field = |label: &str| only_with_role(ui, AccessibleRole::TextInput, label, WHAT);
+    let typed = || ui.get_adv_password().to_string();
+
+    open();
+    field("Password").set_accessible_value("typed-then-escaped");
+    assert_eq!(typed(), "typed-then-escaped", "{WHAT}: typed");
+    press(ui, Key::Escape);
+    assert_eq!(typed(), "", "{WHAT}: Escape kept it");
+
+    // Not ready (a bad checksum): Download keeps what is typed.
+    open();
+    field("Password").set_accessible_value(PASSWORD);
+    ui.invoke_adv_field_changed("checksum".into(), "not-a-sum".into());
+    ui.invoke_adv_add_confirmed(false);
+    assert_eq!(typed(), PASSWORD, "{WHAT}: emptied before it could go");
+    ui.invoke_adv_field_changed("checksum".into(), "".into());
+    // Another screen, however it came: gone.
+    ui.set_screen(Screen::Downloads);
+    wait_until(&format!("{WHAT}: kept after the screen went"), || {
+        typed().is_empty()
+    });
+    ui.invoke_add_cancelled();
+
+    // The mode switch takes the screen away, and the password with it.
+    open();
+    field("Password").set_accessible_value(PASSWORD);
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    assert_eq!(ui.get_layout().as_str(), "simple", "{WHAT}: Simple");
+    assert_eq!(typed(), "", "{WHAT}: kept after the mode switch");
+    ui.invoke_add_cancelled();
+    ui.set_screen(Screen::Downloads);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+
+    // A wrong password: refused, the field empty and asking again.
+    open();
+    ui.invoke_adv_field_changed("user".into(), USER.into());
+    field("Password").set_accessible_value("not-it");
+    ui.invoke_adv_add_confirmed(true);
+    assert_eq!(typed(), "", "{WHAT}: kept after Download");
+    wait_until(&format!("{WHAT}: refused"), || {
+        let a = ui.get_adv_add();
+        !a.busy && !a.refused.is_empty()
+    });
+    assert!(ui.get_adv_add().password_again, "{WHAT}: not asked again");
+    refresh_tree(ui);
+    assert_eq!(
+        field("Password")
+            .accessible_placeholder_text()
+            .unwrap_or_default()
+            .as_str(),
+        "Type the password again",
+        "{WHAT}: the field does not ask again"
+    );
+    // Download with the field empty sends nothing.
+    ui.invoke_adv_add_confirmed(true);
+    assert!(!ui.get_adv_add().busy, "{WHAT}: an empty password sent");
+    field("Password").set_accessible_value(PASSWORD);
+    ui.invoke_adv_add_confirmed(true);
+    wait_until(&format!("{WHAT}: on the list"), || {
+        ui.get_screen() == Screen::Downloads
+    });
+    wait_until(&format!("{WHAT}: guarded.bin finished"), || {
+        job_named(ctx, "guarded.bin").is_some_and(|v| v.state == JobState::Completed)
+    });
     ui.invoke_setting_changed("advanced".into(), "false".into());
     ui.window().set_size(COMPACT);
 }
@@ -4104,6 +4216,55 @@ fn keyboard_remove_dialog(ui: &AppWindow, calls: &Calls) {
         "{WHAT}: Shift+Tab not on Remove"
     );
     assert!(!ui.get_remove_dialog().visible, "{WHAT}: still open");
+
+    // Return on the box ticks it and back; it never removes.
+    open();
+    press(ui, Key::Tab);
+    press(ui, Key::Return);
+    assert_eq!(ticked(), Some(true), "{WHAT}: Return did not tick");
+    assert!(ui.get_remove_dialog().visible, "{WHAT}: Return on the box");
+    press(ui, Key::Return);
+    assert_eq!(ticked(), Some(false), "{WHAT}: Return did not untick");
+    assert_eq!(taken(), Vec::<String>::new(), "{WHAT}: Return on the box");
+    press(ui, Key::Escape);
+
+    // Enter held on "Remove…": its press opens the dialog; the repeats
+    // neither confirm nor close it; a new press does.
+    let weak = ui.as_weak();
+    ui.on_ask_remove(move |id| {
+        weak.unwrap().set_remove_dialog(RemoveDialogVm {
+            visible: true,
+            id,
+            name: "a.bin".into(),
+        });
+    });
+    ui.set_detail(DetailVm {
+        visible: true,
+        row: row(7, "paused"),
+        name: "a.bin".into(),
+        ..Default::default()
+    });
+    refresh_tree(ui);
+    only_button(ui, "Remove…", WHAT).invoke_accessible_default_action();
+    refresh_tree(ui);
+    assert!(
+        ui.get_remove_dialog().visible,
+        "{WHAT}: Remove… did not ask"
+    );
+    for _ in 0..3 {
+        ui.window().dispatch_event(WindowEvent::KeyPressRepeated {
+            text: Key::Return.into(),
+        });
+    }
+    assert_eq!(taken(), Vec::<String>::new(), "{WHAT}: a repeat removed");
+    assert!(ui.get_remove_dialog().visible, "{WHAT}: a repeat closed it");
+    ui.window().dispatch_event(WindowEvent::KeyReleased {
+        text: Key::Return.into(),
+    });
+    press(ui, Key::Return);
+    assert_eq!(taken(), ["remove 7 false"], "{WHAT}: a new Enter");
+    ui.set_detail(DetailVm::default());
+    refresh_tree(ui);
 }
 
 /// Sign in: the user name field has the focus; Escape from it cancels and

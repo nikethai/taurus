@@ -14,6 +14,7 @@ use taurus_core::{AddRequest, CoreError, Engine, ErrorKind, JobId, JobKind, Link
 
 use crate::adv_pick::AdvPick;
 use crate::app::{App, UiMsg};
+use crate::detail::warn;
 use crate::media_add::{self, MediaPick};
 use crate::{AddVm, AppWindow, BannerVm, Screen, format, rows};
 
@@ -310,7 +311,7 @@ impl App {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             if let Err(CoreError { kind, detail }) = add_job(engine, request, sorted).await {
-                eprintln!("hyades: add failed: {detail}");
+                warn(format_args!("add failed: {detail}"));
                 tx.send(UiMsg::AddFailed(kind));
             }
         });

@@ -5,9 +5,10 @@
 //! (`adv_pick.rs`), shown in `adv-add` while the layout is Advanced.
 //!
 //! Download stays on the screen until the engine answers: a refusal is
-//! shown there with everything picked kept. The password typed for a
-//! file link lives only in the window's `adv-password` until Download,
-//! which empties it as it moves the text into the request.
+//! shown there with everything picked kept but the password. The password
+//! typed for a file link lives only in the window's `adv-password` until
+//! Download, which empties it as it moves the text into the request (and
+//! the window empties it when the screen goes).
 //!
 //! "Choose files…" of a torrent in the list opens the same picker over the
 //! window (`files-dialog`), prefilled from `Engine::job_detail`; while it
@@ -24,6 +25,7 @@ use taurus_core::{CoreError, ErrorKind, JobId, LinkInfo};
 use crate::add_flow::{PendingAdd, add_job};
 use crate::adv_pick::AdvPick;
 use crate::app::{App, UiMsg};
+use crate::detail::warn;
 use crate::pump::set_model;
 use crate::torrent_pick::Picker;
 use crate::{
@@ -258,14 +260,14 @@ impl App {
     }
 
     /// Download: the request goes to the engine with the password typed
-    /// (emptied in the window first); then the sharing rule picked, and
-    /// `start_now` when asked. The screen waits for the answer.
+    /// (taken out of the window as the request is built, not before);
+    /// then the sharing rule picked, and `start_now` when asked. The
+    /// screen waits for the answer. After a refusal the password must be
+    /// typed again: an empty one is not sent.
     pub(crate) fn adv_add_confirmed(&self, start_now: bool) {
         let Some(ui) = self.window.upgrade() else {
             return;
         };
-        let password = ui.get_adv_password();
-        ui.set_adv_password(SharedString::new());
         let mut pending = self.pending.borrow_mut();
         let Some(p) = pending.as_mut() else {
             return;
@@ -282,11 +284,17 @@ impl App {
         let Some(pick) = p.adv.as_mut() else {
             return;
         };
+        let password = ui.get_adv_password();
+        if password.is_empty() && pick.wants_password_again() {
+            return;
+        }
+        ui.set_adv_password(SharedString::new());
         let request = pick.request(&p.url, dest_dir, password.to_string());
         drop(password);
         let overrides = pick.overrides();
         pick.busy = true;
         pick.refused = None;
+        pick.password_again = false;
         let seq = p.seq;
         self.render_adv(&ui, p);
         let (engine, tx) = (self.engine.clone(), self.tx.clone());
@@ -296,10 +304,10 @@ impl App {
                 if let Some(o) = overrides
                     && let Err(e) = engine.set_torrent_overrides(id, o).await
                 {
-                    eprintln!("hyades: sharing rules {}: {e}", id.0);
+                    warn(format_args!("sharing rules {}: {e}", id.0));
                 }
                 if start_now && let Err(e) = engine.start_now(id).await {
-                    eprintln!("hyades: start {}: {e}", id.0);
+                    warn(format_args!("start {}: {e}", id.0));
                 }
             }
             tx.send(UiMsg::AdvAdded {
@@ -328,16 +336,19 @@ impl App {
                 self.next_queued();
             }
             (Some(p), Err(CoreError { kind, detail })) => {
-                eprintln!("hyades: add failed: {detail}");
+                warn(format_args!("add failed: {detail}"));
                 if let Some(pick) = p.adv.as_mut() {
                     pick.busy = false;
                     pick.refused = Some(kind);
+                    // The password went with the request: the field is
+                    // empty and says to type it again.
+                    pick.password_again = true;
                 }
                 self.render_adv(&ui, p);
             }
             (None, Ok(())) => {}
             (None, Err(CoreError { kind, detail })) => {
-                eprintln!("hyades: add failed: {detail}");
+                warn(format_args!("add failed: {detail}"));
                 drop(pending);
                 self.add_failed(kind);
             }

@@ -140,6 +140,20 @@ fn strip_userinfo(link: &str) -> String {
     }
 }
 
+/// `text` with every link in it (each word holding a `scheme://`)
+/// stripped of its `user[:password]@`.
+pub(crate) fn scrub_links(text: &str) -> String {
+    text.split_inclusive(char::is_whitespace)
+        .map(strip_userinfo)
+        .collect()
+}
+
+/// Prints `line` to stderr as Hyades' own, without the user name and
+/// password of any link in it (an error's detail can quote its link).
+pub(crate) fn warn(line: std::fmt::Arguments) {
+    eprintln!("hyades: {}", scrub_links(&line.to_string()));
+}
+
 fn model<T: Clone + 'static>(items: Vec<T>) -> ModelRc<T> {
     ModelRc::new(VecModel::from(items))
 }
@@ -509,6 +523,14 @@ mod tests {
         assert_eq!(link_of(&secret), "https://exa mple.org/a@b");
         assert_eq!(strip_userinfo("ftp://u@host"), "ftp://host");
         assert_eq!(strip_userinfo("not a link@all"), "not a link@all");
+        assert_eq!(
+            scrub_links("https://ann:pw@h.org/a.bin: http://u@x answered 401\n"),
+            "https://h.org/a.bin: http://x answered 401\n"
+        );
+        assert_eq!(
+            scrub_links("mail me@home, no link"),
+            "mail me@home, no link"
+        );
         let mut done = view(3, "clip.mp4", JobState::Completed);
         done.downloaded = 1000;
         let vm = detail_vm(&done, &detail(3), 0);

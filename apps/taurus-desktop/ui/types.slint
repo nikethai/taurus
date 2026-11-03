@@ -270,7 +270,9 @@ export struct TorrentFileVm {
 // engine; refused: ErrorKind::as_str() of an add the engine refused (the
 // form stays). File links: connections 1 | 4 | 8 | 16; mirrors as last
 // typed, one per entry; checksum-ok: the checksum is empty or a SHA-256
-// sum; needs-user: the link asked for a user name and password. Videos:
+// sum; needs-user: the link asked for a user name and password;
+// password-again: a refused add took the typed password with it, so it
+// must be typed again. Videos:
 // quality-id one of `qualities`; container "mp4" | "mkv" | "webm";
 // cookies-browser "" | "chrome" | "firefox" | "safari" | "edge" | "brave".
 // Torrents: `files` (see TorrentFileVm); selected-size formatted; ratio
@@ -293,6 +295,7 @@ export struct AdvAddVm {
     checksum-ok: bool,
     referer: string,
     needs-user: bool,
+    password-again: bool,
     qualities: [QualityVm],
     quality-id: string,
     audio-only: bool,

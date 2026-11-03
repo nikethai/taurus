@@ -118,6 +118,14 @@ impl App {
             ui.set_search_text(Default::default());
         }
         if changed {
+            if layout == Layout::Simple {
+                // The Advanced add screen and the sign-in dialog go: what
+                // was typed in their password fields goes with them.
+                ui.set_adv_password(Default::default());
+                ui.set_password_user(Default::default());
+                ui.set_password_text(Default::default());
+                ui.set_password_dialog(Default::default());
+            }
             ui.set_layout(layout.as_str().into());
             self.refresh_adv();
         }
