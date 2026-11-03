@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use taurus_core::secrets::MemoryStore;
 use taurus_core::torrent::hub::TorrentTestNet;
 use taurus_core::{
-    AddRequest, Credentials, Engine, EngineConfig, JobDetail, JobId, JobState, PowerMode,
-    ProgressUnit, Settings, Timing, TorrentSettings,
+    AddRequest, Credentials, Engine, EngineConfig, JobDetail, JobId, JobState, PasswordStore,
+    PowerMode, ProgressUnit, Settings, Timing, TorrentSettings,
 };
 use taurus_testkit::{FileSpec, TestServer, TorrentSeeder, content};
 
@@ -230,6 +230,11 @@ async fn job_detail_torrent_files() {
     let file = |p: &str| finished.files.iter().find(|f| f.path == p).unwrap();
     assert_eq!(file("a.bin").done, a.len() as u64);
     assert!(file("a.bin").selected && !file("b.bin").selected);
+    // Its parsed metadata is kept while it is listed, and goes with it.
+    assert_eq!(rig.engine.torrent_details_kept(), 1);
+    rig.engine.remove(id, false).await.unwrap();
+    assert!(rig.engine.job_detail(id).is_none());
+    assert_eq!(rig.engine.torrent_details_kept(), 0, "kept after removal");
     rig.engine.shutdown().await.unwrap();
 }
 
@@ -256,6 +261,7 @@ async fn job_detail_never_has_password_text() {
     );
     let detail = rig.engine.job_detail(id).unwrap();
     assert!(detail.has_password);
+    assert_eq!(detail.password_store, Some(PasswordStore::Keychain));
     assert_eq!(detail.referer.as_deref(), Some("http://ref.example/page"));
     for shown in [
         format!("{detail:?}"),

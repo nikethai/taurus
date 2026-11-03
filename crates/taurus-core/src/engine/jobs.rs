@@ -238,6 +238,7 @@ impl Actor {
         }
         self.store.delete_job(id)?;
         self.forget_credentials(job.as_ref());
+        self.details.forget(id);
         write(&self.views).remove(&id);
         self.emit(Event::JobRemoved(id));
         Ok(())

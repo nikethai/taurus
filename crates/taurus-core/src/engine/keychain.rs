@@ -15,6 +15,8 @@ use crate::errors::{CoreError, ErrorKind};
 use crate::secrets::SecretStore;
 use crate::store::{JobId, Store};
 
+use super::detail::PasswordStore;
+
 /// How long `flush` waits for the store: a locked keyring may wait on an
 /// unlock prompt nobody answers, and must not hang `shutdown`, `add`,
 /// `remove` or `set_credentials`.
@@ -124,16 +126,25 @@ impl Secrets {
     /// Whether a password of the job is kept: in memory, or listed as
     /// written to the store (without reading the store). Without a ledger,
     /// only one in memory counts.
-    pub(super) fn is_kept(&self, id: JobId) -> bool {
+    #[cfg(test)]
+    fn is_kept(&self, id: JobId) -> bool {
+        self.kept_in(id).is_some()
+    }
+
+    /// Where the job's password is kept: in memory while the store has
+    /// not taken it (refused, or a write still on its way), else in the
+    /// store when listed as written there.
+    pub(super) fn kept_in(&self, id: JobId) -> Option<PasswordStore> {
         let account = self.account(id);
         if lock(&self.pending).contains_key(&account) {
-            return true;
+            return Some(PasswordStore::Memory);
         }
-        self.ledger.as_ref().is_some_and(|ledger| {
+        let listed = self.ledger.as_ref().is_some_and(|ledger| {
             ledger
                 .secret_accounts()
                 .is_ok_and(|accounts| accounts.contains(&account))
-        })
+        });
+        listed.then_some(PasswordStore::Keychain)
     }
 
     /// Deletes every password this database's engine ever wrote (as
@@ -529,6 +540,7 @@ mod tests {
         secrets.flush().await;
         assert_eq!(ledger.secret_accounts().unwrap().len(), 3);
         assert!(secrets.is_kept(JobId(41)));
+        assert_eq!(secrets.kept_in(JobId(41)), Some(PasswordStore::Keychain));
         // A deleted password is taken off the list.
         secrets.forget(JobId(41));
         secrets.flush().await;
@@ -554,6 +566,8 @@ mod tests {
         secrets.flush().await;
         // In memory only: kept, not listed (gone after a restart).
         assert!(secrets.is_kept(JobId(1)));
+        assert_eq!(secrets.kept_in(JobId(1)), Some(PasswordStore::Memory));
+        assert_eq!(secrets.kept_in(JobId(2)), None);
         assert!(ledger.secret_accounts().unwrap().is_empty());
         assert_eq!(secrets.forget_all().await.unwrap(), 1);
         assert_eq!(secrets.password(JobId(1)), None);

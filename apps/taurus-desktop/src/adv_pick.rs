@@ -47,6 +47,9 @@ pub(crate) struct AdvPick {
     // File links.
     name: String,
     connections: u32,
+    /// The settings' count when it is none of `CONNECTIONS` (set by the
+    /// command line or by hand): offered too, so it shows as it is.
+    custom_connections: Option<u32>,
     mirrors: Vec<String>,
     checksum: String,
     referer: String,
@@ -136,6 +139,7 @@ impl AdvPick {
             source,
             name: String::new(),
             connections: DEFAULT_CONNECTIONS,
+            custom_connections: None,
             mirrors: Vec::new(),
             checksum: String::new(),
             referer: String::new(),
@@ -194,11 +198,12 @@ impl AdvPick {
         })
     }
 
-    /// A file starts with the settings' connections per file (when it is
-    /// one the screen offers).
+    /// A file starts with the settings' connections per file; one the
+    /// screen does not offer is offered too, as a custom count.
     pub(crate) fn with_connections(mut self, connections: u32) -> AdvPick {
-        if CONNECTIONS.contains(&connections) {
+        if connections > 0 {
             self.connections = connections;
+            self.custom_connections = (!CONNECTIONS.contains(&connections)).then_some(connections);
         }
         self
     }
@@ -307,7 +312,9 @@ impl AdvPick {
         match field {
             "name" => self.name = value.to_owned(),
             "connections" => match value.parse() {
-                Ok(n) if CONNECTIONS.contains(&n) => self.connections = n,
+                Ok(n) if CONNECTIONS.contains(&n) || self.custom_connections == Some(n) => {
+                    self.connections = n;
+                }
                 _ => return false,
             },
             "mirrors" => {
@@ -372,7 +379,10 @@ impl AdvPick {
             } => {
                 vm.name = self.name.as_str().into();
                 vm.size_text = size.map(format::bytes).unwrap_or_default().into();
-                vm.connections = self.connections as i32;
+                vm.connections = self.connections.min(i32::MAX as u32) as i32;
+                vm.custom_connections = self
+                    .custom_connections
+                    .map_or(0, |n| n.min(i32::MAX as u32) as i32);
                 vm.mirrors = model(
                     self.mirrors
                         .iter()
@@ -708,6 +718,24 @@ mod tests {
             (creds.username.as_str(), creds.password.as_str()),
             ("me", "pw")
         );
+
+        // A saved count the screen does not offer shows as it is.
+        let custom = AdvPick::signed_in_file("https://h/f").with_connections(5);
+        let vm = custom.vm();
+        assert_eq!((vm.connections, vm.custom_connections), (5, 5));
+        let mut custom = custom;
+        assert!(custom.set("connections", "4") && custom.set("connections", "5"));
+        assert!(!custom.set("connections", "6"));
+        assert_eq!(
+            custom
+                .request("u", PathBuf::new(), String::new())
+                .connections,
+            Some(5)
+        );
+        let offered = AdvPick::signed_in_file("https://h/f")
+            .with_connections(8)
+            .vm();
+        assert_eq!((offered.connections, offered.custom_connections), (8, 0));
 
         // After a refusal the password is asked again, with a user name only.
         pick.password_again = true;

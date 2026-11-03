@@ -4,7 +4,8 @@
 //! what `settings` holds) and saved with `Engine::set_settings` by one
 //! writer task, in the order the changes were made.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -136,15 +137,50 @@ pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
     true
 }
 
+/// How many of the latest saves `RecentSaves` remembers.
+const RECENT_SAVES: usize = 8;
+
+/// The latest settings handed to the writer, oldest first: an engine echo
+/// equal to one of them but the newest is an older save's, late.
+#[derive(Default)]
+pub(crate) struct RecentSaves(VecDeque<Settings>);
+
+impl RecentSaves {
+    pub(crate) fn saved(&mut self, settings: Settings) {
+        if self.0.len() == RECENT_SAVES {
+            self.0.pop_front();
+        }
+        self.0.push_back(settings);
+    }
+
+    /// Whether the engine's `SettingsChanged` with `settings` is to be
+    /// shown: not when it is the echo of a save older than the newest.
+    /// The newest one's echo means every older echo has come (the engine
+    /// sends them in order): those are forgotten. Anything else is a
+    /// change made in the engine (the when-done reset, another program).
+    pub(crate) fn take_echo(&mut self, settings: &Settings) -> bool {
+        match self.0.iter().rposition(|s| s == settings) {
+            Some(i) if i + 1 == self.0.len() => {
+                self.0.drain(..i);
+                true
+            }
+            Some(_) => false,
+            None => true,
+        }
+    }
+}
+
 /// Saves the UI's settings one at a time, in order; of a burst of changes
 /// only the newest is saved. Each change has a generation number, so the
-/// app can tell whether a save is still on its way.
+/// app can tell whether a save is still on its way. An echo older than
+/// the newest save is never shown or saved again (`RecentSaves`).
 pub(crate) struct SettingsWriter {
     tx: mpsc::UnboundedSender<(u64, Settings)>,
     /// Generation of the newest change handed to `save`.
     made: Cell<u64>,
     /// Generation of the newest save that finished (saved or failed).
     saved: Arc<AtomicU64>,
+    recent: RefCell<RecentSaves>,
 }
 
 impl SettingsWriter {
@@ -173,20 +209,26 @@ impl SettingsWriter {
             tx,
             made: Cell::new(0),
             saved,
+            recent: RefCell::default(),
         }
     }
 
     pub fn save(&self, settings: Settings) {
         let generation = self.made.get() + 1;
         self.made.set(generation);
+        self.recent.borrow_mut().saved(settings.clone());
         let _ = self.tx.send((generation, settings));
+    }
+
+    /// See `RecentSaves::take_echo`.
+    fn take_echo(&self, settings: &Settings) -> bool {
+        self.recent.borrow_mut().take_echo(settings)
     }
 
     /// Every change has been saved (or failed): the engine's settings are
     /// as new as the UI's. While not idle, the engine's `SettingsChanged`
-    /// echoes are older than what the UI shows and are ignored. (An echo
-    /// can still trail the last save by an instant; the next flush, with
-    /// the last echo, puts it right.)
+    /// echoes are older than what the UI shows and are ignored; an echo
+    /// that trails the last save is recognized by `take_echo`.
     pub fn idle(&self) -> bool {
         self.saved.load(Ordering::SeqCst) >= self.made.get()
     }
@@ -262,9 +304,9 @@ impl App {
     }
 
     /// Settings from the engine (its `SettingsChanged`), unless a change
-    /// made here is still being saved.
+    /// made here is still being saved or they echo an older save.
     pub(crate) fn engine_settings(&self, settings: Settings) {
-        if self.writer.idle() {
+        if self.writer.idle() && self.writer.take_echo(&settings) {
             *self.settings.borrow_mut() = settings;
             self.push_settings();
         }
@@ -324,6 +366,46 @@ mod tests {
         assert_eq!(s, before);
         assert!(apply_change(&mut s, "folder", ""));
         assert_eq!(s.ui.folder, None);
+    }
+
+    /// Save A, save B, then A's echo arrives late: it is not shown, so the
+    /// next change starts from B and keeps B's fields. B's own echo, and a
+    /// change made in the engine, are shown.
+    #[test]
+    fn a_late_echo_of_an_older_save_is_ignored() {
+        let mut recent = RecentSaves::default();
+        let mut ui = Settings::default();
+        let change = |ui: &mut Settings, recent: &mut RecentSaves, key, value| {
+            assert!(apply_change(ui, key, value));
+            recent.saved(ui.clone());
+        };
+        change(&mut ui, &mut recent, "theme", "dark");
+        let a = ui.clone();
+        change(&mut ui, &mut recent, "accent", "jade");
+        let b = ui.clone();
+        assert!(!recent.take_echo(&a), "A's echo shown over B");
+        change(&mut ui, &mut recent, "speed", "gentle");
+        assert_eq!(
+            (ui.ui.theme, ui.ui.accent.as_str(), &ui.speed),
+            (ThemeChoice::Dark, "Jade", &SpeedLimit::Gentle),
+            "B's fields lost"
+        );
+        assert!(!recent.take_echo(&b), "B's echo shown over C");
+        assert!(recent.take_echo(&ui), "C's echo");
+        // Every older echo has come: one equal to A now is the engine's.
+        assert!(recent.take_echo(&a), "the engine's own change");
+        let reset = Settings {
+            when_done: WhenDone::Nothing,
+            ..ui.clone()
+        };
+        assert!(recent.take_echo(&reset));
+        // Only the latest few are remembered.
+        for i in 0..20 {
+            let mut s = ui.clone();
+            s.max_active = i + 1;
+            recent.saved(s);
+        }
+        assert_eq!(recent.0.len(), RECENT_SAVES);
     }
 
     /// The mode switch changes `ui.mode` only; a custom speed shows as

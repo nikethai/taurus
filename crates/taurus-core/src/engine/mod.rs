@@ -54,7 +54,7 @@ use actor::Command;
 #[doc(hidden)]
 pub use actor::JobMsg;
 use detail::Details;
-pub use detail::{JobDetail, SegmentView, TorrentFileProgress};
+pub use detail::{JobDetail, PasswordStore, SegmentView, TorrentFileProgress};
 pub use inspect::LinkInfo;
 use jobs::{downloaded, fixed_url, view_of};
 use keychain::Secrets;

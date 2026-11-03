@@ -83,6 +83,14 @@ component FileOptions inherits VerticalLayout {
                     root.field-changed("connections", n);
                 }
             }
+            // The settings' count when it is none of those.
+            if root.vm.custom-connections > 0: Segment {
+                text: @tr("Custom {0}", root.vm.custom-connections);
+                selected: root.vm.connections == root.vm.custom-connections;
+                clicked => {
+                    root.field-changed("connections", root.vm.custom-connections);
+                }
+            }
         }
     }
 

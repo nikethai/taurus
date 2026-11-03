@@ -3779,6 +3779,27 @@ fn adv_settings_sections_and_values(ui: &AppWindow, ctx: &Ctx) {
         ctx.engine.settings().speed == SpeedLimit::Fastest
     });
 
+    // A connection count set elsewhere shows as it is; a pick replaces it.
+    let five = Settings {
+        connections: 5,
+        ..ctx.engine.settings()
+    };
+    ctx.rt.block_on(ctx.engine.set_settings(five)).unwrap();
+    wait_until(&format!("{WHAT}: custom connections shown"), || {
+        refresh_tree(ui);
+        labelled(ui, "Custom 5")
+            .first()
+            .is_some_and(|e| e.accessible_checked() == Some(true))
+    });
+    radio("16").invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: 16 connections saved"), || {
+        ctx.engine.settings().connections == 16
+    });
+    wait_until(&format!("{WHAT}: custom connections gone"), || {
+        refresh_tree(ui);
+        labelled(ui, "Custom 5").is_empty()
+    });
+
     // A proxy the engine refuses: its words under the field, nothing saved.
     let proxy_before = ctx.engine.settings().network.proxy;
     radio("Manual").invoke_accessible_default_action();

@@ -78,6 +78,12 @@ export component DownloadsSection inherits VerticalLayout {
                 SettingsUi.changed("connections", n);
             }
         }
+        // A count set elsewhere (the command line) shows as it is.
+        if SettingsUi.vm.connections > 0 && SettingsUi.vm.connections != 1 && SettingsUi.vm.connections != 4
+            && SettingsUi.vm.connections != 8 && SettingsUi.vm.connections != 16: Segment {
+            text: @tr("Custom {0}", SettingsUi.vm.connections);
+            selected: true;
+        }
     }
     FieldLabel {
         text: @tr("Speed");

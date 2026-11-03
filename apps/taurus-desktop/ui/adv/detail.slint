@@ -293,7 +293,8 @@ export component DetailPane inherits FocusScope {
                     spacing: 6px;
                     for s in root.detail.stats: Pair {
                         label: root.stat-label(s.key);
-                        value: s.key == "password" ? @tr("Saved") : s.value;
+                        value: s.key != "password" ? s.value
+                            : s.value == "memory" ? @tr("Saved until Hyades quits") : @tr("Saved");
                     }
                     Pair {
                         label: @tr("Saved to");

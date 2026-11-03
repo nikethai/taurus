@@ -163,6 +163,7 @@ impl App {
                     referer: None,
                     checksum: None,
                     has_password: false,
+                    password_store: None,
                     overrides: None,
                 };
                 &empty

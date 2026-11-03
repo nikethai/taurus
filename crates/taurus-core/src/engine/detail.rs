@@ -39,8 +39,21 @@ pub struct JobDetail {
     /// Whether the job has a user name and a password is kept for it.
     /// The password itself is never part of the details.
     pub has_password: bool,
+    /// Where that password is kept; `None` without one.
+    pub password_store: Option<PasswordStore>,
     /// A torrent's own sharing rules; `None` for other jobs.
     pub overrides: Option<TorrentOverrides>,
+}
+
+/// Where a job's password is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasswordStore {
+    /// `EngineConfig::secrets` (the OS keychain by default) took it.
+    Keychain,
+    /// Only in memory (no keychain took it, or not yet): gone when the
+    /// engine stops.
+    Memory,
 }
 
 /// The byte range `[start, end)` of a web download, of which `done` bytes
@@ -93,6 +106,17 @@ impl Details {
         table
     }
 
+    /// Forgets everything kept for a removed job.
+    pub(super) fn forget(&self, id: JobId) {
+        lock(&self.live).remove(&id);
+        lock(&self.torrents).remove(&id);
+    }
+
+    /// How many torrents' parsed metadata is kept.
+    fn torrents_kept(&self) -> usize {
+        lock(&self.torrents).len()
+    }
+
     /// Forgets the live table of a run that ended (unless a newer run of
     /// the job replaced it).
     pub(super) fn untrack(&self, id: JobId, table: &LiveTable) {
@@ -112,6 +136,7 @@ impl Details {
             JobKind::Torrent => self.torrent_files(&job, hub),
             _ => Vec::new(),
         };
+        let password_store = job.auth_user.as_ref().and_then(|_| secrets.kept_in(job.id));
         Some(JobDetail {
             id: job.id,
             segments,
@@ -122,7 +147,8 @@ impl Details {
                 .as_ref()
                 .map(|m| m.files.clone())
                 .unwrap_or_default(),
-            has_password: job.auth_user.is_some() && secrets.is_kept(job.id),
+            has_password: password_store.is_some(),
+            password_store,
             overrides: (job.kind == JobKind::Torrent).then(|| job.torrent_overrides.clone()),
             mirrors: job.mirrors,
             referer: job.referer,
@@ -204,6 +230,13 @@ impl Engine {
     pub fn job_detail(&self, id: JobId) -> Option<JobDetail> {
         let view = self.view(id)?;
         self.details.detail(&view, &self.hub, &self.secrets)
+    }
+
+    /// How many torrents' parsed metadata `job_detail` keeps (one per
+    /// torrent job shown since it was added; a removed job's goes).
+    #[doc(hidden)]
+    pub fn torrent_details_kept(&self) -> usize {
+        self.details.torrents_kept()
     }
 
     /// Deletes every password Taurus saved for this data dir's jobs (in

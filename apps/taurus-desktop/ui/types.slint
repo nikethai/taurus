@@ -170,8 +170,9 @@ export struct StepVm {
 
 // One "label: value" line of the detail. key (worded by the detail pane):
 // speed connections segments peers uploaded upload-speed ratio files
-// entries recorded mirrors checksum referer password (value ""); value is
-// a formatted number or the text itself.
+// entries recorded mirrors checksum referer password (value "keychain",
+// or "memory": kept only until Hyades quits); value is a formatted number
+// or the text itself.
 export struct StatVm {
     key: string,
     value: string,
@@ -268,9 +269,11 @@ export struct TorrentFileVm {
 // The Advanced add screen. kind: "file" | "media" | "torrent" ("" while
 // loading or failed); badge: the KindBadge kind. busy: the add went to the
 // engine; refused: ErrorKind::as_str() of an add the engine refused (the
-// form stays). File links: connections 1 | 4 | 8 | 16; mirrors as last
-// typed, one per entry; checksum-ok: the checksum is empty or a SHA-256
-// sum; needs-user: the link asked for a user name and password;
+// form stays). File links: connections 1 | 4 | 8 | 16, or the count saved
+// in the settings when it is another (then also in custom-connections,
+// else 0); mirrors as last typed, one per entry; checksum-ok: the
+// checksum is empty or a SHA-256 sum; needs-user: the link asked for a
+// user name and password;
 // password-again: a refused add took the typed password with it, so it
 // must be typed again. Videos:
 // quality-id one of `qualities`; container "mp4" | "mkv" | "webm";
@@ -290,6 +293,7 @@ export struct AdvAddVm {
     name: string,
     size-text: string,
     connections: int,
+    custom-connections: int,
     mirrors: [string],
     checksum: string,
     checksum-ok: bool,

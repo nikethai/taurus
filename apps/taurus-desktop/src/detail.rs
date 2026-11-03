@@ -5,7 +5,8 @@
 use slint::{ModelRc, VecModel};
 use taurus_core::media::MediaPhase;
 use taurus_core::{
-    ErrorKind, JobDetail, JobKind, JobState, JobView, ProgressUnit, SegmentView, TorrentOverrides,
+    ErrorKind, JobDetail, JobKind, JobState, JobView, PasswordStore, ProgressUnit, SegmentView,
+    TorrentOverrides,
 };
 
 use crate::{DetailVm, FileRowVm, StatVm, StepVm, format, rows};
@@ -288,8 +289,10 @@ fn stats_of(view: &JobView, detail: &JobDetail) -> Vec<StatVm> {
             if let Some(referer) = &detail.referer {
                 out.push(stat("referer", referer.as_str()));
             }
-            if detail.has_password {
-                out.push(stat("password", ""));
+            match detail.password_store {
+                Some(PasswordStore::Keychain) => out.push(stat("password", "keychain")),
+                Some(PasswordStore::Memory) => out.push(stat("password", "memory")),
+                None => {}
             }
         }
         JobKind::Torrent => {
@@ -398,6 +401,7 @@ mod tests {
             referer: None,
             checksum: None,
             has_password: false,
+            password_store: None,
             overrides: None,
         }
     }
@@ -454,6 +458,7 @@ mod tests {
         d.checksum = Some("sha256:ab".into());
         d.referer = Some("https://example.org/".into());
         d.has_password = true;
+        d.password_store = Some(PasswordStore::Memory);
         let vm = detail_vm(&http, &d, 0);
         assert!(vm.visible);
         assert_eq!(
@@ -480,8 +485,14 @@ mod tests {
                 pair("mirrors", "1"),
                 pair("checksum", "sha256:ab"),
                 pair("referer", "https://example.org/"),
-                pair("password", ""),
+                pair("password", "memory"),
             ]
+        );
+        d.password_store = Some(PasswordStore::Keychain);
+        let kept = items(&detail_vm(&http, &d, 0).stats);
+        assert_eq!(
+            (kept[6].key.as_str(), kept[6].value.as_str()),
+            ("password", "keychain")
         );
         assert_eq!(vm.url.as_str(), "https://example.org/big.iso");
         assert_eq!(
