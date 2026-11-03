@@ -1,6 +1,6 @@
 //! Fake yt-dlp / ffmpeg / ffprobe / deno releases for offline tests.
 //!
-//! # The fake tool (`src/bin/fake-tool.rs`)
+//! # The fake tool (`src/bin/fake-tool.rs`, with `src/bin/fake_tool/`)
 //!
 //! One std-only binary that acts as the tool its file name starts with
 //! (`yt-dlp`, `ffmpeg`, `ffprobe`, `deno`; case-insensitive, `.exe` ignored).
@@ -19,7 +19,14 @@
 //! 4. otherwise: yt-dlp replays a scenario (below); `ffmpeg [-y] -i <in>
 //!    [-i <in> ...] [-map N ...] -c copy <out>` writes the inputs one after
 //!    the other to `<out>` (one input: a copy; exit 1 if an input is
-//!    unreadable, or `<out>` exists without `-y`); every other call exits 0
+//!    unreadable, or `<out>` exists without `-y`); `ffmpeg ... -i <in> ...
+//!    -progress pipe:1 <out>` is a conversion: it refuses an existing `<out>`
+//!    (exit 1, as `-n` does), creates `<out>` with the first half of `<in>`,
+//!    prints `out_time_ms=1000000`, `2000000` and `3000000` (each followed by
+//!    `progress=continue`; `FAKE_FFMPEG_STEP_MS` apart, default 0) and
+//!    finishes `<out>` as a copy of `<in>`; with `FAKE_FFMPEG_FAIL=1` it exits
+//!    1 after the half; `ffprobe ... -show_entries ...` prints
+//!    `FAKE_FFPROBE_DURATION` (default `3.000000`); every other call exits 0
 //!    silently.
 //!
 //! Version and broken flag come from a trailer appended to the binary

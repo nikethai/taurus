@@ -41,7 +41,11 @@ impl Fixture {
     /// `taurus --data-dir <tmp>/data`, never reading the user's real data dir.
     fn taurus(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_taurus"));
+        // Passwords stay in memory (never the real keychain) and none comes
+        // from the environment unless a test sets one.
         cmd.env_remove("TAURUS_DATA_DIR")
+            .env_remove("TAURUS_PASSWORD")
+            .env("TAURUS_SECRETS_IN_MEMORY", "1")
             .arg("--data-dir")
             .arg(self.tmp.path().join("data"))
             .stdin(Stdio::null())
@@ -770,6 +774,22 @@ fn download_argvs(link: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Kills the fake yt-dlp download runs given `link`: one that a `taurus`
+/// killed outright leaves behind would wait for an interrupt for minutes
+/// (on Windows the killed process's job object ends it).
+fn kill_orphaned_downloads(link: &str) {
+    for entry in process_args_log() {
+        let download = entry.tool == "yt-dlp"
+            && entry.argv.iter().any(|a| a == link)
+            && !entry.argv.iter().any(|a| a == "-J");
+        if cfg!(unix) && download {
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", &entry.pid.to_string()])
+                .status();
+        }
+    }
+}
+
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -1137,6 +1157,7 @@ async fn unanswered_stop_exits_1_and_withdraws_the_request() {
     // Killed: the store still says Recording, as after a crash. Then
     // something else holds the data dir and never answers.
     child.kill().await.unwrap();
+    kill_orphaned_downloads(link);
     let _lock = hold_lock(&video.fx);
 
     let started = std::time::Instant::now();
@@ -1182,4 +1203,947 @@ async fn tools_status_works_while_the_data_dir_is_held() {
     assert!(tools.iter().all(|t| t["state"] == "Ready"), "{tools:?}");
     // The rest of the command needs the engine.
     assert_exit(&video.fx.run(&["tools", "install"]).await, 1);
+}
+
+// Grab, passwords, video options, convert, torrent selection and the proxy.
+
+const PAGE: &str = "/files/index.html";
+
+/// A page linking two PDFs and a ZIP, which the server also serves.
+fn serve_files_page(fx: &Fixture) -> (String, FileSpec, FileSpec) {
+    let (pdf, zip) = (FileSpec::new(2000), FileSpec::new(3000));
+    fx.server.serve("/files/a.pdf", pdf.clone());
+    fx.server.serve("/files/b.zip", zip.clone());
+    fx.server.serve(
+        "/files/c.pdf",
+        FileSpec {
+            seed: 7,
+            ..FileSpec::new(4000)
+        },
+    );
+    let html = r#"<html><body>
+        <a href="a.pdf">A</a> <a href="b.zip">B</a> <a href="c.pdf">C</a>
+        <a href="/about.html">About</a>
+        </body></html>"#;
+    let page = fx.server.serve_page(PAGE, 200, &[], html);
+    (page, pdf, zip)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grab_lists_and_adds() {
+    let fx = Fixture::new().await;
+    let (page, pdf, _) = serve_files_page(&fx);
+    let dir = fx.out.to_str().unwrap();
+
+    // Everything linked that is a file, with its size.
+    let all = fx.run(&["grab", &page]).await;
+    assert_exit(&all, 0);
+    let text = String::from_utf8_lossy(&all.stdout);
+    for name in ["a.pdf", "b.zip", "c.pdf"] {
+        assert!(text.contains(name), "{text}");
+    }
+    assert!(!text.contains("about.html"), "{text}");
+
+    // --ext narrows it; --json gives index, size, folder and name.
+    let output = fx.run(&["--json", "grab", &page, "--ext", "PDF"]).await;
+    assert_exit(&output, 0);
+    let grabbed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rows = grabbed["links"].as_array().unwrap();
+    let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["a.pdf", "c.pdf"]);
+    assert_eq!(rows[0]["index"], 0);
+    assert_eq!(rows[1]["index"], 1);
+    assert_eq!(rows[0]["size"], 2000);
+    assert_eq!(rows[1]["size"], 4000);
+    assert_eq!(rows[0]["folder"], "/");
+    assert_eq!(grabbed["truncated"], false);
+
+    // Listing alone downloads nothing and queues nothing.
+    assert!(fs::read_dir(&fx.out).unwrap().next().is_none());
+    let list = fx.run(&["--json", "list"]).await;
+    assert_eq!(String::from_utf8_lossy(&list.stdout).trim(), "[]");
+
+    // --add downloads exactly what is listed.
+    let output = fx
+        .run(&["grab", &page, "--ext", "pdf", "--add", "--dir", dir])
+        .await;
+    assert_exit(&output, 0);
+    assert_same_bytes(&fx.out.join("a.pdf"), &pdf);
+    assert_eq!(fs::metadata(fx.out.join("c.pdf")).unwrap().len(), 4000);
+    assert!(!fx.out.join("b.zip").exists());
+    let list = fx.run(&["--json", "list"]).await;
+    let jobs: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(jobs.as_array().unwrap().len(), 2);
+
+    // Nothing matches: say so, exit 0.
+    let output = fx.run(&["grab", &page, "--ext", "iso"]).await;
+    assert_exit(&output, 0);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("No files found."));
+    // A page that is not there fails.
+    assert_exit(&fx.run(&["grab", "http://127.0.0.1:9/none"]).await, 1);
+    // --dir means nothing without --add.
+    assert_exit(&fx.run(&["grab", &page, "--dir", dir]).await, 1);
+}
+
+fn listing_page(title: &str, links: &[&str]) -> String {
+    let rows: String = links
+        .iter()
+        .map(|l| format!("<a href=\"{l}\">{l}</a>\n"))
+        .collect();
+    format!(
+        "<html><head><title>{title}</title></head><body><h1>{title}</h1><pre>{rows}</pre></body></html>"
+    )
+}
+
+fn header(server: &TestServer, path: &str, name: &str) -> Option<String> {
+    server
+        .last_request_headers(path)
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grab_add_keeps_subfolders_and_sends_the_page_as_referer() {
+    let fx = Fixture::new().await;
+    let other = TestServer::start().await;
+    let (a, b) = (
+        FileSpec::new(1500),
+        FileSpec {
+            seed: 5,
+            ..FileSpec::new(2500)
+        },
+    );
+    fx.server.serve("/lst/a/x.pdf", a.clone());
+    fx.server.serve("/lst/b/x.pdf", b.clone());
+    fx.server.serve("/lst/r.pdf", FileSpec::new(700));
+    let far = other.serve("/far.pdf", FileSpec::new(900));
+    let page = fx.server.serve_page(
+        "/lst/",
+        200,
+        &[],
+        &listing_page("Index of /lst/", &["a/", "b/", "r.pdf", &far]),
+    );
+    fx.server.serve_page(
+        "/lst/a/",
+        200,
+        &[],
+        &listing_page("Index of /lst/a/", &["x.pdf"]),
+    );
+    fx.server.serve_page(
+        "/lst/b/",
+        200,
+        &[],
+        &listing_page("Index of /lst/b/", &["x.pdf"]),
+    );
+
+    let dir = fx.out.to_str().unwrap();
+    let output = fx
+        .run(&["grab", &page, "--subfolders", "--add", "--dir", dir])
+        .await;
+
+    assert_exit(&output, 0);
+    // Same names in different folders stay apart, where the listing put them.
+    assert_same_bytes(&fx.out.join("a/x.pdf"), &a);
+    assert_same_bytes(&fx.out.join("b/x.pdf"), &b);
+    assert_eq!(fs::metadata(fx.out.join("r.pdf")).unwrap().len(), 700);
+    assert!(!fx.out.join("x.pdf").exists());
+    assert!(!fx.out.join("x (1).pdf").exists());
+    // The page is the Referer for its own host's files, and for no other host.
+    assert_eq!(
+        header(&fx.server, "/lst/r.pdf", "referer").as_deref(),
+        Some(page.as_str())
+    );
+    assert_eq!(header(&other, "/far.pdf", "referer"), None);
+    assert_eq!(fs::metadata(fx.out.join("far.pdf")).unwrap().len(), 900);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grab_add_keeps_hostile_folders_inside_dir() {
+    let fx = Fixture::new().await;
+    // The server decodes the path of a request, so these are registered
+    // decoded: the links name them as `x%2F..%2F..%2Fescape/` and `a%5Cb/`.
+    for folder in ["/h/x/../../escape/", "/h/a\\b/", "/h/ok/"] {
+        fx.server
+            .serve(&format!("{folder}ev.pdf"), FileSpec::new(300));
+        fx.server.serve_page(
+            folder,
+            200,
+            &[],
+            &listing_page("Index of folder", &["ev.pdf"]),
+        );
+    }
+    let page = fx.server.serve_page(
+        "/h/",
+        200,
+        &[],
+        &listing_page("Index of /h/", &["x%2F..%2F..%2Fescape/", "a%5Cb/", "ok/"]),
+    );
+    let sandbox = fx.tmp.path().join("sandbox");
+    fs::create_dir(&sandbox).unwrap();
+    let dir = sandbox.join("dl");
+    fs::create_dir(&dir).unwrap();
+
+    let output = fx
+        .run(&[
+            "grab",
+            &page,
+            "--subfolders",
+            "--add",
+            "--dir",
+            dir.to_str().unwrap(),
+        ])
+        .await;
+
+    // The unsafe folders fail; the good one downloads.
+    assert_exit(&output, 1);
+    assert!(stderr(&output).contains("folder"), "{}", stderr(&output));
+    assert_eq!(fs::metadata(dir.join("ok/ev.pdf")).unwrap().len(), 300);
+    let mut inside = Vec::new();
+    let mut todo = vec![sandbox.clone()];
+    while let Some(next) = todo.pop() {
+        for entry in fs::read_dir(next).unwrap().flatten() {
+            if entry.path().is_dir() {
+                todo.push(entry.path());
+            } else {
+                inside.push(entry.path());
+            }
+        }
+    }
+    assert_eq!(inside, [dir.join("ok/ev.pdf")], "{inside:?}");
+    // Nothing next to the sandbox or the destination either.
+    let entries = |p: &Path| fs::read_dir(p).unwrap().count();
+    assert_eq!(entries(&sandbox), 1);
+    assert_eq!(entries(&dir), 1);
+}
+
+const SECRET: &str = "s3cret-pw-4711";
+
+/// The names of the files under `dir` whose bytes contain `needle`.
+fn files_containing(dir: &Path, needle: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(next) = todo.pop() {
+        for entry in fs::read_dir(&next).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                todo.push(path);
+            } else if fs::read(&path)
+                .is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes()))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+fn protected(fx: &Fixture, spec: FileSpec) -> String {
+    let spec = FileSpec {
+        basic_auth: Some(("bob".to_string(), SECRET.to_string())),
+        ..spec
+    };
+    fx.server.serve(PATH, spec)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_with_user_prompts() {
+    let fx = Fixture::new().await;
+    let spec = FileSpec::new(5000);
+    let url = protected(&fx, spec.clone());
+    let dir = fx.out.to_str().unwrap();
+    let say = |o: &Output| format!("{}{}", String::from_utf8_lossy(&o.stdout), stderr(o));
+
+    // No terminal and no test password: it says so and asks for nothing else.
+    let output = fx.run(&["add", &url, "--user", "bob", "--dir", dir]).await;
+    assert_exit(&output, 1);
+    assert!(stderr(&output).contains("terminal"), "{}", stderr(&output));
+    assert!(!fx.file().exists());
+
+    // A user name that carries a password is refused, and not repeated.
+    let output = fx
+        .run(&["add", &url, "--user", "bob:tryme", "--dir", dir])
+        .await;
+    assert_exit(&output, 1);
+    assert!(!say(&output).contains("tryme"), "{}", say(&output));
+
+    // A password is never an option.
+    let output = fx
+        .run(&["add", &url, "--user", "bob", "--password", SECRET])
+        .await;
+    assert_exit(&output, 1);
+    assert!(!say(&output).contains(SECRET));
+
+    // A wrong password fails and is not repeated.
+    let mut cmd = fx.taurus();
+    cmd.env("TAURUS_PASSWORD", "wrong-password")
+        .args(["add", &url, "--user", "bob", "--dir", dir]);
+    let output = output_of(cmd).await;
+    assert_exit(&output, 1);
+    assert!(say(&output).contains("wrong user name or password"));
+    assert!(!say(&output).contains("wrong-password"));
+    assert!(!fx.file().exists());
+
+    // The right one downloads the protected file.
+    let mut cmd = fx.taurus();
+    cmd.env("TAURUS_PASSWORD", SECRET)
+        .args(["--json", "add", &url, "--user", "bob", "--dir", dir]);
+    let output = output_of(cmd).await;
+    assert_exit(&output, 0);
+    assert_same_bytes(&fx.file(), &spec);
+    assert!(!say(&output).contains(SECRET));
+
+    // The password is nowhere on disk but the file it unlocked (none here),
+    // and `list` does not show it.
+    let list = fx.run(&["--json", "list"]).await;
+    assert!(!say(&list).contains(SECRET));
+    assert!(say(&list).contains("\"state\":\"Completed\""));
+    assert_eq!(
+        files_containing(fx.tmp.path(), SECRET),
+        Vec::<PathBuf>::new()
+    );
+}
+
+/// `output` under the shorter name the new tests use.
+async fn output_of(cmd: Command) -> Output {
+    output(cmd).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn login_resumes_a_job_that_needs_sign_in() {
+    tokio::time::timeout(TIMEOUT, login_after_restart())
+        .await
+        .expect("login did not finish in 60 s");
+}
+
+async fn login_after_restart() {
+    let fx = Fixture::new().await;
+    // 64 MiB at 2 MiB/s: the download cannot finish in the ~30 s it would
+    // take, so the kill after 4 MiB always lands while it runs.
+    let mut spec = FileSpec::new(64 * MIB);
+    spec.bytes_per_sec = Some(2 * MIB as u64);
+    let url = protected(&fx, spec.clone());
+    let mut child = {
+        let mut cmd = fx.taurus();
+        cmd.env("TAURUS_PASSWORD", SECRET).args([
+            "--json",
+            "add",
+            &url,
+            "--user",
+            "bob",
+            "--dir",
+            fx.out.to_str().unwrap(),
+        ]);
+        cmd.stdout(Stdio::piped()).spawn().expect("spawn taurus")
+    };
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    loop {
+        let line = lines
+            .next_line()
+            .await
+            .unwrap()
+            .expect("taurus ended early");
+        let event: Value = serde_json::from_str(&line).unwrap();
+        if event["Progress"]["downloaded"].as_u64().unwrap_or(0) > 4 * MIB as u64 {
+            break;
+        }
+    }
+    child.kill().await.unwrap();
+    let list = fx.run(&["--json", "list"]).await;
+    let jobs: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_ne!(
+        jobs[0]["state"], "Completed",
+        "finished before the kill: {jobs}"
+    );
+    // The rest comes at full speed (same bytes, still protected), so the
+    // test stays short.
+    fx.server.replace(
+        PATH,
+        FileSpec {
+            basic_auth: Some(("bob".to_string(), SECRET.to_string())),
+            bytes_per_sec: None,
+            ..spec.clone()
+        },
+    );
+
+    // The password lived in memory only: the next run cannot sign in.
+    let output = fx.run(&["run"]).await;
+    assert_exit(&output, 1);
+    let list = fx.run(&["--json", "list"]).await;
+    let jobs: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(jobs[0]["state"], "Failed", "{jobs}");
+    assert_eq!(jobs[0]["error"][0], "NeedsSignIn", "{jobs}");
+
+    // A wrong password stays failed; the right one finishes the file.
+    let login = |password: &str| {
+        let mut cmd = fx.taurus();
+        cmd.env("TAURUS_PASSWORD", password)
+            .args(["login", "1", "--user", "bob"]);
+        cmd
+    };
+    let output = output_of(login("nope")).await;
+    assert_exit(&output, 1);
+    assert!(!stderr(&output).contains("nope"));
+    let output = output_of(login(SECRET)).await;
+    assert_exit(&output, 0);
+    assert_same_bytes(&fx.file(), &spec);
+    assert_exit(&fx.run(&["login", "9", "--user", "bob"]).await, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn video_options_reach_yt_dlp() {
+    let name = "A Fine Video [abc123].mkv";
+    let video = Video::new(&media_scenario(&video_info(), downloads(name, 64))).await;
+    let link = "https://www.youtube.com/watch?v=cli_video_options";
+    let dir = video.fx.out.to_str().unwrap();
+
+    let output = video
+        .fx
+        .run(&[
+            "add",
+            link,
+            "--cookies-from",
+            "firefox:work",
+            "--subs",
+            "en,vi",
+            "--auto-subs",
+            "--embed-subs",
+            "--container",
+            "mkv",
+            "--dir",
+            dir,
+        ])
+        .await;
+
+    assert_exit(&output, 0);
+    let runs = download_argvs(link);
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    let argv = &runs[0];
+    let has = |pair: &[&str]| argv.windows(pair.len()).any(|w| w == pair);
+    assert!(has(&["--cookies-from-browser", "firefox:work"]), "{argv:?}");
+    assert!(argv.iter().any(|a| a == "--write-subs"), "{argv:?}");
+    assert!(argv.iter().any(|a| a == "--write-auto-subs"), "{argv:?}");
+    assert!(argv.iter().any(|a| a == "--embed-subs"), "{argv:?}");
+    assert!(has(&["--sub-langs", "en,vi"]), "{argv:?}");
+    assert!(has(&["--merge-output-format", "mkv"]), "{argv:?}");
+
+    // Values that mean nothing exit 1 before anything runs.
+    for args in [
+        &["add", link, "--cookies-from", "netscape"][..],
+        &["add", link, "--auto-subs"],
+        &["add", link, "--container", "avi"],
+        &[
+            "add",
+            link,
+            "--convert",
+            "smaller-mp4",
+            "--container",
+            "webm",
+        ],
+    ] {
+        assert_exit(&video.fx.run(args).await, 1);
+    }
+    let output = video
+        .fx
+        .run(&["resume", "1", "--cookies-from", "netscape"])
+        .await;
+    assert_exit(&output, 1);
+    assert!(
+        stderr(&output).contains("unknown browser"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+/// The video's info with a 480p format (not one of the usual qualities),
+/// subtitles and generated captions.
+fn video_with_languages() -> Value {
+    let mut info = video_info();
+    info["formats"].as_array_mut().unwrap().push(json!({
+        "format_id": "135", "ext": "mp4", "vcodec": "avc1.4d401e", "acodec": "none",
+        "height": 480
+    }));
+    info["subtitles"] = json!({
+        "vi": [{ "ext": "vtt", "url": "https://s/vi" }],
+        "en": [{ "ext": "vtt", "url": "https://s/en" }],
+    });
+    info["automatic_captions"] = json!({ "fr": [{ "ext": "vtt", "url": "https://s/fr" }] });
+    info
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inspect_lists_every_quality_and_language() {
+    let video = Video::new(&media_scenario(
+        &video_with_languages(),
+        downloads("v.mp4", 64),
+    ))
+    .await;
+    let link = "https://www.youtube.com/watch?v=cli_inspect";
+
+    let output = video.fx.run(&["inspect", link]).await;
+    assert_exit(&output, 0);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("Title: A Fine Video"), "{text}");
+    let qualities = text
+        .lines()
+        .find_map(|l| l.strip_prefix("Qualities: "))
+        .unwrap_or_else(|| panic!("no qualities line: {text}"));
+    let ids: Vec<&str> = qualities
+        .split(", ")
+        .map(|q| q.split(' ').next().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "best",
+            "2160p",
+            "1080p",
+            "720p",
+            "480p",
+            "audio-best",
+            "audio-small"
+        ],
+        "{text}"
+    );
+    assert!(text.contains("Subtitles: en, vi\n"), "{text}");
+    assert!(text.contains("Auto captions: fr\n"), "{text}");
+
+    let output = video
+        .fx
+        .run(&["--json", "inspect", link, "--cookies-from", "firefox"])
+        .await;
+    assert_exit(&output, 0);
+    let info: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let media = &info["Media"];
+    assert_eq!(media["title"], "A Fine Video", "{info}");
+    let heights: Vec<&str> = media["all_qualities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| q["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(heights, ["2160p", "1080p", "720p", "480p"]);
+    assert_eq!(media["subtitle_languages"], json!(["en", "vi"]));
+    assert_eq!(media["auto_caption_languages"], json!(["fr"]));
+    // The cookies reached the inspection.
+    let inspections: Vec<Vec<String>> = process_args_log()
+        .into_iter()
+        .filter(|e| e.tool == "yt-dlp" && e.argv.iter().any(|a| a == link))
+        .map(|e| e.argv)
+        .collect();
+    assert!(
+        inspections.iter().any(|argv| argv
+            .windows(2)
+            .any(|w| w == ["--cookies-from-browser", "firefox"])),
+        "{inspections:?}"
+    );
+
+    // Nothing was added, and nothing was downloaded.
+    let list = video.fx.run(&["--json", "list"]).await;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&list.stdout).unwrap(),
+        json!([])
+    );
+    assert!(download_argvs(link).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn any_height_reaches_yt_dlp() {
+    let name = "A Fine Video [abc123].mp4";
+    let video = Video::new(&media_scenario(
+        &video_with_languages(),
+        downloads(name, 64),
+    ))
+    .await;
+    let link = "https://www.youtube.com/watch?v=cli_quality_480p";
+    let dir = video.fx.out.to_str().unwrap();
+
+    let output = video
+        .fx
+        .run(&["add", link, "--quality", "480p", "--dir", dir])
+        .await;
+
+    assert_exit(&output, 0);
+    assert!(
+        !stderr(&output).contains("not available"),
+        "{}",
+        stderr(&output)
+    );
+    let runs = download_argvs(link);
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert!(
+        runs[0]
+            .windows(2)
+            .any(|w| w == ["-f", "bv*[height<=480]+ba/b[height<=480]"]),
+        "{:?}",
+        runs[0]
+    );
+    // A value that is not a quality exits 1 before anything runs.
+    for bad in ["480", "hd", "0p"] {
+        let output = video.fx.run(&["add", link, "--quality", bad]).await;
+        assert_exit(&output, 1);
+    }
+    assert_eq!(download_argvs(link).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn user_needs_exactly_one_url() {
+    let fx = Fixture::new().await;
+    let url = protected(&fx, FileSpec::new(5000));
+    let dir = fx.out.to_str().unwrap();
+    let list = fx.tmp.path().join("urls.txt");
+    fs::write(&list, format!("{url}\n")).unwrap();
+
+    for args in [
+        &["add", &url, &url, "--user", "bob", "--dir", dir][..],
+        &[
+            "add",
+            "--file",
+            list.to_str().unwrap(),
+            "--user",
+            "bob",
+            "--dir",
+            dir,
+        ],
+        &[
+            "add",
+            &url,
+            "--file",
+            list.to_str().unwrap(),
+            "--user",
+            "bob",
+            "--dir",
+            dir,
+        ],
+    ] {
+        let mut cmd = fx.taurus();
+        cmd.env("TAURUS_PASSWORD", SECRET).args(args);
+        let output = output_of(cmd).await;
+        assert_exit(&output, 1);
+        assert!(
+            stderr(&output).contains("--user can only be used with exactly one URL"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+    assert_eq!(fx.server.requests(PATH), 0);
+    assert!(!fx.tmp.path().join("data").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_data_dir_is_reported_before_the_password_is_asked() {
+    let fx = Fixture::new().await;
+    let url = protected(&fx, FileSpec::new(5000));
+    let _held = hold_lock(&fx);
+
+    // No terminal and no test password: asking would fail on the terminal,
+    // so the lock must be reported first.
+    let output = fx
+        .run(&[
+            "add",
+            &url,
+            "--user",
+            "bob",
+            "--dir",
+            fx.out.to_str().unwrap(),
+        ])
+        .await;
+    assert_exit(&output, 1);
+    let err = stderr(&output);
+    assert!(err.contains("another taurus instance"), "{err}");
+    assert!(!err.contains("terminal"), "{err}");
+    let output = fx.run(&["login", "1", "--user", "bob"]).await;
+    assert_exit(&output, 1);
+    let err = stderr(&output);
+    assert!(err.contains("another taurus instance"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn convert_command() {
+    let video = Video::new(&json!([])).await;
+    let fx = &video.fx;
+    let dir = fx.out.to_str().unwrap();
+    let song = fx.out.join("song.webm");
+    fs::write(&song, vec![9u8; 4000]).unwrap();
+
+    // A file, by path.
+    let output = fx.run(&["convert", song.to_str().unwrap(), "mp3"]).await;
+    assert_exit(&output, 0);
+    // The fake ffmpeg copies its input; the source stays as it was.
+    assert_eq!(
+        fs::read(fx.out.join("song (mp3).mp3")).unwrap(),
+        vec![9u8; 4000]
+    );
+    assert_eq!(fs::read(&song).unwrap(), vec![9u8; 4000]);
+
+    // A finished download, by id.
+    let url = fx.server.serve(PATH, FileSpec::new(3000));
+    assert_exit(&fx.add(&url, &fx.out).await, 0);
+    let output = fx.run(&["convert", "2", "smaller-mp4"]).await;
+    assert_exit(&output, 0);
+    assert_eq!(
+        fs::metadata(fx.out.join("x (smaller).mp4")).unwrap().len(),
+        3000
+    );
+    let list = fx.run(&["--json", "list"]).await;
+    let jobs: Value = serde_json::from_slice(&list.stdout).unwrap();
+    let kinds: Vec<&str> = jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| j["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["Convert", "Http", "Convert"]);
+
+    // Only web downloads take a login, said before any password is asked.
+    let output = fx.run(&["login", "1", "--user", "bob"]).await;
+    assert_exit(&output, 1);
+    assert!(
+        stderr(&output).contains("not a web download"),
+        "{}",
+        stderr(&output)
+    );
+
+    // Refusals say why and exit 1.
+    let output = fx.run(&["convert", "77", "mp3"]).await;
+    assert_exit(&output, 1);
+    let output = fx
+        .run(&["convert", &format!("{dir}/none.webm"), "mp3"])
+        .await;
+    assert_exit(&output, 1);
+    assert!(
+        stderr(&output).contains("not a file that exists"),
+        "{}",
+        stderr(&output)
+    );
+    assert_exit(&fx.run(&["convert", "2", "ogg"]).await, 1);
+}
+
+/// A torrent of two files, added with only the first one, and finished.
+async fn finished_pack(fx: &Fixture, seeder: &TorrentSeeder) {
+    assert_exit(&fx.run(&["config", "set", "torrent.ratio", "0"]).await, 0);
+    let torrent = fx.tmp.path().join("pack.torrent");
+    fs::write(&torrent, &seeder.torrent_bytes).unwrap();
+    let mut cmd = fx.taurus_with_peer(seeder);
+    cmd.args(["add", torrent.to_str().unwrap(), "--files", "0"])
+        .args(["--dir", fx.out.to_str().unwrap()]);
+    assert_exit(&output(cmd).await, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn torrent_select_command() {
+    let fx = Fixture::new().await;
+    let (seeder, _, b) = pack_seeder().await;
+    finished_pack(&fx, &seeder).await;
+
+    // Refusals change nothing and say why.
+    for (list, why) in [
+        ("", "empty"),
+        ("1,,2", "invalid"),
+        ("5-2", "backwards"),
+        ("7", "no file 7"),
+    ] {
+        let output = fx.run(&["torrent-select", "1", list]).await;
+        assert_exit(&output, 1);
+        assert!(stderr(&output).contains(why), "{list}: {}", stderr(&output));
+    }
+    assert_exit(&fx.run(&["torrent-select", "9", "0"]).await, 1);
+    let url = fx.server.serve(PATH, FileSpec::new(10));
+    assert_exit(&fx.add(&url, &fx.out).await, 0);
+    let output = fx.run(&["torrent-select", "2", "0"]).await;
+    assert_exit(&output, 1);
+
+    // Adding the second file queues the torrent again.
+    let output = fx.run(&["torrent-select", "1", "0-1"]).await;
+    assert_exit(&output, 0);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("Download 1: 2 files selected."), "{text}");
+    assert!(text.contains("taurus run"), "{text}");
+    let list = fx.run(&["--json", "list"]).await;
+    let jobs: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(jobs[0]["state"], "Queued");
+    assert_eq!(jobs[0]["torrent"]["files_selected"], 2);
+
+    // The next run downloads it.
+    let mut cmd = fx.taurus_with_peer(&seeder);
+    cmd.arg("run");
+    assert_exit(&output_of(cmd).await, 0);
+    assert_eq!(fs::read(fx.out.join("pack/dir/b.bin")).unwrap(), b);
+
+    // Dropping a file keeps it on disk and the job done.
+    let output = fx.run(&["--json", "torrent-select", "1", "1"]).await;
+    assert_exit(&output, 0);
+    let said: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(said["files"], json!([1]));
+    assert_eq!(said["state"], "Completed");
+}
+
+/// The first job's own sharing rules, as `list --json` shows them.
+async fn torrent_overrides(fx: &Fixture) -> Value {
+    let list = fx.run(&["--json", "list"]).await;
+    let jobs: Value = serde_json::from_slice(&list.stdout).unwrap();
+    jobs[0]["torrent"]["overrides"].clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn job_set_ratio() {
+    let fx = Fixture::new().await;
+    let (seeder, _, _) = pack_seeder().await;
+    finished_pack(&fx, &seeder).await;
+
+    let output = fx.run(&["job", "set", "1", "ratio", "2.5"]).await;
+    assert_exit(&output, 0);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Download 1: ratio = 2.5\n"
+    );
+    assert_eq!(torrent_overrides(&fx).await, json!({"stop_ratio": 2.5}));
+
+    // The other rule is kept when one changes.
+    assert_exit(&fx.run(&["job", "set", "1", "seed_time", "2h"]).await, 0);
+    assert_eq!(
+        torrent_overrides(&fx).await,
+        json!({"stop_ratio": 2.5, "stop_after_secs": 7200})
+    );
+    assert_exit(&fx.run(&["job", "set", "1", "ratio", "never"]).await, 0);
+    assert_eq!(
+        torrent_overrides(&fx).await,
+        json!({"stop_ratio": null, "stop_after_secs": 7200})
+    );
+
+    // `default` clears one rule: it follows the global setting again.
+    let output = fx.run(&["job", "set", "1", "ratio", "default"]).await;
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Download 1: ratio = default\n"
+    );
+    assert_exit(
+        &fx.run(&["job", "set", "1", "seed_time", "default"]).await,
+        0,
+    );
+    assert_eq!(torrent_overrides(&fx).await, json!({}));
+    assert_exit(&fx.run(&["job", "set", "1", "seed_time", "off"]).await, 0);
+    assert_eq!(
+        torrent_overrides(&fx).await,
+        json!({"stop_after_secs": null})
+    );
+
+    // Bad values and jobs are refused.
+    for args in [
+        ["job", "set", "1", "ratio", "fast"],
+        ["job", "set", "1", "ratio", "-1"],
+        ["job", "set", "1", "seed_time", "0m"],
+        ["job", "set", "1", "speed", "1"],
+        ["job", "set", "5", "ratio", "1"],
+    ] {
+        assert_exit(&fx.run(&args).await, 1);
+    }
+    let url = fx.server.serve(PATH, FileSpec::new(10));
+    assert_exit(&fx.add(&url, &fx.out).await, 0);
+    let output = fx.run(&["job", "set", "2", "ratio", "1"]).await;
+    assert_exit(&output, 1);
+    assert!(
+        stderr(&output).contains("not a torrent"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+async fn proxy_line(fx: &Fixture) -> String {
+    let output = fx.run(&["config", "get", "network.proxy"]).await;
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn proxy_config_roundtrip_and_rejects_bad() {
+    let fx = Fixture::new().await;
+    assert_eq!(proxy_line(&fx).await, "network.proxy = system\n");
+
+    let output = fx
+        .run(&["config", "set", "network.proxy", "socks5h://127.0.0.1:9050"])
+        .await;
+    assert_exit(&output, 0);
+    // Torrents pick up a SOCKS proxy when Taurus next starts.
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "network.proxy = socks5h://127.0.0.1:9050\napplies next time Taurus starts\n"
+    );
+    assert_eq!(
+        proxy_line(&fx).await,
+        "network.proxy = socks5h://127.0.0.1:9050\n"
+    );
+    let output = fx.run(&["--json", "config", "get", "network.proxy"]).await;
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["network.proxy"],
+        json!({"Manual": {"url": "socks5h://127.0.0.1:9050"}})
+    );
+    assert!(
+        String::from_utf8_lossy(&fx.run(&["config", "get"]).await.stdout)
+            .contains("network.proxy = socks5h://127.0.0.1:9050\n")
+    );
+
+    // Leaving a SOCKS proxy says so too: a running torrent session keeps it.
+    let output = fx.run(&["config", "set", "network.proxy", "none"]).await;
+    assert_exit(&output, 0);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "network.proxy = none\napplies next time Taurus starts\n"
+    );
+    assert_eq!(proxy_line(&fx).await, "network.proxy = none\n");
+    assert_exit(
+        &fx.run(&["config", "set", "network.proxy", "System"]).await,
+        0,
+    );
+    assert_eq!(proxy_line(&fx).await, "network.proxy = system\n");
+    // An http proxy is for web downloads only: used at once, no note.
+    let output = fx
+        .run(&[
+            "config",
+            "set",
+            "network.proxy",
+            "http://proxy.example:3128",
+        ])
+        .await;
+    assert_exit(&output, 0);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "network.proxy = http://proxy.example:3128\n"
+    );
+
+    // A user name or password in the URL is refused with the engine's own
+    // message, which does not repeat it; the setting stays.
+    let output = fx
+        .run(&[
+            "config",
+            "set",
+            "network.proxy",
+            "http://amy:hunter2@proxy.example:3128",
+        ])
+        .await;
+    assert_exit(&output, 1);
+    let text = stderr(&output);
+    assert!(
+        text.contains("a user name or password in the proxy URL is not supported"),
+        "{text}"
+    );
+    assert!(!text.contains("hunter2") && !text.contains("amy"), "{text}");
+    for garbage in [
+        "not a url",
+        "ftp://proxy.example:21",
+        "http://",
+        "socks5://[::1]:1080",
+    ] {
+        let output = fx.run(&["config", "set", "network.proxy", garbage]).await;
+        assert_exit(&output, 1);
+        assert!(
+            stderr(&output).contains("unsupported proxy"),
+            "{garbage}: {}",
+            stderr(&output)
+        );
+    }
+    assert_eq!(
+        proxy_line(&fx).await,
+        "network.proxy = http://proxy.example:3128\n"
+    );
 }

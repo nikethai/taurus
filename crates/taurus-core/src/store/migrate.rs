@@ -9,7 +9,10 @@ use crate::errors::{CoreError, ErrorKind};
 
 use super::{Store, db_err, io_err, now_secs};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
+/// Start of the detail of the error a read-only open of an older database
+/// returns.
+pub(crate) const OLDER_SCHEMA: &str = "the database was written by an older taurus";
 
 const SCHEMA_V1: &str = "
 CREATE TABLE jobs (
@@ -85,6 +88,20 @@ const MIGRATE_V5_TO_V6: &str = "
 ALTER TABLE jobs ADD COLUMN media_options TEXT;
 ";
 
+/// Applied on top of v6: one step for all of M6a's columns (v7 is not
+/// released until M6a is; each of its additions appends an `ALTER` here).
+/// `auth_user`: the user name of a protected download (its password is in
+/// the secret store, never here).
+/// `convert_source`: what a convert job (kind 'convert') converts, as JSON
+/// (source file, preset, and the partial output of its run).
+/// `torrent_overrides`: a torrent's own sharing rules, as JSON; NULL uses
+/// the global ones.
+const MIGRATE_V6_TO_V7: &str = "
+ALTER TABLE jobs ADD COLUMN auth_user TEXT;
+ALTER TABLE jobs ADD COLUMN convert_source TEXT;
+ALTER TABLE jobs ADD COLUMN torrent_overrides TEXT;
+";
+
 fn is_corruption(e: &rusqlite::Error) -> bool {
     matches!(
         e.sqlite_error_code(),
@@ -125,6 +142,7 @@ fn init(path: &Path) -> rusqlite::Result<Connection> {
         MIGRATE_V3_TO_V4,
         MIGRATE_V4_TO_V5,
         MIGRATE_V5_TO_V6,
+        MIGRATE_V6_TO_V7,
     ];
     let steps = match usize::try_from(version) {
         Ok(from) if from < chain.len() => chain[from..].concat(),
@@ -176,6 +194,8 @@ impl Store {
 
     /// Opens an existing database for reading only: nothing is created,
     /// migrated or repaired. `None` if there is no database or no schema yet.
+    /// An older schema fails (`CoreError::is_older_schema`): only the engine
+    /// holding the data dir may migrate it.
     pub fn open_read_only(path: &Path) -> Result<Option<Store>, CoreError> {
         if !path.exists() {
             return Ok(None);
@@ -204,7 +224,7 @@ impl Store {
             return Err(CoreError {
                 kind: ErrorKind::Unknown,
                 detail: format!(
-                    "database schema version {version} is older than {SCHEMA_VERSION}; \
+                    "{OLDER_SCHEMA} (version {version}, this one reads {SCHEMA_VERSION}); \
                      start taurus once (with no other instance running) to upgrade it"
                 ),
             });
@@ -218,8 +238,11 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::convert::ConvertSpec;
+    use crate::media::ConvertPreset;
     use crate::store::test_support::{new_job, open_temp};
-    use crate::store::{JobKind, JobState};
+    use crate::store::{JobKind, JobState, NewJob};
+    use crate::torrent::policy::TorrentOverrides;
 
     #[test]
     fn open_configures_wal_and_foreign_keys() {
@@ -441,7 +464,7 @@ mod tests {
             .lock()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, SCHEMA_VERSION);
         // The new kind, state and column are usable.
         let options = crate::media::MediaOptions {
             quality: "audio-best".into(),
@@ -451,6 +474,7 @@ mod tests {
             playlist: false,
             live_from_start: true,
             partial_files: vec!["/d/a [x].mp4.part".into()],
+            ..Default::default()
         };
         let id = store
             .insert_job(&crate::store::NewJob {
@@ -491,6 +515,139 @@ mod tests {
         )
         .unwrap();
         assert!(old.partial_files.is_empty());
+    }
+
+    /// An M5 (v6) database at `path` holding one paused media job.
+    fn v6_database(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        for step in [
+            SCHEMA_V1,
+            MIGRATE_V1_TO_V2,
+            MIGRATE_V2_TO_V3,
+            MIGRATE_V3_TO_V4,
+            MIGRATE_V4_TO_V5,
+            MIGRATE_V5_TO_V6,
+        ] {
+            conn.execute_batch(step).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        conn.execute(
+            "INSERT INTO jobs (url, source_url, dest_dir, file_name, state, connections, \
+             created_at, updated_at, kind, media_options) \
+             VALUES ('u', 'u', '/d', 'x', 'paused', 4, 1, 1, 'media', \
+             '{\"quality\":\"best\",\"selector\":\"b\",\"audio_only\":false,\
+             \"convert\":null,\"playlist\":false,\"live_from_start\":false}')",
+            [],
+        )
+        .unwrap();
+    }
+
+    /// A front end that reads the database before opening the engine (the
+    /// CLI's `login`) can tell an older schema from any other failure, and
+    /// reads it once the engine's open has upgraded it.
+    #[test]
+    fn a_v6_database_is_refused_read_only_until_upgraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taurus.db");
+        v6_database(&path);
+        let Err(e) = Store::open_read_only(&path) else {
+            panic!("a v6 database was read without an upgrade");
+        };
+        assert!(e.is_older_schema(), "{e}");
+        assert!(!e.is_instance_locked());
+        drop(Store::open(&path).unwrap());
+        let store = Store::open_read_only(&path).unwrap().expect("a database");
+        assert_eq!(store.list_jobs().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn v6_database_migrates_to_v7() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("taurus.db");
+        v6_database(&path);
+
+        let store = Store::open(&path).unwrap();
+        let jobs = store.list_jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        let mut job = jobs[0].clone();
+        // What v6 recorded survives; no job has a user name yet.
+        assert_eq!(job.kind, JobKind::Media);
+        assert_eq!(job.state, JobState::Paused);
+        assert_eq!(job.media.as_ref().map(|m| m.quality.as_str()), Some("best"));
+        assert_eq!(job.auth_user, None);
+        assert_eq!(job.convert, None);
+        let version: i64 = store
+            .lock()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
+        // The user name is set on its own; a whole-record update from a
+        // copy without it leaves it alone.
+        store.set_auth_user(job.id, Some("ann")).unwrap();
+        job.state = JobState::Failed;
+        store.update_job(&job).unwrap();
+        let stored = store.get_job(job.id).unwrap().unwrap();
+        assert_eq!(stored.auth_user.as_deref(), Some("ann"));
+        assert_eq!(stored.state, JobState::Failed);
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.get_job(job.id).unwrap().unwrap().auth_user.as_deref(),
+            Some("ann")
+        );
+        store.set_auth_user(job.id, None).unwrap();
+        assert_eq!(store.get_job(job.id).unwrap().unwrap().auth_user, None);
+
+        // What a convert job converts is set on its own, too.
+        let spec = ConvertSpec {
+            source: "/d/song.webm".into(),
+            preset: ConvertPreset::Mp3,
+            partial: Some("/d/.part.mp3".into()),
+        };
+        store.set_convert(job.id, &spec).unwrap();
+        job.state = JobState::Paused;
+        store.update_job(&job).unwrap();
+        let stored = store.get_job(job.id).unwrap().unwrap();
+        assert_eq!(stored.convert.as_ref(), Some(&spec));
+        assert_eq!(stored.state, JobState::Paused);
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let stored = store.get_job(job.id).unwrap().unwrap();
+        assert_eq!(stored.convert, Some(spec));
+        // A new job of the new kind roundtrips.
+        let id = store
+            .insert_job(&NewJob {
+                kind: JobKind::Convert,
+                ..new_job("song (mp3).mp3", "/d")
+            })
+            .unwrap();
+        assert_eq!(store.get_job(id).unwrap().unwrap().kind, JobKind::Convert);
+
+        // No job has sharing rules of its own yet; they are set on their own
+        // and survive a whole-record update and a reopen.
+        assert_eq!(stored.torrent_overrides, TorrentOverrides::default());
+        let rules = TorrentOverrides {
+            stop_ratio: Some(None),
+            stop_after_secs: Some(Some(90)),
+        };
+        store.set_torrent_overrides(job.id, &rules).unwrap();
+        store.update_job(&stored).unwrap();
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        let stored = store.get_job(job.id).unwrap().unwrap();
+        assert_eq!(stored.torrent_overrides, rules);
+        store
+            .set_torrent_overrides(job.id, &TorrentOverrides::default())
+            .unwrap();
+        let raw: Option<String> = store
+            .lock()
+            .query_row(
+                "SELECT torrent_overrides FROM jobs WHERE id = ?1",
+                [job.id.0],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, None);
     }
 
     #[test]

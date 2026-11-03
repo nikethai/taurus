@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::errors::{CoreError, ErrorKind, backoff_delay_with};
+use crate::http::auth::{self, Auth, unauthorized};
 use crate::http::client::{bot_check_error, request_error, status_error};
 use crate::http::probe::{parse_content_range, validator_change};
 use crate::limit::Limiter;
@@ -61,9 +62,11 @@ pub(super) struct Worker {
     pub(super) idx: usize,
     /// Index of `url` in the job's sources.
     pub(super) source: usize,
-    pub(super) client: reqwest::Client,
+    pub(super) client: crate::network::SharedClient,
     pub(super) url: String,
     pub(super) referer: Option<String>,
+    /// The job's credentials, sent if `url` is on the link's origin.
+    pub(super) auth: Option<Auth>,
     /// The job's validators, which every 206 must match.
     pub(super) etag: Option<String>,
     pub(super) last_modified: Option<String>,
@@ -149,18 +152,27 @@ impl Worker {
         if self.written >= end {
             return Ok(WorkerEnd::Complete);
         }
-        let mut request = self.client.get(&self.url);
-        if self.resumable {
-            request = request.header(RANGE, format!("bytes={}-{}", self.written, end - 1));
-        }
-        if let Some(referer) = &self.referer {
-            request = request.header(REFERER, referer);
-        }
-        let mut response = tokio::select! {
-            _ = self.stop.cancelled() => return Ok(WorkerEnd::Cancelled),
-            sent = request.send() => sent.map_err(|e| Fault::Source(request_error(e)))?,
+        let client = self.client.get();
+        let build = |url: &str| {
+            let mut request = client.get(url);
+            if self.resumable {
+                request = request.header(RANGE, format!("bytes={}-{}", self.written, end - 1));
+            }
+            if let Some(referer) = &self.referer {
+                request = request.header(REFERER, referer);
+            }
+            request
         };
-        if let Some(end) = self.check_response(&response, end).map_err(Fault::Source)? {
+        let (mut response, signed_in) = tokio::select! {
+            _ = self.stop.cancelled() => return Ok(WorkerEnd::Cancelled),
+            sent = auth::send(build, self.auth.as_ref(), &self.url) => {
+                sent.map_err(|e| Fault::Source(request_error(e)))?
+            }
+        };
+        if let Some(end) = self
+            .check_response(&response, end, signed_in)
+            .map_err(Fault::Source)?
+        {
             return Ok(end);
         }
         // Counted before it is announced, so the workers it lets start see it.
@@ -212,11 +224,13 @@ impl Worker {
     }
 
     /// Accepts the response, asks for the fallback, or returns the error.
-    /// Runs before any byte of the response is written.
+    /// Runs before any byte of the response is written. `signed_in`: the
+    /// request that got the response carried the job's credentials.
     fn check_response(
         &self,
         response: &reqwest::Response,
         end: u64,
+        signed_in: bool,
     ) -> Result<Option<WorkerEnd>, CoreError> {
         let status = response.status();
         let headers = response.headers();
@@ -244,6 +258,9 @@ impl Worker {
         ) && self.open.load(Ordering::SeqCst) > 0
         {
             return Ok(Some(WorkerEnd::ConnectionLimit));
+        }
+        if status == StatusCode::UNAUTHORIZED {
+            return Err(unauthorized(headers, signed_in));
         }
         if !status.is_success() {
             return Err(status_error(status));

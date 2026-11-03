@@ -220,6 +220,7 @@ fn global_flags_for_every_run() {
     let args = global_args(
         std::path::Path::new("/t/deno/2.5.0/deno"),
         std::path::Path::new("/t/ffmpeg/abc"),
+        &crate::network::ProxySetting::System,
     );
     let args: Vec<_> = args
         .iter()
@@ -238,6 +239,46 @@ fn global_flags_for_every_run() {
             "--no-colors"
         ]
     );
+    let proxy = crate::network::ProxySetting::Manual {
+        url: "http://127.0.0.1:3128".to_string(),
+    };
+    let args = global_args(Path::new("/d"), Path::new("/f"), &proxy);
+    let tail: Vec<_> = args[args.len() - 2..].iter().collect();
+    assert_eq!(tail, ["--proxy", "http://127.0.0.1:3128"]);
+}
+
+/// What yt-dlp starts sees the same proxy as yt-dlp: the command sets or
+/// removes the proxy variables.
+#[test]
+fn the_command_carries_the_proxy_environment() {
+    use crate::network::{ProxySetting, proxy_env};
+    let envs = |proxy: &ProxySetting| {
+        let yt_dlp = YtDlp {
+            path: "/t/yt-dlp".into(),
+            global: Vec::new(),
+            env: proxy_env(proxy),
+        };
+        let command = yt_dlp.command();
+        command
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                let k = k.to_string_lossy().to_ascii_uppercase();
+                (k, v.map(|v| v.to_string_lossy().into_owned()))
+            })
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    assert!(envs(&ProxySetting::System).is_empty());
+    let none = envs(&ProxySetting::None);
+    for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"] {
+        assert_eq!(none.get(name), Some(&None), "{name}");
+    }
+    let url = "http://127.0.0.1:3128".to_string();
+    let manual = envs(&ProxySetting::Manual { url: url.clone() });
+    for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+        assert_eq!(manual.get(name), Some(&Some(url.clone())), "{name}");
+    }
+    assert_eq!(manual.get("NO_PROXY"), Some(&None));
 }
 
 #[test]
@@ -333,4 +374,130 @@ fn failure_detail_is_the_error_line() {
     );
     assert_eq!(detail("just a line\n\n"), "just a line");
     assert_eq!(detail(""), "yt-dlp failed without a message");
+}
+
+#[test]
+fn parse_subtitle_languages() {
+    let mut json = fixture("single_video.json");
+    json["subtitles"] = json!({
+        "vi": [{ "ext": "vtt", "url": "https://s/vi" }],
+        "en": [{ "ext": "vtt", "url": "https://s/en" }],
+        "live_chat": [{ "ext": "json", "url": "https://s/chat" }],
+    });
+    json["automatic_captions"] = json!({
+        "fr": [{ "ext": "vtt", "url": "https://s/fr" }],
+        "en": [{ "ext": "vtt", "url": "https://s/aen" }],
+    });
+    let info = parse_info(&json).unwrap();
+    // Sorted, and the live chat is not a language.
+    assert_eq!(info.subtitle_languages, ["en", "vi"]);
+    assert_eq!(info.auto_caption_languages, ["en", "fr"]);
+    // A video without either key has none; so does a playlist.
+    let plain = parse_info(&fixture("single_video.json")).unwrap();
+    assert!(plain.subtitle_languages.is_empty() && plain.auto_caption_languages.is_empty());
+    let list = parse_info(&fixture("playlist.json")).unwrap();
+    assert!(list.subtitle_languages.is_empty() && list.all_qualities.is_empty());
+}
+
+#[test]
+fn all_qualities_one_per_height() {
+    let formats = [
+        json!({ "format_id": "sb0", "ext": "mhtml", "vcodec": "none", "acodec": "none",
+                "height": 90 }),
+        json!({ "format_id": "251", "vcodec": "none", "acodec": "opus", "filesize": 1000 }),
+        json!({ "format_id": "135", "vcodec": "avc1", "acodec": "none", "height": 480,
+                "filesize": 4000 }),
+        json!({ "format_id": "137", "vcodec": "avc1", "acodec": "none", "height": 1080,
+                "filesize": 9000 }),
+        json!({ "format_id": "248", "vcodec": "vp9", "acodec": "none", "height": 1080,
+                "filesize": 7000 }),
+        json!({ "format_id": "401", "vcodec": "av01", "acodec": "none", "height": 2160 }),
+        json!({ "format_id": "22", "vcodec": "avc1", "acodec": "aac", "height": 720,
+                "filesize": 5000 }),
+    ];
+    let all = all_qualities(&formats);
+    assert_eq!(ids(&all), ["2160p", "1080p", "720p", "480p"]);
+    let p1080 = option(&all, "1080p");
+    assert_eq!(p1080.selector, "bv*[height<=1080]+ba/b[height<=1080]");
+    assert!(!p1080.audio_only);
+    // The largest format of that height, plus the audio it lacks.
+    assert_eq!(p1080.est_size, Some(10_000));
+    assert_eq!(option(&all, "720p").est_size, Some(5000));
+    assert_eq!(option(&all, "2160p").est_size, None);
+    // The parsed info lists them, beside the usual five.
+    let mut json = fixture("single_video.json");
+    json["formats"] = Value::Array(formats.to_vec());
+    let info = parse_info(&json).unwrap();
+    assert_eq!(ids(&info.all_qualities), ["2160p", "1080p", "720p", "480p"]);
+    assert_eq!(info.qualities[0].id, "best");
+    // Audio only: no heights.
+    assert!(all_qualities(&formats[1..2]).is_empty());
+}
+
+#[test]
+fn old_media_options_json_loads() {
+    let old: MediaOptions = serde_json::from_str(
+        r#"{"quality":"best","selector":"b","audio_only":false,"convert":null,
+            "playlist":false,"live_from_start":false}"#,
+    )
+    .unwrap();
+    assert_eq!(old.cookies_from_browser, None);
+    assert_eq!(old.subtitles, None);
+    assert_eq!(old.container, None);
+    // New fields round-trip; unset ones stay out of the JSON.
+    let json = serde_json::to_string(&old).unwrap();
+    assert!(
+        !json.contains("cookies") && !json.contains("container"),
+        "{json}"
+    );
+    let new = MediaOptions {
+        cookies_from_browser: Some("firefox:work".into()),
+        subtitles: Some(SubtitleChoice {
+            languages: vec!["en".into()],
+            auto_generated: true,
+            embed: false,
+        }),
+        container: Some(Container::Mkv),
+        ..old
+    };
+    let back: MediaOptions = serde_json::from_str(&serde_json::to_string(&new).unwrap()).unwrap();
+    assert_eq!(back, new);
+}
+
+#[test]
+fn validate_browser_cases() {
+    for ok in [
+        "chrome",
+        "firefox",
+        "safari",
+        "edge",
+        "brave",
+        "chromium",
+        "opera",
+        "vivaldi",
+        "firefox:default-release",
+        "chrome:Profile 1",
+    ] {
+        validate_browser(ok).unwrap_or_else(|e| panic!("{ok}: {e:?}"));
+    }
+    for bad in [
+        "",
+        " ",
+        "netscape",
+        "Chrome2",
+        "chrome:",
+        ":profile",
+        "chrome:a\nb",
+        "--proxy",
+        "firefox+gnomekeyring",
+        "firefox::container",
+    ] {
+        let e = validate_browser(bad).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Unknown, "{bad:?}");
+        assert!(e.detail.contains("browser"), "{bad:?}: {}", e.detail);
+    }
+    assert_eq!(
+        validate_browser("netscape").unwrap_err().detail,
+        "unknown browser"
+    );
 }

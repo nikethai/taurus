@@ -146,13 +146,25 @@ impl Actor {
         }
     }
 
-    /// Running HTTP and media jobs, and running torrents that are not
+    /// Running HTTP, media and convert jobs, and running torrents that are not
     /// Seeding: what `max_active` and `torrent.max_active` limit.
     pub(super) fn active(&self) -> (usize, usize) {
+        self.running_counts(true)
+    }
+
+    /// `active` without the convert jobs, which download nothing: the jobs
+    /// that share the speed limit (`split_rate`, `media_share`).
+    pub(super) fn transferring(&self) -> (usize, usize) {
+        self.running_counts(false)
+    }
+
+    fn running_counts(&self, with_convert: bool) -> (usize, usize) {
         let views = read(&self.views);
         let running = self.running.keys().filter_map(|id| views.get(id));
         running.fold((0, 0), |(http, torrents), view| match view.kind {
             JobKind::Http | JobKind::Media => (http + 1, torrents),
+            JobKind::Convert if with_convert => (http + 1, torrents),
+            JobKind::Convert => (http, torrents),
             JobKind::Torrent if view.state == JobState::Seeding => (http, torrents),
             JobKind::Torrent => (http, torrents + 1),
         })
@@ -162,7 +174,9 @@ impl Actor {
     /// it must fit beside what the running jobs on its disk still download.
     /// A job whose size is unknown, that has nothing left to download (only
     /// the check and the rename; see `check_space`), or that cannot be read,
-    /// is let through; so is a torrent, whose runner checks for itself.
+    /// is let through; so is a torrent, whose runner checks for itself. A
+    /// conversion's output is taken to be at most its source's size, in the
+    /// folder it is written to.
     fn fits_to_start(&self, id: JobId) -> Result<(), CoreError> {
         if self.is_torrent(id) {
             return Ok(());
@@ -179,6 +193,20 @@ impl Actor {
                 return Ok(());
             }
         };
+        if let Some(spec) = &job.convert {
+            return match std::fs::metadata(&spec.source) {
+                Ok(source) => check_space(
+                    &self.views,
+                    self.space,
+                    &job.dest_dir,
+                    source.len(),
+                    Some(source.len()),
+                    Some(id),
+                ),
+                // A missing source fails in the runner, saying so.
+                Err(_) => Ok(()),
+            };
+        }
         match job.total {
             Some(total) => check_space(
                 &self.views,
@@ -282,10 +310,14 @@ impl Actor {
     }
 
     /// Spawns the job's download task; the job is Downloading from here on.
-    /// A media job has a runner of its own (`start_media`).
+    /// A media job has a runner of its own (`start_media`), and so has a
+    /// convert job (`start_convert`).
     pub(super) fn start(&mut self, id: JobId) {
         if self.is_media(id) {
             return self.start_media(id);
+        }
+        if self.is_convert(id) {
+            return self.start_convert(id);
         }
         if let Err(e) = self.store.set_state(id, JobState::Downloading) {
             // The run records its own state as it starts.
@@ -303,9 +335,13 @@ impl Actor {
             limiter: self.limiter.clone(),
             timing: self.timing.clone(),
             auto_checksum: self.settings.auto_checksum,
+            auth: None,
         };
         let tx = self.job_tx.clone();
+        let secrets = self.secrets.clone();
         tokio::spawn(async move {
+            let mut ctx = ctx;
+            ctx.auth = secrets.auth_for_stored(&ctx.store, id).await;
             // A task of its own, so a panic still ends in `Finished`.
             let job = tokio::spawn(run_job(ctx));
             // Ends when the job drops its progress sender, i.e. when it ends.

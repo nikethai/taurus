@@ -10,10 +10,9 @@ use crate::errors::{CoreError, ErrorKind};
 use crate::filename::{PARTIAL_EXT, sanitize, unique_path};
 use crate::fixups;
 use crate::http::probe::validator_change;
-use crate::http::{JobOutcome, Probe, resolve};
+use crate::http::{JobOutcome, Probe, resolve_with};
 use crate::plan::DEFAULT_CONNECTIONS;
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob, Store};
-use crate::system::marks::loggable;
 
 use super::RemoveFiles;
 use super::actor::{Actor, JobMsg, Run};
@@ -24,7 +23,8 @@ use super::torrent::{stored_downloaded, stored_torrent_view};
 use super::{AddRequest, Event, JobView, io_error, no_such_job, read, write};
 
 impl Actor {
-    pub(super) fn add(&mut self, req: AddRequest, probe: &Probe) -> Result<JobId, CoreError> {
+    pub(super) fn add(&mut self, mut req: AddRequest, probe: &Probe) -> Result<JobId, CoreError> {
+        let credentials = req.credentials.take();
         let name = match &req.file_name {
             Some(name) => sanitize(name),
             None => probe.file_name.clone(),
@@ -83,9 +83,13 @@ impl Actor {
             uploaded: 0,
             seed_started_at: None,
             media: None,
+            auth_user: None,
+            convert: None,
+            torrent_overrides: Default::default(),
         };
         apply_probe(&mut job, probe);
-        if let Err(e) = self.store.update_job(&job) {
+        let stored = self.store.update_job(&job);
+        if let Err(e) = stored.and_then(|()| self.store_credentials(&mut job, credentials)) {
             if let Err(cleanup) = self.store.delete_job(id) {
                 tracing::warn!(job = id.0, "could not remove a half-added job: {cleanup}");
             }
@@ -221,17 +225,20 @@ impl Actor {
         delete_files: bool,
         finished_too: bool,
     ) -> Result<(), CoreError> {
-        match self.store.get_job(id)? {
+        let job = self.store.get_job(id)?;
+        match &job {
             Some(job) if job.kind == JobKind::Torrent => {
-                self.delete_torrent(&job, delete_files).await?;
+                self.delete_torrent(job, delete_files).await?;
             }
             Some(job) if job.kind == JobKind::Media => {
-                self.delete_media(&job, delete_files, finished_too);
+                self.delete_media(job, delete_files, finished_too);
             }
-            Some(job) if delete_files => delete_job_files(&self.store, &job)?,
+            Some(job) if job.kind == JobKind::Convert => self.delete_convert(job, delete_files),
+            Some(job) if delete_files => delete_job_files(&self.store, job)?,
             _ => {}
         }
         self.store.delete_job(id)?;
+        self.forget_credentials(job.as_ref());
         write(&self.views).remove(&id);
         self.emit(Event::JobRemoved(id));
         Ok(())
@@ -244,6 +251,7 @@ impl Actor {
     pub(super) fn on_finished(&mut self, id: JobId, outcome: JobOutcome) {
         let run = self.running.remove(&id);
         self.media_stops.remove(&id);
+        self.media_rates.remove(&id);
         // Pause, remove or shutdown is waiting for this run to end.
         let told_to_stop = run.as_ref().is_some_and(|run| run.cancel.is_cancelled());
         let known = read(&self.views).get(&id).cloned();
@@ -356,15 +364,18 @@ impl Actor {
         let id = job.id;
         let cancel = CancellationToken::new();
         let stop = cancel.clone();
-        let client = self.client.clone();
+        let (client, secrets) = (self.client.clone(), self.secrets.clone());
         let tx = self.job_tx.clone();
         tokio::spawn(async move {
             let url = fixed_url(&job.source_url);
+            let resolved = async {
+                let auth = secrets.auth_for(&job).await;
+                let client = client.get();
+                resolve_with(&client, &url, job.referer.as_deref(), auth.as_ref()).await
+            };
             let probe = tokio::select! {
                 _ = stop.cancelled() => None,
-                probe = resolve(&client, &url, job.referer.as_deref()) => {
-                    Some(probe.map(Box::new))
-                }
+                probe = resolved => Some(probe.map(Box::new)),
             };
             let _ = tx.send(JobMsg::Resolved { id, probe });
         });
@@ -451,7 +462,13 @@ impl Actor {
 
     /// Records the job in `state` with `e` as its error (and, if Waiting,
     /// its next retry at `retry_at`) and announces it.
-    fn record_error(&mut self, id: JobId, state: JobState, retry_at: Option<i64>, e: CoreError) {
+    pub(super) fn record_error(
+        &mut self,
+        id: JobId,
+        state: JobState,
+        retry_at: Option<i64>,
+        e: CoreError,
+    ) {
         let error = Some((e.kind, e.detail));
         match self.store.get_job(id) {
             Ok(Some(mut job)) => {
@@ -486,47 +503,6 @@ pub(super) fn fixed_url(url: &str) -> String {
     }
 }
 
-/// The mirrors that serve the primary's file, each as the link to request
-/// (a confirm form's, if one was followed). A mirror that fails to resolve,
-/// serves another size, or whose validators say it serves another version
-/// (the rule segment responses follow) is dropped.
-pub(super) async fn vet_mirrors(
-    client: &reqwest::Client,
-    primary: &Probe,
-    mirrors: &[String],
-    referer: Option<&str>,
-) -> Vec<String> {
-    let mut kept = Vec::new();
-    for mirror in mirrors {
-        let why = match resolve(client, &fixed_url(mirror), referer).await {
-            Err(e) => e.to_string(),
-            Ok(probe) if probe.size != primary.size => format!(
-                "size {} differs from {}",
-                describe_size(probe.size),
-                describe_size(primary.size)
-            ),
-            Ok(probe) => match mirror_change(primary, &probe) {
-                Some(change) => change,
-                None => {
-                    kept.push(probe.requested_url.to_string());
-                    continue;
-                }
-            },
-        };
-        tracing::info!(mirror = loggable(mirror), "dropping the mirror: {why}");
-    }
-    kept
-}
-
-/// How the mirror's validators differ from the primary's, as for a 206.
-fn mirror_change(primary: &Probe, mirror: &Probe) -> Option<String> {
-    validator_change(
-        (primary.etag.as_deref(), primary.last_modified.as_deref()),
-        (mirror.etag.as_deref(), mirror.last_modified.as_deref()),
-    )
-    .map(|what| format!("{what} (primary to mirror)"))
-}
-
 /// Copies what the probe learned into the record.
 fn apply_probe(job: &mut JobRecord, probe: &Probe) {
     job.final_url = Some(probe.final_url.to_string());
@@ -554,7 +530,7 @@ fn change_on_server(job: &JobRecord, probe: &Probe) -> Option<String> {
     })
 }
 
-fn describe_size(size: Option<u64>) -> String {
+pub(super) fn describe_size(size: Option<u64>) -> String {
     size.map_or_else(|| "unknown".to_string(), |s| format!("{s} bytes"))
 }
 

@@ -25,6 +25,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use url::Url;
 
 use crate::errors::{CoreError, ErrorKind};
+use crate::network::SharedClient;
 use crate::store::Store;
 
 use catalog::asset_for;
@@ -161,7 +162,8 @@ pub type Progress<'a> = &'a (dyn Fn(ToolStatus) + Send + Sync);
 pub struct ToolManager {
     root: PathBuf,
     sources: ToolSources,
-    client: reqwest::Client,
+    /// Taken for each request (see `SharedClient`).
+    client: SharedClient,
     /// Persists when each tool was last checked, if set.
     store: Option<Store>,
     /// Unix seconds of each tool's last check (this run).
@@ -177,11 +179,17 @@ pub struct ToolManager {
 }
 
 impl ToolManager {
-    pub fn new(data_dir: &Path, sources: ToolSources, client: reqwest::Client) -> ToolManager {
+    /// `client` is the engine's [`SharedClient`] (or a plain client, which
+    /// never changes).
+    pub fn new(
+        data_dir: &Path,
+        sources: ToolSources,
+        client: impl Into<SharedClient>,
+    ) -> ToolManager {
         ToolManager {
             root: data_dir.join("tools"),
             sources,
-            client,
+            client: client.into(),
             store: None,
             checked: Mutex::default(),
             states: Mutex::default(),
@@ -426,10 +434,13 @@ impl ToolManager {
 
         let before = self.status_of(kind);
         // However this ends (done, failed, or dropped when the job that
-        // asked is paused), the tool is no longer being installed.
-        let _installing = InstallingGuard {
-            states: &self.states,
+        // asked is paused), the tool is no longer being installed; a
+        // dropped install announces what the tool is now.
+        let mut installing = InstallingGuard {
+            manager: self,
+            progress,
             kind,
+            ended: false,
         };
         let report = |downloaded, total| {
             let state = ToolState::Installing { downloaded, total };
@@ -440,7 +451,10 @@ impl ToolManager {
             });
         };
         report(0, None);
-        let version = install.run(tag, current, &report).await?;
+        let ran = install.run(tag, current, &report).await;
+        // Finished, one way or the other: the caller reports the outcome.
+        installing.ended = true;
+        let version = ran?;
         install::remove_marker(&dir, SKIP_FILE);
         Ok(Some(
             self.tool_dir(kind).join(version).join(main_binary(kind)),
@@ -453,7 +467,7 @@ impl ToolManager {
             .github_api
             .join(path)
             .expect("a relative path joins onto a URL");
-        install::latest_tag(&self.client, url).await
+        install::latest_tag(&self.client.get(), url).await
     }
 
     /// The active version and its main binary, if that binary exists.
@@ -484,17 +498,30 @@ impl ToolManager {
 }
 
 /// Clears a tool's `Installing` state when dropped, so a cancelled or
-/// failed install does not leave the tool shown as installing.
-struct InstallingGuard<'a> {
-    states: &'a Mutex<HashMap<ToolKind, ToolState>>,
+/// failed install does not leave the tool shown as installing. An install
+/// that is dropped before it ended (`ended`: its job paused, the app
+/// quitting) also reports the tool's real status, `Missing` or the version
+/// that stays active, so that a front end can stop showing the install;
+/// one that ended is reported by `check_and_install`.
+struct InstallingGuard<'a, 'p> {
+    manager: &'a ToolManager,
+    progress: Progress<'p>,
     kind: ToolKind,
+    ended: bool,
 }
 
-impl Drop for InstallingGuard<'_> {
+impl Drop for InstallingGuard<'_, '_> {
     fn drop(&mut self) {
-        let mut states = lock(self.states);
-        if matches!(states.get(&self.kind), Some(ToolState::Installing { .. })) {
-            states.remove(&self.kind);
+        let was_installing = {
+            let mut states = lock(&self.manager.states);
+            let was = matches!(states.get(&self.kind), Some(ToolState::Installing { .. }));
+            if was {
+                states.remove(&self.kind);
+            }
+            was
+        };
+        if was_installing && !self.ended {
+            (self.progress)(self.manager.status_of(self.kind));
         }
     }
 }

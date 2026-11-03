@@ -12,14 +12,17 @@ use tokio_util::sync::CancellationToken;
 use crate::errors::CoreError;
 use crate::http::{JobOutcome, Probe};
 use crate::limit::{Limiter, PeakTracker};
+use crate::secrets::Credentials;
 use crate::settings::{Settings, TorrentSettings, WhenDone};
 use crate::store::{JobId, JobKind, JobRecord, JobState, Store};
 use crate::system::{AwakeGuard, SpaceSource};
 use crate::timing::Timing;
 use crate::tools::ToolManager;
 use crate::torrent::hub::TorrentHub;
+use crate::torrent::policy::TorrentOverrides;
 use crate::when_done::WhenDoneRunner;
 
+use super::keychain::Secrets;
 use super::media::{MediaAdd, MediaUpdate};
 use super::torrent::TorrentInput;
 use super::{AddRequest, Event, RemoveFiles, TorrentView, Views, no_such_job, read, write};
@@ -41,6 +44,12 @@ pub(super) enum Command {
         req: AddRequest,
         add: MediaAdd,
         reply: Reply<JobId>,
+    },
+    /// One convert job per file; answers their ids.
+    AddConvert {
+        files: Vec<std::path::PathBuf>,
+        preset: crate::media::ConvertPreset,
+        reply: Reply<Vec<JobId>>,
     },
     /// Answers whether the job runs and was asked to stop.
     StopRecording {
@@ -65,9 +74,36 @@ pub(super) enum Command {
         id: JobId,
         reply: Reply<JobRecord>,
     },
+    /// Answers the job as it was.
+    SetCredentials {
+        id: JobId,
+        creds: Credentials,
+        reply: Reply<JobRecord>,
+    },
+    SignInFailed {
+        id: JobId,
+        error: CoreError,
+        reply: oneshot::Sender<()>,
+    },
+    /// Stores the browser whose cookies a stopped media job signs in with.
+    SetMediaCookies {
+        id: JobId,
+        browser: String,
+        reply: Reply<()>,
+    },
     Remove {
         id: JobId,
         files: RemoveFiles,
+        reply: Reply<()>,
+    },
+    SetTorrentFiles {
+        id: JobId,
+        only_files: Vec<usize>,
+        reply: Reply<()>,
+    },
+    SetTorrentOverrides {
+        id: JobId,
+        overrides: TorrentOverrides,
         reply: Reply<()>,
     },
     Wait {
@@ -146,7 +182,7 @@ pub(super) struct Actor {
     /// Holds the data dir; released when the actor stops.
     pub(super) _lock: std::fs::File,
     pub(super) store: Store,
-    pub(super) client: reqwest::Client,
+    pub(super) client: crate::network::SharedClient,
     pub(super) views: Views,
     pub(super) events: broadcast::Sender<Event>,
     /// The jobs whose download task is running.
@@ -192,6 +228,9 @@ pub(super) struct Actor {
     /// The torrent settings each torrent runner reads its seeding policy
     /// from.
     pub(super) torrent_settings: watch::Sender<TorrentSettings>,
+    /// The sharing rules each running torrent's runner reads (and some of
+    /// torrents that ran: `start_torrent` drops those).
+    pub(super) seed_rules: HashMap<JobId, watch::Sender<TorrentOverrides>>,
     /// The rates last applied: HTTP download, torrent download and upload.
     pub(super) rates: Option<Rates>,
     /// The saved peak speed (bytes/s) and when it was measured (unix secs).
@@ -203,6 +242,13 @@ pub(super) struct Actor {
     pub(super) tools: Arc<ToolManager>,
     /// The `stop_recording` token of each running media job.
     pub(super) media_stops: HashMap<JobId, CancellationToken>,
+    /// The speed-limit share of each running media job that a limit change
+    /// may restart (a live recording has none).
+    pub(super) media_rates: HashMap<JobId, super::media_rate::MediaRate>,
+    /// The effective global speed limit as media jobs last heard of it.
+    pub(super) media_global: Option<u64>,
+    /// The jobs' passwords.
+    pub(super) secrets: Secrets,
 }
 
 pub(super) type Rates = (Option<u64>, Option<u64>, Option<u64>);
@@ -267,7 +313,9 @@ impl Actor {
             Command::Add { .. }
                 | Command::AddTorrent { .. }
                 | Command::AddMedia { .. }
+                | Command::AddConvert { .. }
                 | Command::Resume { .. }
+                | Command::SetMediaCookies { .. }
                 | Command::StartNow { .. }
         ) {
             self.when_done.cancel();
@@ -281,6 +329,13 @@ impl Actor {
             }
             Command::AddMedia { req, add, reply } => {
                 let _ = reply.send(self.add_media(req, add));
+            }
+            Command::AddConvert {
+                files,
+                preset,
+                reply,
+            } => {
+                let _ = reply.send(self.add_convert(files, preset));
             }
             Command::StopRecording { id, reply } => {
                 let _ = reply.send(self.stop_recording(id));
@@ -301,8 +356,32 @@ impl Actor {
                         .and_then(|j| j.ok_or_else(no_such_job)),
                 );
             }
+            Command::SetCredentials { id, creds, reply } => {
+                let _ = reply.send(self.set_credentials(id, creds));
+            }
+            Command::SignInFailed { id, error, reply } => {
+                self.sign_in_failed(id, error);
+                let _ = reply.send(());
+            }
+            Command::SetMediaCookies { id, browser, reply } => {
+                let _ = reply.send(self.set_media_cookies(id, &browser));
+            }
             Command::Remove { id, files, reply } => {
                 let _ = reply.send(self.remove(id, files).await);
+            }
+            Command::SetTorrentFiles {
+                id,
+                only_files,
+                reply,
+            } => {
+                let _ = reply.send(self.set_torrent_files(id, only_files).await);
+            }
+            Command::SetTorrentOverrides {
+                id,
+                overrides,
+                reply,
+            } => {
+                let _ = reply.send(self.set_torrent_overrides(id, overrides));
             }
             Command::Wait { id, reply } => self.wait(id, reply),
             Command::SetSettings { settings, reply } => {

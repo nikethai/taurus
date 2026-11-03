@@ -22,6 +22,7 @@
 //! file (or a mirror serving another file) is never stitched in.
 
 mod finalize;
+pub(crate) use finalize::rename_with_retry;
 mod part_file;
 mod round;
 mod window;
@@ -46,7 +47,9 @@ use round::{HostLimit, RoundEnd, remember_cap, run_round};
 
 pub struct JobContext {
     pub id: JobId,
-    pub client: reqwest::Client,
+    /// The engine's client, taken for each request (so a new proxy
+    /// applies to the job's next request).
+    pub client: crate::network::SharedClient,
     pub store: Store,
     pub cancel: CancellationToken,
     /// `(job, downloaded, total, speed in bytes/s)`, at most 4 per second.
@@ -57,6 +60,9 @@ pub struct JobContext {
     /// Look for the file's sum in a `SHA256SUMS` file next to it when the
     /// job names none.
     pub auto_checksum: bool,
+    /// The job's credentials, if it has any: sent with each request to its
+    /// link's origin (the `SHA256SUMS` file's included).
+    pub auth: Option<crate::http::Auth>,
 }
 
 /// The key a host's learned connection limit is stored under: the host,

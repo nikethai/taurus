@@ -41,7 +41,9 @@ pub(super) async fn run_captured(
         let (out, err, status) = tokio::join!(
             read_capped(&mut stdout, MAX_STDOUT),
             read_capped(&mut stderr, MAX_STDERR),
-            run.child.wait()
+            // Killing what it leaves running also closes the pipes that
+            // would hold the reads up.
+            run.wait()
         );
         (out, err, status)
     })
@@ -101,5 +103,38 @@ pub(super) async fn read_tail(mut reader: impl AsyncRead + Unpin, cap: usize) ->
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::tools::tree::test_support::gone_soon;
+
+    #[tokio::test]
+    async fn what_it_leaves_running_is_killed_and_does_not_hold_the_output() {
+        // It ends at once; its background job still has the pipes open.
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .args(["-c", "sleep 300 & echo $! > \"$0\"; echo done"])
+            .arg(&pid_file)
+            .stdin(std::process::Stdio::null());
+        let started = std::time::Instant::now();
+        let result = run_captured(command, Duration::from_secs(20)).await;
+        let elapsed = started.elapsed();
+        let straggler = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // First, so that a failure leaves nothing running.
+        let gone = gone_soon(straggler).await;
+        let captured = result.unwrap();
+        assert!(captured.success, "{captured:?}");
+        assert_eq!(captured.stdout, b"done\n");
+        assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
+        assert!(gone, "the straggler survived");
     }
 }

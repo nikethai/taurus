@@ -533,6 +533,41 @@ mod tests {
         );
     }
 
+    /// A cancelled install is announced by the engine as the tool's real
+    /// state (Missing, or its Ready version): "Getting video tools" goes.
+    #[test]
+    fn banner_clears_after_cancel() {
+        let t0 = Instant::now();
+        let mut c = Coalescer::new(Duration::ZERO);
+        let installing = |downloaded| ToolState::Installing {
+            downloaded,
+            total: Some(100),
+        };
+        c.push(tool(ToolKind::YtDlp, installing(0)));
+        c.push(tool(ToolKind::YtDlp, installing(40)));
+        assert_eq!(
+            c.take_if_due(t0).unwrap().tools,
+            Some(ToolsBanner::Installing { percent: Some(40) })
+        );
+        // Never installed: back to Missing.
+        c.push(tool(ToolKind::YtDlp, ToolState::Missing));
+        assert_eq!(c.take_if_due(t0).unwrap().tools, Some(ToolsBanner::Hidden));
+
+        // An update of an installed tool, cancelled: Ready with its version.
+        c.push(tool(ToolKind::Ffmpeg, installing(10)));
+        assert_eq!(
+            c.take_if_due(t0).unwrap().tools,
+            Some(ToolsBanner::Installing { percent: Some(10) })
+        );
+        c.push(Event::ToolStatus(ToolStatus {
+            kind: ToolKind::Ffmpeg,
+            version: Some("7.1".to_owned()),
+            path: None,
+            state: ToolState::Ready,
+        }));
+        assert_eq!(c.take_if_due(t0).unwrap().tools, Some(ToolsBanner::Hidden));
+    }
+
     #[test]
     fn a_tool_failure_shows_while_a_media_job_waits_on_it() {
         let t0 = Instant::now();

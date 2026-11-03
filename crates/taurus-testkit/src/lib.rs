@@ -1,8 +1,11 @@
 //! Test support for Taurus: a local HTTP server with scriptable behavior.
 
+mod proxy;
+mod spec;
 mod tools;
 mod torrent;
 
+pub use spec::{FailAfter, FileSpec, content, sha256_hex};
 pub use tools::{
     ArgsLogEntry, FakeToolHost, ToolRelease, fake_tool_bytes, fake_tool_release, hang_pid_file,
     process_args_log, read_args_log, run_retrying, set_ytdlp_scenario, unique_version,
@@ -19,108 +22,21 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::header::{
-    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG,
-    HeaderMap, HeaderName, HeaderValue, LAST_MODIFIED, LOCATION, RANGE,
+    ACCEPT_RANGES, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
+    ETAG, HeaderMap, HeaderName, HeaderValue, LAST_MODIFIED, LOCATION, RANGE, WWW_AUTHENTICATE,
 };
 use axum::http::{Response, StatusCode};
 use axum::routing::get;
 use bytes::Bytes;
-use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use spec::check_headers;
+
 const CHUNK: usize = 16 * 1024;
 const HTML: &str = "text/html; charset=utf-8";
 const BLOCKED_BODY: &str = "<html><body>blocked</body></html>";
-
-/// Every request after the first `after_requests` answers `status` with a small
-/// HTML body, like a host that starts blocking or challenging a client.
-///
-/// The response carries `content-type: text/html; charset=utf-8` unless `headers`
-/// names `content-type` itself; other `headers` are added on top.
-#[derive(Clone, Debug)]
-pub struct FailAfter {
-    pub after_requests: usize,
-    pub status: u16,
-    pub headers: Vec<(String, String)>,
-}
-
-/// Scripted behavior of one served path.
-#[derive(Clone, Debug)]
-pub struct FileSpec {
-    pub size: usize,
-    pub seed: u64,
-    /// Honor Range headers.
-    pub ranges: bool,
-    /// Honor only `bytes=0-0`; answer 200 with the full body otherwise.
-    pub ignore_range_after_probe: bool,
-    pub etag: Option<String>,
-    pub last_modified: Option<String>,
-    pub content_disposition: Option<String>,
-    /// Defaults to `application/octet-stream`.
-    pub content_type: Option<String>,
-    /// Aggregate cap shared by all concurrent responses for the path,
-    /// paced in 16 KiB chunks.
-    pub bytes_per_sec: Option<u64>,
-    /// The first response whose byte window contains this absolute offset
-    /// aborts the connection after sending the bytes before it.
-    pub drop_once_after: Option<usize>,
-    /// Request number k (1-based) answers `fail_first[k - 1]` while k <= len;
-    /// a `0` entry serves that request normally.
-    pub fail_first: Vec<u16>,
-    /// A request arriving while this many bodies are already in flight answers
-    /// `over_limit_status` with an empty body.
-    pub max_concurrent: Option<usize>,
-    pub over_limit_status: u16,
-    pub fail_after: Option<FailAfter>,
-    /// Added to every successful response.
-    pub extra_headers: Vec<(String, String)>,
-}
-
-impl FileSpec {
-    pub fn new(size: usize) -> Self {
-        Self {
-            size,
-            seed: 1,
-            ranges: true,
-            ignore_range_after_probe: false,
-            etag: None,
-            last_modified: None,
-            content_disposition: None,
-            content_type: None,
-            bytes_per_sec: None,
-            drop_once_after: None,
-            fail_first: Vec::new(),
-            max_concurrent: None,
-            over_limit_status: 429,
-            fail_after: None,
-            extra_headers: Vec::new(),
-        }
-    }
-}
-
-/// Deterministic pseudo-random bytes (xorshift64) derived from `spec.seed`.
-pub fn content(spec: &FileSpec) -> Vec<u8> {
-    const MIX: u64 = 0x9E37_79B9_7F4A_7C15;
-    let mut state = spec.seed ^ MIX;
-    if state == 0 {
-        state = MIX;
-    }
-    let mut out = Vec::with_capacity(spec.size + 8);
-    while out.len() < spec.size {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        out.extend_from_slice(&state.to_le_bytes());
-    }
-    out.truncate(spec.size);
-    out
-}
-
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
 
 /// One served path: a request counter and header capture shared by every kind.
 struct Entry {
@@ -202,29 +118,6 @@ fn apply_headers(map: &mut HeaderMap, pairs: &[(String, String)]) {
     }
 }
 
-fn check_headers(spec: &FileSpec) {
-    for value in [
-        &spec.etag,
-        &spec.last_modified,
-        &spec.content_disposition,
-        &spec.content_type,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        HeaderValue::from_str(value).expect("FileSpec header value is not a valid HTTP header");
-    }
-    apply_headers(&mut HeaderMap::new(), &spec.extra_headers);
-    if let Some(fail) = &spec.fail_after {
-        apply_headers(&mut HeaderMap::new(), &fail.headers);
-        StatusCode::from_u16(fail.status).expect("fail_after status is not valid");
-    }
-    StatusCode::from_u16(spec.over_limit_status).expect("over_limit_status is not valid");
-    for &status in spec.fail_first.iter().filter(|&&s| s != 0) {
-        StatusCode::from_u16(status).expect("fail_first status is not valid");
-    }
-}
-
 fn owned_pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs
         .iter()
@@ -236,6 +129,8 @@ fn owned_pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
 pub struct TestServer {
     base: String,
     shared: Shared,
+    /// The absolute-form request targets received, in order.
+    proxied: proxy::Proxied,
     task: JoinHandle<()>,
 }
 
@@ -246,17 +141,29 @@ impl TestServer {
             .expect("bind test server");
         let addr = listener.local_addr().expect("test server address");
         let shared: Shared = Arc::default();
+        let proxied = proxy::Proxied::default();
         let app = Router::new()
             .route("/{*path}", get(handle))
-            .with_state(shared.clone());
+            .with_state(shared.clone())
+            .layer(axum::middleware::from_fn_with_state(
+                proxied.clone(),
+                proxy::record_proxied,
+            ));
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
         TestServer {
             base: format!("http://{addr}"),
             shared,
+            proxied,
             task,
         }
+    }
+
+    /// `http://127.0.0.1:<port>`, without a trailing slash; as a proxy URL
+    /// for a server from [`TestServer::start_proxy`].
+    pub fn base_url(&self) -> &str {
+        &self.base
     }
 
     /// Registers `kind` at `path` with fresh counters and returns the full URL.
@@ -483,6 +390,16 @@ async fn handle(
 /// `max_concurrent`, then the normal response.
 fn file_response(entry: &mut FileEntry, number: usize, headers: &HeaderMap) -> Response<Body> {
     let spec = &entry.spec;
+    if let Some((user, password)) = &spec.basic_auth
+        && !authorized(headers, user, password)
+    {
+        let mut resp = empty(StatusCode::UNAUTHORIZED);
+        resp.headers_mut().insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static("Basic realm=\"test\""),
+        );
+        return resp;
+    }
     if let Some(&status) = spec.fail_first.get(number - 1)
         && status != 0
     {
@@ -574,6 +491,17 @@ fn file_response(entry: &mut FileEntry, number: usize, headers: &HeaderMap) -> R
     }
     apply_headers(h, &spec.extra_headers);
     resp
+}
+
+/// Whether the request carries HTTP Basic auth for `user` and `password`.
+fn authorized(headers: &HeaderMap, user: &str, password: &str) -> bool {
+    use base64::Engine as _;
+    let expected = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Basic "))
+        .is_some_and(|given| given.trim() == expected)
 }
 
 struct Pacing {
@@ -735,6 +663,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn basic_auth_refuses_until_matched() {
+        let server = TestServer::start().await;
+        let mut spec = FileSpec::new(1000);
+        spec.basic_auth = Some(("ann".into(), "pw".into()));
+        let url = server.serve("/p.bin", spec);
+        let resp = get(&url, None).await;
+        assert_eq!(resp.status(), 401);
+        assert_eq!(resp.headers()["www-authenticate"], "Basic realm=\"test\"");
+        let client = reqwest::Client::new();
+        let wrong = client.get(&url).basic_auth("ann", Some("no")).send();
+        assert_eq!(wrong.await.unwrap().status(), 401);
+        let right = client.get(&url).basic_auth("ann", Some("pw")).send();
+        assert_eq!(right.await.unwrap().status(), 200);
+        assert_eq!(server.requests("/p.bin"), 3);
+    }
+
+    #[tokio::test]
     async fn fail_first_statuses_then_ok() {
         let server = TestServer::start().await;
         let mut spec = FileSpec::new(1000);
@@ -805,6 +750,27 @@ mod tests {
         let url = server.serve("/known", FileSpec::new(1));
         let resp = get(&url.replace("known", "other"), None).await;
         assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn proxy_serves_absolute_form_requests_by_path() {
+        let proxy = TestServer::start_proxy().await;
+        let spec = FileSpec::new(1000);
+        proxy.serve("/dir/x.bin", spec.clone());
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::all(proxy.base_url()).unwrap())
+            .build()
+            .unwrap();
+        let target = "http://unresolvable.invalid/dir/x.bin";
+        let resp = client.get(target).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.bytes().await.unwrap(), content(&spec));
+        assert_eq!(proxy.proxied_requests(), [target]);
+        assert_eq!(proxy.requests("/dir/x.bin"), 1);
+        // A request in the usual form is served, not recorded as proxied.
+        let direct = get(&format!("{}/dir/x.bin", proxy.base_url()), None).await;
+        assert_eq!(direct.status(), 200);
+        assert_eq!(proxy.proxied_requests().len(), 1);
     }
 
     #[tokio::test]

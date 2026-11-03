@@ -12,6 +12,7 @@ use tokio::fs::OpenOptions;
 use crate::checksum::{self, Sha256Sum};
 use crate::errors::{CoreError, ErrorKind};
 use crate::filename::{self, unique_path};
+use crate::http::auth;
 use crate::store::{JobRecord, JobState};
 use crate::system;
 
@@ -126,13 +127,17 @@ async fn expected_sum(ctx: &JobContext, job: &JobRecord) -> Result<Option<Sha256
 /// The text of a `SHA256SUMS` file, fetched like the job's own requests;
 /// `None` on any error, a non-2xx answer, a body over 1 MiB, or cancel.
 async fn fetch_sums(ctx: &JobContext, job: &JobRecord, url: url::Url) -> Option<String> {
-    let mut request = ctx.client.get(url);
-    if let Some(referer) = &job.referer {
-        request = request.header(REFERER, referer);
-    }
-    let mut response = tokio::select! {
+    let client = ctx.client.get();
+    let build = |url: &str| {
+        let request = client.get(url);
+        match &job.referer {
+            Some(referer) => request.header(REFERER, referer),
+            None => request,
+        }
+    };
+    let (mut response, _) = tokio::select! {
         _ = ctx.cancel.cancelled() => return None,
-        sent = request.send() => sent.ok()?,
+        sent = auth::send(build, ctx.auth.as_ref(), url.as_str()) => sent.ok()?,
     };
     if !response.status().is_success()
         || response.content_length().is_some_and(|len| len > SUMS_CAP)
@@ -155,8 +160,9 @@ async fn fetch_sums(ctx: &JobContext, job: &JobRecord, url: url::Url) -> Option<
     Some(String::from_utf8_lossy(&body).into_owned())
 }
 
-/// Windows can briefly lock a just-closed file (antivirus, indexer).
-async fn rename_with_retry(from: &Path, to: &Path) -> Result<(), CoreError> {
+/// Windows can briefly lock a just-closed file (antivirus, indexer): a
+/// rename refused with `PermissionDenied` is tried again a few times.
+pub(crate) async fn rename_with_retry(from: &Path, to: &Path) -> Result<(), CoreError> {
     let mut attempt = 1;
     loop {
         match tokio::fs::rename(from, to).await {

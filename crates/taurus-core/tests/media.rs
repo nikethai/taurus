@@ -268,9 +268,15 @@ async fn media_inspect_kills_the_process_group_on_timeout() {
     let tools = ToolManager::new(tmp.path(), sources(&host), reqwest::Client::new());
     let link = "https://www.youtube.com/watch?v=times_out";
     let started = std::time::Instant::now();
-    let err = media::inspect(&tools, link, Duration::from_millis(700))
-        .await
-        .unwrap_err();
+    let err = media::inspect(
+        &tools,
+        link,
+        &Default::default(),
+        None,
+        Duration::from_millis(700),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Timeout);
     assert!(
         started.elapsed() < Duration::from_secs(25),
@@ -400,8 +406,13 @@ impl MediaRig {
         download: Value,
         tweak: impl FnOnce(&mut EngineConfig),
     ) -> MediaRig {
+        MediaRig::with_scenario(&media_scenario(info, download), tweak).await
+    }
+
+    /// `with_config` for a whole scenario of yt-dlp's.
+    async fn with_scenario(scenario: &Value, tweak: impl FnOnce(&mut EngineConfig)) -> MediaRig {
         let version = unique_version();
-        set_ytdlp_scenario(&version, &media_scenario(info, download).to_string());
+        set_ytdlp_scenario(&version, &scenario.to_string());
         let host = FakeToolHost::start(
             ToolRelease::new(&version),
             ToolRelease::new("7.1"),
@@ -662,6 +673,7 @@ async fn audio_only_mp3_args() {
     req.media = Some(MediaChoice {
         quality: "audio-small".into(),
         convert: Some(ConvertPreset::Mp3),
+        ..Default::default()
     });
     let id = rig.engine.add(req).await.unwrap();
     assert_eq!(rig.wait(id).await, JobState::Completed);
@@ -2021,4 +2033,548 @@ async fn a_resumed_playlist_leaves_no_thumbnail_of_its_earlier_run() {
     for thumb in [thumb_one, thumb_two] {
         assert!(!rig.dest.join(thumb).exists(), "{thumb} was left behind");
     }
+}
+
+/// A download that fails to sign in, unless it is given a browser's cookies.
+fn sign_in_unless_cookies(stderr: &str, name: &str) -> Vec<Value> {
+    vec![
+        json!({ "if_arg": "--cookies-from-browser", "stdout": [file_line(name)],
+                "write_files": [[name, 10]] }),
+        json!({ "stderr": [stderr], "exit": 1 }),
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn args_for_cookies_subs_container() {
+    let rig = MediaRig::new(&video_info(), downloads("subs.mkv", 10)).await;
+    let link = "https://www.youtube.com/watch?v=args_for_cookies_subs";
+    let mut req = rig.request(link);
+    req.media = Some(taurus_core::MediaChoice {
+        quality: "best".into(),
+        cookies_from_browser: Some("chrome:Profile 1".into()),
+        subtitles: Some(taurus_core::media::SubtitleChoice {
+            languages: vec!["en".into(), "vi".into()],
+            auto_generated: true,
+            embed: true,
+        }),
+        container: Some(taurus_core::media::Container::Mkv),
+        ..Default::default()
+    });
+    let id = rig.engine.add(req).await.unwrap();
+    assert_eq!(
+        rig.wait(id).await,
+        JobState::Completed,
+        "{:?}",
+        rig.view(id)
+    );
+    let calls = download_calls(link);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    let argv = &calls[0].argv;
+    assert!(
+        has_run(
+            argv,
+            &[
+                "-f",
+                "bv*+ba/b",
+                "--cookies-from-browser",
+                "chrome:Profile 1",
+                "--write-subs",
+                "--write-auto-subs",
+                "--sub-langs",
+                "en,vi",
+                "--embed-subs",
+                "--merge-output-format",
+                "mkv",
+                "--embed-thumbnail",
+            ]
+        ),
+        "{argv:?}"
+    );
+    // The link was read with the cookies too (the add inspected it itself).
+    let inspections: Vec<_> = calls_with(link)
+        .into_iter()
+        .filter(|e| e.argv.iter().any(|a| a == "-J"))
+        .collect();
+    assert_eq!(inspections.len(), 1, "{inspections:?}");
+    assert!(has_run(
+        &inspections[0].argv,
+        &["--cookies-from-browser", "chrome:Profile 1"]
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bad_video_choices_are_refused_on_add() {
+    let rig = MediaRig::new(&video_info(), downloads("never.mp4", 10)).await;
+    let link = "https://www.youtube.com/watch?v=bad_video_choices";
+    for choice in [
+        taurus_core::MediaChoice {
+            cookies_from_browser: Some("netscape".into()),
+            ..Default::default()
+        },
+        taurus_core::MediaChoice {
+            subtitles: Some(taurus_core::media::SubtitleChoice {
+                languages: vec!["--exec".into()],
+                auto_generated: false,
+                embed: false,
+            }),
+            ..Default::default()
+        },
+        taurus_core::MediaChoice {
+            subtitles: Some(taurus_core::media::SubtitleChoice {
+                languages: Vec::new(),
+                auto_generated: false,
+                embed: false,
+            }),
+            ..Default::default()
+        },
+    ] {
+        let mut req = rig.request(link);
+        req.media = Some(choice);
+        let err = rig.engine.add(req).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Unknown, "{err:?}");
+    }
+    assert!(rig.engine.snapshot().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retry_with_cookies_requeues() {
+    for (stderr, kind) in [
+        (
+            "ERROR: [youtube] x: Sign in to confirm your age",
+            ErrorKind::NeedsSignIn,
+        ),
+        (
+            "ERROR: [youtube] x: Sign in to confirm you\u{2019}re not a bot",
+            ErrorKind::BlockedByBotCheck,
+        ),
+    ] {
+        let rig = MediaRig::new(
+            &video_info(),
+            Value::Array(sign_in_unless_cookies(stderr, "cookie.mp4")),
+        )
+        .await;
+        let link = format!("https://www.youtube.com/watch?v=retry_with_cookies_{kind:?}");
+        let id = rig.engine.add(rig.request(&link)).await.unwrap();
+        assert_eq!(rig.wait(id).await, JobState::Failed);
+        assert_eq!(rig.view(id).error.map(|e| e.0), Some(kind));
+        assert!(
+            !download_calls(&link)[0]
+                .argv
+                .iter()
+                .any(|a| a.starts_with("--cookies")),
+        );
+
+        // A browser that does not exist is refused, and the job is untouched.
+        let err = rig.engine.retry_with_cookies(id, "netscape".into()).await;
+        assert_eq!(err.unwrap_err().detail, "unknown browser");
+        assert_eq!(rig.view(id).state, JobState::Failed);
+        // A job that is not a video is refused.
+        assert!(
+            rig.engine
+                .retry_with_cookies(JobId(9999), "firefox".into())
+                .await
+                .is_err()
+        );
+
+        rig.engine
+            .retry_with_cookies(id, "firefox".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            rig.wait(id).await,
+            JobState::Completed,
+            "{:?}",
+            rig.view(id)
+        );
+        let calls = download_calls(&link);
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(
+            has_run(&calls[1].argv, &["--cookies-from-browser", "firefox"]),
+            "{:?}",
+            calls[1].argv
+        );
+        assert_eq!(rig.view(id).error, None);
+        assert!(rig.dest.join("cookie.mp4").is_file());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retry_with_cookies_refuses_a_job_that_is_not_stopped() {
+    let rig = MediaRig::new(&video_info(), downloads("done.mp4", 10)).await;
+    let link = "https://www.youtube.com/watch?v=retry_cookies_completed";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let err = rig
+        .engine
+        .retry_with_cookies(id, "firefox".into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Unknown);
+    assert_eq!(download_calls(link).len(), 1);
+}
+
+/// A video whose reading (`-J`) needs a browser's cookies; its download
+/// (told by `--progress`) is let through, so tests look at its arguments.
+fn signed_in_only_with_cookies(name: &str) -> Value {
+    json!([
+        { "if_arg": "--progress", "stdout": [file_line(name)], "write_files": [[name, 10]] },
+        { "if_arg": "--cookies-from-browser", "stdout": [video_info().to_string()] },
+        { "stderr": ["ERROR: [youtube] x: Sign in to confirm your age"], "exit": 1 },
+    ])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cookies_reach_the_inspection() {
+    let rig = MediaRig::with_scenario(&signed_in_only_with_cookies("aged.mp4"), |_| {}).await;
+    // No run may write into the source tree: they all run in a temp folder.
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let listing = || {
+        let mut names: Vec<_> = std::fs::read_dir(crate_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let tree_before = listing();
+    let link = "https://www.youtube.com/watch?v=aged_inspection";
+    // Without cookies the age check stops the reading, and no job is made.
+    let err = rig.engine.inspect(link).await.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NeedsSignIn);
+    let err = rig.engine.add(rig.request(link)).await;
+    // (no media choice: the fast-path host is read by yt-dlp all the same)
+    assert_eq!(err.unwrap_err().kind, ErrorKind::NeedsSignIn);
+    assert!(rig.engine.snapshot().is_empty());
+    // A bad browser is refused before yt-dlp is asked.
+    let before = calls_with(link).len();
+    let err = rig
+        .engine
+        .inspect_with_cookies(link, Some("netscape"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.detail, "unknown browser");
+    assert_eq!(calls_with(link).len(), before);
+    // With cookies the link is read.
+    let info = rig
+        .engine
+        .inspect_with_cookies(link, Some("firefox"))
+        .await
+        .unwrap();
+    assert!(matches!(info, LinkInfo::Media(_)), "{info:?}");
+    let last = calls_with(link).pop().unwrap();
+    assert!(has_run(&last.argv, &["--cookies-from-browser", "firefox"]));
+    // An empty choice is none.
+    let err = rig.engine.inspect_with_cookies(link, Some(" ")).await;
+    assert_eq!(err.unwrap_err().kind, ErrorKind::NeedsSignIn);
+
+    // Adding with the choice and nothing inspected reads it with the
+    // cookies, and the job's runs carry them.
+    let mut req = rig.request(link);
+    req.media = Some(taurus_core::MediaChoice {
+        quality: "best".into(),
+        cookies_from_browser: Some("firefox".into()),
+        ..Default::default()
+    });
+    let id = rig.engine.add(req).await.unwrap();
+    assert_eq!(
+        rig.wait(id).await,
+        JobState::Completed,
+        "{:?}",
+        rig.view(id)
+    );
+    let calls = calls_with(link);
+    let reads: Vec<_> = calls
+        .iter()
+        .filter(|e| e.argv.iter().any(|a| a == "-J"))
+        .collect();
+    assert!(
+        reads
+            .last()
+            .is_some_and(|e| has_run(&e.argv, &["--cookies-from-browser", "firefox"]))
+    );
+    let runs = download_calls(link);
+    assert!(has_run(
+        &runs.last().unwrap().argv,
+        &["--cookies-from-browser", "firefox"]
+    ));
+    assert_eq!(
+        listing(),
+        tree_before,
+        "a run left a file in the source tree"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn smaller_file_with_mkv_or_webm_is_refused() {
+    let rig = MediaRig::new(&video_info(), downloads("never.mp4", 10)).await;
+    let link = "https://www.youtube.com/watch?v=smaller_mkv";
+    for container in [
+        taurus_core::media::Container::Mkv,
+        taurus_core::media::Container::Webm,
+    ] {
+        let mut req = rig.request(link);
+        req.media = Some(taurus_core::MediaChoice {
+            quality: "best".into(),
+            convert: Some(ConvertPreset::SmallerMp4),
+            container: Some(container),
+            ..Default::default()
+        });
+        let err = rig.engine.add(req).await.unwrap_err();
+        assert!(err.detail.contains("MP4"), "{}", err.detail);
+    }
+    // Refused before yt-dlp was asked anything.
+    assert!(calls_with(link).is_empty());
+    // Mp4 with it is fine.
+    let mut req = rig.request(link);
+    req.media = Some(taurus_core::MediaChoice {
+        quality: "best".into(),
+        convert: Some(ConvertPreset::SmallerMp4),
+        container: Some(taurus_core::media::Container::Mp4),
+        ..Default::default()
+    });
+    rig.engine.add(req).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retry_with_cookies_refuses_a_web_job_and_resumes_a_paused_video() {
+    let server = TestServer::start().await;
+    let file = server.serve_bytes("/plain.bin", "application/octet-stream", b"0123456789");
+    let rig = MediaRig::new(
+        &video_info(),
+        Value::Array(sign_in_unless_cookies(
+            "ERROR: [youtube] x: Sign in to confirm your age",
+            "later.mp4",
+        )),
+    )
+    .await;
+    let web = rig.engine.add(rig.request(&file)).await.unwrap();
+    assert_eq!(rig.wait(web).await, JobState::Completed);
+    let err = rig
+        .engine
+        .retry_with_cookies(web, "firefox".into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Unknown);
+    assert!(err.detail.contains("video"), "{}", err.detail);
+
+    // A video that failed and then fails again with the cookies keeps its
+    // later runs on them.
+    let link = "https://www.youtube.com/watch?v=retry_cookies_twice";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Failed);
+    rig.engine
+        .retry_with_cookies(id, "chrome".into())
+        .await
+        .unwrap();
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let runs = download_calls(link);
+    assert!(has_run(
+        &runs[1].argv,
+        &["--cookies-from-browser", "chrome"]
+    ));
+}
+
+// ---- A speed-limit change reaches running video downloads ----
+
+/// A download of `x.mp4` for the run given `rate` as its `--limit-rate`
+/// (runs are told apart by that value). With `hold` it prints some progress
+/// and waits to be interrupted, leaving `x.mp4.part` as yt-dlp does;
+/// without, it continues from that part: renaming it fails (and so the run)
+/// if the restart deleted it.
+fn run_at_rate(rate: u64, hold: bool) -> Value {
+    if hold {
+        return json!({
+            "if_arg": rate.to_string(),
+            "stdout": [progress(100, 1000)],
+            "wait_for_interrupt": true,
+            "start_files": [["x.mp4.part", 7]],
+            "on_interrupt": { "write_files": [["interrupted", 1]], "exit": 1 },
+        });
+    }
+    json!({
+        "if_arg": rate.to_string(),
+        "stdout": [progress(1000, 1000), file_line("x.mp4")],
+        "rename_files": [["x.mp4.part", "x.mp4"]],
+        "write_files": [["x.mp4", 1000]],
+    })
+}
+
+async fn set_limit(rig: &MediaRig, bytes_per_sec: u64) {
+    let mut settings = rig.engine.settings();
+    settings.speed = taurus_core::SpeedLimit::Custom { bytes_per_sec };
+    rig.engine.set_settings(settings).await.unwrap();
+}
+
+/// The `--limit-rate` value of a yt-dlp run.
+fn rate_of(argv: &[String]) -> Option<&str> {
+    let at = argv.iter().position(|a| a == "--limit-rate")?;
+    Some(argv[at + 1].as_str())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn media_restarts_on_big_limit_change() {
+    let rig = MediaRig::new(
+        &video_info(),
+        json!([run_at_rate(400_000, true), run_at_rate(100_000, false)]),
+    )
+    .await;
+    set_limit(&rig, 400_000).await;
+    let mut events = rig.engine.subscribe();
+    let link = "https://www.youtube.com/watch?v=restarts_on_big_limit_change";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    // The first run is in place (its interrupt handler too).
+    rig.until(id, "progress", |v| v.downloaded > 0).await;
+
+    // 400 kB/s to 100 kB/s: yt-dlp is restarted with the new rate.
+    set_limit(&rig, 100_000).await;
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let calls = download_calls(link);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(rate_of(&calls[0].argv), Some("400000"));
+    assert_eq!(rate_of(&calls[1].argv), Some("100000"));
+    #[cfg(unix)]
+    {
+        assert!(rig.dest.join("interrupted").is_file(), "not interrupted");
+        assert!(process_gone(calls[0].pid));
+    }
+    // The finished file is intact, and the restart was no state change:
+    // never Paused, Waiting or Failed on the way, no error recorded.
+    let view = rig.view(id);
+    assert_eq!(view.file_name, "x.mp4");
+    assert_eq!(
+        std::fs::metadata(rig.dest.join("x.mp4")).unwrap().len(),
+        1000
+    );
+    assert!(view.error.is_none(), "{view:?}");
+    while let Ok(event) = events.try_recv() {
+        if let Event::JobUpdated(v) | Event::JobAdded(v) = event
+            && v.id == id
+        {
+            assert!(
+                matches!(
+                    v.state,
+                    JobState::Queued | JobState::Downloading | JobState::Completed
+                ),
+                "{v:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn media_keeps_running_on_a_small_limit_change() {
+    // Slow enough to be running when the limit changes, ends by itself.
+    let run = json!({
+        "if_arg": "400000",
+        "stdout": [progress(100, 1000), progress(200, 1000), progress(300, 1000),
+                   file_line("x.mp4")],
+        "delay_ms_per_line": 600,
+        "write_files": [["x.mp4", 1000]],
+    });
+    let rig = MediaRig::new(&video_info(), run).await;
+    set_limit(&rig, 400_000).await;
+    let link = "https://www.youtube.com/watch?v=small_limit_change";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    rig.until(id, "progress", |v| v.downloaded > 0).await;
+    // 12 % less: within the 20 % that is left to the running process.
+    set_limit(&rig, 350_000).await;
+    // Still running when it was changed, or the test proves nothing.
+    assert_eq!(rig.view(id).state, JobState::Downloading);
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    assert_eq!(download_calls(link).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recording_not_restarted_on_limit_change() {
+    let rig = MediaRig::new(&fixture("live.json"), live_recording(true, 0)).await;
+    set_limit(&rig, 400_000).await;
+    let link = "https://www.twitch.tv/recording_not_restarted";
+    let id = recording(&rig, link).await;
+    let before = media(&rig.view(id)).live_elapsed_secs.unwrap();
+
+    set_limit(&rig, 100_000).await;
+    // A restart would begin a new run (and its clock): seconds pass on the
+    // same one.
+    rig.until(id, "the same recording going on", |v| {
+        media(v).live_elapsed_secs.is_some_and(|s| s >= before + 2)
+    })
+    .await;
+    assert_eq!(download_calls(link).len(), 1);
+    #[cfg(unix)]
+    assert!(!rig.dest.join("interrupted").exists(), "was interrupted");
+
+    tokio::time::timeout(Duration::from_secs(30), rig.engine.stop_recording(id))
+        .await
+        .unwrap()
+        .unwrap();
+    let calls = download_calls(link);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(rate_of(&calls[0].argv), Some("400000"));
+    assert_eq!(rig.view(id).state, JobState::Completed);
+}
+
+/// A playlist's first entry is merged and its second downloading when the
+/// limit drops: the restart happens whichever of the two the change meets
+/// (a change while merging waits for the next progress line), the second
+/// run continues the entry's part, and the first entry stays in the view.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_limit_change_reaches_the_next_playlist_entry() {
+    let info = json!({
+        "_type": "playlist",
+        "id": "PLlimit",
+        "title": "Two Songs",
+        "webpage_url": "https://www.youtube.com/playlist?list=PLlimit",
+        "extractor_key": "YoutubeTab",
+        "entries": [
+            {"_type": "url", "id": "a", "title": "One"},
+            {"_type": "url", "id": "b", "title": "Two"}
+        ]
+    });
+    let (one, two) = ("One [a].mp4", "Two [b].mp4");
+    let first = json!({
+        "if_arg": "400000",
+        "stdout": [
+            entry_line(1, 2, "a", "One", one),
+            progress(100, 100),
+            "TAURUS-PP Merger started",
+            file_line(one),
+            entry_line(2, 2, "b", "Two", two),
+            progress(10, 100),
+        ],
+        "delay_ms_per_line": 400,
+        "wait_for_interrupt": true,
+        "start_files": [[one, 10], [format!("{two}.part"), 7]],
+        "on_interrupt": { "exit": 1 },
+    });
+    let second = json!({
+        "if_arg": "100000",
+        "stdout": [
+            entry_line(2, 2, "b", "Two", two),
+            progress(100, 100),
+            file_line(two),
+        ],
+        "rename_files": [[format!("{two}.part"), two]],
+        "write_files": [[two, 20]],
+    });
+    let rig = MediaRig::new(&info, json!([first, second])).await;
+    set_limit(&rig, 400_000).await;
+    let link = "https://www.youtube.com/playlist?list=PLlimit_next_entry";
+    let id = rig.engine.add(rig.request(link)).await.unwrap();
+    rig.until(id, "the first entry merging", |v| {
+        media(v).phase == MediaPhase::Merging
+    })
+    .await;
+    set_limit(&rig, 100_000).await;
+    assert_eq!(rig.wait(id).await, JobState::Completed);
+    let calls = download_calls(link);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(rate_of(&calls[0].argv), Some("400000"));
+    assert_eq!(rate_of(&calls[1].argv), Some("100000"));
+    let view = rig.view(id);
+    assert!(view.error.is_none(), "{view:?}");
+    assert_same_paths(
+        &media(&view).files,
+        &[rig.dest.join(one), rig.dest.join(two)],
+    );
+    assert_eq!(media(&view).entries_done, 2);
 }

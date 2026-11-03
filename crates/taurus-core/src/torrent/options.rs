@@ -10,7 +10,7 @@ use std::sync::Arc;
 use librqbit::dht::DhtPersistenceConfig;
 use librqbit::limits::LimitsConfig;
 use librqbit::{
-    DhtSessionConfig, ListenerMode, ListenerOptions, Session, SessionOptions,
+    ConnectionOptions, DhtSessionConfig, ListenerMode, ListenerOptions, Session, SessionOptions,
     SessionPersistenceConfig,
 };
 
@@ -28,19 +28,23 @@ pub(super) const MIN_BPS: u64 = 16_384;
 
 /// Starts the librqbit session, which restores the torrents it saved. A
 /// listening port that is set but cannot be bound (another program has it)
-/// falls back to a random one.
+/// falls back to a random one. `proxy` is a SOCKS proxy URL.
 pub(super) async fn start_session(
     data_dir: &Path,
     settings: &TorrentSettings,
+    proxy: Option<&str>,
     test: bool,
     limits: LimitsConfig,
 ) -> Result<Arc<Session>, CoreError> {
     let ipv6 = ipv6_available();
     let start = |settings: &TorrentSettings| {
-        let opts = session_options(data_dir, settings, test, ipv6, limits);
+        let mut opts = session_options(data_dir, settings, test, ipv6, limits);
+        opts.connect = proxy.map(connection_options);
         tracing::info!(
             listen = ?opts.listen.as_ref().map(|l| l.listen_addr),
             ipv6,
+            // Never the URL: it may hold a password.
+            proxy = proxy.is_some(),
             "starting the torrent session"
         );
         Session::new_with_opts(data_dir.join(SESSION_DIR), opts)
@@ -109,6 +113,15 @@ pub(super) fn session_options(
         client_name_and_version: Some(format!("Hyades/{}", crate::VERSION)),
         ratelimits,
         ..Default::default()
+    }
+}
+
+/// Every outgoing peer connection (and HTTP tracker request) through the
+/// SOCKS proxy at `proxy_url`.
+pub(super) fn connection_options(proxy_url: &str) -> ConnectionOptions {
+    ConnectionOptions {
+        proxy_url: Some(proxy_url.to_owned()),
+        ..ConnectionOptions::default()
     }
 }
 
@@ -212,6 +225,15 @@ mod tests {
             assert!(o.disable_trackers && o.disable_local_service_discovery);
             assert!(o.persistence.is_some() && o.fastresume);
         }
+    }
+
+    #[test]
+    fn a_socks_proxy_carries_the_connections() {
+        let c = connection_options("socks5h://127.0.0.1:9050");
+        assert_eq!(c.proxy_url.as_deref(), Some("socks5h://127.0.0.1:9050"));
+        assert!(c.enable_tcp);
+        // Without one, the session's own defaults.
+        assert!(options(false, true).connect.is_none());
     }
 
     #[test]

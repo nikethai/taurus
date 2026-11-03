@@ -2,16 +2,14 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use super::*;
+use crate::media::{Container, SubtitleChoice};
 
 fn options(quality: &str, selector: &str, audio_only: bool) -> MediaOptions {
     MediaOptions {
         quality: quality.into(),
         selector: selector.into(),
         audio_only,
-        convert: None,
-        playlist: false,
-        live_from_start: false,
-        partial_files: Vec::new(),
+        ..MediaOptions::default()
     }
 }
 
@@ -367,6 +365,7 @@ fn printed_paths_get_one_spelling() {
 #[cfg(unix)]
 mod process {
     use super::*;
+    use crate::tools::tree::test_support::gone_soon;
 
     /// A shell that ignores Ctrl+C and has a grandchild that does too.
     fn stubborn() -> Command {
@@ -375,22 +374,6 @@ mod process {
             .args(["-c", "trap '' INT; sleep 300 & echo $!; wait"])
             .stdin(std::process::Stdio::null());
         command
-    }
-
-    fn alive(pid: libc::pid_t) -> bool {
-        // SAFETY: signal 0 only checks that the process exists.
-        if unsafe { libc::kill(pid, 0) } != 0 {
-            return false;
-        }
-        // A zombie nobody reaped (an orphan in a container) does not count.
-        std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
-            !stat
-                .rsplit(')')
-                .next()
-                .unwrap_or("")
-                .trim_start()
-                .starts_with('Z')
-        })
     }
 
     #[tokio::test]
@@ -414,16 +397,66 @@ mod process {
         )
         .await
         .unwrap();
+        let elapsed = started.elapsed();
+        // First, so that a failure leaves nothing running.
+        let gone = gone_soon(grandchild.unwrap()).await;
         assert_eq!(ended.stopped, Some(Stop::Pause));
         assert!(ended.status.is_none(), "killed, not exited: {ended:?}");
         assert!(!ended.success());
-        assert!(started.elapsed() >= Duration::from_millis(300));
-        let grandchild = grandchild.unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while alive(grandchild) && std::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(elapsed >= Duration::from_millis(300));
+        assert!(gone, "the grandchild survived");
+    }
+
+    /// A shell that ends on Ctrl+C, with a grandchild that ignores it: as
+    /// yt-dlp's bootloader ending while something it started does not.
+    fn leader_that_ends_first() -> Command {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "trap '' INT; sleep 300 & trap - INT; echo $!; wait"])
+            .stdin(std::process::Stdio::null());
+        // A test run started in the background of a non-interactive shell
+        // inherits SIGINT as ignored, which `trap -` could not undo.
+        // SAFETY: only `signal`, which is async-signal-safe, runs after fork.
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                Ok(())
+            });
         }
-        assert!(!alive(grandchild), "the grandchild survived");
+        command
+    }
+
+    #[tokio::test]
+    async fn a_leader_that_ends_on_the_interrupt_takes_its_tree_along() {
+        use std::os::unix::process::ExitStatusExt;
+        let pause = CancellationToken::new();
+        let never = CancellationToken::new();
+        let mut grandchild = None;
+        let stopper = pause.clone();
+        let ended = run_process(
+            leader_that_ends_first(),
+            &pause,
+            &never,
+            Duration::from_secs(30),
+            |out| {
+                if let Output::Line(line) = out {
+                    grandchild = line.trim().parse::<libc::pid_t>().ok();
+                    stopper.cancel();
+                }
+            },
+        )
+        .await
+        .unwrap();
+        let gone = gone_soon(grandchild.unwrap()).await;
+        assert_eq!(ended.stopped, Some(Stop::Pause));
+        // It ended by itself, long before the grace was over.
+        let status = ended.status.expect("exited, not killed");
+        // Linux shells die of the signal itself; macOS's exits with 128 + 2.
+        assert!(
+            status.signal() == Some(libc::SIGINT) || status.code().is_some_and(|c| c != 0),
+            "{ended:?}"
+        );
+        assert!(gone, "the grandchild survived");
     }
 
     #[tokio::test]
@@ -467,7 +500,10 @@ mod process {
         // At least two whole seconds of ticks, however slow the start.
         let ticks = seen.iter().filter(|s| *s == "tick").count();
         assert!(ticks >= 2, "{seen:?}");
-        assert_eq!(seen.last().map(String::as_str), Some("done"), "{seen:?}");
+        // A tick can still come between the last line and the end being
+        // seen; no line is lost.
+        let lines: Vec<_> = seen.iter().filter(|s| *s != "tick").collect();
+        assert_eq!(lines, ["done"], "{seen:?}");
     }
 
     #[tokio::test]
@@ -563,4 +599,87 @@ fn tracker_records_the_jobs_partial_files() {
     t.apply(&writes("L/2 [b].mp4.part", "L/2 [b].mp4"));
     assert!(t.apply(&format!("{FILE}\"L/2 [b].mp4\"")).partials);
     assert_eq!(t.partials, [at("L/2 [b].mp4.part")]);
+}
+
+#[test]
+fn cookies_subtitles_and_container_args() {
+    let dest = Path::new("/dl");
+    let base = options("best", "bv*+ba/b", false);
+    let with = MediaOptions {
+        cookies_from_browser: Some("firefox:work".into()),
+        subtitles: Some(SubtitleChoice {
+            languages: vec!["en".into(), "vi".into()],
+            auto_generated: true,
+            embed: true,
+        }),
+        container: Some(Container::Mkv),
+        ..base.clone()
+    };
+    let args = strings(&download_args(&with, dest, "u", None, true));
+    assert_eq!(
+        &args[..11],
+        [
+            "-f",
+            "bv*+ba/b",
+            "--cookies-from-browser",
+            "firefox:work",
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-langs",
+            "en,vi",
+            "--embed-subs",
+            "--merge-output-format",
+            "mkv"
+        ]
+    );
+    // Without the auto-generated and embed choices; "all" wins.
+    let plain = MediaOptions {
+        subtitles: Some(SubtitleChoice {
+            languages: vec!["en".into(), "all".into()],
+            auto_generated: false,
+            embed: false,
+        }),
+        container: Some(Container::Webm),
+        ..base.clone()
+    };
+    let args = strings(&download_args(&plain, dest, "u", None, true));
+    assert_eq!(
+        &args[..7],
+        [
+            "-f",
+            "bv*+ba/b",
+            "--write-subs",
+            "--sub-langs",
+            "all,-live_chat",
+            "--merge-output-format",
+            "webm"
+        ]
+    );
+    // WebM takes only WebVTT: its subtitles are not embedded.
+    let webm = MediaOptions {
+        subtitles: Some(SubtitleChoice {
+            languages: vec!["en".into()],
+            auto_generated: false,
+            embed: true,
+        }),
+        container: Some(Container::Webm),
+        ..base.clone()
+    };
+    let args = strings(&download_args(&webm, dest, "u", None, true));
+    assert!(args.iter().any(|a| a == "--write-subs"));
+    assert!(!args.iter().any(|a| a == "--embed-subs"));
+    // Audio ignores the container and never embeds; sidecar subtitles and
+    // cookies stay.
+    let audio = MediaOptions {
+        audio_only: true,
+        ..with
+    };
+    let args = strings(&download_args(&audio, dest, "u", None, true));
+    assert!(
+        !args
+            .iter()
+            .any(|a| a == "--merge-output-format" || a == "--embed-subs")
+    );
+    assert!(args.iter().any(|a| a == "--write-subs"));
+    assert!(args.iter().any(|a| a == "--cookies-from-browser"));
 }

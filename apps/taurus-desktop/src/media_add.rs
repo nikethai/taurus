@@ -107,6 +107,7 @@ impl MediaPick {
         MediaChoice {
             quality: self.quality.clone(),
             convert: None,
+            ..MediaChoice::default()
         }
     }
 
@@ -352,6 +353,9 @@ mod tests {
             live: LiveStatus::NotLive,
             playlist: None,
             qualities,
+            subtitle_languages: Vec::new(),
+            auto_caption_languages: Vec::new(),
+            all_qualities: Vec::new(),
         }
     }
 
@@ -373,7 +377,7 @@ mod tests {
             pick.choice(),
             MediaChoice {
                 quality: "best".into(),
-                convert: None
+                ..MediaChoice::default()
             }
         );
         for want in ["1080p", "720p", "best"] {
@@ -389,7 +393,7 @@ mod tests {
             pick.choice(),
             MediaChoice {
                 quality: "audio-small".into(),
-                convert: None
+                ..MediaChoice::default()
             }
         );
         pick.cycle();

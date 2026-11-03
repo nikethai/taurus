@@ -5,6 +5,7 @@
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::errors::{CoreError, ErrorKind};
+use crate::network::torrent_proxy;
 use crate::settings::{Settings, SpeedLimit, WhenDone};
 use crate::torrent::policy::{split_rate, torrent_rate};
 
@@ -29,9 +30,17 @@ impl Actor {
                 });
             }
         }
+        // Refused now, not at the first download.
+        settings.network.proxy.check()?;
         self.store.save_settings(&settings)?;
         if settings.when_done != self.settings.when_done {
             self.when_done.cancel();
+        }
+        // Every web request from now on, and the torrent session's next
+        // start (a running one keeps its proxy).
+        if settings.network.proxy != self.settings.network.proxy {
+            self.client.set_proxy(&settings.network.proxy);
+            self.hub.set_proxy(torrent_proxy(&settings.network.proxy));
         }
         *write(&self.shared_settings) = settings.clone();
         // Running torrents follow the new seeding policy at once.
@@ -61,8 +70,15 @@ impl Actor {
     /// download (a torrent-only limit caps the torrent side further), and
     /// applies it, with the upload limit, if anything changed.
     pub(super) fn apply_limits(&mut self) {
-        let (http, torrents) = self.active();
+        // Convert jobs download nothing: they take no share.
+        let (http, torrents) = self.transferring();
         let global = speed_limit(&self.settings, self.measured_peak);
+        // Only a change of the limit itself reaches running video downloads,
+        // not jobs coming and going.
+        if global != self.media_global {
+            self.media_global = global;
+            self.retune_media();
+        }
         let (http_rate, torrent_share) = split_rate(global, http > 0, torrents > 0);
         let torrent_rate = torrent_rate(torrent_share, self.settings.torrent.download_limit_bps);
         let rates = (
@@ -195,6 +211,32 @@ mod tests {
             actor.rates,
             Some((Some(1_000_000), Some(1_000_000), Some(50_000)))
         );
+    }
+
+    #[tokio::test]
+    async fn a_new_proxy_reaches_the_next_torrent_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = EngineConfig::new(dir.path().join("data"));
+        config.autostart = false;
+        config.secrets = std::sync::Arc::new(crate::secrets::MemoryStore::new());
+        let (_engine, mut actor, _commands) = assemble(config).await.unwrap();
+        assert_eq!(actor.hub.proxy(), None);
+        let socks = crate::network::ProxySetting::Manual {
+            url: "socks5://127.0.0.1:9050".to_string(),
+        };
+        let mut settings = actor.settings.clone();
+        settings.network.proxy = socks;
+        actor.set_settings(settings.clone()).unwrap();
+        assert_eq!(
+            actor.hub.proxy().as_deref(),
+            Some("socks5://127.0.0.1:9050")
+        );
+        // An http proxy is not one for torrents.
+        settings.network.proxy = crate::network::ProxySetting::Manual {
+            url: "http://127.0.0.1:3128".to_string(),
+        };
+        actor.set_settings(settings).unwrap();
+        assert_eq!(actor.hub.proxy(), None);
     }
 
     #[test]

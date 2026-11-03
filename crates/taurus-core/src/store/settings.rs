@@ -3,7 +3,7 @@
 use rusqlite::{OptionalExtension, params};
 
 use crate::errors::{CoreError, ErrorKind};
-use crate::settings::Settings;
+use crate::settings::{ProxySetting, Settings};
 
 use super::{Store, db_err, now_secs};
 
@@ -13,6 +13,7 @@ const UNREADABLE_SETTINGS_KEY: &str = "settings.unreadable";
 const MEASURED_PEAK_KEY: &str = "measured_peak";
 /// Followed by a tool's name: when it was last checked for updates.
 const TOOL_CHECKED_PREFIX: &str = "tool_checked.";
+const DATABASE_TOKEN: &str = "database_token";
 
 /// A learned connection limit older than this is forgotten: hosts change.
 const HOST_CAP_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
@@ -34,8 +35,8 @@ impl Store {
     /// are logged and copied to `settings.unreadable` (replacing an older
     /// copy), then each readable field is kept and the rest defaulted
     /// (everything, if the value is not a JSON object). `max_active` and
-    /// `torrent.max_active` are at least 1. Only a database error is
-    /// returned.
+    /// `torrent.max_active` are at least 1, and a manual proxy that cannot
+    /// be used becomes `System`. Only a database error is returned.
     pub fn load_settings_lenient(&self) -> Result<Settings, CoreError> {
         let Some(raw) = self.setting(SETTINGS_KEY)? else {
             return Ok(Settings::default());
@@ -50,6 +51,10 @@ impl Store {
         };
         settings.max_active = settings.max_active.max(1);
         settings.torrent.max_active = settings.torrent.max_active.max(1);
+        if let Err(e) = settings.network.proxy.check() {
+            tracing::warn!("ignoring the saved proxy ({e}); using the system settings");
+            settings.network.proxy = ProxySetting::System;
+        }
         Ok(settings)
     }
 
@@ -136,6 +141,23 @@ impl Store {
         Ok(())
     }
 
+    /// This database's own random id (16 hex digits), made on first use and
+    /// kept: it tells this data dir's jobs from another's in names shared
+    /// by every data dir, such as keychain accounts.
+    pub fn database_token(&self) -> Result<String, CoreError> {
+        if let Some(token) = self.setting(DATABASE_TOKEN)? {
+            return Ok(token);
+        }
+        let mut bytes = [0u8; 8];
+        getrandom::fill(&mut bytes).map_err(|e| CoreError {
+            kind: ErrorKind::Unknown,
+            detail: format!("no random numbers from the system: {e}"),
+        })?;
+        let token = hex::encode(bytes);
+        self.put_setting(DATABASE_TOKEN, &token)?;
+        Ok(token)
+    }
+
     fn setting(&self, key: &str) -> Result<Option<String>, CoreError> {
         self.lock()
             .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
@@ -203,8 +225,25 @@ fn readable_fields(raw: &str) -> Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{SpeedLimit, ThemeChoice, TorrentSettings, UiSettings, WhenDone};
+    use crate::settings::{
+        NetworkSettings, ProxySetting, SpeedLimit, ThemeChoice, TorrentSettings, UiSettings,
+        WhenDone,
+    };
     use crate::store::test_support::open_temp;
+
+    #[test]
+    fn database_token_is_made_once_and_differs_per_database() {
+        let (dir, store) = open_temp();
+        let token = store.database_token().unwrap();
+        assert_eq!(token.len(), 16);
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(store.database_token().unwrap(), token);
+        drop(store);
+        let reopened = Store::open(&dir.path().join("taurus.db")).unwrap();
+        assert_eq!(reopened.database_token().unwrap(), token);
+        let (_other_dir, other) = open_temp();
+        assert_ne!(other.database_token().unwrap(), token);
+    }
 
     #[test]
     fn tool_check_times_roundtrip() {
@@ -285,6 +324,49 @@ mod tests {
     }
 
     #[test]
+    fn lenient_settings_and_the_network_section() {
+        let (_dir, store) = open_temp();
+        let manual = |url: &str| ProxySetting::Manual {
+            url: url.to_string(),
+        };
+        for (saved, proxy) in [
+            // Saved before the proxy setting existed.
+            (r#"{"max_active":4}"#, ProxySetting::System),
+            (r#"{"max_active":4,"network":7}"#, ProxySetting::System),
+            (
+                r#"{"max_active":4,"network":{"proxy":"Bogus"}}"#,
+                ProxySetting::System,
+            ),
+            (
+                r#"{"max_active":4,"network":{"proxy":"None","x":1}}"#,
+                ProxySetting::None,
+            ),
+            (
+                r#"{"max_active":4,"network":{"proxy":{"Manual":{"url":"http://h:1"}}}}"#,
+                manual("http://h:1"),
+            ),
+            // Reads, but cannot be used.
+            (
+                r#"{"max_active":4,"network":{"proxy":{"Manual":{"url":"nope"}}}}"#,
+                ProxySetting::System,
+            ),
+            // Credentials (R7), and what parsing would silently change.
+            (
+                r#"{"max_active":4,"network":{"proxy":{"Manual":{"url":"http://u:pw@h:1"}}}}"#,
+                ProxySetting::System,
+            ),
+            (
+                r#"{"max_active":4,"network":{"proxy":{"Manual":{"url":" http://h:1"}}}}"#,
+                ProxySetting::System,
+            ),
+        ] {
+            store.put_setting(SETTINGS_KEY, saved).unwrap();
+            let s = store.load_settings_lenient().unwrap();
+            assert_eq!((s.max_active, s.network.proxy), (4, proxy), "{saved}");
+        }
+    }
+
+    #[test]
     fn settings_roundtrip() {
         let (_dir, store) = open_temp();
         assert_eq!(store.load_settings().unwrap(), Settings::default());
@@ -300,6 +382,11 @@ mod tests {
                 max_active: 2,
                 listen_port: Some(51413),
                 ..TorrentSettings::default()
+            },
+            network: NetworkSettings {
+                proxy: ProxySetting::Manual {
+                    url: "socks5h://127.0.0.1:9050".to_string(),
+                },
             },
             ui: UiSettings {
                 accent: "Vega".to_string(),

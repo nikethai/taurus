@@ -50,7 +50,23 @@ impl Engine {
     /// yt-dlp and Deno if needed, announcing each step as
     /// `Event::ToolStatus`.
     pub async fn inspect(&self, input: &str) -> Result<LinkInfo, CoreError> {
+        self.inspect_with_cookies(input, None).await
+    }
+
+    /// [`inspect`](Engine::inspect), with yt-dlp signed in by the cookies of
+    /// `browser` (`firefox`, `chrome:Profile 1`, ...; see
+    /// [`validate_browser`](crate::media::validate_browser), which is
+    /// checked first: an unknown browser is refused before anything is
+    /// read; an empty one is none) when it reads the link: for videos that
+    /// need a sign-in, whose inspection fails without it. Files and
+    /// torrents do not use it.
+    pub async fn inspect_with_cookies(
+        &self,
+        input: &str,
+        browser: Option<&str>,
+    ) -> Result<LinkInfo, CoreError> {
         self.check_running()?;
+        let cookies = clean_browser(browser)?;
         match classify(input) {
             Ok(Source::Http(_)) => {}
             Ok(_) => return self.torrent_files(input).await.map(LinkInfo::Torrent),
@@ -60,9 +76,10 @@ impl Engine {
         }
         let link = input.trim();
         if media::fast_path_host(link) {
-            return self.inspect_media(link).await;
+            return self.inspect_media(link, cookies).await;
         }
-        match resolve(&self.client, &fixed_url(link), None).await {
+        let client = self.client.get();
+        match resolve(&client, &fixed_url(link), None).await {
             Ok(probe) => Ok(LinkInfo::File {
                 url: probe.requested_url.to_string(),
                 name: probe.file_name,
@@ -74,7 +91,7 @@ impl Engine {
             // stays as unsupported as it was: the person never asked for
             // video, so no video error is shown for it.
             Err(page) if page.kind == ErrorKind::SiteNotSupported => {
-                self.inspect_media(link).await.map_err(|e| {
+                self.inspect_media(link, cookies).await.map_err(|e| {
                     tracing::debug!("yt-dlp could not read {link}: {e}");
                     page
                 })
@@ -83,13 +100,21 @@ impl Engine {
         }
     }
 
-    async fn inspect_media(&self, link: &str) -> Result<LinkInfo, CoreError> {
-        self.media_info(link).await.map(LinkInfo::Media)
+    async fn inspect_media(
+        &self,
+        link: &str,
+        cookies: Option<&str>,
+    ) -> Result<LinkInfo, CoreError> {
+        self.media_info(link, cookies).await.map(LinkInfo::Media)
     }
 
     /// What yt-dlp says `link` holds, installing yt-dlp and Deno first if
     /// needed (announced as `Event::ToolStatus`).
-    pub(super) async fn media_info(&self, link: &str) -> Result<MediaInfo, CoreError> {
+    pub(super) async fn media_info(
+        &self,
+        link: &str,
+        cookies: Option<&str>,
+    ) -> Result<MediaInfo, CoreError> {
         // Installing the tools may take minutes: the machine must not sleep.
         let _hold = self.hold_when_done();
         let emit = self.tool_emitter();
@@ -99,7 +124,8 @@ impl Engine {
         );
         yt_dlp?;
         deno?;
-        media::inspect(&self.tools, link, MEDIA_TIMEOUT).await
+        let proxy = self.settings().network.proxy;
+        media::inspect(&self.tools, link, &proxy, cookies, MEDIA_TIMEOUT).await
     }
 
     /// The job that already has `input`, if any (the lowest id when several
@@ -129,6 +155,16 @@ impl Engine {
             .map(|v| v.id)
             .min()
     }
+}
+
+/// A browser choice as given: trimmed, empty is none; an unknown one is
+/// refused.
+pub(super) fn clean_browser(browser: Option<&str>) -> Result<Option<&str>, CoreError> {
+    let browser = browser.map(str::trim).filter(|b| !b.is_empty());
+    if let Some(spec) = browser {
+        media::validate_browser(spec)?;
+    }
+    Ok(browser)
 }
 
 /// The info hash of a local `.torrent` file; `None` if it cannot be read.

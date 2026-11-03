@@ -1,5 +1,9 @@
 mod config;
+mod edit;
 mod file_list;
+mod grab;
+mod inspect;
+mod password;
 mod render;
 mod runner;
 mod stop;
@@ -13,10 +17,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use taurus_core::torrent::source::{Source, classify};
-use taurus_core::{AddRequest, Engine, EngineConfig, JobId, JobView, PowerMode};
+use taurus_core::{AddRequest, Credentials, Engine, EngineConfig, JobId, JobView, PowerMode};
 use tokio::sync::broadcast::error::TryRecvError;
 
+use crate::edit::{ConvertArgs, JobAction, LoginArgs, SelectArgs};
 use crate::file_list::FileList;
+use crate::grab::GrabArgs;
+use crate::inspect::InspectArgs;
 use crate::runner::{Enqueued, Options, Runner};
 use crate::tools::ToolsAction;
 use crate::video::VideoFlags;
@@ -74,13 +81,36 @@ enum Command {
         /// The files of a torrent to download, by index: 0,2,5-7 (one torrent only; see torrent-files) [default: all]
         #[arg(long, value_name = "LIST")]
         files: Option<FileList>,
+        /// Web links: sign in with this user name; the password is asked for on the terminal
+        #[arg(long, value_name = "NAME")]
+        user: Option<String>,
         #[command(flatten)]
-        video: VideoFlags,
+        video: Box<VideoFlags>,
     },
     /// Continue paused or failed downloads, then run the queue until it is idle; Ctrl-C stops (taurus run continues)
     Resume {
         #[arg(value_name = "ID", required = true)]
         ids: Vec<i64>,
+        /// Videos: first sign in with the cookies of a browser (chrome, firefox, safari, edge,
+        /// brave, chromium, opera or vivaldi, optionally :PROFILE)
+        #[arg(long, value_name = "BROWSER[:PROFILE]")]
+        cookies_from: Option<String>,
+    },
+    /// List the files a web page or folder listing links to, with sizes; --add downloads them
+    Grab(GrabArgs),
+    /// Show what a link offers without adding it: a video's title, every quality, its
+    /// subtitle and caption languages; a file's name and size; a torrent's files
+    Inspect(InspectArgs),
+    /// Give a download its user name and password (asked for on the terminal), then run it
+    Login(LoginArgs),
+    /// Convert a finished download, or a file, to mp3 or a smaller mp4, then run the queue
+    Convert(ConvertArgs),
+    /// Change which files of a torrent are downloaded
+    TorrentSelect(SelectArgs),
+    /// Change one download
+    Job {
+        #[command(subcommand)]
+        action: JobAction,
     },
     /// Run the queued and waiting downloads until the queue is idle; Ctrl-C stops (taurus run continues)
     Run,
@@ -124,23 +154,35 @@ enum ConfigAction {
     /// torrent.ratio <N>|never | torrent.seed_time 30m|2h|1d|off |
     /// torrent.upload_limit off|<N>KB/s|<N>MB/s | torrent.download_limit (same) |
     /// torrent.max_active <N> | torrent.peers <N>|default | torrent.port 1024-65535|random |
-    /// torrent.upnp on|off | torrent.dht on|off
+    /// torrent.upnp on|off | torrent.dht on|off |
+    /// network.proxy system|none|<URL> (http, https, socks5 or socks5h; no user name or password)
     Set { key: String, value: String },
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     let cli = match parse() {
         Ok(cli) => cli,
         Err(code) => return code,
     };
-    match run(cli).await {
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("error: cannot start: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let code = match runtime.block_on(run(cli)) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
-    }
+    };
+    // The engine has shut down by now. A keychain write stuck on an unanswered
+    // unlock prompt runs on a blocking thread that `#[tokio::main]` would wait
+    // for without end; give up on it instead of hanging at exit.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+    code
 }
 
 /// Parses the arguments and folds `add --file` into the URLs.
@@ -154,9 +196,11 @@ fn parse() -> std::result::Result<Cli, ExitCode> {
         checksum,
         files,
         video,
+        user,
         ..
     } = &mut cli.command
     {
+        let from_file = file.is_some();
         if let Some(file) = file.take() {
             match read_url_file(&file) {
                 Ok(more) => urls.extend(more),
@@ -180,6 +224,14 @@ fn parse() -> std::result::Result<Cli, ExitCode> {
             );
             return Err(usage_error(&e));
         }
+        // One password goes to one link, never to a list of hosts.
+        if user.is_some() && (urls.len() > 1 || from_file) {
+            let e = Cli::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--user can only be used with exactly one URL (not with --file)",
+            );
+            return Err(usage_error(&e));
+        }
         if files.is_some() && !(urls.len() == 1 && is_torrent(&urls[0])) {
             let e = Cli::command().error(
                 clap::error::ErrorKind::ArgumentConflict,
@@ -191,6 +243,16 @@ fn parse() -> std::result::Result<Cli, ExitCode> {
             let e = Cli::command().error(clap::error::ErrorKind::ArgumentConflict, message);
             return Err(usage_error(&e));
         }
+    }
+    if let Command::Resume {
+        cookies_from: Some(browser),
+        ..
+    } = &cli.command
+        && let Err(e) = taurus_core::media::validate_browser(browser.trim())
+    {
+        let message = format!("--cookies-from: {}", e.detail);
+        let e = Cli::command().error(clap::error::ErrorKind::InvalidValue, message);
+        return Err(usage_error(&e));
     }
     Ok(cli)
 }
@@ -224,11 +286,20 @@ fn read_url_file(path: &Path) -> std::io::Result<Vec<String>> {
 
 async fn run(cli: Cli) -> Result<ExitCode> {
     let data_dir = data_dir(cli.data_dir)?;
+    // A password is asked for first: while a person types, no engine holds
+    // the data dir or runs its tasks.
+    let credentials = ask_credentials(&cli.command, &data_dir, cli.dry_run_power).await?;
     // Only the queue runners start jobs; the other commands look or edit.
-    let autostart = matches!(
-        cli.command,
-        Command::Add { .. } | Command::Resume { .. } | Command::Run | Command::StartNow { .. }
-    );
+    let autostart = match &cli.command {
+        Command::Add { .. }
+        | Command::Resume { .. }
+        | Command::Run
+        | Command::StartNow { .. }
+        | Command::Login(_)
+        | Command::Convert(_) => true,
+        Command::Grab(args) => args.add,
+        _ => false,
+    };
     let config = engine_config(data_dir.clone(), cli.dry_run_power, autostart);
     let options = Options {
         json: cli.json,
@@ -270,9 +341,32 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Err(e) => return Err(e.into()),
     };
-    let result = execute(&engine, cli.command, options).await;
+    let result = execute(&engine, cli.command, credentials, options).await;
     engine.shutdown().await?;
     result
+}
+
+/// The user name and password the command signs in with, asked for on the
+/// terminal: `add --user`, and `login` for a stored web download. Another
+/// taurus holding the data dir is reported before anything is asked.
+async fn ask_credentials(
+    command: &Command,
+    data_dir: &Path,
+    dry_run_power: bool,
+) -> Result<Option<Credentials>> {
+    let user = match command {
+        Command::Add {
+            user: Some(user), ..
+        } => user,
+        Command::Login(args) => &args.user,
+        _ => return Ok(None),
+    };
+    let config = engine_config(data_dir.to_path_buf(), dry_run_power, false);
+    Engine::check_data_dir_free(&config)?;
+    if let Command::Login(args) = command {
+        edit::check_login_target(config, JobId(args.id)).await?;
+    }
+    password::credentials(user).map(Some)
 }
 
 fn engine_config(data_dir: PathBuf, dry_run_power: bool, autostart: bool) -> EngineConfig {
@@ -286,7 +380,12 @@ fn engine_config(data_dir: PathBuf, dry_run_power: bool, autostart: bool) -> Eng
     config
 }
 
-async fn execute(engine: &Engine, command: Command, options: Options) -> Result<ExitCode> {
+async fn execute(
+    engine: &Engine,
+    command: Command,
+    credentials: Option<Credentials>,
+    options: Options,
+) -> Result<ExitCode> {
     let json = options.json;
     match command {
         Command::Add {
@@ -299,6 +398,7 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
             checksum,
             referer,
             files,
+            user: _,
             video,
         } => {
             let only_files = files.map(|FileList(indices)| indices);
@@ -322,6 +422,7 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
                         checksum: checksum.clone(),
                         referer: referer.clone(),
                         only_files: only_files.clone(),
+                        credentials: credentials.clone(),
                         ..AddRequest::default()
                     };
                     let torrent = is_torrent(&url);
@@ -338,13 +439,17 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
             };
             runner.run(enqueue).await
         }
-        Command::Resume { ids } => {
+        Command::Resume { ids, cookies_from } => {
             let runner = Runner::new(engine, options);
             let enqueue = async {
                 let hold = engine.hold_when_done();
                 let mut enqueued = Enqueued::default();
                 for id in ids.into_iter().map(JobId) {
-                    match engine.resume(id).await {
+                    let resumed = match &cookies_from {
+                        Some(browser) => engine.retry_with_cookies(id, browser.clone()).await,
+                        None => engine.resume(id).await,
+                    };
+                    match resumed {
                         Ok(()) => enqueued.ids.push(id),
                         Err(e) => {
                             eprintln!("error: download {}: {e}", id.0);
@@ -417,11 +522,21 @@ async fn execute(engine: &Engine, command: Command, options: Options) -> Result<
         Command::Stop { id } => stop::local(engine, JobId(id)),
         Command::Tools { action } => tools::run(engine, action, json).await,
         Command::Config { action } => configure(engine, action, json).await,
+        Command::Grab(args) => grab::run(engine, args, options).await,
+        Command::Inspect(args) => inspect::run(engine, args, json).await,
+        Command::Login(args) => {
+            let creds = credentials.ok_or("no password was asked for")?;
+            edit::login(engine, args.id, creds, options).await
+        }
+        Command::Convert(args) => edit::convert(engine, args, options).await,
+        Command::TorrentSelect(args) => edit::torrent_select(engine, args, json).await,
+        Command::Job { action } => edit::job_set(engine, action, json).await,
     }
 }
 
 async fn configure(engine: &Engine, action: ConfigAction, json: bool) -> Result<ExitCode> {
     let mut settings = engine.settings();
+    let before = settings.clone();
     match action {
         ConfigAction::Get { key: None } => {
             if json {
@@ -450,7 +565,7 @@ async fn configure(engine: &Engine, action: ConfigAction, json: bool) -> Result<
                 println!("{}", serde_json::to_string(&settings)?);
             } else {
                 println!("{key} = {}", config::get(&settings, &key)?);
-                if config::RESTART_KEYS.contains(&key.as_str()) {
+                if config::needs_restart(&key, &before, &settings) {
                     println!("{}", config::RESTART_NOTE);
                 }
             }
@@ -481,7 +596,7 @@ fn data_dir(flag: Option<PathBuf>) -> Result<PathBuf> {
         .ok_or_else(|| "no data directory found; pass --data-dir or set TAURUS_DATA_DIR".into())
 }
 
-fn default_dest_dir() -> Result<PathBuf> {
+pub(crate) fn default_dest_dir() -> Result<PathBuf> {
     match directories::UserDirs::new().and_then(|u| u.download_dir().map(PathBuf::from)) {
         Some(dir) => Ok(dir),
         None => Ok(std::env::current_dir()?),

@@ -6,17 +6,26 @@
 //! running jobs or reserves names runs in the actor, one command at a time.
 
 mod actor;
+mod convert;
+mod convert_job;
+mod cookies;
+mod grab;
 mod inspect;
 mod jobs;
+mod keychain;
 mod media;
 mod media_job;
+mod media_rate;
+mod mirrors;
 mod open;
 mod remove;
 mod schedule;
 mod settings;
+mod sign_in;
 mod stop_requests;
 mod tool_ops;
 mod torrent;
+mod torrent_edit;
 mod types;
 
 use std::collections::HashMap;
@@ -29,8 +38,9 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::checksum;
 use crate::errors::{CoreError, ErrorKind, classify_io};
-use crate::http::resolve;
+use crate::http::{Auth, resolve_with};
 use crate::media::fast_path_host;
+use crate::network::SharedClient;
 use crate::settings::Settings;
 use crate::store::{JobId, JobKind, JobState, Store};
 use crate::system::SpaceSource;
@@ -42,11 +52,14 @@ use actor::Command;
 #[doc(hidden)]
 pub use actor::JobMsg;
 pub use inspect::LinkInfo;
-use jobs::{downloaded, fixed_url, vet_mirrors, view_of};
+use jobs::{downloaded, fixed_url, view_of};
+use keychain::Secrets;
 pub use media::{MediaChoice, MediaView};
+use mirrors::vet_mirrors;
 use open::assemble;
 pub use remove::RemoveFiles;
 use schedule::check_space;
+use sign_in::web_only;
 pub use types::{AddRequest, EngineConfig, Event, JobView, TorrentView};
 
 const COMMAND_CAPACITY: usize = 64;
@@ -69,7 +82,9 @@ pub struct Engine {
     settings: Arc<RwLock<Settings>>,
     /// The actor's keep-awake wish, copied for `keeping_awake`.
     keeping_awake: Arc<AtomicBool>,
-    client: reqwest::Client,
+    /// The HTTP client, shared with the actor and the tools; take it
+    /// (`get`) for each request.
+    client: SharedClient,
     /// Live `WhenDoneHold`s, shared with the actor.
     holds: Arc<AtomicUsize>,
     /// Tells the actor that `holds` changed.
@@ -83,6 +98,8 @@ pub struct Engine {
     tools: Arc<ToolManager>,
     /// Holds the database, the tools and the media jobs' thumbnails.
     data_dir: PathBuf,
+    /// The jobs' passwords, shared with the actor.
+    secrets: Secrets,
 }
 
 impl Engine {
@@ -158,6 +175,15 @@ impl Engine {
     /// and a checksum are refused. With `req.media_info` the link is taken
     /// as the media it describes, and not read again. It counts toward `max_active` like a web
     /// download; see `stop_recording` for live streams.
+    ///
+    /// With `req.credentials` a web download signs in (HTTP Basic auth) on
+    /// its link's own origin only, mirrors there included, and on that
+    /// host's https when an http link is upgraded (see `http::Auth`). The
+    /// password goes to `EngineConfig::secrets` and is kept there once
+    /// `add` returns. A 401 fails with `NeedsSignIn` ("wrong user name or
+    /// password" if the request that got it signed in, else naming the
+    /// server's realm). Credentials for a torrent or a media link are
+    /// refused.
     pub async fn add(&self, mut req: AddRequest) -> Result<JobId, CoreError> {
         self.check_running()?;
         // Resolving may take minutes: the machine must not sleep meanwhile.
@@ -181,7 +207,10 @@ impl Engine {
         // on a small stack (a front end's main thread: 1 MiB on Windows).
         match classify(&req.url) {
             Ok(Source::Http(_)) => {}
-            Ok(source) => return Box::pin(self.add_torrent(req, source)).await,
+            Ok(source) => {
+                web_only(&req)?;
+                return Box::pin(self.add_torrent(req, source)).await;
+            }
             // A bad magnet link; anything else is for `resolve` to report.
             Err(e) if e.kind == ErrorKind::SiteNotSupported => return Err(e),
             Err(_) => {}
@@ -204,13 +233,19 @@ impl Engine {
         }
         let referer = req.referer.clone();
         if fast_path_host(&req.url) || req.media_info.is_some() {
+            web_only(&req)?;
             return Box::pin(self.add_media(req)).await;
         }
         let url = fixed_url(&req.url);
-        let probe = match Box::pin(resolve(&self.client, &url, referer.as_deref())).await {
+        let auth = req.credentials.clone().and_then(|c| Auth::new(c, &url));
+        let client = self.client.get();
+        let resolved = resolve_with(&client, &url, referer.as_deref(), auth.as_ref());
+        let probe = match Box::pin(resolved).await {
             Ok(probe) => probe,
-            // A web page; yt-dlp may read it, when asked for.
+            // A web page; yt-dlp may read it, when asked for. It never
+            // gets credentials, so they are refused as for any media link.
             Err(page) if page.kind == ErrorKind::SiteNotSupported && req.media.is_some() => {
+                web_only(&req)?;
                 return Box::pin(self.add_media(req)).await;
             }
             Err(e) => return Err(e),
@@ -226,14 +261,23 @@ impl Engine {
             )?;
         }
         req.mirrors = Box::pin(vet_mirrors(
-            &self.client,
+            &self.client.get(),
             &probe,
             &req.mirrors,
             referer.as_deref(),
+            auth.as_ref(),
         ))
         .await;
-        self.call(|reply| Command::Add { req, probe, reply })
-            .await?
+        let signs_in = req.credentials.is_some();
+        let added = self
+            .call(|reply| Command::Add { req, probe, reply })
+            .await?;
+        if signs_in && added.is_ok() {
+            // The job can already read its password; the store has it too
+            // once `add` returns.
+            self.secrets.flush().await;
+        }
+        added
     }
 
     /// Stops the job and returns once its progress is saved and its state is
@@ -264,15 +308,14 @@ impl Engine {
         // Mirrors are not checked again: one that fails is dropped while
         // the job runs.
         let probe = match job.kind {
-            JobKind::Torrent | JobKind::Media => None,
-            JobKind::Http => Some(
-                resolve(
-                    &self.client,
-                    &fixed_url(&job.source_url),
-                    job.referer.as_deref(),
-                )
-                .await?,
-            ),
+            JobKind::Torrent | JobKind::Media | JobKind::Convert => None,
+            JobKind::Http => {
+                let auth = self.secrets.auth_for(&job).await;
+                let url = fixed_url(&job.source_url);
+                let referer = job.referer.as_deref();
+                let client = self.client.get();
+                Some(resolve_with(&client, &url, referer, auth.as_ref()).await?)
+            }
         };
         self.call(|reply| Command::Resume { id, probe, reply })
             .await?
@@ -300,6 +343,7 @@ impl Engine {
     /// but not a playlist's folder. With `RemoveFiles::IfUnfinished` (see
     /// `remove_with`) an unfinished media job loses only those partial
     /// files: what it finished (a paused playlist's done videos) is kept.
+    /// A job's password (see `set_credentials`) is deleted in every case.
     pub async fn remove(&self, id: JobId, delete_files: bool) -> Result<(), CoreError> {
         let files = if delete_files {
             RemoveFiles::All
@@ -313,8 +357,12 @@ impl Engine {
     /// `RemoveFiles::IfUnfinished` it looks at the job as it is when it
     /// removes it, so a download that finished a moment ago keeps its file.
     pub async fn remove_with(&self, id: JobId, files: RemoveFiles) -> Result<(), CoreError> {
-        self.call(|reply| Command::Remove { id, files, reply })
-            .await?
+        let removed = self
+            .call(|reply| Command::Remove { id, files, reply })
+            .await?;
+        // The job's password is deleted from the store before this returns.
+        self.secrets.flush().await;
+        removed
     }
 
     /// Every job, ordered by id.
@@ -337,9 +385,14 @@ impl Engine {
     /// then emits `SettingsChanged`. A higher `max_active` starts more
     /// Queued jobs; a lower one lets running jobs finish (likewise
     /// `torrent.max_active` for torrents). A `max_active` or
-    /// `torrent.max_active` of 0 is refused. The torrent port, DHT and UPnP
-    /// apply the next time the engine opens. Nothing changes if saving
-    /// fails.
+    /// `torrent.max_active` of 0 is refused, and so is a manual proxy that
+    /// `network::parse_proxy` refuses. A new proxy applies to every web
+    /// request from the next one on and to yt-dlp's next run (a running
+    /// video download keeps its own) and to the torrent session's next
+    /// start: a running session keeps its proxy until the engine opens again
+    /// (`network::torrent_proxy_changes` tells whether the change matters to
+    /// torrents). The torrent port, DHT and UPnP apply the next time the
+    /// engine opens. Nothing changes if saving fails.
     pub async fn set_settings(&self, settings: Settings) -> Result<(), CoreError> {
         self.call(|reply| Command::SetSettings { settings, reply })
             .await?
@@ -390,6 +443,10 @@ impl Engine {
     pub async fn shutdown(&self) -> Result<(), CoreError> {
         // An error here means the engine has already stopped.
         let _ = self.call(|reply| Command::Shutdown { reply }).await;
+        // Passwords being written reach the store (unless it hangs); none
+        // stays in memory.
+        self.secrets.flush().await;
+        self.secrets.clear_memory();
         Ok(())
     }
 
@@ -465,6 +522,12 @@ impl CoreError {
     /// engine (in this or another process) holds.
     pub fn is_instance_locked(&self) -> bool {
         self.kind == ErrorKind::Unknown && self.detail.starts_with(IN_USE)
+    }
+
+    /// Whether this is `read_snapshot` refusing a database of an older
+    /// schema, which only `Engine::open` (with the data dir free) upgrades.
+    pub fn is_older_schema(&self) -> bool {
+        self.kind == ErrorKind::Unknown && self.detail.starts_with(crate::store::OLDER_SCHEMA)
     }
 }
 

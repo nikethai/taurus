@@ -7,19 +7,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::convert::ConvertSpec;
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::media::MediaOptions;
 use crate::plan::Segment;
+use crate::torrent::policy::TorrentOverrides;
 
 mod migrate;
+pub(crate) use migrate::OLDER_SCHEMA;
 mod rows;
 mod settings;
 #[cfg(test)]
 mod test_support;
+mod torrent;
 
 use rows::{
     JOB_COLUMNS, col_u64, encode, job_from_row, media_json, mirrors_json, only_files_json,
-    opt_to_i64, to_i64,
+    opt_to_i64,
 };
 
 #[derive(
@@ -43,12 +47,14 @@ pub enum JobState {
 }
 
 /// What a job downloads: a file over HTTP, a torrent, or a video, audio or
-/// playlist link that yt-dlp downloads.
+/// playlist link that yt-dlp downloads; or converts: a finished local file
+/// that ffmpeg converts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum JobKind {
     Http,
     Torrent,
     Media,
+    Convert,
 }
 
 impl JobKind {
@@ -57,6 +63,7 @@ impl JobKind {
             Self::Http => "http",
             Self::Torrent => "torrent",
             Self::Media => "media",
+            Self::Convert => "convert",
         }
     }
 
@@ -65,6 +72,7 @@ impl JobKind {
             "http" => Self::Http,
             "torrent" => Self::Torrent,
             "media" => Self::Media,
+            "convert" => Self::Convert,
             _ => return None,
         })
     }
@@ -106,6 +114,15 @@ pub struct JobRecord {
     /// What a media job downloads and how; `None` for other jobs. Stored
     /// as JSON (`media_options`).
     pub media: Option<MediaOptions>,
+    /// The user name of a protected download; its password is in the
+    /// engine's secret store. Written only by `set_auth_user`.
+    pub auth_user: Option<String>,
+    /// What a convert job converts; `None` for other jobs. Stored as JSON
+    /// (`convert_source`). Written only by `set_convert`.
+    pub convert: Option<ConvertSpec>,
+    /// A torrent's own sharing rules. Stored as JSON (`torrent_overrides`).
+    /// Written only by `set_torrent_overrides`.
+    pub torrent_overrides: TorrentOverrides,
 }
 
 pub struct NewJob {
@@ -297,8 +314,10 @@ impl Store {
     }
 
     /// Writes every mutable field of `job` (all but `id`, `source_url`,
-    /// `kind` and `uploaded`, which `commit_torrent_progress` owns, so a
-    /// stale copy cannot lower it). Updating a job that no longer exists is
+    /// `kind`, `auth_user`, which `set_auth_user` owns, `convert`, which
+    /// `set_convert` owns, and `uploaded`,
+    /// which `commit_torrent_progress` owns, so a stale copy cannot lower
+    /// it). Updating a job that no longer exists is
     /// a no-op; an info-hash another job has is `AlreadyAdded`.
     pub fn update_job(&self, job: &JobRecord) -> Result<(), CoreError> {
         let total = opt_to_i64(job.total, "total size")?;
@@ -359,35 +378,6 @@ impl Store {
             .map_err(db_err)
     }
 
-    /// Sets only a torrent's progress, in one transaction: the selected
-    /// bytes downloaded, as the `done` of its one segment (a torrent job has
-    /// one, `[0, selected total)`, once its runner has started; before, only
-    /// the uploads are set), and the bytes uploaded in all. So no other field
-    /// can be overwritten from a stale copy. Updating a job that no longer
-    /// exists is a no-op.
-    pub fn commit_torrent_progress(
-        &self,
-        id: JobId,
-        downloaded: u64,
-        uploaded: u64,
-    ) -> Result<(), CoreError> {
-        let downloaded = to_i64(downloaded, "downloaded bytes")?;
-        let uploaded = to_i64(uploaded, "uploaded bytes")?;
-        let mut conn = self.lock();
-        let tx = conn.transaction().map_err(db_err)?;
-        tx.execute(
-            "UPDATE segments SET done = ?2 WHERE job_id = ?1 AND idx = 0",
-            params![id.0, downloaded],
-        )
-        .map_err(db_err)?;
-        tx.execute(
-            "UPDATE jobs SET uploaded = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id.0, uploaded, now_secs()],
-        )
-        .map_err(db_err)?;
-        tx.commit().map_err(db_err)
-    }
-
     /// Sets only the job's state, so no other field can be overwritten from
     /// a stale copy. Updating a job that no longer exists is a no-op.
     pub fn set_state(&self, id: JobId, state: JobState) -> Result<(), CoreError> {
@@ -395,6 +385,35 @@ impl Store {
             .execute(
                 "UPDATE jobs SET state = ?2, updated_at = ?3 WHERE id = ?1",
                 params![id.0, state.as_str(), now_secs()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Sets only the user name of a protected download (`None`: none). A
+    /// job that no longer exists is a no-op.
+    pub fn set_auth_user(&self, id: JobId, user: Option<&str>) -> Result<(), CoreError> {
+        self.lock()
+            .execute(
+                "UPDATE jobs SET auth_user = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id.0, user, now_secs()],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Sets only what a convert job converts (its source, preset and the
+    /// partial output its run recorded). A job that no longer exists is a
+    /// no-op.
+    pub fn set_convert(&self, id: JobId, convert: &ConvertSpec) -> Result<(), CoreError> {
+        let json = serde_json::to_string(convert).map_err(|e| CoreError {
+            kind: ErrorKind::Unknown,
+            detail: e.to_string(),
+        })?;
+        self.lock()
+            .execute(
+                "UPDATE jobs SET convert_source = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id.0, json, now_secs()],
             )
             .map_err(db_err)?;
         Ok(())
@@ -632,6 +651,9 @@ mod tests {
                 uploaded: 0,
                 seed_started_at: None,
                 media: None,
+                auth_user: None,
+                convert: None,
+                torrent_overrides: TorrentOverrides::default(),
             }
         );
 

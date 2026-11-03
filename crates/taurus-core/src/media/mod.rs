@@ -6,6 +6,7 @@
 
 mod errors;
 mod inspect;
+mod options;
 mod partials;
 mod process;
 pub(crate) mod remux;
@@ -21,11 +22,16 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 use crate::errors::CoreError;
+use crate::network::{ProxySetting, proxy_env, ytdlp_proxy_args};
 use crate::tools::{ToolKind, ToolManager};
 
 pub(crate) use errors::{classify_stderr_with, live_from_start_refused, only_thumbnail_refused};
-pub(crate) use inspect::{failure_detail, fast_path_host, standard_quality};
-pub use inspect::{inspect, parse_info, qualities, single_video_link};
+pub use inspect::{
+    all_qualities, inspect, parse_info, qualities, single_video_link, standard_quality,
+};
+pub(crate) use inspect::{failure_detail, fast_path_host};
+pub use options::{Container, SubtitleChoice, validate_browser};
+pub(crate) use options::{cookie_and_subtitle_args, validate_subtitles};
 pub(crate) use partials::own_partial_files;
 pub use run::MediaPhase;
 
@@ -60,8 +66,9 @@ pub(crate) fn extra_args_for(id: &str) -> &'static [&'static str] {
     }
 }
 
-/// What a media job downloads and how, stored with the job.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// What a media job downloads and how, stored with the job. Rows stored
+/// before a field existed read it as unset.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MediaOptions {
     /// The chosen [`QualityOption::id`].
     pub quality: String,
@@ -81,6 +88,16 @@ pub struct MediaOptions {
     /// a restart. A file reported finished leaves the list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub partial_files: Vec<PathBuf>,
+    /// The browser (`firefox`, or `chrome:Profile 1`) whose cookies yt-dlp
+    /// signs in with; only its name goes to yt-dlp, which reads the cookies
+    /// itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cookies_from_browser: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitles: Option<SubtitleChoice>,
+    /// A video's container; `None` is MP4. Audio ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<Container>,
 }
 
 /// A conversion after the download.
@@ -139,15 +156,23 @@ pub struct MediaInfo {
     /// Set when the link is a playlist; then `title` is the playlist's.
     pub playlist: Option<PlaylistInfo>,
     pub qualities: Vec<QualityOption>,
+    /// Languages of the subtitles the uploader made, sorted.
+    pub subtitle_languages: Vec<String>,
+    /// Languages of the captions the site generates, sorted.
+    pub auto_caption_languages: Vec<String>,
+    /// One option per distinct video height, highest first, with the ids
+    /// `<height>p`; empty for a playlist or a video without a picture.
+    pub all_qualities: Vec<QualityOption>,
 }
 
 /// The flags every yt-dlp run gets: Deno as the JavaScript runtime, the
-/// folder holding ffmpeg and ffprobe, Windows-safe file names, and plain,
-/// line-by-line output without warnings or colors.
-pub fn global_args(deno: &Path, ffmpeg_dir: &Path) -> Vec<OsString> {
+/// folder holding ffmpeg and ffprobe, Windows-safe file names, plain,
+/// line-by-line output without warnings or colors, and the proxy setting
+/// ([`ytdlp_proxy_args`]).
+pub fn global_args(deno: &Path, ffmpeg_dir: &Path, proxy: &ProxySetting) -> Vec<OsString> {
     let mut js_runtime = OsString::from("deno:");
     js_runtime.push(deno);
-    vec![
+    let mut args: Vec<OsString> = vec![
         "--js-runtimes".into(),
         js_runtime,
         "--ffmpeg-location".into(),
@@ -156,21 +181,28 @@ pub fn global_args(deno: &Path, ffmpeg_dir: &Path) -> Vec<OsString> {
         "--no-warnings".into(),
         "--newline".into(),
         "--no-colors".into(),
-    ]
+    ];
+    args.extend(ytdlp_proxy_args(proxy).into_iter().map(OsString::from));
+    args
 }
 
-/// The installed yt-dlp and the global flags for it.
+/// The installed yt-dlp, the global flags for it and the proxy variables
+/// of its environment ([`proxy_env`]).
 #[derive(Clone, Debug)]
 pub(crate) struct YtDlp {
     path: PathBuf,
     global: Vec<OsString>,
+    env: Vec<(&'static str, Option<String>)>,
 }
 
 impl YtDlp {
     /// Installs yt-dlp and Deno if they are missing (without reporting
     /// progress; `Engine` does that first), and finds ffmpeg's folder
-    /// (which holds nothing until ffmpeg is installed).
-    pub(crate) async fn prepare(tools: &ToolManager) -> Result<YtDlp, CoreError> {
+    /// (which holds nothing until ffmpeg is installed). Its runs use `proxy`.
+    pub(crate) async fn prepare(
+        tools: &ToolManager,
+        proxy: &ProxySetting,
+    ) -> Result<YtDlp, CoreError> {
         let none = |_| {};
         let (yt_dlp, deno) = tokio::join!(
             tools.ensure(ToolKind::YtDlp, &none),
@@ -184,8 +216,12 @@ impl YtDlp {
             .and_then(|s| s.path)
             .and_then(|p| p.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| tools.tool_dir(ToolKind::Ffmpeg));
-        let global = global_args(&deno, &ffmpeg_dir);
-        Ok(YtDlp { path, global })
+        let global = global_args(&deno, &ffmpeg_dir, proxy);
+        Ok(YtDlp {
+            path,
+            global,
+            env: proxy_env(proxy),
+        })
     }
 
     /// The yt-dlp binary this runs.
@@ -193,7 +229,8 @@ impl YtDlp {
         &self.path
     }
 
-    /// `yt-dlp <global flags>`, with stdin closed. The caller adds the
+    /// `yt-dlp <global flags>`, with stdin closed and the proxy variables
+    /// of its environment set or removed. The caller adds the
     /// arguments and the other stdio, and starts it with
     /// `tools::tree::TreeChild::spawn`, so that stopping it stops
     /// everything it starts.
@@ -202,6 +239,12 @@ impl YtDlp {
         command
             .args(&self.global)
             .stdin(std::process::Stdio::null());
+        for (name, value) in &self.env {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+        }
         command
     }
 }

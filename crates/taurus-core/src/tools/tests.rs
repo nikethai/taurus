@@ -8,6 +8,7 @@ use taurus_testkit::{FakeToolHost, ToolRelease, hang_pid_file, run_retrying};
 
 use super::*;
 use crate::errors::ErrorKind;
+use crate::network::{ProxySetting, build_client};
 
 const YT1: &str = "2026.01.01";
 const YT2: &str = "2026.02.01";
@@ -64,7 +65,7 @@ fn manager_for(data_dir: &Path, host: &FakeToolHost) -> ToolManager {
     ToolManager::new(
         data_dir,
         ToolSources::under(&base),
-        crate::http::build_client(),
+        build_client(&ProxySetting::System),
     )
 }
 
@@ -461,7 +462,11 @@ async fn a_withdrawn_build_keeps_the_installed_one() {
         yt_dlp: base.join("gone/").unwrap(),
         ..ToolSources::under(&base)
     };
-    let manager = ToolManager::new(f.tmp.path(), gone.clone(), crate::http::build_client());
+    let manager = ToolManager::new(
+        f.tmp.path(),
+        gone.clone(),
+        build_client(&ProxySetting::System),
+    );
     let err = manager
         .update(ToolKind::YtDlp, true, &|_| {})
         .await
@@ -480,7 +485,7 @@ async fn a_withdrawn_build_keeps_the_installed_one() {
     assert_eq!(f.host.requests(""), before);
 
     let fresh = tempfile::tempdir().unwrap();
-    let manager = ToolManager::new(fresh.path(), gone, crate::http::build_client());
+    let manager = ToolManager::new(fresh.path(), gone, build_client(&ProxySetting::System));
     let err = manager.ensure(ToolKind::YtDlp, &|_| {}).await.unwrap_err();
     assert_eq!(err.kind, ErrorKind::ToolMissing);
 }
@@ -511,7 +516,7 @@ fn check_intervals() {
 async fn every_platform_layout_installs() {
     let f = Fixture::new().await;
     let sources = ToolSources::under(&url::Url::parse(&f.host.base_url()).unwrap());
-    let client = crate::http::build_client();
+    let client = SharedClient::new(&ProxySetting::System);
     for (kind, os, arch, musl) in [
         (ToolKind::Ffmpeg, "macos", "x86_64", false),
         (ToolKind::Ffmpeg, "macos", "aarch64", false),
@@ -599,6 +604,130 @@ async fn a_cancelled_install_is_not_left_installing() {
         _ = f.manager.update(ToolKind::Ffmpeg, true, &report) => panic!("finished before it was dropped"),
     }
     assert_eq!(f.status_of(ToolKind::Ffmpeg).state, ToolState::Ready);
+}
+
+/// A release of `tool` whose binaries hang when run (its version check,
+/// which an install does after the download), under a version of its own;
+/// returns that version's pid file, which appears once one is running.
+fn hanging_release(f: &Fixture, tool: &str) -> (String, PathBuf) {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    let version = format!("2026.9.{nanos}");
+    let pid_file = hang_pid_file(&version);
+    let _ = std::fs::remove_file(&pid_file);
+    f.host.set_release(
+        tool,
+        ToolRelease {
+            hang: true,
+            ..ToolRelease::new(&version)
+        },
+    );
+    (version, pid_file)
+}
+
+/// Polls `work` until `pid_file` exists (a hanging binary is running: the
+/// install is truly under way), then drops it.
+async fn drop_once_hanging<T>(work: impl std::future::Future<Output = T>, pid_file: &Path) {
+    let running = async {
+        while !pid_file.is_file() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    let running = tokio::time::timeout(std::time::Duration::from_secs(30), running);
+    tokio::select! {
+        biased;
+        r = running => r.expect("the hanging binary never ran"),
+        _ = work => panic!("finished before it was dropped"),
+    }
+}
+
+/// A cancelled install announces what the tool really is now, so a front
+/// end showing "getting video tools" can clear it: Missing for a tool that
+/// was never installed, Ready (its version) for an update that was dropped.
+/// Dropped while the downloaded binary is being checked, not at the start.
+#[tokio::test]
+async fn cancelled_install_clears_installing_state() {
+    let f = Fixture::new().await;
+    let seen = Mutex::new(Vec::<ToolStatus>::new());
+    let report = |s: ToolStatus| seen.lock().unwrap().push(s);
+    let (_, pid_file) = hanging_release(&f, "yt-dlp");
+    drop_once_hanging(f.manager.ensure(ToolKind::YtDlp, &report), &pid_file).await;
+    // Dropped: not installing any more, and the last word said so.
+    assert_eq!(f.status_of(ToolKind::YtDlp).state, ToolState::Missing);
+    {
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter()
+                .any(|s| matches!(s.state, ToolState::Installing { .. })),
+            "{seen:?}"
+        );
+        let last = seen.last().unwrap();
+        assert_eq!(
+            (last.kind, &last.state),
+            (ToolKind::YtDlp, &ToolState::Missing)
+        );
+        assert_eq!(last.version, None);
+    }
+    let _ = std::fs::remove_file(&pid_file);
+
+    // An update dropped likewise: the installed version is announced Ready.
+    f.ensure(ToolKind::Ffmpeg).await;
+    let version = f.current(ToolKind::Ffmpeg);
+    let (_, pid_file) = hanging_release(&f, "ffmpeg");
+    seen.lock().unwrap().clear();
+    drop_once_hanging(f.manager.update(ToolKind::Ffmpeg, true, &report), &pid_file).await;
+    {
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter()
+                .any(|s| matches!(s.state, ToolState::Installing { .. })),
+            "{seen:?}"
+        );
+        let last = seen.last().unwrap();
+        assert_eq!(
+            (last.kind, &last.state),
+            (ToolKind::Ffmpeg, &ToolState::Ready)
+        );
+        assert_eq!(last.version.as_deref(), Some(version.as_str()));
+    }
+    let _ = std::fs::remove_file(&pid_file);
+    assert_eq!(f.current(ToolKind::Ffmpeg), version);
+}
+
+/// An install that fails inside the download (here: a checksum that does
+/// not match) is reported once, as `Failed`, and not also as Missing.
+#[tokio::test]
+async fn a_failed_install_reports_failed_not_missing() {
+    let f = Fixture::new().await;
+    f.host.set_release(
+        "yt-dlp",
+        ToolRelease {
+            corrupt_checksum: true,
+            ..ToolRelease::new(YT1)
+        },
+    );
+    let seen = Mutex::new(Vec::<ToolStatus>::new());
+    let report = |s: ToolStatus| seen.lock().unwrap().push(s);
+    let err = f
+        .manager
+        .ensure(ToolKind::YtDlp, &report)
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::ChecksumMismatch, "{err}");
+    let seen = seen.lock().unwrap();
+    // It got as far as installing, then failed: the last word is Failed.
+    assert!(
+        seen.iter()
+            .any(|s| matches!(s.state, ToolState::Installing { .. })),
+        "{seen:?}"
+    );
+    assert_eq!(seen.last().unwrap().state, ToolState::Failed(err.kind));
+    assert!(
+        !seen.iter().any(|s| s.state == ToolState::Missing),
+        "{seen:?}"
+    );
 }
 
 #[tokio::test]

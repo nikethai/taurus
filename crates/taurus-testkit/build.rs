@@ -9,6 +9,8 @@ use std::process::Command;
 fn main() {
     let source = "src/bin/fake-tool.rs";
     println!("cargo:rerun-if-changed={source}");
+    // The root file's `mod`s (a directory is scanned for changes).
+    println!("cargo:rerun-if-changed=src/bin/fake_tool");
     println!("cargo:rerun-if-changed=build.rs");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));

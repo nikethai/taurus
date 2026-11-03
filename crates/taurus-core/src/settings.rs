@@ -1,5 +1,7 @@
 //! User settings and the values derived from them.
 
+pub use crate::network::ProxySetting;
+
 /// Without a measured peak: Gentle = 1 MiB/s, Balanced = 5 MiB/s.
 const GENTLE_FALLBACK_BPS: u64 = 1_048_576;
 const BALANCED_FALLBACK_BPS: u64 = 5_242_880;
@@ -87,6 +89,7 @@ pub struct Settings {
     pub auto_checksum: bool,
     pub keep_awake: bool,
     pub torrent: TorrentSettings,
+    pub network: NetworkSettings,
     /// What only the desktop app reads.
     pub ui: UiSettings,
 }
@@ -100,9 +103,20 @@ impl Default for Settings {
             auto_checksum: true,
             keep_awake: true,
             torrent: TorrentSettings::default(),
+            network: NetworkSettings::default(),
             ui: UiSettings::default(),
         }
     }
+}
+
+/// How the engine reaches the web.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct NetworkSettings {
+    /// Applies to every web request from the next one on, and to yt-dlp's
+    /// next run; to torrents (a SOCKS proxy only) when the engine next
+    /// opens. See [`crate::network`].
+    pub proxy: ProxySetting,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

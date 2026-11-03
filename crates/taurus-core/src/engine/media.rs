@@ -12,28 +12,40 @@ use crate::http::JobOutcome;
 use crate::media::run::MediaPhase;
 use crate::media::thumbnail::{THUMBS_DIR, fetch_thumbnail, thumbnail_in};
 use crate::media::{
-    ConvertPreset, LiveStatus, MediaInfo, MediaOptions, own_partial_files, standard_quality,
+    Container, ConvertPreset, LiveStatus, MediaInfo, MediaOptions, SubtitleChoice,
+    own_partial_files, standard_quality, validate_subtitles,
 };
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob};
 
 use super::actor::{Actor, Command, JobMsg, Run};
+use super::inspect::clean_browser;
 use super::jobs::view_of;
 use super::media_job::{MediaJob, run_media_job};
+use super::media_rate::MediaRate;
 use super::schedule::check_space;
-use super::settings::speed_limit;
 use super::{AddRequest, Engine, Event, JobView, no_such_job, read, write};
-use crate::torrent::policy::split_rate;
 
 /// Playlists longer than this need `AddRequest::confirm_large_playlist`.
 const LARGE_PLAYLIST: u32 = 50;
 
 /// How to download a media link: one of the link's
 /// [`QualityOption`](crate::media::QualityOption) ids (`best`, `1080p`,
-/// `720p`, `audio-best`, `audio-small`) and an optional conversion.
+/// `720p`, `audio-best`, `audio-small`, or a `<height>p` the link lists
+/// in `MediaInfo::all_qualities`), an optional conversion, and what only a
+/// video takes: the browser whose cookies to sign in with, subtitles and
+/// the container.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MediaChoice {
     pub quality: String,
     pub convert: Option<ConvertPreset>,
+    /// `chrome`, `firefox`, ... optionally `:<profile>`
+    /// ([`validate_browser`](crate::media::validate_browser)); an empty
+    /// string is none.
+    pub cookies_from_browser: Option<String>,
+    pub subtitles: Option<SubtitleChoice>,
+    /// `None` is MP4; audio ignores it. The smaller-file conversion makes
+    /// an MP4, so it is refused with Mkv or Webm.
+    pub container: Option<Container>,
 }
 
 /// What only a media job has.
@@ -88,10 +100,12 @@ impl Engine {
                 detail: "mirrors and checksum apply only to web downloads".to_string(),
             });
         }
+        // A bad choice is refused before anything is read.
+        let cookies = check_choice(req.media.as_ref())?;
         // Read once: the front end usually inspected the link already.
         let info = match req.media_info.take() {
             Some(info) => info,
-            None => self.media_info(req.url.trim()).await?,
+            None => self.media_info(req.url.trim(), cookies.as_deref()).await?,
         };
         if let Some(playlist) = &info.playlist
             && playlist.count > LARGE_PLAYLIST
@@ -107,6 +121,7 @@ impl Engine {
         let est_size = info
             .qualities
             .iter()
+            .chain(&info.all_qualities)
             .find(|q| q.id == options.quality)
             .and_then(|q| q.est_size)
             .filter(|_| !options.playlist && !options.live_from_start);
@@ -133,7 +148,7 @@ impl Engine {
             .call(|reply| Command::AddMedia { req, add, reply })
             .await??;
         if let Some(url) = info.thumbnail_url {
-            let client = self.client.clone();
+            let client = self.client.get();
             let dir = self.data_dir.join(THUMBS_DIR);
             let tx = self.hold_tx.clone();
             tokio::spawn(async move {
@@ -171,6 +186,29 @@ impl Engine {
     }
 }
 
+/// Refuses a choice whose video options cannot be used (an unknown browser,
+/// bad subtitle languages, the smaller-file conversion with Mkv or Webm,
+/// which it would turn into MP4); returns the browser, trimmed (none if
+/// empty).
+fn check_choice(choice: Option<&MediaChoice>) -> Result<Option<String>, CoreError> {
+    let Some(choice) = choice else {
+        return Ok(None);
+    };
+    let cookies = clean_browser(choice.cookies_from_browser.as_deref())?;
+    if choice.convert == Some(ConvertPreset::SmallerMp4)
+        && matches!(choice.container, Some(Container::Mkv | Container::Webm))
+    {
+        return Err(CoreError {
+            kind: ErrorKind::Unknown,
+            detail: "the smaller-file conversion always makes an MP4".to_owned(),
+        });
+    }
+    if let Some(subtitles) = &choice.subtitles {
+        validate_subtitles(subtitles)?;
+    }
+    Ok(cookies.map(str::to_owned))
+}
+
 /// The stored options for `info` downloaded as `choice` (default `best`).
 /// A quality the link does not list, but which is one of the five, is used
 /// as it is usually built (a playlist lists only `best` and `audio-best`).
@@ -185,6 +223,7 @@ fn media_options(
     let quality = info
         .qualities
         .iter()
+        .chain(&info.all_qualities)
         .find(|q| q.id == id)
         .cloned()
         .or_else(|| standard_quality(id))
@@ -192,6 +231,12 @@ fn media_options(
             kind: ErrorKind::Unknown,
             detail: format!("unknown quality {id:?}"),
         })?;
+    let cookies_from_browser = choice
+        .and_then(|c| c.cookies_from_browser.as_deref())
+        .map(str::trim)
+        .filter(|b| !b.is_empty());
+    let container = choice.and_then(|c| c.container);
+    let subtitles = choice.and_then(|c| c.subtitles.clone());
     Ok(MediaOptions {
         quality: quality.id,
         selector: quality.selector,
@@ -203,6 +248,9 @@ fn media_options(
             LiveStatus::IsLive | LiveStatus::IsUpcoming { .. }
         ),
         partial_files: Vec::new(),
+        cookies_from_browser: cookies_from_browser.map(str::to_owned),
+        subtitles,
+        container,
     })
 }
 
@@ -279,12 +327,18 @@ impl Actor {
         let downloaded_at_start = read(&self.views).get(&id).map_or(0, |v| v.downloaded);
         let cancel = CancellationToken::new();
         let finish = CancellationToken::new();
+        let (media_rate, rate) = MediaRate::new(self.media_rate());
+        // A recording keeps the limit it started with.
+        if !live {
+            self.media_rates.insert(id, media_rate);
+        }
         let ctx = MediaJob {
             job,
             tools: self.tools.clone(),
             store: self.store.clone(),
             grace: self.timing.media_stop_grace,
-            limit_rate: self.media_rate(),
+            rate,
+            proxy: self.settings.network.proxy.clone(),
             events: self.events.clone(),
             cancel: cancel.clone(),
             finish: finish.clone(),
@@ -311,16 +365,6 @@ impl Actor {
             },
         );
         self.set_view_state(id, state);
-    }
-
-    /// The share of the speed limit for a media job about to start: yt-dlp
-    /// takes a fixed `--limit-rate`, so it gets its part of the web
-    /// downloads' rate as the jobs running now (and it) split it.
-    fn media_rate(&self) -> Option<u64> {
-        let (http, torrents) = self.active();
-        let global = speed_limit(&self.settings, self.measured_peak);
-        let (http_rate, _) = split_rate(global, true, torrents > 0);
-        http_rate.map(|rate| rate / (http as u64 + 1))
     }
 
     /// Asks the running media job to stop as a finished recording; true if
@@ -362,6 +406,8 @@ impl Actor {
         if let Some(view) = view {
             self.emit(Event::JobUpdated(view));
         }
+        // A speed-limit change may have waited for the download to go on.
+        self.apply_wanted(id, update.phase);
     }
 
     pub(super) fn on_thumbnail(&mut self, id: JobId, path: PathBuf) {

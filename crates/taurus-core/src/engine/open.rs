@@ -9,8 +9,8 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::errors::{CoreError, ErrorKind};
-use crate::http::build_client;
 use crate::limit::{Limiter, PeakTracker};
+use crate::network::{SharedClient, torrent_proxy};
 use crate::store::{JobKind, JobState, Store};
 use crate::system::AwakeGuard;
 use crate::tools::ToolManager;
@@ -19,6 +19,7 @@ use crate::when_done::{EngineLink, WhenDoneRunner};
 
 use super::actor::{Actor, Command, JobMsg};
 use super::jobs::{downloaded, view_of};
+use super::keychain::Secrets;
 use super::media::restore_thumbnails;
 use super::settings::{fresh_peak, speed_limit, unix_now};
 use super::{
@@ -72,6 +73,7 @@ pub(super) async fn assemble(
         config.torrent_test.clone(),
         store.clone(),
     ));
+    hub.set_proxy(torrent_proxy(&settings.network.proxy));
     // Torrents about to run start the session now, which makes it agree
     // with the store first. Short-lived front ends that only look at or
     // edit the jobs (no autostart) leave it for the first torrent that runs.
@@ -87,7 +89,8 @@ pub(super) async fn assemble(
     let views = Arc::new(RwLock::new(views));
     let shared_settings = Arc::new(RwLock::new(settings.clone()));
     let keeping_awake = Arc::new(AtomicBool::new(false));
-    let limiter = Limiter::new(speed_limit(&settings, measured_peak));
+    let media_global = speed_limit(&settings, measured_peak);
+    let limiter = Limiter::new(media_global);
     let peak = PeakTracker::with_max(fresh_peak(measured_peak, unix_now()).unwrap_or(0));
     let (commands, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
     let (events, _) = broadcast::channel(EVENT_CAPACITY);
@@ -99,7 +102,8 @@ pub(super) async fn assemble(
             let _ = job_tx.send(JobMsg::WhenDoneFired(action));
         })
     };
-    let client = build_client();
+    let client = SharedClient::new(&settings.network.proxy);
+    let secrets = Secrets::new(config.secrets.clone(), &store.database_token()?);
     let (torrent_settings, _) = watch::channel(settings.torrent.clone());
     let tools = Arc::new(
         ToolManager::new(&config.data_dir, config.tool_sources, client.clone())
@@ -143,12 +147,16 @@ pub(super) async fn assemble(
         limiter,
         hub: hub.clone(),
         torrent_settings,
+        seed_rules: HashMap::new(),
         rates: None,
         measured_peak,
         peak,
         transferred: 0,
         tools: tools.clone(),
         media_stops: HashMap::new(),
+        media_rates: HashMap::new(),
+        media_global,
+        secrets: secrets.clone(),
     };
     let engine = Engine {
         commands,
@@ -164,8 +172,23 @@ pub(super) async fn assemble(
         metadata_timeout: config.timing.torrent_metadata_timeout,
         tools,
         data_dir: config.data_dir,
+        secrets,
     };
     Ok((engine, actor, commands_rx))
+}
+
+impl Engine {
+    /// Fails as `open` would (`is_instance_locked`) while another engine,
+    /// in any process, holds `config.data_dir`; opens nothing: the lock is
+    /// taken and given back at once. For a front end that asks the person
+    /// something (a password) before it opens the engine, so a held data
+    /// dir is reported first. A data dir that does not exist yet is free.
+    pub fn check_data_dir_free(config: &EngineConfig) -> Result<(), CoreError> {
+        if !config.data_dir.is_dir() {
+            return Ok(());
+        }
+        lock_data_dir(&config.data_dir).map(drop)
+    }
 }
 
 /// Takes the exclusive lock on `data_dir/taurus.lock` without waiting.
