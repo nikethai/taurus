@@ -3330,10 +3330,14 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
         SpeedLimit::Gentle,
         "{WHAT}: Custom alone changes nothing"
     );
-    // Picking Custom shows the limit in effect (Gentle's figure).
+    // Picking Custom shows the limit in effect (Gentle's share of the peak).
+    let gentle = ctx
+        .engine
+        .effective_speed_limit()
+        .expect("Gentle is a limit");
     assert_eq!(
         state.get_custom_text().as_str(),
-        "1.048576",
+        (gentle as f64 / 1e6).to_string(),
         "{WHAT}: Custom prefill"
     );
     let enter = || {
@@ -3442,6 +3446,58 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     assert!(!state.get_open(), "{WHAT}: Escape with the field focused");
     only_button(ui, "When done", WHAT).invoke_accessible_default_action();
     assert!(state.get_open(), "{WHAT}: reopen");
+    // The field holds the old custom value; each switch to Custom refills
+    // it with the limit in effect.
+    assert_eq!(
+        state.get_custom_text().as_str(),
+        "10000",
+        "{WHAT}: reopened"
+    );
+    whendone_choice(ui, "Balanced", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: balanced saved"), || {
+        ctx.engine.settings().speed == SpeedLimit::Balanced
+    });
+    let balanced = ctx
+        .engine
+        .effective_speed_limit()
+        .expect("Balanced is a limit");
+    whendone_choice(ui, "Custom", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        state.get_custom_text().as_str(),
+        (balanced as f64 / 1e6).to_string(),
+        "{WHAT}: refilled with Balanced's limit"
+    );
+    // Fastest has no limit: the field is empty.
+    whendone_choice(ui, "Fastest", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: fastest saved"), || {
+        ctx.engine.settings().speed == SpeedLimit::Fastest
+    });
+    whendone_choice(ui, "Custom", WHAT).invoke_accessible_default_action();
+    assert_eq!(state.get_custom_text().as_str(), "", "{WHAT}: Fastest");
+    // Leaving the field after an edit writes once (Tab moves focus on).
+    let mut events = ctx.engine.subscribe();
+    refresh_tree(ui);
+    only_with_role(ui, AccessibleRole::TextInput, "Custom speed in MB/s", WHAT)
+        .set_accessible_value("7");
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: slint::platform::Key::Tab.into(),
+    });
+    wait_until(&format!("{WHAT}: 7 saved on focus out"), || {
+        ctx.engine.settings().speed
+            == SpeedLimit::Custom {
+                bytes_per_sec: 7_000_000,
+            }
+    });
+    settle(Duration::from_millis(200));
+    let mut writes = 0;
+    loop {
+        match events.try_recv() {
+            Ok(Event::SettingsChanged(_)) => writes += 1,
+            Ok(_) | Err(TryRecvError::Lagged(_)) => {}
+            Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+        }
+    }
+    assert_eq!(writes, 1, "{WHAT}: settings writes on focus out");
 
     // The footer's speed text is the jobs' total, not the limit.
     assert_eq!(ui.get_speed_down_text().as_str(), "0 B/s", "{WHAT}: idle");

@@ -72,20 +72,18 @@ impl App {
         self.setting_changed(key, value);
     }
 
-    /// The Custom segment was picked: an empty field shows the limit now
-    /// in effect, in MB/s (a preset's figure is the one used without a
-    /// measured peak; Fastest has none).
+    /// The Custom segment was picked: the field shows the download limit
+    /// in effect now, in MB/s, replacing any older text; empty when there
+    /// is none (Fastest is unlimited).
     pub(crate) fn whendone_custom_chosen(&self) {
         let Some(ui) = self.window.upgrade() else {
             return;
         };
         let state = ui.global::<WhenDoneUi>();
-        if !state.get_custom_text().trim().is_empty() {
-            return;
-        }
-        if let Some(bps) = self.settings.borrow().speed.bytes_per_sec(None) {
-            state.set_custom_text(custom_speed_text(bps).into());
-        }
+        let limit = self.engine.effective_speed_limit();
+        state.set_custom_text(limit.map(custom_speed_text).unwrap_or_default().into());
+        state.set_custom_invalid(false);
+        state.set_custom_comma(false);
     }
 
     /// The field's text after an edit: shows whether it is a speed; nothing

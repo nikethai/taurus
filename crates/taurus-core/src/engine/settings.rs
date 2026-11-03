@@ -2,6 +2,7 @@
 //! limiter's rate, the torrent session's limits and the measured peak speed
 //! they are a share of.
 
+use std::sync::atomic::Ordering;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::errors::{CoreError, ErrorKind};
@@ -107,7 +108,10 @@ impl Actor {
         };
         let at = unix_now();
         match self.store.save_measured_peak(bps, at) {
-            Ok(()) => self.measured_peak = Some((bps, at)),
+            Ok(()) => {
+                self.measured_peak = Some((bps, at));
+                self.peak_bps.store(bps, Ordering::Relaxed);
+            }
             Err(e) => tracing::warn!("could not save the peak speed: {e}"),
         }
     }

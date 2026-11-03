@@ -2,7 +2,7 @@
 //! serves and the messages its jobs and timers send it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -235,6 +235,8 @@ pub(super) struct Actor {
     pub(super) rates: Option<Rates>,
     /// The saved peak speed (bytes/s) and when it was measured (unix secs).
     pub(super) measured_peak: Option<(u64, i64)>,
+    /// `measured_peak`'s speed, for the engine handle (0: none).
+    pub(super) peak_bps: Arc<AtomicU64>,
     pub(super) peak: PeakTracker,
     /// Bytes downloaded by all jobs since the engine opened.
     pub(super) transferred: u64,

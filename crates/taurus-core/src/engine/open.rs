@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::{broadcast, mpsc, watch};
@@ -90,6 +90,7 @@ pub(super) async fn assemble(
     let views = Arc::new(RwLock::new(views));
     let shared_settings = Arc::new(RwLock::new(settings.clone()));
     let keeping_awake = Arc::new(AtomicBool::new(false));
+    let peak_bps = Arc::new(AtomicU64::new(measured_peak.map_or(0, |(bps, _)| bps)));
     let media_global = speed_limit(&settings, measured_peak);
     let limiter = Limiter::new(media_global);
     let peak = PeakTracker::with_max(fresh_peak(measured_peak, unix_now()).unwrap_or(0));
@@ -156,6 +157,7 @@ pub(super) async fn assemble(
         seed_rules: HashMap::new(),
         rates: None,
         measured_peak,
+        peak_bps: peak_bps.clone(),
         peak,
         transferred: 0,
         tools: tools.clone(),
@@ -170,6 +172,7 @@ pub(super) async fn assemble(
         events,
         views,
         settings: shared_settings,
+        peak_bps,
         keeping_awake,
         client: client.clone(),
         holds,

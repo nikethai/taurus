@@ -1579,3 +1579,44 @@ async fn completed_job_has_finished_at() {
     assert_eq!(snapshot[0].finished_at, Some(again));
     engine.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn effective_speed_limit_follows_setting_and_saved_peak() {
+    let fx = Fixture::new().await;
+    fs::create_dir_all(fx.data_dir()).unwrap();
+    Store::open(&fx.data_dir().join("taurus.db"))
+        .unwrap()
+        .save_measured_peak(40_000_000, 1_700_000_000)
+        .unwrap();
+    let engine = fx.engine().await;
+    // Fastest is unlimited.
+    assert_eq!(engine.effective_speed_limit(), None);
+    for (speed, expected) in [
+        (SpeedLimit::Gentle, Some(10_000_000)),
+        (SpeedLimit::Balanced, Some(24_000_000)),
+        (SpeedLimit::Fastest, None),
+        (
+            SpeedLimit::Custom {
+                bytes_per_sec: 2_500_000,
+            },
+            Some(2_500_000),
+        ),
+    ] {
+        engine
+            .set_settings(with_speed(speed.clone()))
+            .await
+            .unwrap();
+        assert_eq!(engine.effective_speed_limit(), expected, "{speed:?}");
+    }
+    engine.shutdown().await.unwrap();
+
+    // No peak measured: the fixed figures.
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    engine
+        .set_settings(with_speed(SpeedLimit::Gentle))
+        .await
+        .unwrap();
+    assert_eq!(engine.effective_speed_limit(), Some(1_048_576));
+    engine.shutdown().await.unwrap();
+}

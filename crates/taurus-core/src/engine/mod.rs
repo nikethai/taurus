@@ -32,7 +32,7 @@ mod types;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
@@ -84,6 +84,9 @@ pub struct Engine {
     views: Views,
     /// The actor's settings, copied for `settings`.
     settings: Arc<RwLock<Settings>>,
+    /// The actor's saved peak speed in bytes/s (0: none), copied for
+    /// `effective_speed_limit`.
+    peak_bps: Arc<AtomicU64>,
     /// The actor's keep-awake wish, copied for `keeping_awake`.
     keeping_awake: Arc<AtomicBool>,
     /// The HTTP client, shared with the actor and the tools; take it
@@ -385,6 +388,17 @@ impl Engine {
     /// The current settings.
     pub fn settings(&self) -> Settings {
         read(&self.settings).clone()
+    }
+
+    /// The download limit in bytes per second that the speed setting gives
+    /// now, as the engine applies it: a custom limit as set, Gentle and
+    /// Balanced as shares (25 % and 60 %) of the measured peak (fixed
+    /// figures while none is measured), `None` for Fastest (unlimited).
+    pub fn effective_speed_limit(&self) -> Option<u64> {
+        let peak = self.peak_bps.load(Ordering::Relaxed);
+        read(&self.settings)
+            .speed
+            .bytes_per_sec((peak != 0).then_some(peak))
     }
 
     /// Saves the settings and applies them at once, also to running jobs,
