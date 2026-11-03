@@ -1,0 +1,47 @@
+// Wide layout detail pane, minimal until the full detail view (M6b Task 3
+// replaces this component): the selected download's name and kind.
+import { Theme } from "../theme.slint";
+import { DetailStubVm } from "../types.slint";
+import { KindBadge } from "../widgets.slint";
+import { SourceChip } from "row.slint";
+
+export component DetailStub inherits Rectangle {
+    in property <DetailStubVm> detail;
+
+    background: Theme.panel;
+
+    if !root.detail.visible: Text {
+        x: 16px;
+        width: parent.width - 32px;
+        text: @tr("Select a download to see its details.");
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        font-size: 13px;
+        color: Theme.muted;
+    }
+    if root.detail.visible: VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        alignment: start;
+        KindBadge {
+            kind: root.detail.kind;
+            size: 48px;
+        }
+        Text {
+            text: root.detail.name;
+            wrap: word-wrap;
+            font-size: 15px;
+            font-weight: 700;
+            color: Theme.text;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+        HorizontalLayout {
+            alignment: start;
+            SourceChip {
+                source: root.detail.source;
+            }
+        }
+    }
+}

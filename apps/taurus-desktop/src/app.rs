@@ -24,6 +24,7 @@ use slint::{CloseRequestResponse, ComponentHandle, SharedPixelBuffer, Timer, Tim
 use taurus_core::{CoreError, Engine, ErrorKind, JobId, JobState, LinkInfo, RemoveFiles, Settings};
 
 use crate::add_flow::PendingAdd;
+use crate::adv_view::AdvState;
 use crate::bridge::{self, Coalescer};
 use crate::links::ClipboardFilter;
 use crate::pump::ViewState;
@@ -120,6 +121,8 @@ pub struct App {
     /// The settings as the UI last set or received them.
     pub(crate) settings: RefCell<Settings>,
     pub(crate) view: RefCell<ViewState>,
+    /// Advanced mode's list (`adv_view.rs`).
+    pub(crate) adv: RefCell<AdvState>,
     coalescer: Arc<Mutex<Coalescer>>,
     pub(crate) writer: SettingsWriter,
     /// Mirrors `settings.ui.offer_copied_links` for the clipboard thread.
@@ -173,6 +176,7 @@ impl App {
             seq: Cell::new(0),
             settings: RefCell::new(settings),
             view: RefCell::new(ViewState::default()),
+            adv: RefCell::new(AdvState::default()),
             coalescer: coalescer.clone(),
             writer,
             offer_links,
@@ -185,6 +189,7 @@ impl App {
         window.set_app_icon(slint::Image::from_rgba8(pixels));
         window.set_has_tray(has_tray);
         app.view.borrow().install(window);
+        app.adv.borrow().install(window);
         app.push_settings();
         let screen = if app.engine.snapshot().is_empty() {
             crate::Screen::Welcome
@@ -232,6 +237,13 @@ impl App {
         on!(ui, self, on_setting_changed, |a, key, value| a
             .setting_changed(&key, &value));
         on!(ui, self, on_cancel_countdown, |a| a.cancel_countdown());
+        on!(ui, self, on_width_changed, |a| a.apply_layout());
+        on!(ui, self, on_select, |a, id| a.adv_select(id));
+        on!(ui, self, on_filter_changed, |a, key| a.adv_filter(&key));
+        on!(ui, self, on_tab_changed, |a, tab| a.adv_tab(tab));
+        on!(ui, self, on_search_changed, |a, text| a.adv_search(&text));
+        // open-batch, open-whendone and open-grab: their screens come in
+        // later M6b tasks; until then they are left unconnected.
 
         let weak = Rc::downgrade(self);
         ui.window().on_close_requested(move || {

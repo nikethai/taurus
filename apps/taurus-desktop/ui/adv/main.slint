@@ -1,0 +1,275 @@
+// Advanced mode, compact window (CompactMain): header, Active / Waiting /
+// Done tabs with counts, the list and a footer with the total speeds.
+// The list and the footer are shared with the wide layout.
+import { Theme } from "../theme.slint";
+import { AdvRowVm, TabCountsVm } from "../types.slint";
+import { ListView } from "std-widgets.slint";
+import { IconButton, Pressable } from "../widgets.slint";
+import { LinkField } from "../welcome.slint";
+import { AdvRow } from "row.slint";
+
+component AdvTab inherits Pressable {
+    in property <string> text;
+    in property <int> count;
+    in property <bool> selected;
+
+    height: 32px;
+    min-width: 0;
+    preferred-width: 0;
+    horizontal-stretch: 1;
+    border-radius: 8px;
+    background: selected ? Theme.panel : root.hovered ? Theme.track : transparent;
+    border-width: selected ? 1px : 0;
+    border-color: Theme.line;
+    accessible-role: tab;
+    accessible-label: text;
+    accessible-value: count;
+    accessible-item-selectable: true;
+    accessible-item-selected: selected;
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: 12px;
+            font-weight: root.selected ? 600 : 400;
+            color: root.selected ? Theme.text : Theme.muted;
+            accessible-role: none;
+        }
+        Text {
+            text: root.count;
+            vertical-alignment: center;
+            font-size: 11px;
+            font-weight: 600;
+            color: root.selected ? Theme.accent-strong : Theme.muted;
+            accessible-role: none;
+        }
+    }
+}
+
+// The rows, or a line saying why there are none.
+export component AdvList inherits Rectangle {
+    in property <[AdvRowVm]> rows;
+    in property <string> empty-text;
+    callback select(int);
+    callback pause(int);
+    callback resume(int);
+    callback retry(int);
+    callback stop-recording(int);
+    callback open-file(int);
+
+    if root.rows.length == 0: Text {
+        x: 16px;
+        width: parent.width - 32px;
+        text: root.empty-text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        font-size: 13px;
+        color: Theme.muted;
+    }
+    if root.rows.length > 0: ListView {
+        for r in root.rows: HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            AdvRow {
+                item: r;
+                select(id) => {
+                    root.select(id);
+                }
+                pause(id) => {
+                    root.pause(id);
+                }
+                resume(id) => {
+                    root.resume(id);
+                }
+                retry(id) => {
+                    root.retry(id);
+                }
+                stop-recording(id) => {
+                    root.stop-recording(id);
+                }
+                open-file(id) => {
+                    root.open-file(id);
+                }
+            }
+        }
+    }
+}
+
+// Total download and upload speed.
+export component SpeedFooter inherits Rectangle {
+    in property <string> down;
+    in property <string> up;
+
+    height: 36px;
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.line;
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 16px;
+        Text {
+            text: @tr("↓ {0}", root.down);
+            vertical-alignment: center;
+            font-size: 12px;
+            color: Theme.muted;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+        Text {
+            text: @tr("↑ {0}", root.up);
+            vertical-alignment: center;
+            font-size: 12px;
+            color: Theme.muted;
+            horizontal-stretch: 1;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+    }
+}
+
+export component AdvCompact inherits Rectangle {
+    in property <[AdvRowVm]> rows;
+    in property <TabCountsVm> counts;
+    in-out property <int> tab;
+    in property <string> speed-down;
+    in property <string> speed-up;
+    callback tab-changed(int);
+    callback select(int);
+    callback link-entered(string);
+    callback open-settings();
+    callback pause(int);
+    callback resume(int);
+    callback retry(int);
+    callback stop-recording(int);
+    callback open-file(int);
+
+    property <bool> pasting: false;
+
+    function pick(i: int) {
+        root.tab = i;
+        root.tab-changed(i);
+    }
+
+    VerticalLayout {
+        padding-top: 12px;
+        spacing: 10px;
+
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 8px;
+            spacing: 4px;
+            Text {
+                text: @tr("Downloads");
+                vertical-alignment: center;
+                font-size: 18px;
+                font-weight: 700;
+                color: Theme.text;
+                horizontal-stretch: 1;
+            }
+            IconButton {
+                icon: root.pasting ? "close" : "plus";
+                label: root.pasting ? @tr("Close the link field") : @tr("Add a download");
+                clicked => {
+                    root.pasting = !root.pasting;
+                }
+            }
+            IconButton {
+                icon: "settings";
+                label: @tr("Settings");
+                clicked => {
+                    root.open-settings();
+                }
+            }
+        }
+
+        if root.pasting: HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            LinkField {
+                field-height: 44px;
+                init => {
+                    self.focus-input();
+                }
+                entered(link) => {
+                    root.pasting = false;
+                    root.link-entered(link);
+                }
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            Rectangle {
+                background: Theme.chip;
+                border-radius: 10px;
+                accessible-role: tab-list;
+                HorizontalLayout {
+                    padding: 3px;
+                    spacing: 3px;
+                    AdvTab {
+                        text: @tr("Active");
+                        count: root.counts.active;
+                        selected: root.tab == 0;
+                        clicked => {
+                            root.pick(0);
+                        }
+                    }
+                    AdvTab {
+                        text: @tr("Waiting");
+                        count: root.counts.waiting;
+                        selected: root.tab == 1;
+                        clicked => {
+                            root.pick(1);
+                        }
+                    }
+                    AdvTab {
+                        text: @tr("Done");
+                        count: root.counts.done;
+                        selected: root.tab == 2;
+                        clicked => {
+                            root.pick(2);
+                        }
+                    }
+                }
+            }
+        }
+
+        AdvList {
+            vertical-stretch: 1;
+            rows: root.rows;
+            empty-text: root.tab == 0 ? @tr("Nothing is downloading right now.")
+                : root.tab == 1 ? @tr("Nothing is waiting.") : @tr("Finished downloads show up here.");
+            select(id) => {
+                root.select(id);
+            }
+            pause(id) => {
+                root.pause(id);
+            }
+            resume(id) => {
+                root.resume(id);
+            }
+            retry(id) => {
+                root.retry(id);
+            }
+            stop-recording(id) => {
+                root.stop-recording(id);
+            }
+            open-file(id) => {
+                root.open-file(id);
+            }
+        }
+
+        SpeedFooter {
+            down: root.speed-down;
+            up: root.speed-up;
+        }
+    }
+}

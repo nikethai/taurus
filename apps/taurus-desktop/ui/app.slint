@@ -2,7 +2,10 @@ import { Theme } from "theme.slint";
 import { Messages } from "messages.slint";
 import {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
+    AdvRowVm, FilterCountVm, TabCountsVm, DetailStubVm,
 } from "types.slint";
+import { AdvCompact } from "adv/main.slint";
+import { AdvWide } from "adv/wide.slint";
 import { Welcome } from "welcome.slint";
 import { Downloads } from "downloads.slint";
 import { Add } from "add.slint";
@@ -13,6 +16,7 @@ import { Countdown } from "countdown.slint";
 export { Theme, Messages }
 export {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
+    AdvRowVm, FilterCountVm, TabCountsVm, DetailStubVm,
 } from "types.slint";
 
 // Navigation: the UI itself moves between Welcome, Downloads and Settings,
@@ -66,6 +70,36 @@ export component AppWindow inherits Window {
     callback quality-cycled();
     callback playlist-confirmed();
 
+    // Advanced mode. `layout`, set by the app from ui.mode and the width:
+    // "simple" | "compact" | "wide". Add and Settings stay the Simple
+    // screens for now; the Advanced list replaces Welcome and Downloads.
+    in property <string> layout: "simple";
+    // Rows of the current tab (compact) or filter and search (wide).
+    in property <[AdvRowVm]> adv-rows;
+    // The selected job's id, -1 for none; the app sets it on `select`.
+    in-out property <int> selected-id: -1;
+    // Wide: the sidebar entry (FilterCountVm.key).
+    in-out property <string> filter: "all";
+    in property <[FilterCountVm]> filter-counts;
+    // Compact: 0 Active, 1 Waiting, 2 Done.
+    in-out property <int> adv-tab: 0;
+    in property <TabCountsVm> tab-counts;
+    in property <string> speed-down-text;
+    in property <string> speed-up-text;
+    // Wide layout detail pane (minimal until the full detail view).
+    in property <DetailStubVm> detail-stub;
+    // The window's width, read by the app when `width-changed` fires.
+    out property <length> window-width: root.width;
+    callback select(int);
+    callback filter-changed(string);
+    callback tab-changed(int);
+    callback search-changed(string);
+    callback width-changed();
+    // Several links, the when-done menu and grab links: later screens.
+    callback open-batch();
+    callback open-whendone();
+    callback open-grab(string);
+
     property <bool> has-rows: downloading-rows.length + finished-rows.length > 0;
 
     function home() {
@@ -81,6 +115,13 @@ export component AppWindow inherits Window {
         root.apply-look();
     }
 
+    changed width => {
+        root.width-changed();
+    }
+
+    property <bool> advanced-list: root.layout != "simple"
+        && (root.screen == Screen.welcome || root.screen == Screen.downloads);
+
     title: window-title;
     icon: app-icon;
     preferred-width: 420px;
@@ -90,9 +131,10 @@ export component AppWindow inherits Window {
     background: Theme.bg;
     default-font-size: 14px;
 
-    // Simple screen: one centered column, at most 640px wide.
+    // Simple screen: one centered column, at most 640px wide. The
+    // Advanced list takes the whole window.
     Rectangle {
-        width: min(root.width, 640px);
+        width: root.advanced-list ? root.width : min(root.width, 640px);
         height: root.height;
         x: (root.width - self.width) / 2;
         y: 0;
@@ -116,7 +158,81 @@ export component AppWindow inherits Window {
             Rectangle {
                 vertical-stretch: 1;
 
-                if root.screen == Screen.welcome: Welcome {
+                if root.advanced-list && root.layout == "wide": AdvWide {
+                    rows: root.adv-rows;
+                    counts: root.filter-counts;
+                    filter <=> root.filter;
+                    speed-down: root.speed-down-text;
+                    speed-up: root.speed-up-text;
+                    detail: root.detail-stub;
+                    filter-changed(key) => {
+                        root.filter-changed(key);
+                    }
+                    search-changed(text) => {
+                        root.search-changed(text);
+                    }
+                    select(id) => {
+                        root.select(id);
+                    }
+                    link-entered(link) => {
+                        root.link-entered(link);
+                    }
+                    open-settings => {
+                        root.screen = Screen.settings;
+                    }
+                    pause(id) => {
+                        root.pause(id);
+                    }
+                    resume(id) => {
+                        root.resume(id);
+                    }
+                    retry(id) => {
+                        root.retry(id);
+                    }
+                    stop-recording(id) => {
+                        root.stop-recording(id);
+                    }
+                    open-file(id) => {
+                        root.open-file(id);
+                    }
+                }
+
+                if root.advanced-list && root.layout != "wide": AdvCompact {
+                    rows: root.adv-rows;
+                    counts: root.tab-counts;
+                    tab <=> root.adv-tab;
+                    speed-down: root.speed-down-text;
+                    speed-up: root.speed-up-text;
+                    tab-changed(i) => {
+                        root.tab-changed(i);
+                    }
+                    select(id) => {
+                        root.select(id);
+                    }
+                    link-entered(link) => {
+                        root.link-entered(link);
+                    }
+                    open-settings => {
+                        root.screen = Screen.settings;
+                    }
+                    pause(id) => {
+                        root.pause(id);
+                    }
+                    resume(id) => {
+                        root.resume(id);
+                    }
+                    retry(id) => {
+                        root.retry(id);
+                    }
+                    stop-recording(id) => {
+                        root.stop-recording(id);
+                    }
+                    open-file(id) => {
+                        root.open-file(id);
+                    }
+                }
+
+                if !root.advanced-list && root.screen == Screen.welcome: Welcome {
                     offer-copied-links: root.settings.offer-copied-links;
                     link-entered(link) => {
                         root.link-entered(link);
@@ -126,7 +242,7 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.screen == Screen.downloads: Downloads {
+                if !root.advanced-list && root.screen == Screen.downloads: Downloads {
                     downloading-rows: root.downloading-rows;
                     finished-rows: root.finished-rows;
                     summary: root.summary;

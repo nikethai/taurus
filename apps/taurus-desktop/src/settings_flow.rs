@@ -10,18 +10,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use slint::ComponentHandle;
-use taurus_core::{Engine, Settings, SpeedLimit, ThemeChoice, WhenDone};
+use taurus_core::{Engine, Settings, SpeedLimit, ThemeChoice, UiMode, WhenDone};
 use tokio::sync::mpsc;
 
 use crate::app::{App, AppSender, UiMsg};
-use crate::{SettingsVm, Theme, login};
+use crate::{SettingsVm, Theme, format, login};
 
 /// Accent names as stored in `UiSettings.accent`.
 const ACCENTS: [&str; 6] = ["Aldebaran", "Cobalt", "Jade", "Grape", "Rose", "Sky"];
 
 /// What the Settings screen shows for `s`. Values it has no control for
 /// (a custom speed, the Quit action) show as their own name, so no choice
-/// is marked.
+/// is marked; the screen shows them read-only (a custom speed with its
+/// limit in `speed-custom`).
 pub fn settings_vm(s: &Settings) -> SettingsVm {
     let speed = match s.speed {
         SpeedLimit::Gentle => "gentle",
@@ -51,6 +52,11 @@ pub fn settings_vm(s: &Settings) -> SettingsVm {
         open_at_login: s.ui.open_at_login,
         theme: theme_name(s.ui.theme).into(),
         accent: s.ui.accent.to_lowercase().into(),
+        speed_custom: match s.speed {
+            SpeedLimit::Custom { bytes_per_sec } => format::speed(bytes_per_sec).into(),
+            _ => Default::default(),
+        },
+        advanced: s.ui.mode == UiMode::Advanced,
     }
 }
 
@@ -85,6 +91,11 @@ pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
         },
         "open-at-login" => match flag() {
             Some(b) => s.ui.open_at_login = b,
+            None => return false,
+        },
+        "advanced" => match flag() {
+            Some(true) => s.ui.mode = UiMode::Advanced,
+            Some(false) => s.ui.mode = UiMode::Simple,
             None => return false,
         },
         "speed" => {
@@ -190,6 +201,8 @@ impl App {
         theme.set_scheme(vm.theme.clone());
         theme.set_accent(vm.accent.clone());
         ui.set_settings(vm);
+        // ui.mode may have changed: Simple, compact or wide.
+        self.apply_layout();
     }
 
     pub(crate) fn setting_changed(&self, key: &str, value: &str) {
@@ -301,5 +314,31 @@ mod tests {
         assert_eq!(s, before);
         assert!(apply_change(&mut s, "folder", ""));
         assert_eq!(s.ui.folder, None);
+    }
+
+    /// The mode switch changes `ui.mode` only; a custom speed shows as
+    /// "custom" with its limit until a preset replaces it.
+    #[test]
+    fn advanced_switch_and_custom_speed() {
+        let mut s = Settings {
+            speed: SpeedLimit::Custom {
+                bytes_per_sec: 3_000_000,
+            },
+            ..Settings::default()
+        };
+        let vm = settings_vm(&s);
+        assert_eq!(
+            (vm.speed.as_str(), vm.speed_custom.as_str(), vm.advanced),
+            ("custom", "3.0 MB/s", false)
+        );
+        let before = s.clone();
+        assert!(apply_change(&mut s, "advanced", "true"));
+        assert_eq!(s.ui.mode, UiMode::Advanced);
+        assert!(settings_vm(&s).advanced);
+        assert!(!apply_change(&mut s, "advanced", "on"));
+        assert!(apply_change(&mut s, "advanced", "false"));
+        assert_eq!(s, before);
+        assert!(apply_change(&mut s, "speed", "gentle"));
+        assert_eq!(settings_vm(&s).speed_custom.as_str(), "");
     }
 }

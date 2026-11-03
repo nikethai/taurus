@@ -22,6 +22,11 @@ pub fn bytes(n: u64) -> String {
     }
 }
 
+/// A speed: `bytes` per second, "3.0 MB/s".
+pub fn speed(bps: u64) -> String {
+    format!("{}/s", bytes(bps))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Eta {
     Unknown,

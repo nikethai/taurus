@@ -201,6 +201,15 @@ export component Settings inherits Rectangle {
                         }
                     }
                 }
+                // A limit set in Advanced mode: shown, not changed, until a
+                // preset above is picked.
+                if root.speed == "custom": Text {
+                    text: @tr("Custom · {0}", root.settings.speed-custom);
+                    font-size: 13px;
+                    color: Theme.muted;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
 
                 SectionTitle {
                     text: @tr("When downloads finish");
@@ -214,6 +223,15 @@ export component Settings inherits Rectangle {
                             clicked => {
                                 root.changed("when-done", c.value);
                             }
+                        }
+                    }
+                    // Set in Advanced mode: shown, not offered.
+                    if root.when-done == "quit": VerticalLayout {
+                        Divider { }
+                        Choice {
+                            text: @tr("Quit Hyades");
+                            selected: true;
+                            enabled: false;
                         }
                     }
                 }
@@ -235,6 +253,15 @@ export component Settings inherits Rectangle {
                         checked: root.settings.open-at-login;
                         clicked => {
                             root.changed("open-at-login", root.flag(!root.settings.open-at-login));
+                        }
+                    }
+                    Divider { }
+                    Toggle {
+                        label: @tr("Show advanced options");
+                        hint: @tr("Sources, filters and more details");
+                        checked: root.settings.advanced;
+                        clicked => {
+                            root.changed("advanced", root.flag(!root.settings.advanced));
                         }
                     }
                 }

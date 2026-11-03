@@ -14,8 +14,8 @@ use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use taurus_core::tools::ToolSources;
 use taurus_core::torrent::hub::TorrentTestNet;
 use taurus_core::{
-    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobState, PowerMode, Settings, SpeedLimit,
-    ThemeChoice, Timing, WhenDone,
+    AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, PowerMode, Settings,
+    SpeedLimit, ThemeChoice, Timing, UiMode, WhenDone,
 };
 use taurus_desktop::app::App;
 use taurus_desktop::shell_text::simple_message;
@@ -53,6 +53,9 @@ fn ui_smoke() {
     live_recording_shows_and_stops(&media);
     large_playlist_asks_first(&media);
     media.shutdown();
+    let adv = advanced_mode_is_compact_with_tab_counts(&ui, &ctx);
+    mode_switch_changes_nothing(&ui, &ctx);
+    wide_switch_keeps_selection(&ui, &ctx, adv);
     quit_shuts_down_engine_cleanly(&ui, &ctx);
 }
 
@@ -1309,4 +1312,275 @@ fn large_playlist_asks_first(m: &MediaCtx) {
             .any(|r| r.name == "Big List" && r.state == "done")
     });
     assert_eq!(jobs(), 1, "{WHAT}");
+}
+
+/// The compact window, and one tall enough to show all of Settings.
+const COMPACT: slint::LogicalSize = slint::LogicalSize::new(420.0, 640.0);
+const TALL: slint::LogicalSize = slint::LogicalSize::new(420.0, 1600.0);
+
+/// The one element with role `role` labelled `label`.
+fn only_with_role(ui: &AppWindow, role: AccessibleRole, label: &str, what: &str) -> ElementHandle {
+    let mut found: Vec<ElementHandle> = labelled(ui, label)
+        .into_iter()
+        .filter(|e| e.accessible_role() == Some(role))
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "{what}: expected one {role:?} labelled {label:?}, found {}",
+        found.len()
+    );
+    found.remove(0)
+}
+
+/// Active / Waiting / Done counts of `views`, by the compact tab rules.
+fn tab_counts_of(views: &[taurus_core::JobView]) -> (i32, i32, i32) {
+    let n = |states: &[JobState]| views.iter().filter(|v| states.contains(&v.state)).count() as i32;
+    (
+        n(&[
+            JobState::Downloading,
+            JobState::Recording,
+            JobState::Seeding,
+        ]),
+        n(&[
+            JobState::Queued,
+            JobState::Waiting,
+            JobState::Paused,
+            JobState::Failed,
+        ]),
+        n(&[JobState::Completed]),
+    )
+}
+
+/// "Show advanced options" in Simple Settings turns on Advanced mode: in a
+/// window narrower than 900 px that is the compact layout, whose Active /
+/// Waiting / Done tabs show their counts. Leaves a paused download
+/// (returned) for the next checks.
+fn advanced_mode_is_compact_with_tab_counts(ui: &AppWindow, ctx: &Ctx) -> JobId {
+    const WHAT: &str = "advanced_mode_is_compact_with_tab_counts";
+    let mut spec = FileSpec::new(20 * 1024 * 1024);
+    spec.bytes_per_sec = Some(256 * 1024);
+    let url = ctx.server.serve("adv.bin", spec);
+    let request = AddRequest {
+        url,
+        dest_dir: ctx.out(),
+        ..Default::default()
+    };
+    let id = ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    let state = || {
+        ctx.engine
+            .snapshot()
+            .into_iter()
+            .find(|v| v.id == id)
+            .map(|v| v.state)
+    };
+    wait_until(&format!("{WHAT}: adv.bin downloading"), || {
+        state() == Some(JobState::Downloading)
+    });
+    ctx.rt.block_on(ctx.engine.pause(id)).unwrap();
+    wait_until(&format!("{WHAT}: adv.bin paused"), || {
+        ui.get_downloading_rows()
+            .iter()
+            .any(|r| r.name == "adv.bin" && r.state == "paused")
+    });
+
+    // Tall enough that the whole Settings screen is in view (the testing
+    // backend finds no element scrolled out of it).
+    ui.window().set_size(TALL);
+    settle(Duration::from_millis(200));
+    assert_eq!(ui.get_layout().as_str(), "simple", "{WHAT}: Simple first");
+    ui.set_screen(Screen::Settings);
+    let switch = only_with_role(ui, AccessibleRole::Switch, "Show advanced options", WHAT);
+    assert_eq!(
+        switch.accessible_checked(),
+        Some(false),
+        "{WHAT}: switch off"
+    );
+    switch.invoke_accessible_default_action();
+    assert_eq!(ui.get_layout().as_str(), "compact", "{WHAT}: layout");
+    wait_until(&format!("{WHAT}: ui.mode saved"), || {
+        ctx.engine.settings().ui.mode == UiMode::Advanced
+    });
+    ui.set_screen(Screen::Downloads);
+    ui.window().set_size(COMPACT);
+
+    let (active, waiting, done) = tab_counts_of(&ctx.engine.snapshot());
+    assert!(
+        waiting >= 1 && done >= 1,
+        "{WHAT}: {waiting} waiting, {done} done"
+    );
+    wait_until(&format!("{WHAT}: tab counts"), || {
+        let c = ui.get_tab_counts();
+        (c.active, c.waiting, c.done) == (active, waiting, done)
+    });
+    for (label, count) in [("Active", active), ("Waiting", waiting), ("Done", done)] {
+        let tab = only_with_role(ui, AccessibleRole::Tab, label, WHAT);
+        assert!(tab.size().width > 0.0, "{WHAT}: tab {label} not shown");
+        assert_eq!(
+            tab.accessible_value().map(|v| v.to_string()),
+            Some(count.to_string()),
+            "{WHAT}: tab {label} count"
+        );
+    }
+    only_with_role(ui, AccessibleRole::Tab, "Waiting", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: Waiting lists adv.bin"), || {
+        ui.get_adv_rows()
+            .iter()
+            .any(|r| r.row.name == "adv.bin" && r.row.state == "paused" && r.source == "HTTP")
+    });
+    assert_eq!(
+        ui.get_adv_rows().row_count() as i32,
+        waiting,
+        "{WHAT}: Waiting rows"
+    );
+    id
+}
+
+/// Turning Advanced on and off changes no job and no engine setting but
+/// `ui.mode`; Simple shows a custom speed (set in Advanced) as "Custom",
+/// read-only: looking at it changes nothing.
+fn mode_switch_changes_nothing(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "mode_switch_changes_nothing";
+    let mut custom = ctx.engine.settings();
+    custom.speed = SpeedLimit::Custom {
+        bytes_per_sec: 3_000_000,
+    };
+    ctx.rt.block_on(ctx.engine.set_settings(custom)).unwrap();
+    wait_until(&format!("{WHAT}: custom speed shown"), || {
+        ui.get_settings().speed == "custom"
+    });
+    let snapshot = || {
+        let mut settings = ctx.engine.settings();
+        settings.ui.mode = UiMode::Simple;
+        (format!("{:?}", ctx.engine.snapshot()), settings)
+    };
+    let before = snapshot();
+    for round in 0..2 {
+        for (advanced, mode, layout) in [
+            ("false", UiMode::Simple, "simple"),
+            ("true", UiMode::Advanced, "compact"),
+        ] {
+            ui.invoke_setting_changed("advanced".into(), advanced.into());
+            assert_eq!(
+                ui.get_layout().as_str(),
+                layout,
+                "{WHAT}: {round} {advanced}"
+            );
+            wait_until(&format!("{WHAT}: {round} saved {mode:?}"), || {
+                ctx.engine.settings().ui.mode == mode
+            });
+            if round == 0 && mode == UiMode::Simple {
+                ui.window().set_size(TALL);
+                ui.set_screen(Screen::Settings);
+                wait_until(&format!("{WHAT}: Simple shows Custom"), || {
+                    labelled(ui, "Custom · 3.0 MB/s")
+                        .iter()
+                        .any(|e| e.size().width > 0.0)
+                });
+                settle(Duration::from_millis(300));
+                ui.set_screen(Screen::Downloads);
+                ui.window().set_size(COMPACT);
+            }
+        }
+    }
+    settle(Duration::from_millis(300));
+    let after = snapshot();
+    assert_eq!(before.1, after.1, "{WHAT}: settings changed");
+    assert_eq!(before.0, after.0, "{WHAT}: jobs changed");
+    assert_eq!(
+        ctx.engine.settings().speed,
+        SpeedLimit::Custom {
+            bytes_per_sec: 3_000_000
+        },
+        "{WHAT}: custom speed kept"
+    );
+}
+
+/// Widening the window past 900 px switches to the wide layout and keeps
+/// the selected download, which the detail pane shows; narrowing it back
+/// keeps it too. Ends in Simple mode with a preset speed picked there
+/// (which replaces the custom one).
+fn wide_switch_keeps_selection(ui: &AppWindow, ctx: &Ctx, id: JobId) {
+    const WHAT: &str = "wide_switch_keeps_selection";
+    assert_eq!(ui.get_layout().as_str(), "compact", "{WHAT}: compact first");
+    ui.set_screen(Screen::Downloads);
+    only_with_role(ui, AccessibleRole::Tab, "Waiting", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: adv.bin listed"), || {
+        !labelled(ui, "adv.bin").is_empty()
+    });
+    only_with_role(ui, AccessibleRole::ListItem, "adv.bin", WHAT)
+        .invoke_accessible_default_action();
+    let want = id.0 as i32;
+    assert_eq!(ui.get_selected_id(), want, "{WHAT}: selected");
+    wait_until(&format!("{WHAT}: row marked selected"), || {
+        ui.get_adv_rows()
+            .iter()
+            .any(|r| r.row.id == want && r.selected)
+    });
+
+    ui.window().set_size(slint::LogicalSize::new(1200.0, 640.0));
+    wait_until(&format!("{WHAT}: wide"), || ui.get_layout() == "wide");
+    assert_eq!(ui.get_selected_id(), want, "{WHAT}: selection kept");
+    let detail = ElementHandle::find_by_element_type_name(ui, "DetailStub")
+        .next()
+        .unwrap_or_else(|| panic!("{WHAT}: no detail pane"));
+    assert!(detail.size().width > 0.0, "{WHAT}: detail pane hidden");
+    let shown: Vec<String> = detail
+        .query_descendants()
+        .match_accessible_role(AccessibleRole::Text)
+        .find_all()
+        .into_iter()
+        .filter_map(|e| e.accessible_label().map(|l| l.to_string()))
+        .collect();
+    assert!(
+        shown.iter().any(|t| t == "adv.bin") && shown.iter().any(|t| t == "HTTP"),
+        "{WHAT}: detail pane shows {shown:?}"
+    );
+    // The sidebar's counts and filters work in the wide layout.
+    let paused: Vec<i32> = ctx
+        .engine
+        .snapshot()
+        .iter()
+        .filter(|v| v.state == JobState::Paused)
+        .map(|v| v.id.0 as i32)
+        .collect();
+    assert!(paused.contains(&want), "{WHAT}: {paused:?}");
+    let count = ui
+        .get_filter_counts()
+        .iter()
+        .find(|c| c.key == "paused")
+        .map(|c| c.count);
+    assert_eq!(count, Some(paused.len() as i32), "{WHAT}: Paused count");
+    only_with_role(ui, AccessibleRole::ListItem, "Paused", WHAT).invoke_accessible_default_action();
+    assert_eq!(ui.get_filter().as_str(), "paused", "{WHAT}: filter");
+    assert_eq!(
+        ui.get_adv_rows()
+            .iter()
+            .map(|r| r.row.id)
+            .collect::<Vec<_>>(),
+        paused,
+        "{WHAT}: Paused filter"
+    );
+
+    ui.window().set_size(COMPACT);
+    wait_until(&format!("{WHAT}: compact again"), || {
+        ui.get_layout() == "compact"
+    });
+    assert_eq!(ui.get_selected_id(), want, "{WHAT}: selection kept back");
+
+    // Back to Simple; picking a preset there replaces the custom speed.
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Settings);
+    only_with_role(ui, AccessibleRole::Switch, "Show advanced options", WHAT)
+        .invoke_accessible_default_action();
+    assert_eq!(ui.get_layout().as_str(), "simple", "{WHAT}: Simple again");
+    only_with_role(ui, AccessibleRole::RadioButton, "Fastest", WHAT)
+        .invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: preset saved"), || {
+        let s = ctx.engine.settings();
+        s.speed == SpeedLimit::Fastest && s.ui.mode == UiMode::Simple
+    });
+    ui.set_screen(Screen::Downloads);
+    ui.window().set_size(COMPACT);
+    ctx.rt.block_on(ctx.engine.remove(id, true)).unwrap();
 }
