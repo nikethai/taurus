@@ -10,27 +10,22 @@ import { Palette } from "std-widgets.slint";
 export global Theme {
     // system (default, follows the OS) | light | dark
     in-out property <string> scheme: "system";
-    // The OS is dark: followed until a light or dark theme is picked,
-    // then kept as it was (the std widgets' palette then follows the
-    // pick, see sync-palette).
-    in-out property <bool> os-dark: Palette.color-scheme == ColorScheme.dark;
-    in-out property <bool> dark: scheme == "dark" || (scheme != "light" && os-dark);
-    property <bool> palette-set: false;
+    // The std widgets' (fluent) palette is dark. sync-palette forces it
+    // light or dark for the Light and Dark themes and resets it to
+    // ColorScheme.unknown for System; with unknown, fluent paints from the
+    // OS scheme the backend reports, live (unknown OS scheme: light). Slint
+    // gives no other public read of the OS scheme, so under System this is
+    // how the theme follows the OS.
+    property <color> palette-ground: Palette.background;
+    out property <bool> palette-dark: palette-ground.to-hsv().value < 0.5;
+    out property <bool> dark: scheme == "dark" || (scheme != "light" && palette-dark);
 
-    // The std widgets (text fields, selects) take the theme's light or
-    // dark palette once a light or dark theme was picked; until then
-    // they, and the theme, follow the OS. Called after `scheme` changed.
+    // Gives the std widgets (text fields, selects) the theme's scheme.
+    // Called after `scheme` changed.
     public function sync-palette() {
-        if (self.scheme == "system" && !self.palette-set) {
-            return;
-        }
-        if (!self.palette-set) {
-            // Keeps the OS's scheme as it is now: the palette no longer
-            // tells it once set.
-            self.os-dark = self.os-dark;
-            self.palette-set = true;
-        }
-        Palette.color-scheme = self.dark ? ColorScheme.dark : ColorScheme.light;
+        Palette.color-scheme = self.scheme == "dark" ? ColorScheme.dark
+            : self.scheme == "light" ? ColorScheme.light
+            : ColorScheme.unknown;
     }
     // aldebaran (default) | cobalt | jade | grape | rose | sky
     in-out property <string> accent: "aldebaran";
