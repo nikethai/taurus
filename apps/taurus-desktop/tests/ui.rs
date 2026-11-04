@@ -2048,7 +2048,10 @@ fn password_cleared_after_submit(ui: &AppWindow, ctx: &Ctx) {
 
     ui.window().set_size(TALL);
     open_detail(ui, "Waiting", "locked.bin", WHAT);
-    assert!(ui.get_detail().needs_password, "{WHAT}: needs-password");
+    // The window learns of the failure on a later tick than the engine.
+    wait_until(&format!("{WHAT}: needs-password"), || {
+        ui.get_detail().needs_password
+    });
     wait_until(&format!("{WHAT}: dialog shown"), || {
         ui.get_password_dialog().visible
     });
