@@ -175,8 +175,10 @@ impl App {
             view.refresh(&ui);
         }
         self.refresh_adv();
-        if let Some(settings) = flush.settings {
-            self.engine_settings(settings);
+        // Only a sign that they changed: the engine's current ones are
+        // shown (`SettingsWriter::engine_now`).
+        if flush.settings.is_some() {
+            self.engine_settings();
         }
         if let Some(tools) = flush.tools {
             let (state, percent) = match tools {

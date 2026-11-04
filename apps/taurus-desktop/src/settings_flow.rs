@@ -4,8 +4,7 @@
 //! what `settings` holds) and saved with `Engine::set_settings` by one
 //! writer task, in the order the changes were made.
 
-use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -137,57 +136,24 @@ pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
     true
 }
 
-/// How many of the latest saves `RecentSaves` remembers.
-const RECENT_SAVES: usize = 8;
-
-/// The latest settings handed to the writer, oldest first: an engine echo
-/// equal to one of them but the newest is an older save's, late.
-#[derive(Default)]
-pub(crate) struct RecentSaves(VecDeque<Settings>);
-
-impl RecentSaves {
-    pub(crate) fn saved(&mut self, settings: Settings) {
-        if self.0.len() == RECENT_SAVES {
-            self.0.pop_front();
-        }
-        self.0.push_back(settings);
-    }
-
-    /// Whether the engine's `SettingsChanged` with `settings` is to be
-    /// shown: not when it is the echo of a save older than the newest.
-    /// The newest one's echo means every older echo has come (the engine
-    /// sends them in order): those are forgotten. Anything else is a
-    /// change made in the engine (the when-done reset, another program).
-    /// Forgets every save but `settings`, the engine's state after a failed
-    /// save: its echoes and later ones are shown again.
-    pub(crate) fn reset_to(&mut self, settings: &Settings) {
-        self.0.clear();
-        self.0.push_back(settings.clone());
-    }
-
-    pub(crate) fn take_echo(&mut self, settings: &Settings) -> bool {
-        match self.0.iter().rposition(|s| s == settings) {
-            Some(i) if i + 1 == self.0.len() => {
-                self.0.drain(..i);
-                true
-            }
-            Some(_) => false,
-            None => true,
-        }
-    }
-}
-
 /// Saves the UI's settings one at a time, in order; of a burst of changes
 /// only the newest is saved. Each change has a generation number, so the
-/// app can tell whether a save is still on its way. An echo older than
-/// the newest save is never shown or saved again (`RecentSaves`).
+/// app can tell whether a save is still on its way; each save's end is
+/// told to the app (`UiMsg::SettingsSaved` or `SettingsFailed`).
+///
+/// The engine's `SettingsChanged` events reach the window late and only
+/// the newest of a burst, so their settings are never shown as such: an
+/// event only says "the engine's settings changed", and the window then
+/// shows the engine's current ones (`engine_now`), once every change made
+/// here is saved. So an old echo cannot bring back an older save, and a
+/// change made elsewhere is shown at the latest when the save on its way
+/// ends, whatever it equals.
 pub(crate) struct SettingsWriter {
     tx: mpsc::UnboundedSender<(u64, Settings)>,
     /// Generation of the newest change handed to `save`.
     made: Cell<u64>,
     /// Generation of the newest save that finished (saved or failed).
     saved: Arc<AtomicU64>,
-    recent: RefCell<RecentSaves>,
 }
 
 impl SettingsWriter {
@@ -206,9 +172,13 @@ impl SettingsWriter {
                 let (generation, settings) = change;
                 let result = engine.set_settings(settings).await;
                 done.store(generation, Ordering::SeqCst);
-                if let Err(e) = result {
-                    eprintln!("hyades: saving settings failed: {e}");
-                    app.send(UiMsg::SettingsFailed);
+                match result {
+                    // Its echo may have come before `done` said so.
+                    Ok(()) => app.send(UiMsg::SettingsSaved),
+                    Err(e) => {
+                        eprintln!("hyades: saving settings failed: {e}");
+                        app.send(UiMsg::SettingsFailed);
+                    }
                 }
             }
         });
@@ -216,34 +186,27 @@ impl SettingsWriter {
             tx,
             made: Cell::new(0),
             saved,
-            recent: RefCell::default(),
         }
     }
 
     pub fn save(&self, settings: Settings) {
         let generation = self.made.get() + 1;
         self.made.set(generation);
-        self.recent.borrow_mut().saved(settings.clone());
         let _ = self.tx.send((generation, settings));
     }
 
-    /// See `RecentSaves::take_echo`.
-    fn take_echo(&self, settings: &Settings) -> bool {
-        self.recent.borrow_mut().take_echo(settings)
-    }
-
-    /// A save failed: `settings` (read back from the engine) are what it
-    /// holds now, so every remembered save is forgotten in their favour.
-    fn resync(&self, settings: &Settings) {
-        self.recent.borrow_mut().reset_to(settings);
-    }
-
     /// Every change has been saved (or failed): the engine's settings are
-    /// as new as the UI's. While not idle, the engine's `SettingsChanged`
-    /// echoes are older than what the UI shows and are ignored; an echo
-    /// that trails the last save is recognized by `take_echo`.
+    /// as new as the UI's.
     pub fn idle(&self) -> bool {
         self.saved.load(Ordering::SeqCst) >= self.made.get()
+    }
+
+    /// What the window is to show after the engine's settings changed:
+    /// the engine's current ones (never an event's, which can be an old
+    /// echo), or `None` while a change made here is on its way (its end
+    /// asks again).
+    pub(crate) fn engine_now(&self, engine: &Engine) -> Option<Settings> {
+        self.idle().then(|| engine.settings())
     }
 }
 
@@ -316,22 +279,13 @@ impl App {
         self.writer.save(next);
     }
 
-    /// Settings from the engine (its `SettingsChanged`), unless a change
-    /// made here is still being saved or they echo an older save.
-    pub(crate) fn engine_settings(&self, settings: Settings) {
-        if self.writer.idle() && self.writer.take_echo(&settings) {
-            *self.settings.borrow_mut() = settings;
-            self.push_settings();
-        }
-    }
-
-    /// A save failed: show the engine's settings again (the failed change is
-    /// not kept on screen as if saved), unless a newer change is on its way.
-    /// They usually equal an older save, so the echo check is bypassed.
-    pub(crate) fn settings_failed(&self, settings: Settings) {
-        if self.writer.idle() {
-            self.writer.resync(&settings);
-            *self.settings.borrow_mut() = settings;
+    /// The engine's settings changed (its `SettingsChanged`), or a save
+    /// made here ended (saved, or failed: the failed change is then not
+    /// kept on screen as if saved): the window shows the engine's current
+    /// settings, unless a change made here is still being saved.
+    pub(crate) fn engine_settings(&self) {
+        if let Some(now) = self.writer.engine_now(&self.engine) {
+            *self.settings.borrow_mut() = now;
             self.push_settings();
         }
     }
@@ -392,63 +346,65 @@ mod tests {
         assert_eq!(s.ui.folder, None);
     }
 
-    /// Save A, save B, then A's echo arrives late: it is not shown, so the
-    /// next change starts from B and keeps B's fields. B's own echo, and a
-    /// change made in the engine, are shown.
+    /// A change made here whose echo comes before the writer says it is
+    /// saved, then a change made elsewhere back to an older save's
+    /// settings: the latter is shown (the old echo ring hid it). An event
+    /// while a save is on its way shows nothing; the save's end shows the
+    /// engine's settings, a failed save's too.
     #[test]
-    fn a_late_echo_of_an_older_save_is_ignored() {
-        let mut recent = RecentSaves::default();
-        let mut ui = Settings::default();
-        let change = |ui: &mut Settings, recent: &mut RecentSaves, key, value| {
-            assert!(apply_change(ui, key, value));
-            recent.saved(ui.clone());
+    fn the_engines_current_settings_are_shown() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = taurus_core::EngineConfig::new(tmp.path().join("data"));
+        config.secrets = Arc::new(taurus_core::secrets::MemoryStore::new());
+        let engine = rt.block_on(Engine::open(config)).unwrap();
+        let (app, ends) = AppSender::for_tests();
+        let writer = SettingsWriter::spawn(&engine, rt.handle(), app);
+        // The end of the last save made (an earlier one's end may come
+        // first, or not at all when the writer skipped it).
+        let ended = |what: &str| loop {
+            let msg = ends
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            if writer.idle() {
+                break msg;
+            }
         };
-        change(&mut ui, &mut recent, "theme", "dark");
-        let a = ui.clone();
-        change(&mut ui, &mut recent, "accent", "jade");
-        let b = ui.clone();
-        assert!(!recent.take_echo(&a), "A's echo shown over B");
-        change(&mut ui, &mut recent, "speed", "gentle");
-        assert_eq!(
-            (ui.ui.theme, ui.ui.accent.as_str(), &ui.speed),
-            (ThemeChoice::Dark, "Jade", &SpeedLimit::Gentle),
-            "B's fields lost"
-        );
-        assert!(!recent.take_echo(&b), "B's echo shown over C");
-        assert!(recent.take_echo(&ui), "C's echo");
-        // Every older echo has come: one equal to A now is the engine's.
-        assert!(recent.take_echo(&a), "the engine's own change");
-        let reset = Settings {
-            when_done: WhenDone::Nothing,
-            ..ui.clone()
-        };
-        assert!(recent.take_echo(&reset));
-        // Only the latest few are remembered.
-        for i in 0..20 {
-            let mut s = ui.clone();
-            s.max_active = i + 1;
-            recent.saved(s);
-        }
-        assert_eq!(recent.0.len(), RECENT_SAVES);
-    }
 
-    /// After a failed save the engine still holds an older save; reading it
-    /// back must be shown (not ignored as an old echo), and so must the
-    /// engine's later changes.
-    #[test]
-    fn a_failed_save_shows_the_engines_settings_again() {
-        let mut recent = RecentSaves::default();
-        let a = Settings::default();
-        let mut b = a.clone();
-        b.ui.theme = taurus_core::ThemeChoice::Dark;
-        recent.saved(a.clone());
-        recent.saved(b.clone());
-        assert!(!recent.take_echo(&a), "an old echo stays hidden");
-        recent.reset_to(&a);
-        assert!(recent.take_echo(&a), "the engine's state after a failure");
-        let mut c = a.clone();
-        c.ui.theme = taurus_core::ThemeChoice::Light;
-        assert!(recent.take_echo(&c), "a later change in the engine");
+        let a = engine.settings();
+        let b = Settings {
+            max_active: 4,
+            ..a.clone()
+        };
+        writer.save(a.clone());
+        writer.save(b.clone());
+        // B's echo, before the writer says B is saved: nothing shown.
+        assert_eq!(writer.engine_now(&engine), None);
+        assert!(matches!(ended("B saved"), UiMsg::SettingsSaved));
+        assert_eq!(writer.engine_now(&engine), Some(b.clone()));
+        // Elsewhere, back to A (an older save): shown.
+        let outside = Settings {
+            max_active: 7,
+            ..a.clone()
+        };
+        rt.block_on(engine.set_settings(outside.clone())).unwrap();
+        assert_eq!(writer.engine_now(&engine), Some(outside));
+        rt.block_on(engine.set_settings(a.clone())).unwrap();
+        assert_eq!(writer.engine_now(&engine), Some(a.clone()), "put back");
+
+        // A save the engine refuses: the engine's settings again.
+        writer.save(Settings {
+            max_active: 0,
+            ..a.clone()
+        });
+        assert!(matches!(ended("refused"), UiMsg::SettingsFailed));
+        assert_eq!(writer.engine_now(&engine), Some(a));
+        drop(writer);
+        rt.block_on(engine.shutdown()).unwrap();
     }
 
     /// The mode switch changes `ui.mode` only; a custom speed shows as
