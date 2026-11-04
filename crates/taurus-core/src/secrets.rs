@@ -18,6 +18,14 @@ pub trait SecretStore: Send + Sync {
     fn get(&self, account: &str) -> Result<Option<String>, CoreError>;
     /// Deleting an account without a secret is not an error.
     fn delete(&self, account: &str) -> Result<(), CoreError>;
+    /// Deletes the account's secret, answering whether it had one. The
+    /// default reads the secret first; stores that can tell without it
+    /// override this.
+    fn remove(&self, account: &str) -> Result<bool, CoreError> {
+        let had = self.get(account)?.is_some();
+        self.delete(account)?;
+        Ok(had)
+    }
 }
 
 /// The OS keychain: Keychain Services on macOS, Credential Manager on
@@ -49,8 +57,13 @@ impl SecretStore for KeyringStore {
     }
 
     fn delete(&self, account: &str) -> Result<(), CoreError> {
+        self.remove(account).map(drop)
+    }
+
+    fn remove(&self, account: &str) -> Result<bool, CoreError> {
         match Self::entry(account)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Ok(()) => Ok(true),
+            Err(keyring::Error::NoEntry) => Ok(false),
             Err(e) => Err(keychain_error(e)),
         }
     }
@@ -75,6 +88,15 @@ pub struct MemoryStore {
 impl MemoryStore {
     pub fn new() -> MemoryStore {
         MemoryStore::default()
+    }
+
+    /// How many accounts have a secret.
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
@@ -104,6 +126,10 @@ impl SecretStore for MemoryStore {
     fn delete(&self, account: &str) -> Result<(), CoreError> {
         self.lock().remove(account);
         Ok(())
+    }
+
+    fn remove(&self, account: &str) -> Result<bool, CoreError> {
+        Ok(self.lock().remove(account).is_some())
     }
 }
 
@@ -142,6 +168,10 @@ mod tests {
         // Deleting what is not there is fine; other accounts are untouched.
         store.delete("job:1").unwrap();
         assert_eq!(store.get("job:2").unwrap().as_deref(), Some("two"));
+        assert_eq!(store.len(), 1);
+        assert!(!store.remove("job:1").unwrap());
+        assert!(store.remove("job:2").unwrap());
+        assert!(store.is_empty());
         assert!(!format!("{store:?}").contains("two"));
     }
 

@@ -1,0 +1,350 @@
+// Advanced Settings: the Downloads, Torrents and Network sections.
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+import { TextButton, Toggle, Segment, Segmented } from "../widgets.slint";
+import { SettingsUi } from "settings_ui.slint";
+import {
+    SectionHeading, FieldLabel, Hint, Divider, CommitField, NumberRow,
+} from "settings_parts.slint";
+
+export component DownloadsSection inherits VerticalLayout {
+    pure function flag(b: bool) -> string {
+        return b ? "true" : "false";
+    }
+
+    // Typing a custom speed, or already on one.
+    property <bool> custom-mode: SettingsUi.settings.speed == "custom";
+    // Custom was picked here: its field takes the focus.
+    property <bool> picked-custom: false;
+    property <[int]> connections: [1, 4, 8, 16];
+
+    spacing: 10px;
+    SectionHeading {
+        text: @tr("Downloads");
+    }
+    FieldLabel {
+        text: @tr("Save downloads to");
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                name: "folder";
+                width: 20px;
+                height: 20px;
+                stroke: Theme.muted;
+            }
+        }
+        Text {
+            text: SettingsUi.settings.folder != "" ? SettingsUi.settings.folder : @tr("Downloads folder");
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+            font-size: 14px;
+            color: Theme.text;
+        }
+        TextButton {
+            text: @tr("Change");
+            kind: "quiet";
+            clicked => {
+                SettingsUi.choose-folder();
+            }
+        }
+    }
+    Toggle {
+        label: @tr("Sort into folders by type");
+        hint: @tr("Videos, Music and Documents");
+        checked: SettingsUi.settings.sort-by-type;
+        clicked => {
+            SettingsUi.changed("sort-by-type", root.flag(!SettingsUi.settings.sort-by-type));
+        }
+    }
+    NumberRow {
+        label: @tr("Active downloads at once");
+        value: SettingsUi.vm.max-active;
+        changed(v) => {
+            SettingsUi.changed("max-active", v);
+        }
+    }
+    FieldLabel {
+        text: @tr("Connections per file");
+    }
+    Segmented {
+        for n in root.connections: Segment {
+            text: n;
+            selected: SettingsUi.vm.connections == n;
+            clicked => {
+                SettingsUi.changed("connections", n);
+            }
+        }
+        // A count set elsewhere (the command line) shows as it is.
+        if SettingsUi.vm.connections > 0 && SettingsUi.vm.connections != 1 && SettingsUi.vm.connections != 4
+            && SettingsUi.vm.connections != 8 && SettingsUi.vm.connections != 16: Segment {
+            text: @tr("Custom {0}", SettingsUi.vm.connections);
+            selected: true;
+        }
+    }
+    FieldLabel {
+        text: @tr("Speed");
+    }
+    Segmented {
+        Segment {
+            text: @tr("Gentle");
+            selected: !root.custom-mode && SettingsUi.settings.speed == "gentle";
+            clicked => {
+                root.custom-mode = false;
+                SettingsUi.changed("speed", "gentle");
+            }
+        }
+        Segment {
+            text: @tr("Balanced");
+            selected: !root.custom-mode && SettingsUi.settings.speed == "balanced";
+            clicked => {
+                root.custom-mode = false;
+                SettingsUi.changed("speed", "balanced");
+            }
+        }
+        Segment {
+            text: @tr("Fastest");
+            selected: !root.custom-mode && SettingsUi.settings.speed == "fastest";
+            clicked => {
+                root.custom-mode = false;
+                SettingsUi.changed("speed", "fastest");
+            }
+        }
+        Segment {
+            text: @tr("Custom");
+            selected: root.custom-mode;
+            clicked => {
+                root.picked-custom = true;
+                root.custom-mode = true;
+                SettingsUi.custom-chosen();
+            }
+        }
+    }
+    if root.custom-mode: CommitField {
+        label: @tr("Custom speed in MB/s");
+        focus-first: root.picked-custom;
+        placeholder: @tr("0.1 to 10000");
+        unit: @tr("MB/s");
+        text <=> SettingsUi.custom-text;
+        invalid: SettingsUi.custom-invalid;
+        error: SettingsUi.custom-comma ? @tr("Use a dot for decimals, like 2.5.") : @tr("Enter a speed from 0.1 to 10000 MB/s.");
+        edited(t) => {
+            SettingsUi.field-edited("speed-custom", t);
+        }
+        commit(t) => {
+            SettingsUi.field-commit("speed-custom", t);
+        }
+    }
+    Toggle {
+        label: @tr("Verify checksums automatically");
+        hint: @tr("When the site publishes one");
+        checked: SettingsUi.vm.auto-checksum;
+        clicked => {
+            SettingsUi.changed("auto-checksum", root.flag(!SettingsUi.vm.auto-checksum));
+        }
+    }
+    Toggle {
+        label: @tr("Keep the computer awake");
+        hint: @tr("While downloads run");
+        checked: SettingsUi.vm.keep-awake;
+        clicked => {
+            SettingsUi.changed("keep-awake", root.flag(!SettingsUi.vm.keep-awake));
+        }
+    }
+}
+
+export component TorrentsSection inherits VerticalLayout {
+    pure function flag(b: bool) -> string {
+        return b ? "true" : "false";
+    }
+
+    property <[{value: string, label: string}]> ratios: [
+        { value: "0", label: @tr("Don't share") },
+        { value: "0.5", label: @tr("0.5") },
+        { value: "1", label: @tr("1") },
+        { value: "2", label: @tr("2") },
+        { value: "never", label: @tr("Never stop") },
+    ];
+    property <[{value: string, label: string}]> times: [
+        { value: "off", label: @tr("Off") },
+        { value: "1h", label: @tr("1 h") },
+        { value: "24h", label: @tr("24 h") },
+        { value: "7d", label: @tr("7 d") },
+    ];
+    property <string> limit-error: @tr("Enter a speed from 0.01 to 10000 MB/s, or leave it empty for no limit.");
+    property <string> restart-note: @tr("Applies the next time Hyades starts.");
+
+    spacing: 10px;
+    SectionHeading {
+        text: @tr("Torrents");
+    }
+    FieldLabel {
+        text: @tr("Stop sharing at ratio");
+    }
+    Segmented {
+        for r in root.ratios: Segment {
+            text: r.label;
+            selected: SettingsUi.vm.stop-ratio == r.value;
+            clicked => {
+                SettingsUi.changed("stop-ratio", r.value);
+            }
+        }
+    }
+    FieldLabel {
+        text: @tr("Stop sharing after");
+    }
+    Segmented {
+        for t in root.times: Segment {
+            text: t.label;
+            selected: SettingsUi.vm.stop-after == t.value;
+            clicked => {
+                SettingsUi.changed("stop-after", t.value);
+            }
+        }
+    }
+    CommitField {
+        label: @tr("Upload limit");
+        placeholder: @tr("No limit");
+        unit: @tr("MB/s");
+        text <=> SettingsUi.upload-text;
+        invalid: SettingsUi.upload-invalid;
+        error: root.limit-error;
+        edited(t) => {
+            SettingsUi.field-edited("upload-limit", t);
+        }
+        commit(t) => {
+            SettingsUi.field-commit("upload-limit", t);
+        }
+    }
+    CommitField {
+        label: @tr("Torrent download limit");
+        placeholder: @tr("No limit");
+        unit: @tr("MB/s");
+        text <=> SettingsUi.down-text;
+        invalid: SettingsUi.down-invalid;
+        error: root.limit-error;
+        edited(t) => {
+            SettingsUi.field-edited("torrent-down-limit", t);
+        }
+        commit(t) => {
+            SettingsUi.field-commit("torrent-down-limit", t);
+        }
+    }
+    NumberRow {
+        label: @tr("Active torrents at once");
+        value: SettingsUi.vm.max-torrents;
+        changed(v) => {
+            SettingsUi.changed("max-torrents", v);
+        }
+    }
+    CommitField {
+        label: @tr("Peers per torrent");
+        placeholder: @tr("Default");
+        text <=> SettingsUi.peers-text;
+        invalid: SettingsUi.peers-invalid;
+        error: @tr("Enter a number from 1 to 1000, or leave it empty for the default.");
+        edited(t) => {
+            SettingsUi.field-edited("peers", t);
+        }
+        commit(t) => {
+            SettingsUi.field-commit("peers", t);
+        }
+    }
+    CommitField {
+        label: @tr("Listening port");
+        placeholder: @tr("Random");
+        text <=> SettingsUi.port-text;
+        invalid: SettingsUi.port-invalid;
+        error: @tr("Enter a port from 1024 to 65535, or leave it empty for a random one.");
+        edited(t) => {
+            SettingsUi.field-edited("port", t);
+        }
+        commit(t) => {
+            SettingsUi.field-commit("port", t);
+        }
+    }
+    Hint {
+        text: root.restart-note;
+    }
+    Toggle {
+        label: @tr("UPnP");
+        hint: root.restart-note;
+        checked: SettingsUi.vm.upnp;
+        clicked => {
+            SettingsUi.changed("upnp", root.flag(!SettingsUi.vm.upnp));
+        }
+    }
+    Toggle {
+        label: @tr("DHT");
+        hint: root.restart-note;
+        checked: SettingsUi.vm.dht;
+        clicked => {
+            SettingsUi.changed("dht", root.flag(!SettingsUi.vm.dht));
+        }
+    }
+}
+
+export component NetworkSection inherits VerticalLayout {
+    // The URL field is shown: Manual was picked, or is the saved proxy.
+    // Only the saved proxy is marked as chosen.
+    property <bool> manual-mode: SettingsUi.vm.proxy == "manual";
+    // Manual was picked here: its field takes the focus.
+    property <bool> picked-manual: false;
+
+    spacing: 10px;
+    SectionHeading {
+        text: @tr("Network");
+    }
+    FieldLabel {
+        text: @tr("Proxy");
+    }
+    Segmented {
+        Segment {
+            text: @tr("System");
+            selected: SettingsUi.vm.proxy == "system";
+            clicked => {
+                root.manual-mode = false;
+                SettingsUi.changed("proxy", "system");
+            }
+        }
+        Segment {
+            text: @tr("None");
+            selected: SettingsUi.vm.proxy == "none";
+            clicked => {
+                root.manual-mode = false;
+                SettingsUi.changed("proxy", "none");
+            }
+        }
+        Segment {
+            text: @tr("Manual");
+            selected: SettingsUi.vm.proxy == "manual";
+            clicked => {
+                root.picked-manual = true;
+                root.manual-mode = true;
+            }
+        }
+    }
+    if !root.manual-mode: Hint {
+        text: SettingsUi.vm.proxy == "none" ? @tr("Hyades connects directly, whatever your computer's settings say.") : @tr("Hyades uses your computer's proxy settings.");
+    }
+    if root.manual-mode: CommitField {
+        label: @tr("Proxy URL");
+        focus-first: root.picked-manual;
+        placeholder: @tr("http://host:port or socks5h://host:port");
+        text <=> SettingsUi.proxy-text;
+        invalid: SettingsUi.proxy-error != "";
+        error: SettingsUi.proxy-error;
+        edited(t) => {
+            SettingsUi.field-edited("proxy-url", t);
+        }
+        commit(t) => {
+            SettingsUi.field-commit("proxy-url", t);
+        }
+    }
+    if root.manual-mode && SettingsUi.vm.proxy != "manual": Hint {
+        text: @tr("Not in use yet: press Enter to use this proxy.");
+    }
+}

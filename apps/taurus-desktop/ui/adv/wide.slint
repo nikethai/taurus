@@ -1,0 +1,161 @@
+// Advanced mode, wide layout (Main, window at least 900 px wide): sidebar,
+// then search and the list. The detail pane beside them is laid out by
+// the window (`DetailPane`, shared with the compact layout).
+import { Theme } from "../theme.slint";
+import { AdvRowVm, FilterCountVm } from "../types.slint";
+import { IconButton, TextButton, LineEdit } from "../widgets.slint";
+import { LinkField } from "../welcome.slint";
+import { AdvList, SpeedFooter } from "main.slint";
+import { Sidebar } from "sidebar.slint";
+
+export component AdvWide inherits Rectangle {
+    in property <[AdvRowVm]> rows;
+    in property <[FilterCountVm]> counts;
+    in-out property <string> filter;
+    in property <string> speed-down;
+    in property <string> speed-up;
+    // What the list is filtered by; outlives this component.
+    in-out property <string> search-text;
+    callback filter-changed(string);
+    callback search-changed(string);
+    callback select(int);
+    callback link-entered(string);
+    // The "+" panel's other ways to add: several links, links of a page.
+    callback open-batch();
+    callback open-grab();
+    callback open-settings();
+    callback pause(int);
+    callback resume(int);
+    callback retry(int);
+    callback stop-recording(int);
+    callback open-file(int);
+    // The footer's when-done button.
+    callback open-whendone();
+
+    property <bool> pasting: false;
+
+    HorizontalLayout {
+        Sidebar {
+            width: 200px;
+            counts: root.counts;
+            filter <=> root.filter;
+            filter-changed(key) => {
+                root.filter-changed(key);
+            }
+        }
+        Rectangle {
+            width: 1px;
+            background: Theme.line;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            padding-top: 12px;
+            spacing: 10px;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 8px;
+                spacing: 6px;
+                LineEdit {
+                    horizontal-stretch: 1;
+                    text <=> root.search-text;
+                    placeholder-text: @tr("Search downloads");
+                    accessible-label: @tr("Search downloads");
+                    edited(text) => {
+                        root.search-changed(text);
+                    }
+                }
+                add-button := IconButton {
+                    icon: root.pasting ? "close" : "plus";
+                    label: root.pasting ? @tr("Close the link field") : @tr("Add a download");
+                    clicked => {
+                        root.pasting = !root.pasting;
+                    }
+                }
+                IconButton {
+                    icon: "settings";
+                    label: @tr("Settings");
+                    clicked => {
+                        root.open-settings();
+                    }
+                }
+            }
+            // Escape from the field closes the panel; the focus goes back to "+".
+            if root.pasting: FocusScope {
+                focus-on-tab-navigation: false;
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) {
+                        root.pasting = false;
+                        add-button.focus();
+                        return accept;
+                    }
+                    return reject;
+                }
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 6px;
+                    LinkField {
+                        field-height: 44px;
+                        init => {
+                            self.focus-input();
+                        }
+                        entered(link) => {
+                            root.pasting = false;
+                            root.link-entered(link);
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        TextButton {
+                            text: @tr("Several links…");
+                            kind: "quiet";
+                            clicked => {
+                                root.pasting = false;
+                                root.open-batch();
+                            }
+                        }
+                        TextButton {
+                            text: @tr("Grab links from a page…");
+                            kind: "quiet";
+                            clicked => {
+                                root.pasting = false;
+                                root.open-grab();
+                            }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+            }
+            AdvList {
+                vertical-stretch: 1;
+                rows: root.rows;
+                empty-text: @tr("No downloads here.");
+                select(id) => {
+                    root.select(id);
+                }
+                pause(id) => {
+                    root.pause(id);
+                }
+                resume(id) => {
+                    root.resume(id);
+                }
+                retry(id) => {
+                    root.retry(id);
+                }
+                stop-recording(id) => {
+                    root.stop-recording(id);
+                }
+                open-file(id) => {
+                    root.open-file(id);
+                }
+            }
+            SpeedFooter {
+                down: root.speed-down;
+                up: root.speed-up;
+                open-whendone => { root.open-whendone(); }
+            }
+        }
+    }
+}

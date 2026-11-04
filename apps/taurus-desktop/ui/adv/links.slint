@@ -1,0 +1,36 @@
+// Grab links and Add several links: what the app shows on those screens
+// and what they ask of it. A global, so the window does not have to pass
+// each property and callback along (the app sets it with
+// `ui.global::<LinksUi>()`).
+import { GrabVm, GrabRowVm, BatchVm, BatchLineVm } from "../types.slint";
+
+export global LinksUi {
+    // Grab links: the page's links (shown by chip and extension) and the
+    // rest of the screen.
+    in property <GrabVm> grab;
+    in property <[GrabRowVm]> grab-rows;
+    // The page link field's text, as typed (the app sets it when it opens
+    // the screen); the Subfolders switch reads the link written there.
+    in-out property <string> grab-url-text;
+    // Read this page (the screen's link field).
+    callback grab-page(string);
+    // "subfolders" ("true" | "false"), "chip" (GrabVm.chip), "ext" (as typed)
+    callback grab-option(string, string);
+    // GrabRowVm.index: ticks or unticks it.
+    callback grab-toggle(int);
+    // "Select all shown" (or clears them when all are ticked).
+    callback grab-select-shown();
+    // "Download N": one download per ticked link.
+    callback grab-download();
+    // Back: the screen is left (its size probes stop).
+    callback grab-closed();
+
+    // Several links: the parsed lines and the rest of the screen.
+    in property <BatchVm> batch;
+    in property <[BatchLineVm]> batch-lines;
+    // The whole text after each edit.
+    callback batch-edited(string);
+    callback batch-mirrors(bool);
+    // "Add N downloads".
+    callback batch-add();
+}

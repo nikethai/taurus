@@ -1,0 +1,250 @@
+// The Advanced "when done and speed" popover, opened from the footer's
+// button: what Hyades does when every download is finished, and the speed
+// limit. A global holds what it shows and what it asks of the app (the app
+// sets it with `ui.global::<WhenDoneUi>()`), so the window passes nothing
+// along. Escape or a click outside closes it.
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+import { Pressable, Segmented, Segment, LineEdit } from "../widgets.slint";
+
+export global WhenDoneUi {
+    in-out property <bool> open: false;
+    // "nothing" | "notify" | "sleep" | "shutdown" | "quit"
+    in property <string> when-done: "nothing";
+    // "gentle" | "balanced" | "fastest" | "custom"
+    in property <string> speed: "fastest";
+    // The custom field's text, in MB/s (the app fills it when it opens).
+    in-out property <string> custom-text;
+    // The text last sent was not a speed from 0.1 to 10000 MB/s.
+    in property <bool> custom-invalid: false;
+    // ... because it holds a comma (decimals use a dot).
+    in property <bool> custom-comma: false;
+    // One of the when-done values above.
+    callback pick-when-done(string);
+    // "gentle" | "balanced" | "fastest"
+    callback pick-speed(string);
+    // The custom field's text after each edit: only checked, never saved.
+    callback custom-edited(string);
+    // Enter, or the field lost focus after an edit: the text is applied.
+    callback custom-commit(string);
+    // The Custom segment was picked: the app fills an empty field with
+    // the limit now in effect, when there is one.
+    callback custom-chosen();
+
+    // The footer button's label for a when-done value.
+    public pure function footer-label(w: string) -> string {
+        if (w == "notify") {
+            return @tr("Notify");
+        }
+        if (w == "sleep") {
+            return @tr("Then sleep");
+        }
+        if (w == "shutdown") {
+            return @tr("Then shut down");
+        }
+        if (w == "quit") {
+            return @tr("Then quit");
+        }
+        return @tr("When done");
+    }
+}
+
+component Radio inherits Pressable {
+    in property <string> text;
+    in property <bool> selected;
+
+    height: 36px;
+    accessible-role: radio-button;
+    accessible-label: text;
+    accessible-checkable: true;
+    accessible-checked: selected;
+
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            font-size: 13px;
+            color: Theme.text;
+            accessible-role: none;
+        }
+        if root.selected: VerticalLayout {
+            alignment: center;
+            Icon {
+                name: "check";
+                width: 16px;
+                height: 16px;
+                stroke: Theme.accent-strong;
+                stroke-width: 2.25px;
+            }
+        }
+    }
+}
+
+component Heading inherits Text {
+    font-size: 12px;
+    font-weight: 700;
+    color: Theme.muted;
+    accessible-role: text;
+    accessible-label: self.text;
+}
+
+// Laid over the whole window; the card sits above the footer, at the right.
+export component WhenDonePopover inherits Rectangle {
+    // Typing the custom speed, or already on a custom speed.
+    property <bool> custom-mode: WhenDoneUi.speed == "custom";
+    property <[{value: string, label: string}]> choices: [
+        { value: "nothing", label: @tr("Do nothing") },
+        { value: "notify", label: @tr("Just notify me") },
+        { value: "sleep", label: @tr("Put the computer to sleep") },
+        { value: "shutdown", label: @tr("Shut down") },
+        { value: "quit", label: @tr("Quit Hyades") },
+    ];
+
+    // The field's text changed since it was last applied.
+    property <bool> dirty: false;
+
+    background: transparent;
+    init => {
+        keys.focus();
+    }
+
+    // Holds the whole popover, so Escape reaches it from any item inside.
+    keys := FocusScope {
+        width: root.width;
+        height: root.height;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                WhenDoneUi.open = false;
+                return accept;
+            }
+            return reject;
+        }
+
+    // Outside the card: closes.
+    TouchArea {
+        clicked => {
+            WhenDoneUi.open = false;
+        }
+    }
+
+    Rectangle {
+        width: min(root.width - 32px, 320px);
+        height: card.preferred-height;
+        x: root.width - self.width - 16px;
+        y: root.height - self.height - 44px;
+        background: Theme.panel;
+        border-radius: 14px;
+        border-width: 1px;
+        border-color: Theme.line;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.shadow;
+        accessible-role: groupbox;
+        accessible-label: @tr("When done and speed");
+        // Clicks on the card stay on it.
+        TouchArea { }
+        card := VerticalLayout {
+            padding: 16px;
+            spacing: 6px;
+            Heading {
+                text: @tr("When downloads finish");
+            }
+            for c in root.choices: Radio {
+                text: c.label;
+                selected: WhenDoneUi.when-done == c.value;
+                clicked => {
+                    WhenDoneUi.pick-when-done(c.value);
+                }
+            }
+            if WhenDoneUi.when-done == "sleep" || WhenDoneUi.when-done == "shutdown": Text {
+                text: @tr("You get 60 seconds to cancel before it happens.");
+                wrap: word-wrap;
+                font-size: 12px;
+                color: Theme.muted;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+            Heading {
+                text: @tr("Speed");
+            }
+            Segmented {
+                height: 38px;
+                Segment {
+                    text: @tr("Gentle");
+                    selected: !root.custom-mode && WhenDoneUi.speed == "gentle";
+                    clicked => {
+                        root.custom-mode = false;
+                        WhenDoneUi.pick-speed("gentle");
+                    }
+                }
+                Segment {
+                    text: @tr("Balanced");
+                    selected: !root.custom-mode && WhenDoneUi.speed == "balanced";
+                    clicked => {
+                        root.custom-mode = false;
+                        WhenDoneUi.pick-speed("balanced");
+                    }
+                }
+                Segment {
+                    text: @tr("Fastest");
+                    selected: !root.custom-mode && WhenDoneUi.speed == "fastest";
+                    clicked => {
+                        root.custom-mode = false;
+                        WhenDoneUi.pick-speed("fastest");
+                    }
+                }
+                Segment {
+                    text: @tr("Custom");
+                    selected: root.custom-mode;
+                    clicked => {
+                        root.custom-mode = true;
+                        WhenDoneUi.custom-chosen();
+                    }
+                }
+            }
+            if root.custom-mode: HorizontalLayout {
+                spacing: 8px;
+                LineEdit {
+                    horizontal-stretch: 1;
+                    text <=> WhenDoneUi.custom-text;
+                    placeholder-text: @tr("0.1 to 10000");
+                    accessible-label: @tr("Custom speed in MB/s");
+                    init => {
+                        self.focus();
+                    }
+                    edited(t) => {
+                        root.dirty = true;
+                        WhenDoneUi.custom-edited(t);
+                    }
+                    accepted(t) => {
+                        root.dirty = false;
+                        WhenDoneUi.custom-commit(t);
+                    }
+                    changed has-focus => {
+                        if (!self.has-focus && root.dirty) {
+                            root.dirty = false;
+                            WhenDoneUi.custom-commit(self.text);
+                        }
+                    }
+                }
+                Text {
+                    text: @tr("MB/s");
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    color: Theme.muted;
+                    accessible-role: none;
+                }
+            }
+            if root.custom-mode && WhenDoneUi.custom-invalid: Text {
+                text: WhenDoneUi.custom-comma ? @tr("Use a dot for decimals, like 2.5.") : @tr("Enter a speed from 0.1 to 10000 MB/s.");
+                wrap: word-wrap;
+                font-size: 12px;
+                color: Theme.err;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+        }
+    }
+    }
+}

@@ -1,0 +1,573 @@
+// Advanced mode's Add screen (CompactAdd): what the link is, the options
+// of its kind (file links: name, connections, mirrors, checksum, referer,
+// user name and password; videos: quality, format, subtitles, browser
+// sign-in; torrents: the file picker and sharing), where it goes, and
+// "Start immediately".
+import { Theme } from "../theme.slint";
+import { Icon } from "../icons.slint";
+import { AdvAddVm } from "../types.slint";
+import { Messages } from "../messages.slint";
+import {
+    IconButton, TextButton, KindBadge, LoadingDots, Card, Segmented, Segment, CheckBox, LineEdit, TextEdit,
+} from "../widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+import { SectionLabel } from "detail_parts.slint";
+import { TorrentOptions } from "torrent.slint";
+import { MediaOptions, BrowserRow } from "add_media.slint";
+
+// A label over a text field.
+component Field inherits VerticalLayout {
+    in property <string> label;
+    spacing: 4px;
+    SectionLabel {
+        text: root.label;
+    }
+    @children
+}
+
+component FileOptions inherits VerticalLayout {
+    in property <AdvAddVm> vm;
+    in property <bool> is-macos;
+    in-out property <string> password;
+    callback field-changed(string, string);
+
+    spacing: 12px;
+
+    if root.vm.needs-user: Rectangle {
+        background: Theme.accent-soft;
+        border-radius: 12px;
+        VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+            Text {
+                text: @tr("This link wants a user name and password. Enter them below.");
+                wrap: word-wrap;
+                font-size: 13px;
+                color: Theme.text;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+            Text {
+                text: @tr("A video site? Use your browser's sign-in instead:");
+                wrap: word-wrap;
+                font-size: 12px;
+                color: Theme.muted;
+            }
+            BrowserRow {
+                is-macos: root.is-macos;
+                picked(b) => {
+                    root.field-changed("sign-in-browser", b);
+                }
+            }
+        }
+    }
+
+    Field {
+        label: @tr("File name");
+        LineEdit {
+            text: root.vm.name;
+            accessible-label: @tr("File name");
+            edited(t) => {
+                root.field-changed("name", t);
+            }
+        }
+    }
+
+    Field {
+        label: @tr("Connections");
+        Segmented {
+            accessible-role: list;
+            accessible-label: @tr("Connections");
+            for n in [1, 4, 8, 16]: Segment {
+                text: n;
+                selected: root.vm.connections == n;
+                clicked => {
+                    root.field-changed("connections", n);
+                }
+            }
+            // The settings' count when it is none of those.
+            if root.vm.custom-connections > 0: Segment {
+                text: @tr("Custom {0}", root.vm.custom-connections);
+                selected: root.vm.connections == root.vm.custom-connections;
+                clicked => {
+                    root.field-changed("connections", root.vm.custom-connections);
+                }
+            }
+        }
+    }
+
+    Field {
+        label: @tr("Mirrors (one link per line)");
+        TextEdit {
+            height: 72px;
+            wrap: no-wrap;
+            accessible-label: @tr("Mirrors");
+            edited(t) => {
+                root.field-changed("mirrors", t);
+            }
+        }
+    }
+
+    Field {
+        label: @tr("Checksum (SHA-256)");
+        LineEdit {
+            text: root.vm.checksum;
+            placeholder-text: @tr("Optional");
+            accessible-label: @tr("Checksum");
+            edited(t) => {
+                root.field-changed("checksum", t);
+            }
+        }
+        if !root.vm.checksum-ok: Text {
+            text: @tr("That isn't a SHA-256 checksum (64 hex digits).");
+            wrap: word-wrap;
+            font-size: 12px;
+            color: Theme.err;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+    }
+
+    Field {
+        label: @tr("Referer");
+        LineEdit {
+            text: root.vm.referer;
+            placeholder-text: @tr("Optional");
+            accessible-label: @tr("Referer");
+            edited(t) => {
+                root.field-changed("referer", t);
+            }
+        }
+    }
+
+    Field {
+        label: @tr("Sign in");
+        LineEdit {
+            placeholder-text: @tr("User name");
+            accessible-label: @tr("User name");
+            edited(t) => {
+                root.field-changed("user", t);
+            }
+        }
+        // After a refused add, the password goes with it: type it again.
+        LineEdit {
+            input-type: InputType.password;
+            text <=> root.password;
+            placeholder-text: root.vm.password-again ? @tr("Type the password again") : @tr("Password");
+            accessible-label: @tr("Password");
+        }
+    }
+}
+
+export component AdvAdd inherits FocusScope {
+    in property <AdvAddVm> vm;
+    // Safari's sign-in is offered on macOS only.
+    in property <bool> is-macos;
+    // Video tools: "" | "installing" | "failed".
+    in property <string> tools-banner;
+    // What is typed in the password field; the app empties it as soon as
+    // it hands it to the engine.
+    in-out property <string> password;
+    // AdvAddVm field, value (see AdvAddVm).
+    callback field-changed(string, string);
+    callback toggle-file(int);
+    callback toggle-all(bool);
+    callback toggle-group(string);
+    // Add, and whether it starts now.
+    callback confirmed(bool);
+    callback cancelled();
+    callback show-list();
+    callback choose-folder();
+    // The link is a web page ("" otherwise): "Find files →" finds the
+    // files it links to (grab links) while it is looked at or failed.
+    in property <string> page-url;
+    callback find-files(string);
+
+    property <bool> failed: !vm.loading && vm.error-kind != "";
+    property <bool> shown: !vm.loading && !failed;
+    property <bool> options: shown && !vm.duplicate;
+    property <bool> start-now: true;
+    property <bool> ready: options && !vm.busy && vm.checksum-ok
+        && (vm.kind != "torrent" || vm.selected-count > 0)
+        && !(vm.password-again && root.password == "");
+    property <bool> sign-in-error: vm.error-kind == "needs_sign_in" || vm.error-kind == "blocked_by_bot_check";
+    property <string> refused: vm.refused;
+    property <bool> had-refusal: false;
+    changed refused => {
+        if (self.refused != "") {
+            self.had-refusal = true;
+        }
+    }
+
+    // Escape cancels, from anywhere on the screen.
+    focus-on-tab-navigation: false;
+    init => {
+        self.focus();
+    }
+    key-pressed(event) => {
+        if (event.text == Key.Escape) {
+            root.password = "";
+            root.cancelled();
+            return accept;
+        }
+        return reject;
+    }
+
+    pure function byline(a: AdvAddVm) -> string {
+        if (a.uploader != "" && a.duration-text != "") {
+            return @tr("{0} · {1}", a.uploader, a.duration-text);
+        }
+        return a.uploader != "" ? a.uploader : a.duration-text;
+    }
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding: 14px;
+            padding-left: 20px;
+            spacing: 8px;
+            IconButton {
+                icon: "back";
+                label: @tr("Back");
+                clicked => {
+                    root.password = "";
+                    root.cancelled();
+                }
+            }
+            Text {
+                text: @tr("New download");
+                vertical-alignment: center;
+                font-size: 20px;
+                font-weight: 700;
+                color: Theme.text;
+            }
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 20px;
+                padding-top: 0;
+                spacing: 14px;
+                alignment: start;
+
+                if root.vm.loading: Card {
+                    VerticalLayout {
+                        padding-top: 32px;
+                        padding-bottom: 32px;
+                        spacing: 16px;
+                        LoadingDots { }
+                        Text {
+                            text: root.tools-banner == "installing" ? @tr("Getting the video tools…") : @tr("Looking at the link…");
+                            horizontal-alignment: center;
+                            font-size: 14px;
+                            color: Theme.muted;
+                            accessible-role: text;
+                            accessible-label: self.text;
+                        }
+                    }
+                }
+
+                if root.page-url != "" && !root.shown: Rectangle {
+                    background: Theme.accent-soft;
+                    border-radius: 12px;
+                    HorizontalLayout {
+                        padding: 12px;
+                        spacing: 10px;
+                        Text {
+                            text: @tr("This looks like a web page. Find the files it links to?");
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                            font-size: 13px;
+                            color: Theme.text;
+                            accessible-role: text;
+                            accessible-label: self.text;
+                        }
+                        TextButton {
+                            text: @tr("Find files →");
+                            kind: "primary";
+                            clicked => {
+                                root.password = "";
+                                root.find-files(root.page-url);
+                            }
+                        }
+                    }
+                }
+
+                if root.failed: Card {
+                    VerticalLayout {
+                        padding-top: 12px;
+                        padding-bottom: 12px;
+                        spacing: 10px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            KindBadge {
+                                kind: "file";
+                            }
+                            Text {
+                                text: Messages.simple(root.vm.error-kind);
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                wrap: word-wrap;
+                                font-size: 14px;
+                                color: Theme.err;
+                                accessible-role: text;
+                                accessible-label: self.text;
+                            }
+                        }
+                        if root.sign-in-error: Text {
+                            text: @tr("Use your browser's sign-in:");
+                            font-size: 12px;
+                            color: Theme.muted;
+                        }
+                        if root.sign-in-error: BrowserRow {
+                            is-macos: root.is-macos;
+                            picked(b) => {
+                                root.field-changed("sign-in-browser", b);
+                            }
+                        }
+                    }
+                }
+
+                if root.shown: Card {
+                    HorizontalLayout {
+                        padding-top: 10px;
+                        padding-bottom: 10px;
+                        spacing: 14px;
+                        VerticalLayout {
+                            alignment: start;
+                            if root.vm.kind == "media": Rectangle {
+                                width: 112px;
+                                height: 63px;
+                                border-radius: 8px;
+                                clip: true;
+                                background: Theme.kind-bg(root.vm.badge);
+                                if root.vm.thumbnail.width > 0: Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: root.vm.thumbnail;
+                                    image-fit: cover;
+                                    accessible-role: none;
+                                }
+                                if root.vm.thumbnail.width == 0: Icon {
+                                    name: root.vm.badge;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    width: 28px;
+                                    height: 28px;
+                                    stroke: Theme.kind-fg(root.vm.badge);
+                                }
+                            }
+                            if root.vm.kind != "media": KindBadge {
+                                kind: root.vm.badge;
+                                size: 48px;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.vm.kind == "media" ? root.vm.title : root.vm.name;
+                                wrap: word-wrap;
+                                font-size: 15px;
+                                font-weight: 600;
+                                color: Theme.text;
+                                accessible-role: text;
+                                accessible-label: self.text;
+                            }
+                            if root.byline(root.vm) != "": Text {
+                                text: root.byline(root.vm);
+                                font-size: 13px;
+                                color: Theme.muted;
+                            }
+                            Text {
+                                text: root.vm.size-text != "" ? (root.vm.kind == "media" ? @tr("About {0}", root.vm.size-text) : root.vm.size-text)
+                                    : @tr("Size unknown");
+                                font-size: 13px;
+                                color: Theme.muted;
+                            }
+                            if root.vm.live == "live": Text {
+                                text: @tr("Live now");
+                                font-size: 13px;
+                                font-weight: 600;
+                                color: Theme.kind-fg("live");
+                            }
+                            if root.vm.live == "upcoming": Text {
+                                text: @tr("Not started yet");
+                                font-size: 13px;
+                                color: Theme.kind-fg("live");
+                            }
+                            if root.vm.playlist-count > 0: Text {
+                                text: @tr("Playlist · {n} video" | "Playlist · {n} videos" % root.vm.playlist-count);
+                                font-size: 13px;
+                                color: Theme.muted;
+                            }
+                        }
+                    }
+                }
+
+                if root.shown && root.vm.duplicate: Rectangle {
+                    background: Theme.accent-soft;
+                    border-radius: 12px;
+                    HorizontalLayout {
+                        padding: 14px;
+                        Text {
+                            text: Messages.simple("already_added");
+                            wrap: word-wrap;
+                            font-size: 14px;
+                            color: Theme.text;
+                            accessible-role: text;
+                            accessible-label: self.text;
+                        }
+                    }
+                }
+
+                if root.options && root.vm.kind == "file": FileOptions {
+                    vm: root.vm;
+                    is-macos: root.is-macos;
+                    password <=> root.password;
+                    field-changed(f, v) => {
+                        root.field-changed(f, v);
+                    }
+                }
+
+                if root.options && root.vm.kind == "media": MediaOptions {
+                    vm: root.vm;
+                    is-macos: root.is-macos;
+                    field-changed(f, v) => {
+                        root.field-changed(f, v);
+                    }
+                }
+
+                // Its file list shrinks to what the window has left, so
+                // the screen does not scroll beside the list's scrollbar.
+                if root.options && root.vm.kind == "torrent": TorrentOptions {
+                    vm: root.vm;
+                    fill: true;
+                    field-changed(f, v) => {
+                        root.field-changed(f, v);
+                    }
+                    toggle-file(i) => {
+                        root.toggle-file(i);
+                    }
+                    toggle-all(on) => {
+                        root.toggle-all(on);
+                    }
+                    toggle-group(path) => {
+                        root.toggle-group(path);
+                    }
+                }
+
+                if root.options: VerticalLayout {
+                    spacing: 4px;
+                    SectionLabel {
+                        text: @tr("Save to");
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            alignment: center;
+                            Icon {
+                                name: "folder";
+                                width: 20px;
+                                height: 20px;
+                                stroke: Theme.muted;
+                            }
+                        }
+                        Text {
+                            text: root.vm.folder != "" ? root.vm.folder : @tr("Downloads folder");
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                            font-size: 14px;
+                            color: Theme.text;
+                            accessible-role: text;
+                            accessible-label: self.text;
+                        }
+                        TextButton {
+                            text: @tr("Change");
+                            kind: "quiet";
+                            clicked => {
+                                root.choose-folder();
+                            }
+                        }
+                    }
+                    if root.vm.kind != "torrent" && root.vm.free-text != "": Text {
+                        text: @tr("{0} free", root.vm.free-text);
+                        font-size: 12px;
+                        color: Theme.muted;
+                    }
+                }
+
+                if root.options: CheckBox {
+                    text: @tr("Start immediately");
+                    checked <=> root.start-now;
+                }
+
+                if root.options && root.vm.playlist-count > 50: Text {
+                    text: @tr("This playlist has {n} video. All of them will be downloaded." | "This playlist has {n} videos. All of them will be downloaded." % root.vm.playlist-count);
+                    wrap: word-wrap;
+                    font-size: 13px;
+                    color: Theme.text;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+            }
+        }
+
+        // Why the engine refused the add, under the form. Once shown, the
+        // line keeps its room (two lines at least): the form does not jump
+        // when it goes, as it does when a field is typed in.
+        if root.vm.refused != "" || root.had-refusal: HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 8px;
+            Text {
+                text: root.vm.refused != "" ? Messages.simple(root.vm.refused) : "";
+                min-height: 36px;
+                wrap: word-wrap;
+                font-size: 13px;
+                color: Theme.err;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+        }
+
+        HorizontalLayout {
+            padding: 20px;
+            padding-top: 10px;
+            alignment: end;
+            spacing: 10px;
+            if root.vm.busy: Text {
+                text: @tr("Adding…");
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                font-size: 12px;
+                color: Theme.muted;
+            }
+            TextButton {
+                text: root.failed ? @tr("Close") : @tr("Cancel");
+                clicked => {
+                    root.password = "";
+                    root.cancelled();
+                }
+            }
+            if root.shown && root.vm.duplicate: TextButton {
+                text: @tr("Show it");
+                kind: "primary";
+                clicked => {
+                    root.show-list();
+                }
+            }
+            if root.options: TextButton {
+                text: root.vm.live != "" ? @tr("Record") : @tr("Download");
+                kind: "primary";
+                enabled: root.ready;
+                clicked => {
+                    root.confirmed(root.start-now);
+                }
+            }
+        }
+    }
+}

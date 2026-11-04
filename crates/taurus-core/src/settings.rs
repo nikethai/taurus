@@ -88,6 +88,9 @@ pub struct Settings {
     pub when_done: WhenDone,
     pub auto_checksum: bool,
     pub keep_awake: bool,
+    /// Connections per file for an add that names none, 1 to 16
+    /// (`plan::CONNECTIONS_RANGE`).
+    pub connections: u32,
     pub torrent: TorrentSettings,
     pub network: NetworkSettings,
     /// What only the desktop app reads.
@@ -102,6 +105,7 @@ impl Default for Settings {
             when_done: WhenDone::Nothing,
             auto_checksum: true,
             keep_awake: true,
+            connections: crate::plan::DEFAULT_CONNECTIONS,
             torrent: TorrentSettings::default(),
             network: NetworkSettings::default(),
             ui: UiSettings::default(),
@@ -261,6 +265,7 @@ mod tests {
     fn settings_default_and_partial_json() {
         let d = Settings::default();
         assert_eq!(d.max_active, 3);
+        assert_eq!(d.connections, 16);
         assert_eq!(d.speed, SpeedLimit::Fastest);
         assert_eq!(d.when_done, WhenDone::Nothing);
         assert!(d.auto_checksum);

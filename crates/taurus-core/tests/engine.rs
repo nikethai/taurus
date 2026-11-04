@@ -764,6 +764,43 @@ async fn saved_max_active_zero_loads_as_one() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn saved_connections_out_of_range_load_as_the_default() {
+    for raw in [r#"{"connections":0}"#, r#"{"connections":5000}"#] {
+        let (settings, backup) = open_with_raw_settings(raw).await;
+        assert_eq!(settings.connections, 16, "{raw}");
+        assert_eq!(backup, None, "{raw}");
+    }
+    let (settings, _) = open_with_raw_settings(r#"{"connections":4}"#).await;
+    assert_eq!(settings.connections, 4);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn connections_outside_one_to_sixteen_are_refused() {
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    for connections in [0, 17, 5000] {
+        let settings = Settings {
+            connections,
+            ..Settings::default()
+        };
+        assert!(
+            engine.set_settings(settings).await.is_err(),
+            "{connections}"
+        );
+        assert_eq!(engine.settings(), Settings::default(), "{connections}");
+    }
+    for connections in [1, 16] {
+        let settings = Settings {
+            connections,
+            ..Settings::default()
+        };
+        engine.set_settings(settings).await.unwrap();
+        assert_eq!(engine.settings().connections, connections);
+    }
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn settings_are_saved_and_announced() {
     let fx = Fixture::new().await;
     let engine = fx.engine().await;
@@ -1577,5 +1614,46 @@ async fn completed_job_has_finished_at() {
     let config = EngineConfig::new(fx.data_dir());
     let snapshot = Engine::read_snapshot(&config).unwrap();
     assert_eq!(snapshot[0].finished_at, Some(again));
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn effective_speed_limit_follows_setting_and_saved_peak() {
+    let fx = Fixture::new().await;
+    fs::create_dir_all(fx.data_dir()).unwrap();
+    Store::open(&fx.data_dir().join("taurus.db"))
+        .unwrap()
+        .save_measured_peak(40_000_000, 1_700_000_000)
+        .unwrap();
+    let engine = fx.engine().await;
+    // Fastest is unlimited.
+    assert_eq!(engine.effective_speed_limit(), None);
+    for (speed, expected) in [
+        (SpeedLimit::Gentle, Some(10_000_000)),
+        (SpeedLimit::Balanced, Some(24_000_000)),
+        (SpeedLimit::Fastest, None),
+        (
+            SpeedLimit::Custom {
+                bytes_per_sec: 2_500_000,
+            },
+            Some(2_500_000),
+        ),
+    ] {
+        engine
+            .set_settings(with_speed(speed.clone()))
+            .await
+            .unwrap();
+        assert_eq!(engine.effective_speed_limit(), expected, "{speed:?}");
+    }
+    engine.shutdown().await.unwrap();
+
+    // No peak measured: the fixed figures.
+    let fx = Fixture::new().await;
+    let engine = fx.engine().await;
+    engine
+        .set_settings(with_speed(SpeedLimit::Gentle))
+        .await
+        .unwrap();
+    assert_eq!(engine.effective_speed_limit(), Some(1_048_576));
     engine.shutdown().await.unwrap();
 }

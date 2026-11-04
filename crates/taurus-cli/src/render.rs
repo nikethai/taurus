@@ -233,27 +233,28 @@ pub fn torrent_files(info: &TorrentInfo) -> String {
 /// One line per link: index, size (`-` when the server tells none), the
 /// folder it was found in, name. Control characters (the page's author
 /// chose these names) are left out.
-pub fn grab_links(links: &[GrabbedLink], sizes: &[Option<u64>]) -> String {
+pub fn grab_links(links: &[GrabbedLink]) -> String {
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "{:>5}  {:>10}  {:<12}  NAME",
-        "INDEX", "SIZE", "FOLDER"
-    );
+    let _ = writeln!(out, "{:>5}  {:<12}  NAME", "INDEX", "FOLDER");
     for (index, link) in links.iter().enumerate() {
-        let size = sizes
-            .get(index)
-            .copied()
-            .flatten()
-            .map_or("-".to_string(), bytes);
         let _ = writeln!(
             out,
-            "{index:>5}  {size:>10}  {:<12}  {}",
+            "{index:>5}  {:<12}  {}",
             printable(&link.folder),
             printable(&link.name)
         );
     }
     out
+}
+
+/// The heading of the sizes `grab --sizes` prints as they arrive.
+pub const GRAB_SIZES_HEADING: &str = "INDEX        SIZE";
+
+/// One link's size, by its index in the listing (`-` when the server tells
+/// none), under [`GRAB_SIZES_HEADING`].
+pub fn grab_size(index: usize, size: Option<u64>) -> String {
+    let size = size.map_or("-".to_string(), bytes);
+    format!("{index:>5}  {size:>10}")
 }
 
 fn printable(s: &str) -> String {
@@ -310,6 +311,7 @@ mod tests {
             finished_at: None,
             info_hash: None,
             media: None,
+            progress_unit: Default::default(),
         }
     }
 
@@ -331,6 +333,23 @@ mod tests {
     #[test]
     fn progress_line_of_empty_file_is_complete() {
         assert_eq!(progress_line(0, Some(0), 0), "100.0%  0 B / 0 B  0.0 MB/s");
+    }
+
+    #[test]
+    fn grab_listing_and_sizes() {
+        let link = GrabbedLink {
+            url: "http://h/a.pdf".into(),
+            name: "a.pdf".into(),
+            folder: "/".into(),
+            extension: Some("pdf".into()),
+        };
+        assert_eq!(
+            grab_links(&[link]),
+            "INDEX  FOLDER        NAME\n    0  /             a.pdf\n"
+        );
+        assert_eq!(grab_size(3, Some(2048)), "    3     2.0 KiB");
+        assert_eq!(grab_size(12, None), "   12           -");
+        assert_eq!(GRAB_SIZES_HEADING.len(), grab_size(0, None).len());
     }
 
     #[test]

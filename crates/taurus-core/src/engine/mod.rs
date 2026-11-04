@@ -7,8 +7,10 @@
 
 mod actor;
 mod convert;
+mod convert_guard;
 mod convert_job;
 mod cookies;
+mod detail;
 mod grab;
 mod inspect;
 mod jobs;
@@ -30,7 +32,7 @@ mod types;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
@@ -51,6 +53,8 @@ use crate::torrent::source::{Source, classify};
 use actor::Command;
 #[doc(hidden)]
 pub use actor::JobMsg;
+use detail::Details;
+pub use detail::{JobDetail, PasswordStore, SegmentView, TorrentFileProgress};
 pub use inspect::LinkInfo;
 use jobs::{downloaded, fixed_url, view_of};
 use keychain::Secrets;
@@ -60,7 +64,7 @@ use open::assemble;
 pub use remove::RemoveFiles;
 use schedule::check_space;
 use sign_in::web_only;
-pub use types::{AddRequest, EngineConfig, Event, JobView, TorrentView};
+pub use types::{AddRequest, EngineConfig, Event, JobView, ProgressUnit, TorrentView};
 
 const COMMAND_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 1024;
@@ -80,6 +84,9 @@ pub struct Engine {
     views: Views,
     /// The actor's settings, copied for `settings`.
     settings: Arc<RwLock<Settings>>,
+    /// The actor's saved peak speed in bytes/s (0: none), copied for
+    /// `effective_speed_limit`.
+    peak_bps: Arc<AtomicU64>,
     /// The actor's keep-awake wish, copied for `keeping_awake`.
     keeping_awake: Arc<AtomicBool>,
     /// The HTTP client, shared with the actor and the tools; take it
@@ -100,6 +107,8 @@ pub struct Engine {
     data_dir: PathBuf,
     /// The jobs' passwords, shared with the actor.
     secrets: Secrets,
+    /// What `job_detail` reads beside the views, shared with the actor.
+    details: Details,
 }
 
 impl Engine {
@@ -381,11 +390,23 @@ impl Engine {
         read(&self.settings).clone()
     }
 
+    /// The download limit in bytes per second that the speed setting gives
+    /// now, as the engine applies it: a custom limit as set, Gentle and
+    /// Balanced as shares (25 % and 60 %) of the measured peak (fixed
+    /// figures while none is measured), `None` for Fastest (unlimited).
+    pub fn effective_speed_limit(&self) -> Option<u64> {
+        let peak = self.peak_bps.load(Ordering::Relaxed);
+        read(&self.settings)
+            .speed
+            .bytes_per_sec((peak != 0).then_some(peak))
+    }
+
     /// Saves the settings and applies them at once, also to running jobs,
     /// then emits `SettingsChanged`. A higher `max_active` starts more
     /// Queued jobs; a lower one lets running jobs finish (likewise
     /// `torrent.max_active` for torrents). A `max_active` or
-    /// `torrent.max_active` of 0 is refused, and so is a manual proxy that
+    /// `torrent.max_active` of 0 is refused, and so are connections per
+    /// file outside 1 to 16 and a manual proxy that
     /// `network::parse_proxy` refuses. A new proxy applies to every web
     /// request from the next one on and to yt-dlp's next run (a running
     /// video download keeps its own) and to the torrent session's next

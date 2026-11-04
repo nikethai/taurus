@@ -4,24 +4,26 @@
 //! what `settings` holds) and saved with `Engine::set_settings` by one
 //! writer task, in the order the changes were made.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use slint::ComponentHandle;
-use taurus_core::{Engine, Settings, SpeedLimit, ThemeChoice, WhenDone};
+use taurus_core::{Engine, Settings, SpeedLimit, ThemeChoice, UiMode, WhenDone};
 use tokio::sync::mpsc;
 
 use crate::app::{App, AppSender, UiMsg};
-use crate::{SettingsVm, Theme, login};
+use crate::{SettingsVm, Theme, format, login};
 
 /// Accent names as stored in `UiSettings.accent`.
 const ACCENTS: [&str; 6] = ["Aldebaran", "Cobalt", "Jade", "Grape", "Rose", "Sky"];
 
 /// What the Settings screen shows for `s`. Values it has no control for
 /// (a custom speed, the Quit action) show as their own name, so no choice
-/// is marked.
+/// is marked; the screen shows them read-only (a custom speed with its
+/// limit in `speed-custom`).
 pub fn settings_vm(s: &Settings) -> SettingsVm {
     let speed = match s.speed {
         SpeedLimit::Gentle => "gentle",
@@ -51,6 +53,11 @@ pub fn settings_vm(s: &Settings) -> SettingsVm {
         open_at_login: s.ui.open_at_login,
         theme: theme_name(s.ui.theme).into(),
         accent: s.ui.accent.to_lowercase().into(),
+        speed_custom: match s.speed {
+            SpeedLimit::Custom { bytes_per_sec } => format::speed(bytes_per_sec).into(),
+            _ => Default::default(),
+        },
+        advanced: s.ui.mode == UiMode::Advanced,
     }
 }
 
@@ -63,8 +70,10 @@ fn theme_name(t: ThemeChoice) -> &'static str {
 }
 
 /// Applies one `setting-changed(key, value)` to `s`. Keys are the
-/// `SettingsVm` field names; names are matched ignoring case. False when
-/// the key or value is not one the screen sends (`s` is left as it was).
+/// `SettingsVm` field names, then Advanced Settings' own
+/// (`adv_settings::apply_adv_change`); names are matched ignoring case.
+/// False when the key or value is not one the screens send (`s` is left as
+/// it was).
 pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
     let value = value.trim();
     let flag = || match value {
@@ -87,6 +96,11 @@ pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
             Some(b) => s.ui.open_at_login = b,
             None => return false,
         },
+        "advanced" => match flag() {
+            Some(true) => s.ui.mode = UiMode::Advanced,
+            Some(false) => s.ui.mode = UiMode::Simple,
+            None => return false,
+        },
         "speed" => {
             s.speed = match lower.as_str() {
                 "gentle" => SpeedLimit::Gentle,
@@ -101,6 +115,7 @@ pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
                 "notify" => WhenDone::Notify,
                 "sleep" => WhenDone::Sleep,
                 "shutdown" => WhenDone::Shutdown,
+                "quit" => WhenDone::Quit,
                 _ => return false,
             }
         }
@@ -116,20 +131,63 @@ pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
             Some(a) => s.ui.accent = a.to_string(),
             None => return false,
         },
-        _ => return false,
+        // Advanced Settings' own keys.
+        _ => return crate::adv_settings::apply_adv_change(s, key, value),
     }
     true
 }
 
+/// How many of the latest saves `RecentSaves` remembers.
+const RECENT_SAVES: usize = 8;
+
+/// The latest settings handed to the writer, oldest first: an engine echo
+/// equal to one of them but the newest is an older save's, late.
+#[derive(Default)]
+pub(crate) struct RecentSaves(VecDeque<Settings>);
+
+impl RecentSaves {
+    pub(crate) fn saved(&mut self, settings: Settings) {
+        if self.0.len() == RECENT_SAVES {
+            self.0.pop_front();
+        }
+        self.0.push_back(settings);
+    }
+
+    /// Whether the engine's `SettingsChanged` with `settings` is to be
+    /// shown: not when it is the echo of a save older than the newest.
+    /// The newest one's echo means every older echo has come (the engine
+    /// sends them in order): those are forgotten. Anything else is a
+    /// change made in the engine (the when-done reset, another program).
+    /// Forgets every save but `settings`, the engine's state after a failed
+    /// save: its echoes and later ones are shown again.
+    pub(crate) fn reset_to(&mut self, settings: &Settings) {
+        self.0.clear();
+        self.0.push_back(settings.clone());
+    }
+
+    pub(crate) fn take_echo(&mut self, settings: &Settings) -> bool {
+        match self.0.iter().rposition(|s| s == settings) {
+            Some(i) if i + 1 == self.0.len() => {
+                self.0.drain(..i);
+                true
+            }
+            Some(_) => false,
+            None => true,
+        }
+    }
+}
+
 /// Saves the UI's settings one at a time, in order; of a burst of changes
 /// only the newest is saved. Each change has a generation number, so the
-/// app can tell whether a save is still on its way.
+/// app can tell whether a save is still on its way. An echo older than
+/// the newest save is never shown or saved again (`RecentSaves`).
 pub(crate) struct SettingsWriter {
     tx: mpsc::UnboundedSender<(u64, Settings)>,
     /// Generation of the newest change handed to `save`.
     made: Cell<u64>,
     /// Generation of the newest save that finished (saved or failed).
     saved: Arc<AtomicU64>,
+    recent: RefCell<RecentSaves>,
 }
 
 impl SettingsWriter {
@@ -158,20 +216,32 @@ impl SettingsWriter {
             tx,
             made: Cell::new(0),
             saved,
+            recent: RefCell::default(),
         }
     }
 
     pub fn save(&self, settings: Settings) {
         let generation = self.made.get() + 1;
         self.made.set(generation);
+        self.recent.borrow_mut().saved(settings.clone());
         let _ = self.tx.send((generation, settings));
+    }
+
+    /// See `RecentSaves::take_echo`.
+    fn take_echo(&self, settings: &Settings) -> bool {
+        self.recent.borrow_mut().take_echo(settings)
+    }
+
+    /// A save failed: `settings` (read back from the engine) are what it
+    /// holds now, so every remembered save is forgotten in their favour.
+    fn resync(&self, settings: &Settings) {
+        self.recent.borrow_mut().reset_to(settings);
     }
 
     /// Every change has been saved (or failed): the engine's settings are
     /// as new as the UI's. While not idle, the engine's `SettingsChanged`
-    /// echoes are older than what the UI shows and are ignored. (An echo
-    /// can still trail the last save by an instant; the next flush, with
-    /// the last echo, puts it right.)
+    /// echoes are older than what the UI shows and are ignored; an echo
+    /// that trails the last save is recognized by `take_echo`.
     pub fn idle(&self) -> bool {
         self.saved.load(Ordering::SeqCst) >= self.made.get()
     }
@@ -190,6 +260,10 @@ impl App {
         theme.set_scheme(vm.theme.clone());
         theme.set_accent(vm.accent.clone());
         ui.set_settings(vm);
+        self.push_whendone(&ui);
+        self.push_adv_settings(&ui);
+        // ui.mode may have changed: Simple, compact or wide.
+        self.apply_layout();
     }
 
     pub(crate) fn setting_changed(&self, key: &str, value: &str) {
@@ -226,7 +300,7 @@ impl App {
     }
 
     /// `next` (changed at `key`) becomes the UI's settings and is saved.
-    fn change_settings(&self, key: &str, next: Settings) {
+    pub(crate) fn change_settings(&self, key: &str, next: Settings) {
         if key == "open-at-login"
             && self.os_shell.get()
             && let Err(e) = login::set_open_at_login(next.ui.open_at_login)
@@ -243,9 +317,20 @@ impl App {
     }
 
     /// Settings from the engine (its `SettingsChanged`), unless a change
-    /// made here is still being saved.
+    /// made here is still being saved or they echo an older save.
     pub(crate) fn engine_settings(&self, settings: Settings) {
+        if self.writer.idle() && self.writer.take_echo(&settings) {
+            *self.settings.borrow_mut() = settings;
+            self.push_settings();
+        }
+    }
+
+    /// A save failed: show the engine's settings again (the failed change is
+    /// not kept on screen as if saved), unless a newer change is on its way.
+    /// They usually equal an older save, so the echo check is bypassed.
+    pub(crate) fn settings_failed(&self, settings: Settings) {
         if self.writer.idle() {
+            self.writer.resync(&settings);
             *self.settings.borrow_mut() = settings;
             self.push_settings();
         }
@@ -283,6 +368,10 @@ mod tests {
         assert_eq!(s.speed, SpeedLimit::Gentle);
         assert_eq!(s.when_done, WhenDone::Sleep);
         assert_eq!(s.ui.folder, Some(PathBuf::from("/tmp/dl")));
+        assert!(apply_change(&mut s, "when-done", "Quit"));
+        assert_eq!(s.when_done, WhenDone::Quit);
+        assert_eq!(settings_vm(&s).when_done.as_str(), "quit");
+        assert!(apply_change(&mut s, "when-done", "sleep"));
         let vm = settings_vm(&s);
         assert_eq!(
             (vm.theme.as_str(), vm.accent.as_str(), vm.when_done.as_str()),
@@ -301,5 +390,90 @@ mod tests {
         assert_eq!(s, before);
         assert!(apply_change(&mut s, "folder", ""));
         assert_eq!(s.ui.folder, None);
+    }
+
+    /// Save A, save B, then A's echo arrives late: it is not shown, so the
+    /// next change starts from B and keeps B's fields. B's own echo, and a
+    /// change made in the engine, are shown.
+    #[test]
+    fn a_late_echo_of_an_older_save_is_ignored() {
+        let mut recent = RecentSaves::default();
+        let mut ui = Settings::default();
+        let change = |ui: &mut Settings, recent: &mut RecentSaves, key, value| {
+            assert!(apply_change(ui, key, value));
+            recent.saved(ui.clone());
+        };
+        change(&mut ui, &mut recent, "theme", "dark");
+        let a = ui.clone();
+        change(&mut ui, &mut recent, "accent", "jade");
+        let b = ui.clone();
+        assert!(!recent.take_echo(&a), "A's echo shown over B");
+        change(&mut ui, &mut recent, "speed", "gentle");
+        assert_eq!(
+            (ui.ui.theme, ui.ui.accent.as_str(), &ui.speed),
+            (ThemeChoice::Dark, "Jade", &SpeedLimit::Gentle),
+            "B's fields lost"
+        );
+        assert!(!recent.take_echo(&b), "B's echo shown over C");
+        assert!(recent.take_echo(&ui), "C's echo");
+        // Every older echo has come: one equal to A now is the engine's.
+        assert!(recent.take_echo(&a), "the engine's own change");
+        let reset = Settings {
+            when_done: WhenDone::Nothing,
+            ..ui.clone()
+        };
+        assert!(recent.take_echo(&reset));
+        // Only the latest few are remembered.
+        for i in 0..20 {
+            let mut s = ui.clone();
+            s.max_active = i + 1;
+            recent.saved(s);
+        }
+        assert_eq!(recent.0.len(), RECENT_SAVES);
+    }
+
+    /// After a failed save the engine still holds an older save; reading it
+    /// back must be shown (not ignored as an old echo), and so must the
+    /// engine's later changes.
+    #[test]
+    fn a_failed_save_shows_the_engines_settings_again() {
+        let mut recent = RecentSaves::default();
+        let a = Settings::default();
+        let mut b = a.clone();
+        b.ui.theme = taurus_core::ThemeChoice::Dark;
+        recent.saved(a.clone());
+        recent.saved(b.clone());
+        assert!(!recent.take_echo(&a), "an old echo stays hidden");
+        recent.reset_to(&a);
+        assert!(recent.take_echo(&a), "the engine's state after a failure");
+        let mut c = a.clone();
+        c.ui.theme = taurus_core::ThemeChoice::Light;
+        assert!(recent.take_echo(&c), "a later change in the engine");
+    }
+
+    /// The mode switch changes `ui.mode` only; a custom speed shows as
+    /// "custom" with its limit until a preset replaces it.
+    #[test]
+    fn advanced_switch_and_custom_speed() {
+        let mut s = Settings {
+            speed: SpeedLimit::Custom {
+                bytes_per_sec: 3_000_000,
+            },
+            ..Settings::default()
+        };
+        let vm = settings_vm(&s);
+        assert_eq!(
+            (vm.speed.as_str(), vm.speed_custom.as_str(), vm.advanced),
+            ("custom", "3.0 MB/s", false)
+        );
+        let before = s.clone();
+        assert!(apply_change(&mut s, "advanced", "true"));
+        assert_eq!(s.ui.mode, UiMode::Advanced);
+        assert!(settings_vm(&s).advanced);
+        assert!(!apply_change(&mut s, "advanced", "on"));
+        assert!(apply_change(&mut s, "advanced", "false"));
+        assert_eq!(s, before);
+        assert!(apply_change(&mut s, "speed", "gentle"));
+        assert_eq!(settings_vm(&s).speed_custom.as_str(), "");
     }
 }

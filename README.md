@@ -40,7 +40,7 @@ taurus remove 1 --delete-files
 
 ### Links on a web page
 
-`taurus grab <PAGE_URL>` reads a web page (or an Apache/nginx style "Index of" folder listing) and lists the files it links to: index (from 0), size (`-` when the server tells none), the folder it was found in, and name. Only links whose file name has an extension that is not a web page's are listed, each once, at most 500.
+`taurus grab <PAGE_URL>` reads a web page (or an Apache/nginx style "Index of" folder listing) and lists the files it links to at once: index (from 0), the folder it was found in, and name. Only links whose file name has an extension that is not a web page's are listed, each once, at most 500. Sizes are not asked for unless you add `--sizes`: after the listing, one line per file (its index and size, `-` when the server tells none) is printed as each answer arrives, so the lines come in the order the servers answer, not the listing's.
 
 ```sh
 # List the files a page links to
@@ -52,12 +52,15 @@ taurus grab https://example.com/papers/ --ext pdf,zip
 # A folder listing: read its subfolders too (one level)
 taurus grab https://example.com/files/ --subfolders
 
+# Also ask for each file's size (printed by index as the answers arrive)
+taurus grab https://example.com/papers/ --sizes
+
 # Add every listed file to the queue and download them into a folder; a file found in
 # a subfolder goes into the same subfolder of that folder (a/x.pdf and b/x.pdf stay apart)
 taurus grab https://example.com/papers/ --ext pdf --add --dir ~/Downloads
 ```
 
-`--json` prints the listing as one object, `{"links": [{"index", "url", "name", "folder", "extension", "size"}], "truncated": bool}`. Without `--add`, nothing is queued; with `--add`, `--json` goes on to print the usual event lines after that object, one JSON value per line. Folder names come from the page, so they are checked: a name that is empty, `.`, `..` or holds a backslash makes that one file fail (the others go on, exit 1), and nothing is ever written outside `--dir`. With `--add`, a file on the page's own scheme, host and port is requested with the page (without its `#fragment`) as its Referer, like a browser following the link; a plain-http link on an https page gets none.
+`--json` prints the listing as one object, `{"links": [{"index", "url", "name", "folder", "extension"}], "truncated": bool}`; with `--sizes` it is followed by one object per size as it arrives, `{"index", "size"}` (`size` is `null` when the server tells none). Without `--add`, nothing is queued; with `--add`, `--json` goes on to print the usual event lines after that object, one JSON value per line. `--add` never waits on sizes, and does not go with `--sizes`. Folder names come from the page, so they are checked: a name that is empty, `.`, `..` or holds a backslash makes that one file fail (the others go on, exit 1), and nothing is ever written outside `--dir`. With `--add`, a file on the page's own scheme, host and port is requested with the page (without its `#fragment`) as its Referer, like a browser following the link; a plain-http link on an https page gets none.
 
 ### Protected downloads
 
@@ -257,5 +260,24 @@ cargo run -p taurus-desktop
 - **Data.** The app keeps its downloads list and settings in the same folder as the command-line client: `TAURUS_DATA_DIR` if set, else `~/.local/share/taurus` on Linux (`$XDG_DATA_HOME/taurus` when that is set), `~/Library/Application Support/dev.nikethai.taurus` on macOS and `%APPDATA%\nikethai\taurus\data` on Windows. Only one of them can use the folder at a time; opening the app while the command-line client runs shows a message and exits.
 - **Tray.** Closing the window hides it to the tray and downloads go on; choose Quit in the tray menu to stop. On Linux the tray needs a StatusNotifier host (KDE Plasma has one; GNOME needs the AppIndicator extension). Without a tray, closing the window quits.
 - **One window.** Launching the app again (for example `taurus-desktop <link>`, or with a `.torrent` file) shows the open window, from the tray or minimized, and hands it the links; other arguments are ignored.
+
+### Advanced mode
+
+Turn on **Show advanced options** in Settings (turn it off again in Advanced settings, General) for a denser window with filters, details and every option. The screens, with no screenshots yet:
+
+- **Compact list** (window narrower than 900 px). The downloads under three tabs with counts: Active (downloading, recording, sharing), Waiting (queued, waiting, paused, failed) and Done. Each row shows the kind, the name with its source (HTTP, Torrent, yt-dlp, Convert), progress, status and speed, and the action that fits (Pause, Resume, Try again, Stop, Open). "+" opens a link field with "Several links…" and "Grab links from a page…"; the gear opens Settings. The footer shows the total download and upload speed and the when-done button.
+- **Wide list** (900 px and wider). A sidebar of filters with counts, Library (All, Downloading, Queued, Paused, Completed, Failed) and Sources (HTTP, Torrents, Media), a search field over the list, and the selected download's details in a pane on the right. Stretching the window across 900 px switches between the two layouts and keeps the selection.
+- **Details** (click a row; over the whole window when compact, Back closes it). The size and percent, a segment map that fills in as each connection downloads its part, the steps of a video (tools, download, finish), figures such as speed, connections, peers, ratio or mirrors, where it is saved and its link, and a torrent's files with their progress. Actions: Pause or Resume, Open, Show in folder, Copy link, Convert… (to MP3, or a smaller MP4, for a finished video), Choose files… and the sharing limits of a torrent, and Remove….
+- **Remove.** Asks first. A finished download's files stay unless "Also delete the files" is ticked; an unfinished download's partial files are always cleared.
+- **Sign in.** A download that wants a user name and password (Enter password… in its details, or on its own when the details open) asks for them in a dialog, says when they did not work, and resumes once they do. The password is kept in the computer's keychain, never in the settings.
+- **Browser sign-in retry.** A video that failed for want of a sign-in or a "not a bot" check offers to try again with the cookies of Chrome, Firefox, Edge, Brave or (on macOS) Safari.
+- **Advanced add** (paste a link). What the link is, then the options of its kind. Files: file name, connections per file, mirrors (one link per line), SHA-256 checksum, Referer, user name and password. Videos: quality, format (MP4, MKV or WebM), subtitle languages with the site's generated captions and embedding, and the browser to sign in with. Torrents: the file picker and how long to keep sharing. Then where it is saved and "Start immediately". A link to a web page offers "Find files →".
+- **Torrent file picker.** The files grouped by top folder, with a box per folder (all, some or none), All and None, the selected count and size and the folder's free space. It is part of Advanced add, and "Choose files…" in a torrent's details opens it again to add or drop files later.
+- **Grab links** ("+", then "Grab links from a page…", or "Find files →"). Reads a web page or an "Index of" folder listing and lists the files it links to, with type chips (All, Video, Docs, Archives, Images) and counts, an extension filter, a Subfolders switch (one level into a listing's folders), "Select all shown", sizes as they arrive, and "Download N". Files from subfolders keep their subfolder.
+- **Several links** ("+", then "Several links…"). One link per line (lines starting with # are skipped); each line is shown with its kind. "Treat copies as mirrors" makes links to files with the same name one download from several servers; a web page line offers "Find files →". "Add N downloads" adds them.
+- **When done and speed** (the footer's when-done button). What to do when downloads finish (do nothing, notify, sleep, shut down or quit Hyades; sleep and shutdown give 60 seconds to cancel) and the speed: Gentle, Balanced, Fastest or Custom. A custom speed is typed in MB/s with a dot for decimals (2.5; a comma is refused) and applies on Enter or when the field loses focus.
+- **Advanced settings** (the gear). One section after another when compact, a list of sections beside them when wide: Downloads (folder, sorting by type, downloads at once, connections per file, speed, checksums, keeping the computer awake), Torrents (sharing ratio and time, upload and download limits, torrents at once, peers, listening port, UPnP, DHT), Network (proxy: system, none or manual), Engines (yt-dlp, ffmpeg and Deno: install, check for newer versions, roll back), Appearance (theme, accent, progress bars colored by file type), Privacy ("Forget saved passwords" removes every download password from the keychain) and General (copied-link offers, open at login, Show advanced options). A typed value applies on Enter or when its field loses focus.
+
+Keyboard: Tab moves through the controls in order (in the list: the header, the tabs or filters, each row then its action button, the footer), Space or Enter presses the focused one. In a dialog, Enter confirms, Escape cancels and Tab stays inside it. Escape also closes the when-done menu and the "+" link field, and goes back from the details (compact), Advanced add, Grab links, Several links and Settings.
 
 Known alpha limitations: dragging links or files in from other apps does not work yet (the UI toolkit does not support it), and the colours and icons are provisional.

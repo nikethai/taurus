@@ -12,14 +12,16 @@ use std::path::{Path, PathBuf};
 use slint::ComponentHandle;
 use taurus_core::{AddRequest, CoreError, Engine, ErrorKind, JobId, JobKind, LinkInfo};
 
+use crate::adv_pick::AdvPick;
 use crate::app::{App, UiMsg};
+use crate::detail::warn;
 use crate::media_add::{self, MediaPick};
 use crate::{AddVm, AppWindow, BannerVm, Screen, format, rows};
 
 /// The link on the Add screen.
 pub(crate) struct PendingAdd {
     pub(crate) seq: u64,
-    url: String,
+    pub(crate) url: String,
     /// The kind the destination is sorted by, once the link was looked at
     /// without error.
     pub(crate) kind: Option<&'static str>,
@@ -27,6 +29,24 @@ pub(crate) struct PendingAdd {
     folder: Option<PathBuf>,
     /// What is picked for a video or audio link.
     pub(crate) media: Option<MediaPick>,
+    /// What is picked on the Advanced Add screen (`adv_add.rs`).
+    pub(crate) adv: Option<AdvPick>,
+    /// The browser whose cookies the link was last read with ("" none).
+    pub(crate) adv_cookies: String,
+}
+
+impl PendingAdd {
+    fn new(seq: u64, url: String) -> PendingAdd {
+        PendingAdd {
+            seq,
+            url,
+            kind: None,
+            folder: None,
+            media: None,
+            adv: None,
+            adv_cookies: String::new(),
+        }
+    }
 }
 
 /// The type subfolder a kind is sorted into when "sort by type" is on;
@@ -121,13 +141,10 @@ impl App {
         let seq = self.seq.get() + 1;
         self.seq.set(seq);
         let folder = self.settings.borrow().ui.folder.clone();
-        *self.pending.borrow_mut() = Some(PendingAdd {
-            seq,
-            url: url.clone(),
-            kind: None,
-            folder: None,
-            media: None,
-        });
+        *self.pending.borrow_mut() = Some(PendingAdd::new(seq, url.clone()));
+        // A web page: Advanced offers "Find files →" (grab links) for it.
+        let page = crate::batch::line_kind(&url) == crate::batch::LineKind::Page;
+        ui.set_adv_page_url(if page { url.as_str().into() } else { "".into() });
         if let Some(id) = self.engine.find_by_url(&url) {
             let view = self.view.borrow();
             let existing = view.view(id);
@@ -145,10 +162,12 @@ impl App {
                     .unwrap_or_default(),
                 ..Default::default()
             };
-            ui.set_add(match existing {
+            let vm = match existing {
                 Some(v) => media_add::duplicate_vm(v, vm),
                 None => vm,
-            });
+            };
+            self.adv_duplicate(&ui, &vm);
+            ui.set_add(vm);
             ui.set_screen(Screen::Add);
             return;
         }
@@ -157,6 +176,7 @@ impl App {
             folder: folder_text(folder.as_deref()),
             ..Default::default()
         });
+        self.adv_loading(&ui, folder_text(folder.as_deref()));
         ui.set_screen(Screen::Add);
         let engine = self.engine.clone();
         let tx = self.tx.clone();
@@ -178,6 +198,8 @@ impl App {
         let Some(p) = pending.as_mut().filter(|p| p.seq == seq) else {
             return;
         };
+        // The Advanced screen first: the Simple one takes the result.
+        self.adv_inspected(&ui, p, &result);
         let result = match result {
             Ok(LinkInfo::Media(info)) => return self.media_inspected(&ui, p, info),
             other => other,
@@ -201,7 +223,7 @@ impl App {
 
     /// Where the pending download of `kind` goes, and whether that is a
     /// type subfolder (made when missing).
-    fn destination_of(&self, p: &PendingAdd, kind: &str) -> (PathBuf, bool) {
+    pub(crate) fn destination_of(&self, p: &PendingAdd, kind: &str) -> (PathBuf, bool) {
         let s = self.settings.borrow();
         let dest = destination(
             p.folder.as_deref(),
@@ -211,6 +233,14 @@ impl App {
         );
         let sorted = p.folder.is_none() && s.ui.sort_by_type && sort_folder(kind).is_some();
         (dest, sorted)
+    }
+
+    /// Where a download of `kind` goes when no folder was picked for it,
+    /// and whether that is a type subfolder (made when missing).
+    pub(crate) fn default_destination(&self, kind: &str) -> (PathBuf, bool) {
+        let s = self.settings.borrow();
+        let dest = destination(None, s.ui.folder.as_deref(), s.ui.sort_by_type, kind);
+        (dest, s.ui.sort_by_type && sort_folder(kind).is_some())
     }
 
     /// "Save to" on the Add screen: the real destination, type subfolder
@@ -281,7 +311,7 @@ impl App {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             if let Err(CoreError { kind, detail }) = add_job(engine, request, sorted).await {
-                eprintln!("hyades: add failed: {detail}");
+                warn(format_args!("add failed: {detail}"));
                 tx.send(UiMsg::AddFailed(kind));
             }
         });
@@ -306,17 +336,13 @@ impl App {
         // An empty pending add, so Close goes on with the queue.
         let seq = self.seq.get() + 1;
         self.seq.set(seq);
-        *self.pending.borrow_mut() = Some(PendingAdd {
-            seq,
-            url: String::new(),
-            kind: None,
-            folder: None,
-            media: None,
-        });
+        *self.pending.borrow_mut() = Some(PendingAdd::new(seq, String::new()));
+        ui.set_adv_page_url("".into());
         ui.set_add(AddVm {
             error_kind: kind.as_str().into(),
             ..Default::default()
         });
+        self.adv_error(&ui, kind);
         ui.set_screen(Screen::Add);
     }
 
@@ -367,6 +393,7 @@ impl App {
                 ..ui.get_add()
             });
             p.folder = Some(picked);
+            self.render_adv(&ui, p);
             return;
         }
         self.set_folder(picked);

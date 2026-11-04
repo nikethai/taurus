@@ -104,6 +104,7 @@ impl Fixture {
             timing,
             auto_checksum,
             auth: None,
+            live: Default::default(),
         };
         tokio::time::timeout(Duration::from_secs(30), run_job(ctx))
             .await

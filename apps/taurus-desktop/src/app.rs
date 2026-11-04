@@ -7,9 +7,11 @@
 //! `pump.rs`). No `invoke_from_event_loop`: tests drive the same timer with
 //! `slint::platform::update_timers_and_animations()`.
 //!
-//! The add flow lives in `add_flow.rs` (video links in `media_add.rs`),
-//! the Settings screen in `settings_flow.rs`, applying engine state to the
-//! window in `pump.rs`.
+//! The add flow lives in `add_flow.rs` (video links in `media_add.rs`,
+//! Advanced mode's Add screen in `adv_add.rs`, its Grab links screen in
+//! `grab_flow.rs` and Add several links in `batch_flow.rs`),
+//! the Settings screen in `settings_flow.rs` (Advanced Settings in
+//! `adv_settings.rs`), applying engine state to the window in `pump.rs`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -21,10 +23,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use slint::{CloseRequestResponse, ComponentHandle, SharedPixelBuffer, Timer, TimerMode};
-use taurus_core::{CoreError, Engine, ErrorKind, JobId, JobState, LinkInfo, RemoveFiles, Settings};
+use taurus_core::{
+    CoreError, Engine, ErrorKind, GrabResult, JobId, JobState, LinkInfo, RemoveFiles, Settings,
+};
 
 use crate::add_flow::PendingAdd;
+use crate::adv_add::AdvAddState;
+use crate::adv_fields::FieldsState;
+use crate::adv_flow::AdvFlow;
+use crate::adv_settings::SettingsMsg;
+use crate::adv_view::AdvState;
+use crate::batch_flow::BatchState;
 use crate::bridge::{self, Coalescer};
+use crate::detail::warn;
+use crate::grab_flow::GrabState;
 use crate::links::ClipboardFilter;
 use crate::pump::ViewState;
 use crate::settings_flow::SettingsWriter;
@@ -76,6 +88,26 @@ pub(crate) enum UiMsg {
     Clipboard(String),
     /// Look at this link next (the next one of a forwarded batch).
     Link(String),
+    /// `Engine::set_credentials` answered for the sign-in dialog of `id`.
+    SignedIn {
+        id: i32,
+        result: Result<(), ErrorKind>,
+    },
+    /// `Engine::set_torrent_overrides` refused the rules picked for a job.
+    OverridesRefused(JobId),
+    /// `Engine::add` answered Download on the Advanced Add screen (the
+    /// add with this `seq`).
+    AdvAdded {
+        seq: u64,
+        result: Result<(), CoreError>,
+    },
+    /// `Engine::grab` answered the grab with this run number.
+    Grabbed {
+        run: u64,
+        result: Box<Result<GrabResult, ErrorKind>>,
+    },
+    /// A tool action or forgetting passwords answered (Advanced Settings).
+    Settings(SettingsMsg),
 }
 
 /// Hands links and clipboard text to the app from any thread.
@@ -120,6 +152,18 @@ pub struct App {
     /// The settings as the UI last set or received them.
     pub(crate) settings: RefCell<Settings>,
     pub(crate) view: RefCell<ViewState>,
+    /// Advanced mode's list (`adv_view.rs`).
+    pub(crate) adv: RefCell<AdvState>,
+    /// Advanced mode's detail and dialogs (`adv_flow.rs`).
+    pub(crate) flow: AdvFlow,
+    /// Advanced mode's Add screen and file picker (`adv_add.rs`).
+    pub(crate) adv_add: AdvAddState,
+    /// Advanced mode's Grab links (`grab_flow.rs`).
+    pub(crate) grab: GrabState,
+    /// Advanced mode's Add several links (`batch_flow.rs`).
+    pub(crate) batch: BatchState,
+    /// Advanced Settings' typed fields (`adv_fields.rs`).
+    pub(crate) fields: FieldsState,
     coalescer: Arc<Mutex<Coalescer>>,
     pub(crate) writer: SettingsWriter,
     /// Mirrors `settings.ui.offer_copied_links` for the clipboard thread.
@@ -173,6 +217,12 @@ impl App {
             seq: Cell::new(0),
             settings: RefCell::new(settings),
             view: RefCell::new(ViewState::default()),
+            adv: RefCell::new(AdvState::default()),
+            flow: AdvFlow::default(),
+            adv_add: AdvAddState::default(),
+            grab: GrabState::default(),
+            batch: BatchState::default(),
+            fields: FieldsState::default(),
             coalescer: coalescer.clone(),
             writer,
             offer_links,
@@ -184,7 +234,11 @@ impl App {
         let pixels = SharedPixelBuffer::clone_from_slice(&icon::app_icon_rgba(size), size, size);
         window.set_app_icon(slint::Image::from_rgba8(pixels));
         window.set_has_tray(has_tray);
+        window.set_is_macos(cfg!(target_os = "macos"));
         app.view.borrow().install(window);
+        app.adv.borrow().install(window);
+        app.grab.install(window);
+        app.batch.install(window);
         app.push_settings();
         let screen = if app.engine.snapshot().is_empty() {
             crate::Screen::Welcome
@@ -193,6 +247,7 @@ impl App {
         };
         window.set_screen(screen);
 
+        app.start_detail_poll();
         app.connect(window);
         *app.bridge.borrow_mut() = Some(bridge::spawn(&app.engine, &app.rt, coalescer));
         let weak = Rc::downgrade(&app);
@@ -232,6 +287,78 @@ impl App {
         on!(ui, self, on_setting_changed, |a, key, value| a
             .setting_changed(&key, &value));
         on!(ui, self, on_cancel_countdown, |a| a.cancel_countdown());
+        on!(ui, self, on_width_changed, |a| a.apply_layout());
+        on!(ui, self, on_select, |a, id| a.adv_select(id));
+        on!(ui, self, on_filter_changed, |a, key| a.adv_filter(&key));
+        on!(ui, self, on_tab_changed, |a, tab| a.adv_tab(tab));
+        on!(ui, self, on_search_changed, |a, text| a.adv_search(&text));
+        on!(ui, self, on_copy_link, |a, id| a.copy_link(id));
+        on!(ui, self, on_convert, |a, id, preset| a.convert(id, &preset));
+        on!(ui, self, on_ask_remove, |a, id| a.ask_remove(id));
+        on!(ui, self, on_confirm_remove, |a, id, delete| a
+            .confirm_remove(id, delete));
+        on!(ui, self, on_retry_with_browser, |a, id, browser| a
+            .retry_with_browser(id, &browser));
+        on!(ui, self, on_ask_password, |a, id| a.ask_password(id));
+        on!(ui, self, on_submit_password, |a, id, user, password| a
+            .submit_password(id, user, password));
+        on!(ui, self, on_files_chosen, |a, id, indexes| a
+            .files_chosen(id, indexes));
+        on!(ui, self, on_set_override, |a, id, field, value| a
+            .set_override(id, &field, &value));
+        on!(ui, self, on_choose_files, |a, id| a.choose_files(id));
+        on!(ui, self, on_adv_field_changed, |a, field, value| a
+            .adv_field_changed(&field, &value));
+        on!(ui, self, on_adv_toggle_file, |a, index| a
+            .adv_toggle_file(index));
+        on!(ui, self, on_adv_toggle_all, |a, on| a.adv_toggle_all(on));
+        on!(ui, self, on_adv_toggle_group, |a, folder| a
+            .adv_toggle_group(&folder));
+        on!(ui, self, on_adv_add_confirmed, |a, start_now| a
+            .adv_add_confirmed(start_now));
+        on!(ui, self, on_open_grab, |a, url| a.open_grab(&url));
+        on!(ui, self, on_open_batch, |a| a.open_batch());
+        let links = ui.global::<crate::LinksUi>();
+        on!(links, self, on_grab_page, |a, url| a.grab_page(&url));
+        on!(links, self, on_grab_option, |a, key, value| a
+            .grab_option(&key, &value));
+        on!(links, self, on_grab_toggle, |a, index| a.grab_toggle(index));
+        on!(links, self, on_grab_select_shown, |a| a.grab_select_shown());
+        on!(links, self, on_grab_download, |a| a.grab_download());
+        on!(links, self, on_grab_closed, |a| a.grab_closed());
+        on!(links, self, on_batch_edited, |a, text| a
+            .batch_edited(&text));
+        on!(links, self, on_batch_mirrors, |a, on| a.batch_mirrors(on));
+        on!(links, self, on_batch_add, |a| a.batch_add());
+        on!(ui, self, on_open_whendone, |a| a.open_whendone());
+        let whendone = ui.global::<crate::WhenDoneUi>();
+        on!(whendone, self, on_pick_when_done, |a, value| a
+            .whendone_pick("when-done", &value));
+        on!(whendone, self, on_pick_speed, |a, value| a
+            .whendone_pick("speed", &value));
+        on!(whendone, self, on_custom_edited, |a, text| a
+            .whendone_custom_typed(&text));
+        on!(whendone, self, on_custom_commit, |a, text| a
+            .whendone_custom(&text));
+        on!(whendone, self, on_custom_chosen, |a| a
+            .whendone_custom_chosen());
+        let settings = ui.global::<crate::SettingsUi>();
+        on!(settings, self, on_opened, |a| a.adv_settings_opened());
+        on!(settings, self, on_changed, |a, key, value| a
+            .adv_changed(&key, &value));
+        on!(settings, self, on_leave, |a| a.adv_settings_leave());
+        on!(settings, self, on_field_edited, |a, key, text| a
+            .adv_field_edited(&key, &text));
+        on!(settings, self, on_field_commit, |a, key, text| a
+            .adv_field_commit(&key, &text));
+        on!(settings, self, on_custom_chosen, |a| a.adv_custom_chosen());
+        on!(settings, self, on_choose_folder, |a| a.choose_folder());
+        on!(settings, self, on_install_tools, |a| a.install_tools());
+        on!(settings, self, on_check_tools, |a| a.check_tools());
+        on!(settings, self, on_rollback_tool, |a, kind| a
+            .rollback_tool(&kind));
+        on!(settings, self, on_forget_passwords, |a| a
+            .forget_passwords());
 
         let weak = Rc::downgrade(self);
         ui.window().on_close_requested(move || {
@@ -341,7 +468,7 @@ impl App {
             };
             // A failed resume keeps the job as it was, with its error shown.
             if let Err(e) = result {
-                eprintln!("hyades: {job:?} {id:?}: {e}");
+                warn(format_args!("{job:?} {id:?}: {e}"));
             }
         });
     }
@@ -371,8 +498,9 @@ impl App {
         });
     }
 
-    /// One refresh: messages first, then engine state when due.
+    /// One refresh: grabbed sizes, messages, then engine state when due.
     fn tick(&self) {
+        self.grab_sizes();
         while let Ok(msg) = self.rx.try_recv() {
             self.handle(msg);
             if self.quitting.get() {
@@ -391,10 +519,15 @@ impl App {
             UiMsg::Inspected { seq, result } => self.inspected(seq, *result),
             UiMsg::AddFailed(kind) => self.add_failed(kind),
             UiMsg::MediaAdded { seq, result } => self.media_added(seq, result),
-            UiMsg::SettingsFailed => self.engine_settings(self.engine.settings()),
+            UiMsg::SettingsFailed => self.settings_failed(self.engine.settings()),
             UiMsg::Forwarded(links) => self.forwarded(links),
             UiMsg::Clipboard(text) => self.clipboard_text(&text),
             UiMsg::Link(link) => self.offer_link(link),
+            UiMsg::SignedIn { id, result } => self.signed_in(id, result),
+            UiMsg::OverridesRefused(id) => self.overrides_refused(id),
+            UiMsg::AdvAdded { seq, result } => self.adv_added(seq, result),
+            UiMsg::Grabbed { run, result } => self.grabbed(run, *result),
+            UiMsg::Settings(msg) => self.settings_msg(msg),
         }
     }
 

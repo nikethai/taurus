@@ -1,0 +1,222 @@
+// Add several links (CompactBatch): links pasted one per line, each shown
+// with what it is; copies of one file on several servers can become one
+// download with mirrors; a web page's files are found with Grab links.
+import { Theme } from "../theme.slint";
+import { BatchVm, BatchLineVm } from "../types.slint";
+import { IconButton, TextButton, Toggle, TextEdit } from "../widgets.slint";
+import { ListView } from "std-widgets.slint";
+import { SectionLabel } from "detail_parts.slint";
+import { LinksUi } from "links.slint";
+
+// What a line is, in its kind's colors.
+component KindChip inherits Rectangle {
+    // BatchLineVm.kind, and its words
+    in property <string> kind;
+    in property <string> text;
+    property <string> badge: kind == "torrent" ? "magnet" : kind == "media" ? "media" : kind == "page" ? "disc" : "file";
+
+    height: 20px;
+    width: label.preferred-width + 14px;
+    border-radius: 6px;
+    background: kind == "invalid" ? transparent : Theme.kind-bg(badge);
+    border-width: kind == "invalid" ? 1px : 0;
+    border-color: Theme.err;
+    label := Text {
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        text: root.text;
+        font-size: 11px;
+        font-weight: 600;
+        color: root.kind == "invalid" ? Theme.err : Theme.kind-fg(root.badge);
+        accessible-role: none;
+    }
+}
+
+component LineRow inherits Rectangle {
+    in property <BatchLineVm> item;
+    callback find-files(string);
+
+    pure function kind-text(kind: string) -> string {
+        if (kind == "http") {
+            return @tr("File");
+        } else if (kind == "torrent") {
+            return @tr("Torrent");
+        } else if (kind == "media") {
+            return @tr("Video");
+        } else if (kind == "page") {
+            return @tr("Page");
+        }
+        return @tr("Not a link");
+    }
+
+    height: 52px;
+    accessible-role: list-item;
+    accessible-label: item.text;
+    accessible-value: root.kind-text(item.kind);
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            KindChip {
+                kind: root.item.kind;
+                text: root.kind-text(root.item.kind);
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.item.text;
+                overflow: elide;
+                font-size: 13px;
+                color: root.item.kind == "invalid" ? Theme.muted : Theme.text;
+                accessible-role: none;
+            }
+            if root.item.mirror-of > 0: Text {
+                text: @tr("Mirror of line {0}", root.item.mirror-of);
+                font-size: 11px;
+                color: Theme.muted;
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+            if root.item.kind == "page": Text {
+                text: @tr("A web page: find the files it links to.");
+                overflow: elide;
+                font-size: 11px;
+                color: Theme.muted;
+                accessible-role: none;
+            }
+        }
+        if root.item.kind == "page": VerticalLayout {
+            alignment: center;
+            TextButton {
+                text: @tr("Find files →");
+                kind: "quiet";
+                clicked => {
+                    root.find-files(root.item.text);
+                }
+            }
+        }
+    }
+}
+
+// Shows `LinksUi.batch` and asks the app through `LinksUi`; a page
+// line's "Find files →" is `find-files`.
+export component AdvBatch inherits FocusScope {
+    callback find-files(string);
+    callback back();
+
+    // Escape goes back, from anywhere on the screen.
+    focus-on-tab-navigation: false;
+    init => {
+        self.focus();
+    }
+    key-pressed(event) => {
+        if (event.text == Key.Escape) {
+            root.back();
+            return accept;
+        }
+        return reject;
+    }
+
+    property <BatchVm> vm: LinksUi.batch;
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding: 14px;
+            padding-left: 20px;
+            spacing: 8px;
+            IconButton {
+                icon: "back";
+                label: @tr("Back");
+                clicked => {
+                    root.back();
+                }
+            }
+            Text {
+                text: @tr("Add several links");
+                vertical-alignment: center;
+                font-size: 20px;
+                font-weight: 700;
+                color: Theme.text;
+            }
+        }
+
+        VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            spacing: 10px;
+            vertical-stretch: 1;
+
+            SectionLabel {
+                text: @tr("Links, one per line (lines starting with # are skipped)");
+            }
+            TextEdit {
+                height: 140px;
+                wrap: no-wrap;
+                accessible-label: @tr("Links");
+                edited(t) => {
+                    LinksUi.batch-edited(t);
+                }
+            }
+            Toggle {
+                label: @tr("Treat copies as mirrors");
+                hint: @tr("Links to files with the same name become one download from several servers.");
+                checked: root.vm.mirrors;
+                clicked => {
+                    LinksUi.batch-mirrors(!root.vm.mirrors);
+                }
+            }
+            Rectangle {
+                vertical-stretch: 1;
+                border-radius: 10px;
+                border-width: 1px;
+                border-color: Theme.line;
+                ListView {
+                    for l in LinksUi.batch-lines: LineRow {
+                        item: l;
+                        find-files(url) => {
+                            root.find-files(url);
+                        }
+                    }
+                }
+                if LinksUi.batch-lines.length == 0: Text {
+                    x: 16px;
+                    width: parent.width - 32px;
+                    text: @tr("Paste links above to see them here.");
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    font-size: 13px;
+                    color: Theme.muted;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            padding: 20px;
+            padding-top: 10px;
+            alignment: end;
+            spacing: 10px;
+            TextButton {
+                text: @tr("Cancel");
+                clicked => {
+                    root.back();
+                }
+            }
+            TextButton {
+                text: @tr("Add {n} download" | "Add {n} downloads" % root.vm.add-count);
+                kind: "primary";
+                enabled: root.vm.add-count > 0;
+                clicked => {
+                    LinksUi.batch-add();
+                }
+            }
+        }
+    }
+}

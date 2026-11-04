@@ -2,10 +2,12 @@
 //! limiter's rate, the torrent session's limits and the measured peak speed
 //! they are a share of.
 
+use std::sync::atomic::Ordering;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::errors::{CoreError, ErrorKind};
 use crate::network::torrent_proxy;
+use crate::plan::CONNECTIONS_RANGE;
 use crate::settings::{Settings, SpeedLimit, WhenDone};
 use crate::torrent::policy::{split_rate, torrent_rate};
 
@@ -29,6 +31,16 @@ impl Actor {
                     detail: format!("{name} must be at least 1"),
                 });
             }
+        }
+        if !CONNECTIONS_RANGE.contains(&settings.connections) {
+            return Err(CoreError {
+                kind: ErrorKind::Unknown,
+                detail: format!(
+                    "connections must be from {} to {}",
+                    CONNECTIONS_RANGE.start(),
+                    CONNECTIONS_RANGE.end()
+                ),
+            });
         }
         // Refused now, not at the first download.
         settings.network.proxy.check()?;
@@ -107,7 +119,10 @@ impl Actor {
         };
         let at = unix_now();
         match self.store.save_measured_peak(bps, at) {
-            Ok(()) => self.measured_peak = Some((bps, at)),
+            Ok(()) => {
+                self.measured_peak = Some((bps, at));
+                self.peak_bps.store(bps, Ordering::Relaxed);
+            }
             Err(e) => tracing::warn!("could not save the peak speed: {e}"),
         }
     }

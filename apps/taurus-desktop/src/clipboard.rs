@@ -1,5 +1,5 @@
 //! Watching the clipboard for copied links, by polling (no clipboard offers
-//! change events everywhere).
+//! change events everywhere), and putting text on it.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,4 +62,19 @@ pub fn watch(
             }
         })
         .expect("spawn the clipboard thread")
+}
+
+/// Puts text on the clipboard. The clipboard stays open once used: on
+/// Linux (X11) copied text is only there while the app holds it.
+#[derive(Default)]
+pub struct Writer(Option<arboard::Clipboard>);
+
+impl Writer {
+    pub fn set(&mut self, text: &str) -> Result<(), arboard::Error> {
+        let clipboard = match &mut self.0 {
+            Some(c) => c,
+            None => self.0.insert(arboard::Clipboard::new()?),
+        };
+        clipboard.set_text(text)
+    }
 }

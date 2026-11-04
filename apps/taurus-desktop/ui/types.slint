@@ -45,7 +45,7 @@ export struct SummaryVm {
     all-paused: bool,
 }
 
-export enum Screen { welcome, downloads, add, settings }
+export enum Screen { welcome, downloads, add, settings, grab, batch }
 
 // The Add screen: what the pasted link turned out to be.
 export struct AddVm {
@@ -104,6 +104,11 @@ export struct SettingsVm {
     theme: string,
     // aldebaran | cobalt | jade | grape | rose | sky
     accent: string,
+    // The speed limit when it is custom (speed "custom"), e.g. "3.0 MB/s";
+    // Simple shows it read-only. "" otherwise.
+    speed-custom: string,
+    // Advanced mode is on (ui.mode); key "advanced".
+    advanced: bool,
 }
 
 // When-done countdown before the computer sleeps or shuts down.
@@ -119,4 +124,275 @@ export struct BannerVm {
     visible: bool,
     host: string,
     kind: string,
+}
+
+// Advanced mode: a list row. `row` as in Simple; `source` is "HTTP",
+// "Torrent", "yt-dlp" or "Convert"; `speed-text` the download speed while
+// running (e.g. "3.0 MB/s"), else "".
+export struct AdvRowVm {
+    row: RowVm,
+    source: string,
+    speed-text: string,
+    selected: bool,
+}
+
+// A sidebar entry's count. key: all downloading queued paused completed
+// failed (Library), http torrents media (Sources), in that order.
+export struct FilterCountVm {
+    key: string,
+    count: int,
+}
+
+// Counts of the compact layout's tabs.
+export struct TabCountsVm {
+    active: int,
+    waiting: int,
+    done: int,
+}
+
+// Advanced detail: a torrent file (index into the torrent's files, path
+// inside it, size, 0..1 downloaded, selected) or a finished media file
+// (index -1, size "" and progress 1).
+export struct FileRowVm {
+    index: int,
+    name: string,
+    size-text: string,
+    progress: float,
+    selected: bool,
+}
+
+// A media job's step. key: tools waiting download finish record;
+// state: done current failed todo.
+export struct StepVm {
+    key: string,
+    state: string,
+}
+
+// One "label: value" line of the detail. key (worded by the detail pane):
+// speed connections segments peers uploaded upload-speed ratio files
+// entries recorded mirrors checksum referer password (value "keychain",
+// or "memory": kept only until Hyades quits); value is a formatted number
+// or the text itself.
+export struct StatVm {
+    key: string,
+    value: string,
+}
+
+// The selected download's details (Advanced: the wide layout's pane, or
+// the compact layout's full-window detail). `row` as in the list; `big`
+// the percent done ("42%", "" when the size is unknown); `size-line` the
+// amounts done and in all ("120 MB / 400 MB", or media time "1:23 / 4:56"
+// for a conversion). `cells`: a web download's segment map, 0..1 per cell
+// (96 cells) when `has-cells`. `url`: the link without any user name or
+// password ("" for a conversion). Overrides: "default" | "never" | a number
+// (ratio; seed time in seconds).
+export struct DetailVm {
+    visible: bool,
+    row: RowVm,
+    name: string,
+    kind: string,
+    source: string,
+    big: string,
+    size-line: string,
+    cells: [float],
+    has-cells: bool,
+    files: [FileRowVm],
+    steps: [StepVm],
+    stats: [StatVm],
+    folder: string,
+    url: string,
+    can-convert: bool,
+    can-retry-cookies: bool,
+    needs-password: bool,
+    can-choose-files: bool,
+    ratio-override: string,
+    seed-time-override: string,
+    // Changes when the engine refused the sharing rules picked: the
+    // selects show the engine's values again.
+    overrides-epoch: int,
+}
+
+// "Remove <name> from the list?"
+export struct RemoveDialogVm {
+    visible: bool,
+    id: int,
+    name: string,
+}
+
+// The sign-in dialog of a protected download. Never holds the typed user
+// name or password (AppWindow.password-user / password-text do, until
+// they are handed over). busy: waiting for the engine; wrong: the last
+// try was refused.
+export struct PasswordDialogVm {
+    visible: bool,
+    id: int,
+    name: string,
+    busy: bool,
+    wrong: bool,
+}
+
+// Advanced add: one quality of a video. `height` is the picture height of
+// a "<N>p" option (0 for best / audio-best / audio-small, worded by
+// Messages.quality); `size-text` the estimated size, "" when unknown.
+export struct QualityVm {
+    id: string,
+    height: int,
+    audio-only: bool,
+    size-text: string,
+}
+
+// Advanced add: a subtitle language (`auto`: only the site's generated
+// captions have it).
+export struct LangVm {
+    code: string,
+    auto: bool,
+    selected: bool,
+}
+
+// The torrent file picker's rows, grouped by top folder. A group row
+// (`group`, index -1) has the folder's path in `path` and `state` "all" |
+// "some" | "none" (shown checked / dash / empty); a file row has its index
+// into the torrent's files, its path inside the torrent, and `in-group`
+// when it sits under a group row (`name` is then the part after the
+// folder).
+export struct TorrentFileVm {
+    index: int,
+    name: string,
+    path: string,
+    size-text: string,
+    selected: bool,
+    group: bool,
+    state: string,
+    in-group: bool,
+}
+
+// The Advanced add screen. kind: "file" | "media" | "torrent" ("" while
+// loading or failed); badge: the KindBadge kind. busy: the add went to the
+// engine; refused: ErrorKind::as_str() of an add the engine refused (the
+// form stays). File links: connections 1 | 4 | 8 | 16, or the count saved
+// in the settings when it is another (then also in custom-connections,
+// else 0); mirrors as last typed, one per entry; checksum-ok: the
+// checksum is empty or a SHA-256 sum; needs-user: the link asked for a
+// user name and password;
+// password-again: a refused add took the typed password with it, so it
+// must be typed again. Videos:
+// quality-id one of `qualities`; container "mp4" | "mkv" | "webm";
+// cookies-browser "" | "chrome" | "firefox" | "safari" | "edge" | "brave".
+// Torrents: `files` (see TorrentFileVm); selected-size formatted; ratio
+// "default" | "0" | "1" | "2" | "never"; short-of-space: the selected
+// files do not fit. folder: "" = the OS Downloads folder; free-text: the
+// folder's free space, formatted ("" when unknown).
+export struct AdvAddVm {
+    kind: string,
+    loading: bool,
+    error-kind: string,
+    duplicate: bool,
+    badge: string,
+    busy: bool,
+    refused: string,
+    name: string,
+    size-text: string,
+    connections: int,
+    custom-connections: int,
+    mirrors: [string],
+    checksum: string,
+    checksum-ok: bool,
+    referer: string,
+    needs-user: bool,
+    password-again: bool,
+    qualities: [QualityVm],
+    quality-id: string,
+    audio-only: bool,
+    container: string,
+    subtitle-langs: [LangVm],
+    auto-subs: bool,
+    embed-subs: bool,
+    cookies-browser: string,
+    title: string,
+    uploader: string,
+    duration-text: string,
+    thumbnail: image,
+    live: string,
+    playlist-count: int,
+    files: [TorrentFileVm],
+    selected-count: int,
+    selected-size: string,
+    ratio: string,
+    short-of-space: bool,
+    folder: string,
+    free-text: string,
+}
+
+// "Choose files…" of a torrent in the list: the picker over the window.
+// `chosen`: the indices of the selected files, for `files-chosen`.
+export struct FilesDialogVm {
+    visible: bool,
+    id: int,
+    name: string,
+    files: [TorrentFileVm],
+    selected-count: int,
+    selected-size: string,
+    free-text: string,
+    short-of-space: bool,
+    chosen: [int],
+}
+
+// Grab links: one link of the page. index: into the grab's links;
+// folder "/" (the page) or "/sub/" (a subfolder of a listing); kind: the
+// KindBadge kind; size-text "" until its size probe answered (`probed`),
+// and "" too when the server told no size.
+export struct GrabRowVm {
+    index: int,
+    name: string,
+    folder: string,
+    kind: string,
+    size-text: string,
+    probed: bool,
+    selected: bool,
+}
+
+// Grab links. error-kind: ErrorKind::as_str() of a failed grab; chip
+// "all" | "video" | "docs" | "archives" | "images"; ext-filter: as typed;
+// counts: links of each chip on the whole page; shown-count: rows shown
+// now (chip and extension); selected-size: the known sizes of the
+// selected links, formatted; unknown-count: selected links whose size is
+// not known (yet); unsafe-count: selected links whose subfolder name is
+// not safe to create (they are not downloaded); truncated: links were
+// left out (more than the grab returns).
+export struct GrabVm {
+    page-url: string,
+    loading: bool,
+    error-kind: string,
+    subfolders: bool,
+    chip: string,
+    ext-filter: string,
+    count-all: int,
+    count-video: int,
+    count-docs: int,
+    count-archives: int,
+    count-images: int,
+    shown-count: int,
+    selected-count: int,
+    selected-size: string,
+    unknown-count: int,
+    unsafe-count: int,
+    all-shown-selected: bool,
+    truncated: bool,
+}
+
+// Several links: one line that holds something. n: its line number;
+// kind "http" | "torrent" | "media" | "page" | "invalid"; mirror-of: the
+// line number of the line it is a copy of, 0 for none.
+export struct BatchLineVm {
+    n: int,
+    text: string,
+    kind: string,
+    mirror-of: int,
+}
+
+// Several links: add-count: downloads "Add" makes; mirrors: "Treat
+// copies as mirrors" is on.
+export struct BatchVm {
+    add-count: int,
+    mirrors: bool,
 }

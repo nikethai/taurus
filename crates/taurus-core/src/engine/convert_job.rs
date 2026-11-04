@@ -32,7 +32,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::convert::probe::{probe_duration, progress_ms};
-use crate::convert::{ConvertSpec, ffmpeg_args, output_path};
+use crate::convert::{ConvertSpec, TEMP_PREFIX, ffmpeg_args, output_path};
 use crate::errors::{CoreError, ErrorKind, classify_io};
 use crate::http::{JobOutcome, rename_with_retry};
 use crate::media::run::{Output, run_process};
@@ -48,8 +48,6 @@ use super::media_job::emitter;
 /// up (each is taken by another process between choosing it and creating
 /// it).
 const NAME_ATTEMPTS: usize = 100;
-/// Start of the name of a temporary folder of a convert job.
-const TEMP_PREFIX: &str = ".hyades-convert-";
 /// The stem of the temporary file inside it.
 const TEMP_STEM: &str = "out";
 

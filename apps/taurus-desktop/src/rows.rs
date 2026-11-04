@@ -1,9 +1,9 @@
 //! Job views turned into what the screens show.
 
 use crate::format;
-use crate::{RowVm, SummaryVm};
+use crate::{AdvRowVm, RowVm, SummaryVm};
 use taurus_core::media::MediaPhase;
-use taurus_core::{JobKind, JobState, JobView};
+use taurus_core::{JobKind, JobState, JobView, ProgressUnit};
 
 const DISC: &[&str] = &["iso", "img", "dmg"];
 const MEDIA: &[&str] = &[
@@ -106,8 +106,26 @@ pub fn row_in<Tz: chrono::TimeZone>(view: &JobView, now_unix: i64, tz: &Tz) -> R
             _ => -1.0,
         }
     };
+    // Ruling R3: a conversion under way counts media time, shown as such
+    // ("1:23 of 4:56"), never as bytes. The unit is the view's: the last
+    // progress of a conversion carries the file's bytes while the view
+    // still says Millis (more than the media's length): it is finishing.
+    let millis = view.progress_unit == ProgressUnit::Millis;
+    let finishing = millis && view.total.is_some_and(|t| view.downloaded > t);
+    let amount = |n: u64| {
+        if millis {
+            format::duration(n / 1000)
+        } else {
+            format::bytes(n)
+        }
+    };
+    let done = if finishing {
+        view.total.unwrap_or(0)
+    } else {
+        view.downloaded
+    };
     let eta = match (view.state, view.total) {
-        (JobState::Downloading, Some(t)) => {
+        (JobState::Downloading, Some(t)) if !millis => {
             format::eta(t.saturating_sub(view.downloaded), view.speed_bps)
         }
         _ => format::Eta::Unknown,
@@ -120,14 +138,19 @@ pub fn row_in<Tz: chrono::TimeZone>(view: &JobView, now_unix: i64, tz: &Tz) -> R
         (JobState::Completed, Some(at)) => format::moment(at, now_unix, tz),
         _ => None,
     };
+    let phase = match &view.media {
+        Some(m) => phase_name(m.phase),
+        None if finishing => phase_name(MediaPhase::Converting),
+        None => "",
+    };
     RowVm {
         id: view.id.0.clamp(0, i32::MAX as i64) as i32,
         name: view.file_name.as_str().into(),
         kind: row_kind(view).into(),
         state: state_name(view.state).into(),
         progress,
-        done_text: format::bytes(view.downloaded).into(),
-        total_text: view.total.map(format::bytes).unwrap_or_default().into(),
+        done_text: amount(done).into(),
+        total_text: view.total.map(amount).unwrap_or_default().into(),
         eta_kind: eta_kind.into(),
         eta_value,
         retry_seconds,
@@ -148,11 +171,7 @@ pub fn row_in<Tz: chrono::TimeZone>(view: &JobView, now_unix: i64, tz: &Tz) -> R
             .torrent
             .as_ref()
             .map_or(0, |t| t.peers.min(i32::MAX as u32) as i32),
-        phase: view
-            .media
-            .as_ref()
-            .map_or("", |m| phase_name(m.phase))
-            .into(),
+        phase: phase.into(),
         entries_done: view
             .media
             .as_ref()
@@ -181,12 +200,61 @@ pub fn split_tabs(views: &[JobView]) -> (Vec<JobView>, Vec<JobView>) {
         .iter()
         .cloned()
         .partition(|v| v.state == JobState::Completed);
-    finished.sort_by(|a, b| {
+    newest_finished_first(&mut finished);
+    (active, finished)
+}
+
+/// Sorts finished jobs newest first (by `finished_at`, then by id).
+pub fn newest_finished_first<V: std::borrow::Borrow<JobView>>(views: &mut [V]) {
+    views.sort_by(|a, b| {
+        let (a, b) = (a.borrow(), b.borrow());
         b.finished_at
             .cmp(&a.finished_at)
             .then_with(|| b.id.cmp(&a.id))
     });
-    (active, finished)
+}
+
+/// The source chip of an Advanced row.
+pub fn source_of(kind: JobKind) -> &'static str {
+    match kind {
+        JobKind::Http => "HTTP",
+        JobKind::Torrent => "Torrent",
+        JobKind::Media => "yt-dlp",
+        JobKind::Convert => "Convert",
+    }
+}
+
+/// The download speed of a running job; `None` when it is not
+/// downloading (or counts media time: a conversion has no speed).
+fn running_speed(view: &JobView) -> Option<u64> {
+    (matches!(view.state, JobState::Downloading | JobState::Recording)
+        && view.progress_unit == ProgressUnit::Bytes)
+        .then_some(view.speed_bps)
+}
+
+/// One Advanced list row.
+pub fn adv_row_of(view: &JobView, now_unix: i64, selected: bool) -> AdvRowVm {
+    AdvRowVm {
+        row: row_of(view, now_unix),
+        source: source_of(view.kind).into(),
+        speed_text: running_speed(view)
+            .filter(|&bps| bps > 0)
+            .map(format::speed)
+            .unwrap_or_default()
+            .into(),
+        selected,
+    }
+}
+
+/// (Total download speed, total upload speed) of all jobs, as the
+/// Advanced footer shows them.
+pub fn speeds(views: &[JobView]) -> (String, String) {
+    let down: u64 = views.iter().filter_map(running_speed).sum();
+    let up: u64 = views
+        .iter()
+        .filter_map(|v| v.torrent.as_ref().map(|t| t.upload_bps))
+        .sum();
+    (format::speed(down), format::speed(up))
 }
 
 /// Footer numbers. `downloading` is the size of the Downloading tab and
@@ -202,10 +270,11 @@ pub fn summary(views: &[JobView]) -> SummaryVm {
         .iter()
         .filter(|v| v.state != JobState::Completed)
         .collect();
+    // Conversions count media time, not bytes: left out of the time left.
     let running: Vec<&JobView> = open
         .iter()
         .copied()
-        .filter(|v| v.state == JobState::Downloading)
+        .filter(|v| v.state == JobState::Downloading && v.progress_unit == ProgressUnit::Bytes)
         .collect();
     let eta = if running.iter().any(|v| v.total.is_none()) {
         format::Eta::Unknown
@@ -414,6 +483,91 @@ mod tests {
         let ids = |v: &[JobView]| v.iter().map(|x| x.id.0).collect::<Vec<_>>();
         assert_eq!(ids(&active), [9, 5, 7, 6]);
         assert_eq!(ids(&finished), [3, 2, 1, 4]);
+    }
+
+    /// Ruling R3: a conversion under way shows media time, by the view's
+    /// unit; its final bytes-carrying progress reads as finishing.
+    #[test]
+    fn millis_rows_show_media_time() {
+        let mut v = view(1, "clip.mp3", JobState::Downloading);
+        v.kind = JobKind::Convert;
+        v.progress_unit = ProgressUnit::Millis;
+        v.downloaded = 83_000;
+        v.total = Some(296_000);
+        let r = row_of(&v, 0);
+        assert_eq!(
+            (
+                r.done_text.as_str(),
+                r.total_text.as_str(),
+                r.phase.as_str()
+            ),
+            ("1:23", "4:56", "")
+        );
+        assert_eq!(r.eta_kind, "unknown");
+        assert!((r.progress - 83.0 / 296.0).abs() < 1e-6);
+        let adv = adv_row_of(&v, 0, true);
+        assert_eq!(
+            (adv.source.as_str(), adv.speed_text.as_str(), adv.selected),
+            ("Convert", "", true)
+        );
+        // The last progress carries bytes; the view still says Millis.
+        v.downloaded = 4_500_000;
+        let r = row_of(&v, 0);
+        assert_eq!(
+            (
+                r.done_text.as_str(),
+                r.total_text.as_str(),
+                r.phase.as_str()
+            ),
+            ("4:56", "4:56", "converting")
+        );
+        assert_eq!(r.progress, 1.0);
+        // Completed: bytes again.
+        v.state = JobState::Completed;
+        v.progress_unit = ProgressUnit::Bytes;
+        v.total = Some(4_500_000);
+        let r = row_of(&v, 0);
+        assert_eq!(r.total_text, "4.5 MB");
+        // A running conversion adds nothing to the overall time left.
+        let mut conv = view(2, "b.mp3", JobState::Downloading);
+        conv.progress_unit = ProgressUnit::Millis;
+        conv.speed_bps = 0;
+        let mut run = view(3, "c", JobState::Downloading);
+        run.speed_bps = 10;
+        run.downloaded = 400;
+        let s = summary(&[conv, run]);
+        assert_eq!((s.eta_kind.as_str(), s.eta_value), ("minutes", 1));
+    }
+
+    #[test]
+    fn adv_rows_and_speeds() {
+        let mut run = view(1, "a.iso", JobState::Downloading);
+        run.speed_bps = 3_000_000;
+        let mut seed = view(2, "t", JobState::Seeding);
+        seed.kind = JobKind::Torrent;
+        seed.speed_bps = 99;
+        seed.torrent = Some(TorrentView {
+            peers: 1,
+            uploaded: 0,
+            upload_bps: 250_000,
+            ratio: 0.0,
+            files_selected: 1,
+            files_total: 1,
+            overrides: Default::default(),
+        });
+        let r = adv_row_of(&run, 0, false);
+        assert_eq!(
+            (r.source.as_str(), r.speed_text.as_str(), r.selected),
+            ("HTTP", "3.0 MB/s", false)
+        );
+        assert_eq!(r.row, row_of(&run, 0));
+        let r = adv_row_of(&seed, 0, false);
+        assert_eq!((r.source.as_str(), r.speed_text.as_str()), ("Torrent", ""));
+        assert_eq!(
+            speeds(&[run, seed, view(3, "p", JobState::Paused)]),
+            ("3.0 MB/s".to_string(), "250 KB/s".to_string())
+        );
+        assert_eq!(source_of(JobKind::Media), "yt-dlp");
     }
 
     #[test]

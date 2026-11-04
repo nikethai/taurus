@@ -1,0 +1,590 @@
+// Advanced mode: the selected download's details. The wide layout shows
+// it as the right-hand pane; the compact layout shows it over the whole
+// window, with Back. Segment map (web downloads), media steps, numbers,
+// torrent files and sharing rules, and the actions that fit the download.
+import { Theme } from "../theme.slint";
+import { DetailVm } from "../types.slint";
+import { RowText } from "../row_text.slint";
+import { IconButton, TextButton, KindBadge, ProgressBar } from "../widgets.slint";
+import { ComboBox, ListView, ScrollView } from "std-widgets.slint";
+import { SourceChip } from "row.slint";
+import { SegmentMap, Pair, SectionLabel } from "detail_parts.slint";
+
+export component DetailPane inherits FocusScope {
+    in property <DetailVm> detail;
+    // The compact layout: a Back button closes the detail.
+    in property <bool> show-back;
+    // Safari's sign-in is offered on macOS only.
+    in property <bool> is-macos;
+    callback back();
+    callback pause(int);
+    callback resume(int);
+    callback retry(int);
+    callback open-file(int);
+    callback reveal(int);
+    callback stop-recording(int);
+    callback copy-link(int);
+    // "mp3" | "smaller-mp4"
+    callback convert(int, string);
+    callback ask-remove(int);
+    // "chrome" | "firefox" | "safari" | "edge" | "brave"
+    callback retry-with-browser(int, string);
+    callback ask-password(int);
+    callback choose-files(int);
+    // field "ratio" | "seed-time"; value "default" | "never" | a number
+    callback set-override(int, string, string);
+
+    property <int> id: detail.row.id;
+    property <string> state: detail.row.state;
+    property <bool> convert-open: false;
+    property <bool> browsers-open: false;
+
+    pure function stat-label(key: string) -> string {
+        if (key == "speed") {
+            return @tr("Speed");
+        } else if (key == "connections") {
+            return @tr("Connections");
+        } else if (key == "segments") {
+            return @tr("Segments");
+        } else if (key == "peers") {
+            return @tr("Peers");
+        } else if (key == "uploaded") {
+            return @tr("Uploaded");
+        } else if (key == "upload-speed") {
+            return @tr("Upload speed");
+        } else if (key == "ratio") {
+            return @tr("Ratio");
+        } else if (key == "files") {
+            return @tr("Files");
+        } else if (key == "entries") {
+            return @tr("Videos");
+        } else if (key == "recorded") {
+            return @tr("Recorded");
+        } else if (key == "mirrors") {
+            return @tr("Mirrors");
+        } else if (key == "checksum") {
+            return @tr("Checksum");
+        } else if (key == "referer") {
+            return @tr("Referer");
+        } else if (key == "password") {
+            return @tr("Password");
+        }
+        return key;
+    }
+
+    pure function step-label(key: string) -> string {
+        if (key == "tools") {
+            return @tr("Tools");
+        } else if (key == "waiting") {
+            return @tr("Waiting");
+        } else if (key == "download") {
+            return @tr("Download");
+        } else if (key == "record") {
+            return @tr("Record");
+        }
+        return @tr("Finish");
+    }
+
+    pure function ratio-index(v: string) -> int {
+        if (v == "default") {
+            return 0;
+        } else if (v == "0") {
+            return 1;
+        } else if (v == "1") {
+            return 2;
+        } else if (v == "2") {
+            return 3;
+        } else if (v == "never") {
+            return 4;
+        }
+        return 5;
+    }
+
+    pure function seed-index(v: string) -> int {
+        if (v == "default") {
+            return 0;
+        } else if (v == "3600") {
+            return 1;
+        } else if (v == "86400") {
+            return 2;
+        } else if (v == "604800") {
+            return 3;
+        } else if (v == "never") {
+            return 4;
+        }
+        return 5;
+    }
+
+    changed id => {
+        root.convert-open = false;
+        root.browsers-open = false;
+    }
+
+    // A dialog over the window is open; when it closes, the keys come
+    // back here.
+    in property <bool> dialog-open;
+    changed dialog-open => {
+        if (!root.dialog-open && root.detail.visible) {
+            root.focus();
+        }
+    }
+
+    // Escape closes an open choice (convert, browsers), then, compact,
+    // the detail itself. The keys reach here from anywhere in the pane.
+    focus-on-tab-navigation: false;
+    init => {
+        if (root.show-back) {
+            root.focus();
+        }
+    }
+    key-pressed(event) => {
+        if (event.text != Key.Escape) {
+            return reject;
+        }
+        if (root.convert-open || root.browsers-open) {
+            root.convert-open = false;
+            root.browsers-open = false;
+            root.focus();
+        } else if (root.show-back) {
+            root.back();
+        } else {
+            return reject;
+        }
+        return accept;
+    }
+
+    Rectangle {
+        width: root.width;
+        height: root.height;
+        background: Theme.panel;
+    }
+
+    if !root.detail.visible: Text {
+        x: 16px;
+        width: parent.width - 32px;
+        text: @tr("Select a download to see its details.");
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        font-size: 13px;
+        color: Theme.muted;
+    }
+
+    if root.detail.visible: VerticalLayout {
+        if root.show-back: HorizontalLayout {
+            padding: 8px;
+            spacing: 4px;
+            IconButton {
+                icon: "back";
+                label: @tr("Back");
+                clicked => {
+                    root.back();
+                }
+            }
+            Text {
+                text: @tr("Details");
+                vertical-alignment: center;
+                font-size: 16px;
+                font-weight: 700;
+                color: Theme.text;
+            }
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+                alignment: start;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        alignment: start;
+                        KindBadge {
+                            kind: root.detail.kind;
+                            size: 44px;
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        horizontal-stretch: 1;
+                        // Wraps anywhere in a long name: the pane never
+                        // grows wider than the window gives it.
+                        Text {
+                            text: root.detail.name;
+                            wrap: word-wrap;
+                            overflow: elide;
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: Theme.text;
+                            accessible-role: text;
+                            accessible-label: self.text;
+                        }
+                        HorizontalLayout {
+                            alignment: start;
+                            SourceChip {
+                                source: root.detail.source;
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    if root.detail.big != "": Text {
+                        text: root.detail.big;
+                        font-size: 24px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        vertical-alignment: bottom;
+                        accessible-role: text;
+                        accessible-label: self.text;
+                    }
+                    Text {
+                        text: root.detail.size-line;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                        font-size: 12px;
+                        color: Theme.muted;
+                        vertical-alignment: bottom;
+                        accessible-role: text;
+                        accessible-label: self.text;
+                    }
+                }
+
+                Text {
+                    text: RowText.status(root.detail.row);
+                    wrap: word-wrap;
+                    overflow: elide;
+                    font-size: 12px;
+                    color: root.state == "failed" ? Theme.err : Theme.muted;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+
+                if root.detail.has-cells: SegmentMap {
+                    cells: root.detail.cells;
+                    kind: root.detail.kind;
+                    percent: root.detail.big;
+                }
+
+                if root.detail.steps.length > 0: HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    for s in root.detail.steps: Rectangle {
+                        height: 22px;
+                        border-radius: 6px;
+                        background: s.state == "current" ? Theme.accent-soft : Theme.chip;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            Text {
+                                text: root.step-label(s.key);
+                                vertical-alignment: center;
+                                font-size: 11px;
+                                font-weight: s.state == "current" ? 600 : 400;
+                                color: s.state == "done" ? Theme.ok
+                                    : s.state == "failed" ? Theme.err
+                                    : s.state == "current" ? Theme.accent-strong : Theme.muted;
+                                accessible-role: text;
+                                accessible-label: self.text;
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 6px;
+                    for s in root.detail.stats: Pair {
+                        label: root.stat-label(s.key);
+                        value: s.key != "password" ? s.value
+                            : s.value == "memory" ? @tr("Saved until Hyades quits") : @tr("Saved");
+                    }
+                    Pair {
+                        label: @tr("Saved to");
+                        value: root.detail.folder;
+                    }
+                    if root.detail.url != "": Pair {
+                        label: @tr("Link");
+                        value: root.detail.url;
+                    }
+                }
+
+                if root.detail.files.length > 0: VerticalLayout {
+                    spacing: 6px;
+                    SectionLabel {
+                        text: @tr("Files");
+                    }
+                    ListView {
+                        height: min(root.detail.files.length * 44px, 220px);
+                        for f in root.detail.files: Rectangle {
+                            height: 44px;
+                            accessible-role: list-item;
+                            accessible-label: f.name;
+                            accessible-item-selectable: f.index >= 0;
+                            accessible-item-selected: f.selected;
+                            VerticalLayout {
+                                padding-top: 6px;
+                                padding-bottom: 6px;
+                                padding-right: 8px;
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: f.name;
+                                        horizontal-stretch: 1;
+                                        overflow: elide;
+                                        font-size: 12px;
+                                        color: f.selected ? Theme.text : Theme.muted;
+                                        accessible-role: none;
+                                    }
+                                    Text {
+                                        text: f.selected || f.index < 0 ? f.size-text : @tr("Skipped");
+                                        font-size: 11px;
+                                        color: Theme.muted;
+                                        accessible-role: none;
+                                    }
+                                }
+                                if f.index >= 0 && f.selected: ProgressBar {
+                                    progress: f.progress;
+                                    bar-color: Theme.bar(root.detail.kind);
+                                    moving: false;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.detail.can-choose-files: HorizontalLayout {
+                    alignment: start;
+                    TextButton {
+                        text: @tr("Choose files…");
+                        clicked => {
+                            root.choose-files(root.id);
+                        }
+                    }
+                }
+
+                if root.detail.source == "Torrent": VerticalLayout {
+                    // The engine's answer wins over what was picked.
+                    property <string> ratio-value: root.detail.ratio-override;
+                    property <string> seed-value: root.detail.seed-time-override;
+                    property <int> epoch: root.detail.overrides-epoch;
+                    changed ratio-value => {
+                        ratio.current-index = root.ratio-index(self.ratio-value);
+                    }
+                    changed seed-value => {
+                        seed.current-index = root.seed-index(self.seed-value);
+                    }
+                    // The engine refused a pick: show what it has.
+                    changed epoch => {
+                        ratio.current-index = root.ratio-index(self.ratio-value);
+                        seed.current-index = root.seed-index(self.seed-value);
+                    }
+                    spacing: 8px;
+                    SectionLabel {
+                        text: @tr("Keep sharing");
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Text {
+                            text: @tr("Until ratio");
+                            width: 96px;
+                            vertical-alignment: center;
+                            font-size: 12px;
+                            color: Theme.muted;
+                        }
+                        ratio := ComboBox {
+                            horizontal-stretch: 1;
+                            accessible-label: @tr("Keep sharing until ratio");
+                            model: root.ratio-index(root.detail.ratio-override) < 5
+                                ? [@tr("As in Settings"), @tr("Stop when done"), "1", "2", @tr("No limit")]
+                                : [@tr("As in Settings"), @tr("Stop when done"), "1", "2", @tr("No limit"), root.detail.ratio-override];
+                            current-index: root.ratio-index(root.detail.ratio-override);
+                            selected => {
+                                root.set-override(root.id, "ratio",
+                                    ["default", "0", "1", "2", "never", root.detail.ratio-override][self.current-index]);
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Text {
+                            text: @tr("For at most");
+                            width: 96px;
+                            vertical-alignment: center;
+                            font-size: 12px;
+                            color: Theme.muted;
+                        }
+                        seed := ComboBox {
+                            horizontal-stretch: 1;
+                            accessible-label: @tr("Keep sharing for at most");
+                            model: root.seed-index(root.detail.seed-time-override) < 5
+                                ? [@tr("As in Settings"), @tr("1 hour"), @tr("1 day"), @tr("1 week"), @tr("No limit")]
+                                : [@tr("As in Settings"), @tr("1 hour"), @tr("1 day"), @tr("1 week"), @tr("No limit"),
+                                    @tr("{0} s", root.detail.seed-time-override)];
+                            current-index: root.seed-index(root.detail.seed-time-override);
+                            selected => {
+                                root.set-override(root.id, "seed-time",
+                                    ["default", "3600", "86400", "604800", "never", root.detail.seed-time-override][self.current-index]);
+                            }
+                        }
+                    }
+                }
+
+                // Actions.
+                VerticalLayout {
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        if root.state == "failed" && !root.detail.needs-password: TextButton {
+                            text: @tr("Try again");
+                            horizontal-stretch: 1;
+                            clicked => {
+                                root.retry(root.id);
+                            }
+                        }
+                        if root.state == "paused": TextButton {
+                            text: @tr("Resume");
+                            horizontal-stretch: 1;
+                            clicked => {
+                                root.resume(root.id);
+                            }
+                        }
+                        if root.state == "downloading" || root.state == "queued"
+                            || root.state == "waiting" || root.state == "seeding": TextButton {
+                            text: @tr("Pause");
+                            horizontal-stretch: 1;
+                            clicked => {
+                                root.pause(root.id);
+                            }
+                        }
+                        if root.state == "recording": TextButton {
+                            text: @tr("Stop recording");
+                            horizontal-stretch: 1;
+                            clicked => {
+                                root.stop-recording(root.id);
+                            }
+                        }
+                        if root.state == "done": TextButton {
+                            text: @tr("Open");
+                            horizontal-stretch: 1;
+                            clicked => {
+                                root.open-file(root.id);
+                            }
+                        }
+                        TextButton {
+                            text: @tr("Show in folder");
+                            horizontal-stretch: 1;
+                            clicked => {
+                                root.reveal(root.id);
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        if root.detail.url != "": TextButton {
+                            text: @tr("Copy link");
+                            horizontal-stretch: 1;
+                            clicked => {
+                                root.copy-link(root.id);
+                            }
+                        }
+                        TextButton {
+                            text: @tr("Remove…");
+                            horizontal-stretch: 1;
+                            clicked => {
+                                root.ask-remove(root.id);
+                            }
+                        }
+                    }
+                    if root.detail.source == "HTTP" && root.state != "done": TextButton {
+                        text: @tr("Enter password…");
+                        kind: root.detail.needs-password ? "primary" : "secondary";
+                        clicked => {
+                            root.ask-password(root.id);
+                        }
+                    }
+                    if root.detail.can-retry-cookies: TextButton {
+                        text: @tr("Use my browser's sign-in");
+                        kind: "primary";
+                        clicked => {
+                            root.browsers-open = !root.browsers-open;
+                        }
+                    }
+                    // Two rows: they fit the wide layout's narrow pane.
+                    if root.detail.can-retry-cookies && root.browsers-open: HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        TextButton {
+                            text: @tr("Chrome");
+                            kind: "quiet";
+                            clicked => {
+                                root.retry-with-browser(root.id, "chrome");
+                            }
+                        }
+                        TextButton {
+                            text: @tr("Firefox");
+                            kind: "quiet";
+                            clicked => {
+                                root.retry-with-browser(root.id, "firefox");
+                            }
+                        }
+                        if root.is-macos: TextButton {
+                            text: @tr("Safari");
+                            kind: "quiet";
+                            clicked => {
+                                root.retry-with-browser(root.id, "safari");
+                            }
+                        }
+                    }
+                    if root.detail.can-retry-cookies && root.browsers-open: HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        TextButton {
+                            text: @tr("Edge");
+                            kind: "quiet";
+                            clicked => {
+                                root.retry-with-browser(root.id, "edge");
+                            }
+                        }
+                        TextButton {
+                            text: @tr("Brave");
+                            kind: "quiet";
+                            clicked => {
+                                root.retry-with-browser(root.id, "brave");
+                            }
+                        }
+                    }
+                    if root.detail.can-convert: TextButton {
+                        text: @tr("Convert…");
+                        clicked => {
+                            root.convert-open = !root.convert-open;
+                        }
+                    }
+                    if root.detail.can-convert && root.convert-open: VerticalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        TextButton {
+                            text: @tr("Convert to MP3");
+                            kind: "quiet";
+                            clicked => {
+                                root.convert-open = false;
+                                root.convert(root.id, "mp3");
+                            }
+                        }
+                        if root.detail.kind == "media": TextButton {
+                            text: @tr("Make a smaller MP4");
+                            kind: "quiet";
+                            clicked => {
+                                root.convert-open = false;
+                                root.convert(root.id, "smaller-mp4");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

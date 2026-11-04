@@ -29,6 +29,7 @@ mod window;
 mod worker;
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use tokio::fs::OpenOptions;
 use tokio::sync::mpsc;
@@ -63,6 +64,44 @@ pub struct JobContext {
     /// The job's credentials, if it has any: sent with each request to its
     /// link's origin (the `SHA256SUMS` file's included).
     pub auth: Option<crate::http::Auth>,
+    /// Where the run shows its segments as they are now.
+    pub live: LiveTable,
+}
+
+/// A running job's segments, with what is written of each (durable or
+/// not), and how many workers run now: refreshed with each progress report
+/// (4 times a second) and as each round ends. Cheap to clone; clones share
+/// the table.
+#[derive(Clone, Debug, Default)]
+pub struct LiveTable(Arc<Mutex<LiveState>>);
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LiveState {
+    pub segments: Vec<Segment>,
+    pub workers: u32,
+}
+
+impl LiveTable {
+    pub fn get(&self) -> LiveState {
+        self.lock().clone()
+    }
+
+    /// Whether `other` is a clone of this table.
+    pub fn same(&self, other: &LiveTable) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    fn set(&self, segments: Vec<Segment>, workers: usize) {
+        *self.lock() = LiveState {
+            segments,
+            workers: u32::try_from(workers).unwrap_or(u32::MAX),
+        };
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, LiveState> {
+        // Nothing panics while holding the lock, so the table is still whole.
+        self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
 }
 
 /// The key a host's learned connection limit is stored under: the host,

@@ -2,7 +2,23 @@ import { Theme } from "theme.slint";
 import { Messages } from "messages.slint";
 import {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
+    AdvRowVm, FilterCountVm, TabCountsVm,
+    DetailVm, FileRowVm, StepVm, StatVm, RemoveDialogVm, PasswordDialogVm,
+    QualityVm, LangVm, TorrentFileVm, AdvAddVm, FilesDialogVm,
+    GrabRowVm, GrabVm, BatchLineVm, BatchVm,
 } from "types.slint";
+import { AdvGrab } from "adv/grab.slint";
+import { AdvBatch } from "adv/batch.slint";
+import { LinksUi } from "adv/links.slint";
+import { SettingsUi, AdvSettingsVm, ToolRowVm } from "adv/settings_ui.slint";
+import { AdvSettings } from "adv/settings.slint";
+import { WhenDoneUi, WhenDonePopover } from "adv/whendone.slint";
+import { AdvAdd } from "adv/add.slint";
+import { FilesDialog } from "adv/torrent.slint";
+import { AdvCompact } from "adv/main.slint";
+import { AdvWide } from "adv/wide.slint";
+import { DetailPane } from "adv/detail.slint";
+import { RemoveDialog, PasswordDialog } from "adv/dialogs.slint";
 import { Welcome } from "welcome.slint";
 import { Downloads } from "downloads.slint";
 import { Add } from "add.slint";
@@ -10,9 +26,13 @@ import { Settings } from "settings.slint";
 import { Banner } from "banner.slint";
 import { Countdown } from "countdown.slint";
 
-export { Theme, Messages }
+export { Theme, Messages, LinksUi, WhenDoneUi, SettingsUi, AdvSettingsVm, ToolRowVm }
 export {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
+    AdvRowVm, FilterCountVm, TabCountsVm,
+    DetailVm, FileRowVm, StepVm, StatVm, RemoveDialogVm, PasswordDialogVm,
+    QualityVm, LangVm, TorrentFileVm, AdvAddVm, FilesDialogVm,
+    GrabRowVm, GrabVm, BatchLineVm, BatchVm,
 } from "types.slint";
 
 // Navigation: the UI itself moves between Welcome, Downloads and Settings,
@@ -66,6 +86,94 @@ export component AppWindow inherits Window {
     callback quality-cycled();
     callback playlist-confirmed();
 
+    // Advanced mode. `layout`, set by the app from ui.mode and the width:
+    // "simple" | "compact" | "wide". The Advanced list replaces Welcome
+    // and Downloads, the Advanced Add screen (`adv-add`) replaces Add and
+    // Advanced Settings (`SettingsUi`) replaces Settings.
+    in property <string> layout: "simple";
+    // Rows of the current tab (compact) or filter and search (wide).
+    in property <[AdvRowVm]> adv-rows;
+    // The selected job's id, -1 for none; the app sets it on `select`.
+    in-out property <int> selected-id: -1;
+    // Wide: the sidebar entry (FilterCountVm.key).
+    in-out property <string> filter: "all";
+    in property <[FilterCountVm]> filter-counts;
+    // Compact: 0 Active, 1 Waiting, 2 Done.
+    in-out property <int> adv-tab: 0;
+    in property <TabCountsVm> tab-counts;
+    in property <string> speed-down-text;
+    in property <string> speed-up-text;
+    // The selected download's details: the wide layout's pane, or over
+    // the whole compact layout (Back selects nothing).
+    in property <DetailVm> detail;
+    // Safari's sign-in is offered on macOS only.
+    in property <bool> is-macos;
+    // Dialogs the app opens; their Cancel closes them here.
+    in-out property <RemoveDialogVm> remove-dialog;
+    in-out property <PasswordDialogVm> password-dialog;
+    // What is typed in the sign-in dialog. The app sets both to "" as soon
+    // as it hands them to the engine; no view model ever holds them.
+    in-out property <string> password-user;
+    in-out property <string> password-text;
+    // Wide: the search field's text, kept here so it outlives the field
+    // (Settings, Add, a narrower window). The app clears it when the
+    // layout stops being wide: the compact layout has no search field.
+    in-out property <string> search-text;
+    // The window's width, read by the app when `width-changed` fires.
+    out property <length> window-width: root.width;
+    callback select(int);
+    callback filter-changed(string);
+    callback tab-changed(int);
+    callback search-changed(string);
+    callback width-changed();
+    // Detail and dialog actions take the job id.
+    callback copy-link(int);
+    // "mp3" | "smaller-mp4"
+    callback convert(int, string);
+    callback ask-remove(int);
+    // Remove dialog: whether the files are deleted too.
+    callback confirm-remove(int, bool);
+    // "chrome" | "firefox" | "safari" | "edge" | "brave"
+    callback retry-with-browser(int, string);
+    // "Enter password…": opens the sign-in dialog.
+    callback ask-password(int);
+    // id, user name, password
+    callback submit-password(int, string, string);
+    // Torrent files: open the picker (prefilled), and what it chose
+    // (indices into the torrent's files).
+    callback choose-files(int);
+    callback files-chosen(int, [int]);
+    // field "ratio" | "seed-time"; value "default" | "never" | a number
+    callback set-override(int, string, string);
+    // Several links (Screen.batch) and grab links (Screen.grab, with the
+    // page's link, "" for none yet): the app opens them; the screens talk
+    // to it through `LinksUi`. The footer's when-done button; the popover reads
+    // and asks through `WhenDoneUi`.
+    callback open-batch();
+    callback open-whendone();
+    callback open-grab(string);
+    // The Add screen: the link is a web page ("" otherwise); "Find files →"
+    // opens grab links with it.
+    in property <string> adv-page-url;
+    // The Advanced Add screen. The app opens it like Add (Screen.add)
+    // and fills `adv-add`. `adv-password`: what is typed in its password
+    // field, emptied by the app as soon as it is handed to the engine.
+    in property <AdvAddVm> adv-add;
+    in-out property <string> adv-password;
+    // "Choose files…" of a torrent in the list; its Cancel closes it here.
+    in-out property <FilesDialogVm> files-dialog;
+    // field (AdvAddVm field name, or "sub-lang" (toggles a language),
+    // "user", "sign-in-browser" (reads the link again signed in)), value;
+    // booleans as "true" / "false".
+    callback adv-field-changed(string, string);
+    // The torrent picker (the Add screen's, or the files dialog while it
+    // is open): a file's index; all or none; a group's folder.
+    callback adv-toggle-file(int);
+    callback adv-toggle-all(bool);
+    callback adv-toggle-group(string);
+    // Download, and whether it starts now ("Start immediately").
+    callback adv-add-confirmed(bool);
+
     property <bool> has-rows: downloading-rows.length + finished-rows.length > 0;
 
     function home() {
@@ -75,11 +183,35 @@ export component AppWindow inherits Window {
     function apply-look() {
         Theme.scheme = root.settings.theme != "" ? root.settings.theme.to-lowercase() : "system";
         Theme.accent = root.settings.accent != "" ? root.settings.accent.to-lowercase() : "aldebaran";
+        Theme.sync-palette();
     }
 
     changed settings => {
         root.apply-look();
     }
+
+    changed width => {
+        root.width-changed();
+    }
+
+    // A typed password never outlives the Advanced add screen or the
+    // sign-in dialog, whatever closes them (Back, Escape, a mode switch).
+    property <bool> adv-add-open: root.screen == Screen.add && root.layout != "simple";
+    changed adv-add-open => {
+        if (!self.adv-add-open) {
+            root.adv-password = "";
+        }
+    }
+    property <bool> password-open: root.password-dialog.visible;
+    changed password-open => {
+        if (!self.password-open) {
+            root.password-user = "";
+            root.password-text = "";
+        }
+    }
+
+    property <bool> advanced-list: root.layout != "simple"
+        && (root.screen == Screen.welcome || root.screen == Screen.downloads);
 
     title: window-title;
     icon: app-icon;
@@ -90,9 +222,10 @@ export component AppWindow inherits Window {
     background: Theme.bg;
     default-font-size: 14px;
 
-    // Simple screen: one centered column, at most 640px wide.
+    // Simple screen: one centered column, at most 640px wide. The
+    // Advanced list, and wide Advanced Settings, take the whole window.
     Rectangle {
-        width: min(root.width, 640px);
+        width: root.advanced-list || (root.layout == "wide" && root.screen == Screen.settings) ? root.width : min(root.width, 640px);
         height: root.height;
         x: (root.width - self.width) / 2;
         y: 0;
@@ -116,7 +249,120 @@ export component AppWindow inherits Window {
             Rectangle {
                 vertical-stretch: 1;
 
-                if root.screen == Screen.welcome: Welcome {
+                if root.advanced-list: Rectangle {
+                    // Compact: the list, hidden (not torn down, so it keeps
+                    // its scroll position) under an open detail.
+                    if root.layout != "wide": AdvCompact {
+                        visible: !root.detail.visible;
+                        rows: root.adv-rows;
+                        counts: root.tab-counts;
+                        tab <=> root.adv-tab;
+                        speed-down: root.speed-down-text;
+                        speed-up: root.speed-up-text;
+                        tab-changed(i) => { root.tab-changed(i); }
+                        select(id) => { root.select(id); }
+                        link-entered(link) => { root.link-entered(link); }
+                        open-whendone => { root.open-whendone(); }
+                        open-batch => { root.open-batch(); }
+                        open-grab => { root.open-grab(""); }
+                        open-settings => {
+                            root.screen = Screen.settings;
+                        }
+                        pause(id) => { root.pause(id); }
+                        resume(id) => { root.resume(id); }
+                        retry(id) => { root.retry(id); }
+                        stop-recording(id) => { root.stop-recording(id); }
+                        open-file(id) => { root.open-file(id); }
+                    }
+
+                    HorizontalLayout {
+                        if root.layout == "wide": AdvWide {
+                            horizontal-stretch: 1;
+                            rows: root.adv-rows;
+                            counts: root.filter-counts;
+                            filter <=> root.filter;
+                            speed-down: root.speed-down-text;
+                            speed-up: root.speed-up-text;
+                            search-text <=> root.search-text;
+                            filter-changed(key) => { root.filter-changed(key); }
+                            search-changed(text) => { root.search-changed(text); }
+                            select(id) => { root.select(id); }
+                            link-entered(link) => { root.link-entered(link); }
+                            open-whendone => { root.open-whendone(); }
+                            open-batch => { root.open-batch(); }
+                            open-grab => { root.open-grab(""); }
+                            open-settings => {
+                                root.screen = Screen.settings;
+                            }
+                            pause(id) => { root.pause(id); }
+                            resume(id) => { root.resume(id); }
+                            retry(id) => { root.retry(id); }
+                            stop-recording(id) => { root.stop-recording(id); }
+                            open-file(id) => { root.open-file(id); }
+                        }
+
+                        if root.layout == "wide": Rectangle {
+                            width: 1px;
+                            background: Theme.line;
+                        }
+
+                        if root.layout == "wide" || root.detail.visible: DetailPane {
+                            // Wide: a 300 px pane; compact: the whole window.
+                            min-width: root.layout == "wide" ? 300px : 0px;
+                            max-width: root.layout == "wide" ? 300px : 100000px;
+                            horizontal-stretch: root.layout == "wide" ? 0 : 1;
+                            detail: root.detail;
+                            show-back: root.layout != "wide";
+                            dialog-open: root.remove-dialog.visible || root.password-dialog.visible
+                                || root.files-dialog.visible;
+                            is-macos: root.is-macos;
+                            back => {
+                                root.select(-1);
+                            }
+                            pause(id) => {
+                                root.pause(id);
+                            }
+                            resume(id) => {
+                                root.resume(id);
+                            }
+                            retry(id) => {
+                                root.retry(id);
+                            }
+                            open-file(id) => {
+                                root.open-file(id);
+                            }
+                            reveal(id) => {
+                                root.reveal(id);
+                            }
+                            stop-recording(id) => {
+                                root.stop-recording(id);
+                            }
+                            copy-link(id) => {
+                                root.copy-link(id);
+                            }
+                            convert(id, preset) => {
+                                root.convert(id, preset);
+                            }
+                            ask-remove(id) => {
+                                root.ask-remove(id);
+                            }
+                            retry-with-browser(id, browser) => {
+                                root.retry-with-browser(id, browser);
+                            }
+                            ask-password(id) => {
+                                root.ask-password(id);
+                            }
+                            choose-files(id) => {
+                                root.choose-files(id);
+                            }
+                            set-override(id, field, value) => {
+                                root.set-override(id, field, value);
+                            }
+                        }
+                    }
+                }
+
+                if !root.advanced-list && root.screen == Screen.welcome: Welcome {
                     offer-copied-links: root.settings.offer-copied-links;
                     link-entered(link) => {
                         root.link-entered(link);
@@ -126,7 +372,7 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.screen == Screen.downloads: Downloads {
+                if !root.advanced-list && root.screen == Screen.downloads: Downloads {
                     downloading-rows: root.downloading-rows;
                     finished-rows: root.finished-rows;
                     summary: root.summary;
@@ -168,7 +414,7 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.screen == Screen.add: Add {
+                if root.screen == Screen.add && root.layout == "simple": Add {
                     add: root.add;
                     confirmed => {
                         root.add-confirmed();
@@ -195,7 +441,66 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.screen == Screen.settings: Settings {
+                if root.screen == Screen.add && root.layout != "simple": AdvAdd {
+                    vm: root.adv-add;
+                    page-url: root.adv-page-url;
+                    find-files(url) => {
+                        root.adv-password = "";
+                        root.open-grab(url);
+                    }
+                    is-macos: root.is-macos;
+                    tools-banner: root.tools-banner;
+                    password <=> root.adv-password;
+                    field-changed(field, value) => {
+                        root.adv-field-changed(field, value);
+                    }
+                    toggle-file(i) => {
+                        root.adv-toggle-file(i);
+                    }
+                    toggle-all(on) => {
+                        root.adv-toggle-all(on);
+                    }
+                    toggle-group(path) => {
+                        root.adv-toggle-group(path);
+                    }
+                    confirmed(start-now) => {
+                        root.adv-add-confirmed(start-now);
+                    }
+                    cancelled => {
+                        root.add-cancelled();
+                        root.home();
+                    }
+                    show-list => {
+                        root.add-cancelled();
+                        root.screen = Screen.downloads;
+                    }
+                    choose-folder => {
+                        root.choose-folder();
+                    }
+                }
+
+                if root.screen == Screen.grab: AdvGrab {
+                    back => {
+                        LinksUi.grab-closed();
+                        root.home();
+                    }
+                }
+
+                if root.screen == Screen.batch: AdvBatch {
+                    find-files(url) => {
+                        root.open-grab(url);
+                    }
+                    back => {
+                        root.home();
+                    }
+                }
+
+                if root.screen == Screen.settings && root.layout != "simple": AdvSettings {
+                    wide: root.layout == "wide";
+                    back => { root.home(); }
+                }
+
+                if root.screen == Screen.settings && root.layout == "simple": Settings {
                     settings: root.settings;
                     changed(key, value) => {
                         root.setting-changed(key, value);
@@ -220,5 +525,68 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
+
+    if root.remove-dialog.visible: RemoveDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        dialog: root.remove-dialog;
+        confirm(id, delete-files) => {
+            root.confirm-remove(id, delete-files);
+        }
+        cancel => {
+            root.remove-dialog.visible = false;
+        }
+    }
+
+    if root.files-dialog.visible: FilesDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        dialog: root.files-dialog;
+        toggle-file(i) => {
+            root.adv-toggle-file(i);
+        }
+        toggle-all(on) => {
+            root.adv-toggle-all(on);
+        }
+        toggle-group(path) => {
+            root.adv-toggle-group(path);
+        }
+        confirm(id, chosen) => {
+            root.files-chosen(id, chosen);
+            root.files-dialog.visible = false;
+        }
+        cancel => {
+            root.files-dialog.visible = false;
+        }
+    }
+
+    if root.password-dialog.visible: PasswordDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        dialog: root.password-dialog;
+        user <=> root.password-user;
+        password <=> root.password-text;
+        submit(id, user, password) => {
+            root.submit-password(id, user, password);
+        }
+        cancel => {
+            root.password-dialog.visible = false;
+            root.password-user = "";
+            root.password-text = "";
+        }
+    }
+
+    if WhenDoneUi.open: WhenDonePopover {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
     }
 }

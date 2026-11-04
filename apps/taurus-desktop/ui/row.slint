@@ -2,7 +2,7 @@
 // the action that fits the state.
 import { Theme } from "theme.slint";
 import { RowVm } from "types.slint";
-import { Messages } from "messages.slint";
+import { RowText } from "row_text.slint";
 import { IconButton, TextButton, KindBadge, ProgressBar } from "widgets.slint";
 
 export component Row inherits Rectangle {
@@ -15,107 +15,9 @@ export component Row inherits Rectangle {
     callback reveal(int);
     callback remove(int);
 
-    property <string> size: item.total-text != "" ? item.total-text : item.done-text;
     property <bool> active: item.state == "downloading" || item.state == "recording";
     property <bool> shows-bar: (item.state == "downloading" || item.state == "paused" || item.state == "waiting"
         || item.state == "queued" || item.state == "recording") && (item.progress >= 0 || active);
-
-    pure function status(r: RowVm) -> string {
-        if (r.state == "recording") {
-            if (r.phase == "getting-tools") {
-                return @tr("Getting video tools…");
-            } else if (r.phase == "waiting-for-stream") {
-                return @tr("Waiting for the stream to start");
-            } else if (r.live-elapsed == "") {
-                return @tr("Recording live");
-            }
-            return @tr("Recording live · {0}", r.live-elapsed);
-        } else if (r.state == "downloading" && r.phase == "getting-tools") {
-            return @tr("Getting video tools…");
-        } else if (r.state == "downloading" && (r.phase == "merging" || r.phase == "converting")) {
-            return @tr("Finishing up…");
-        } else if (r.state == "downloading" && r.entries-total > 1) {
-            return @tr("{0} of {1} videos", r.entries-done, r.entries-total);
-        } else if (r.state == "waiting" && r.phase == "getting-tools") {
-            if (r.retry-seconds < 1) {
-                return @tr("Getting video tools…");
-            }
-            return @tr("Getting video tools… Trying again in {0}.", Messages.retry-time(r.retry-seconds));
-        }
-        if (r.state == "downloading") {
-            if (r.total-text == "") {
-                return @tr("{0} so far", r.done-text);
-            } else if (r.eta-kind == "minutes") {
-                return @tr("{0} of {1} · About {2} min left", r.done-text, r.total-text, r.eta-value);
-            } else if (r.eta-kind == "under-minute") {
-                return @tr("{0} of {1} · Less than a minute left", r.done-text, r.total-text);
-            } else if (r.eta-kind == "hours") {
-                return @tr("{0} of {1} · About {2} h left", r.done-text, r.total-text, r.eta-value);
-            }
-            return @tr("{0} of {1}", r.done-text, r.total-text);
-        } else if (r.state == "paused") {
-            if (r.total-text == "") {
-                return @tr("Paused · {0}", r.done-text);
-            }
-            return @tr("Paused · {0} of {1}", r.done-text, r.total-text);
-        } else if (r.state == "queued") {
-            return @tr("Waiting to start");
-        } else if (r.state == "waiting") {
-            return Messages.waiting(r.retry-seconds);
-        } else if (r.state == "seeding") {
-            return @tr("Sharing · ratio {0}", r.ratio-text);
-        } else if (r.state == "failed") {
-            return Messages.simple(r.error-kind);
-        }
-        // done
-        if (r.finished-month < 1 || r.finished-month > 12) {
-            return size;
-        } else if (r.finished-today) {
-            return @tr("{0} · {1}", size, clock(r.finished-hour, r.finished-minute));
-        }
-        return @tr("{0} · {1}", size, date(r.finished-month, r.finished-day));
-    }
-
-    pure function two-digits(n: int) -> string {
-        return (n < 10 ? "0" : "") + n;
-    }
-
-    // "14:05"
-    pure function clock(hour: int, minute: int) -> string {
-        return @tr("hours:minutes" => "{0}:{1}", two-digits(hour), two-digits(minute));
-    }
-
-    // "Oct 28"
-    pure function date(month: int, day: int) -> string {
-        return @tr("short month and day" => "{0} {1}", month-name(month), day);
-    }
-
-    pure function month-name(month: int) -> string {
-        if (month == 1) {
-            return @tr("short month" => "Jan");
-        } else if (month == 2) {
-            return @tr("short month" => "Feb");
-        } else if (month == 3) {
-            return @tr("short month" => "Mar");
-        } else if (month == 4) {
-            return @tr("short month" => "Apr");
-        } else if (month == 5) {
-            return @tr("short month" => "May");
-        } else if (month == 6) {
-            return @tr("short month" => "Jun");
-        } else if (month == 7) {
-            return @tr("short month" => "Jul");
-        } else if (month == 8) {
-            return @tr("short month" => "Aug");
-        } else if (month == 9) {
-            return @tr("short month" => "Sep");
-        } else if (month == 10) {
-            return @tr("short month" => "Oct");
-        } else if (month == 11) {
-            return @tr("short month" => "Nov");
-        }
-        return @tr("short month" => "Dec");
-    }
 
     min-height: layout.min-height;
     preferred-height: layout.preferred-height;
@@ -168,11 +70,11 @@ export component Row inherits Rectangle {
             }
             if root.shows-bar: ProgressBar {
                 progress: root.item.progress;
-                bar-color: root.item.state == "paused" ? Theme.muted : Theme.kind-fg(root.item.kind);
+                bar-color: root.item.state == "paused" ? Theme.muted : Theme.bar(root.item.kind);
                 moving: root.active;
             }
             Text {
-                text: root.status(root.item);
+                text: RowText.status(root.item);
                 color: root.item.state == "failed" ? Theme.err
                     : root.item.state == "recording" ? Theme.kind-fg("live") : Theme.muted;
                 font-size: 12px;

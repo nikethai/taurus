@@ -34,7 +34,9 @@ pub struct TorrentSeeder {
 
 impl TorrentSeeder {
     /// Writes `files` (relative path, content) under a temp dir named `name`
-    /// and seeds them from a private session.
+    /// and seeds them from a private session. The torrent lists the files
+    /// in directory-listing order (librqbit walks the folder), which
+    /// differs between file systems: tests find a file's index by its path.
     pub async fn start(name: &str, files: &[(&str, Vec<u8>)], upload_bps: Option<u32>) -> Self {
         assert!(
             upload_bps.is_none_or(|bps| bps >= MIN_UPLOAD_BPS),

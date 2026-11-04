@@ -38,8 +38,10 @@ const FAST_PATH_HOSTS: [&str; 14] = [
 ];
 
 /// Whether `url` is an http(s) link to one of the well-known video hosts
-/// (or a subdomain of one, such as `www.youtube.com`).
-pub(crate) fn fast_path_host(url: &str) -> bool {
+/// (or a subdomain of one, such as `www.youtube.com`): a link `inspect`
+/// and `add` hand to yt-dlp straight away. Public so front ends sort
+/// links the same way (the desktop app's several-links list).
+pub fn fast_path_host(url: &str) -> bool {
     let Ok(parsed) = url::Url::parse(url.trim()) else {
         return false;
     };

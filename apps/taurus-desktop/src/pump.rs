@@ -63,6 +63,11 @@ impl ViewState {
             .collect()
     }
 
+    /// Every known job, in the engine's order (by id).
+    pub fn views(&self) -> &[JobView] {
+        &self.views
+    }
+
     pub fn view(&self, id: JobId) -> Option<&JobView> {
         self.views.iter().find(|v| v.id == id)
     }
@@ -76,22 +81,35 @@ impl ViewState {
     fn refresh(&mut self, ui: &AppWindow) {
         let now = unix_now();
         let (active, done) = rows::split_tabs(&self.views);
-        set_rows(
+        set_model(
             &self.downloading,
             active.iter().map(|v| rows::row_of(v, now)),
+            |r| r.id,
         );
-        set_rows(&self.finished, done.iter().map(|v| rows::row_of(v, now)));
+        set_model(
+            &self.finished,
+            done.iter().map(|v| rows::row_of(v, now)),
+            |r| r.id,
+        );
         ui.set_summary(rows::summary(&self.views));
         self.refreshed = Some(Instant::now());
     }
 }
 
-/// Puts `rows` in `model`: row by row when the same jobs are listed in the
-/// same order (only changed rows are touched), else the whole list at once.
-fn set_rows(model: &VecModel<RowVm>, rows: impl Iterator<Item = RowVm>) {
-    let rows: Vec<RowVm> = rows.collect();
+/// Puts `rows` in `model`: row by row when the same jobs (by `id`) are
+/// listed in the same order (only changed rows are touched), else the
+/// whole list at once.
+pub(crate) fn set_model<T: Clone + PartialEq + 'static>(
+    model: &VecModel<T>,
+    rows: impl Iterator<Item = T>,
+    id: impl Fn(&T) -> i32,
+) {
+    let rows: Vec<T> = rows.collect();
     let same_ids = model.row_count() == rows.len()
-        && model.iter().zip(&rows).all(|(old, new)| old.id == new.id);
+        && model
+            .iter()
+            .zip(&rows)
+            .all(|(old, new)| id(&old) == id(new));
     if !same_ids {
         model.set_vec(rows);
         return;
@@ -103,7 +121,7 @@ fn set_rows(model: &VecModel<RowVm>, rows: impl Iterator<Item = RowVm>) {
     }
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
@@ -156,6 +174,7 @@ impl App {
             view.views = flush.views;
             view.refresh(&ui);
         }
+        self.refresh_adv();
         if let Some(settings) = flush.settings {
             self.engine_settings(settings);
         }
@@ -169,6 +188,7 @@ impl App {
             };
             ui.set_tools_banner(state.into());
             ui.set_tools_percent(percent);
+            self.refresh_tools(&ui);
         }
         if let Some(when_done) = flush.when_done {
             self.when_done(&ui, when_done);
@@ -183,6 +203,8 @@ impl App {
         let mut view = self.view.borrow_mut();
         if view.refreshed.is_some_and(|at| at.elapsed() >= CLOCK) {
             view.refresh(&ui);
+            drop(view);
+            self.refresh_adv();
         }
     }
 

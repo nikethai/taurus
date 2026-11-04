@@ -22,5 +22,6 @@ pub fn view(id: i64, name: &str, state: JobState) -> JobView {
         finished_at: None,
         info_hash: None,
         media: None,
+        progress_unit: Default::default(),
     }
 }

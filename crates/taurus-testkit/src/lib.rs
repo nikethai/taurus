@@ -356,8 +356,16 @@ async fn handle(
     Path(path): Path<String>,
     headers: HeaderMap,
 ) -> Response<Body> {
+    let key = format!("/{path}");
+    let delay = match lock(&shared).get(&key).map(|e| &e.kind) {
+        Some(Kind::File(file)) => file.spec.delay,
+        _ => None,
+    };
+    if let Some(delay) = delay {
+        tokio::time::sleep(delay).await;
+    }
     let mut map = lock(&shared);
-    let Some(entry) = map.get_mut(&format!("/{path}")) else {
+    let Some(entry) = map.get_mut(&key) else {
         return empty(StatusCode::NOT_FOUND);
     };
     entry.requests += 1;

@@ -1,0 +1,181 @@
+// Advanced mode: one download in the list. Kind badge, name with its
+// source chip, progress, status line with the speed, and the action that
+// fits the state. Clicking the row selects it.
+import { Theme } from "../theme.slint";
+import { AdvRowVm } from "../types.slint";
+import { RowText } from "../row_text.slint";
+import { IconButton, TextButton, KindBadge, ProgressBar, Pressable } from "../widgets.slint";
+
+// Where a download comes from: "HTTP", "Torrent", "yt-dlp", "Convert".
+export component SourceChip inherits Rectangle {
+    in property <string> source;
+
+    pure function label(s: string) -> string {
+        if (s == "Torrent") {
+            return @tr("Torrent");
+        } else if (s == "yt-dlp") {
+            return @tr("yt-dlp");
+        } else if (s == "Convert") {
+            return @tr("Convert");
+        }
+        return @tr("HTTP");
+    }
+
+    horizontal-stretch: 0;
+    height: 18px;
+    border-radius: 5px;
+    background: Theme.chip;
+    border-width: 1px;
+    border-color: Theme.line;
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        Text {
+            text: root.label(root.source);
+            vertical-alignment: center;
+            font-size: 10px;
+            font-weight: 600;
+            color: Theme.muted;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+    }
+}
+
+export component AdvRow inherits Pressable {
+    in property <AdvRowVm> item;
+    callback select(int);
+    callback pause(int);
+    callback resume(int);
+    callback retry(int);
+    callback stop-recording(int);
+    callback open-file(int);
+
+    property <string> state: item.row.state;
+    property <bool> active: state == "downloading" || state == "recording";
+    property <bool> shows-bar: state != "done" && state != "failed" && state != "seeding"
+        && (item.row.progress >= 0 || active);
+
+    min-height: layout.min-height;
+    preferred-height: layout.preferred-height;
+    border-radius: 10px;
+    background: item.selected ? Theme.sel : root.hovered ? Theme.chip : transparent;
+    accessible-role: list-item;
+    accessible-label: item.row.name;
+    accessible-item-selectable: true;
+    accessible-item-selected: item.selected;
+
+    clicked => {
+        root.select(root.item.row.id);
+    }
+
+    layout := HorizontalLayout {
+        padding: 8px;
+        spacing: 10px;
+
+        VerticalLayout {
+            alignment: start;
+            horizontal-stretch: 0;
+            KindBadge {
+                kind: root.item.row.kind;
+                size: 32px;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            horizontal-stretch: 1;
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: root.item.row.name;
+                    color: Theme.text;
+                    font-size: 13px;
+                    font-weight: 600;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    accessible-role: none;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    SourceChip {
+                        source: root.item.source;
+                    }
+                }
+            }
+            if root.shows-bar: ProgressBar {
+                progress: root.item.row.progress;
+                bar-color: root.state == "paused" ? Theme.muted : Theme.bar(root.item.row.kind);
+                moving: root.active;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: RowText.status(root.item.row);
+                    color: root.state == "failed" ? Theme.err
+                        : root.state == "recording" ? Theme.kind-fg("live") : Theme.muted;
+                    font-size: 11px;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+                if root.item.speed-text != "": Text {
+                    text: @tr("↓ {0}", root.item.speed-text);
+                    color: Theme.muted;
+                    font-size: 11px;
+                    horizontal-stretch: 0;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            if root.state == "failed": IconButton {
+                icon: "retry";
+                label: @tr("Try again");
+                size: 30px;
+                clicked => {
+                    root.retry(root.item.row.id);
+                }
+            }
+            if root.state == "done": IconButton {
+                icon: "file";
+                label: @tr("Open");
+                size: 30px;
+                clicked => {
+                    root.open-file(root.item.row.id);
+                }
+            }
+            if root.state == "paused": IconButton {
+                icon: "play";
+                label: @tr("Resume");
+                size: 30px;
+                clicked => {
+                    root.resume(root.item.row.id);
+                }
+            }
+            if root.state == "recording": IconButton {
+                icon: "stop";
+                label: @tr("Stop");
+                size: 30px;
+                clicked => {
+                    root.stop-recording(root.item.row.id);
+                }
+            }
+            if root.state == "downloading" || root.state == "waiting"
+                || root.state == "queued" || root.state == "seeding": IconButton {
+                icon: "pause";
+                label: @tr("Pause");
+                size: 30px;
+                clicked => {
+                    root.pause(root.item.row.id);
+                }
+            }
+        }
+    }
+}

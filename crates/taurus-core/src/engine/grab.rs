@@ -1,5 +1,6 @@
-//! `Engine::grab` and `Engine::probe_sizes`: reading the links of a web page
-//! (or folder listing) and the sizes of the files they name. Both go through
+//! `Engine::grab` and `Engine::probe_sizes` (or `probe_sizes_stream`):
+//! reading the links of a web page (or folder listing) and the sizes of the
+//! files they name. `grab` itself never probes a size. Both go through
 //! the engine's HTTP client, so its settings (proxy, User-Agent, redirects)
 //! apply to them as to every download.
 
@@ -9,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::header::CONTENT_TYPE;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
 
 use crate::errors::{CoreError, ErrorKind};
@@ -117,6 +118,21 @@ impl Engine {
     pub async fn probe_sizes(&self, urls: Vec<String>) -> Vec<Option<u64>> {
         probe_sizes_with(&self.client.get(), urls, PROBE_TIMEOUT).await
     }
+
+    /// `probe_sizes`, each size sent as soon as it is known, as `(index of
+    /// the URL, size)`, in the order they arrive; the stream ends once every
+    /// URL has its answer. Same probes, same client, same timeout, four at a
+    /// time. Dropping the receiver stops the probes. Must be called within
+    /// a Tokio runtime.
+    pub fn probe_sizes_stream(&self, urls: Vec<String>) -> mpsc::Receiver<(usize, Option<u64>)> {
+        probe_stream_with(self.client.get(), urls, PROBE_TIMEOUT)
+    }
+}
+
+/// One URL's size, as `probe_sizes` answers it.
+async fn probe_size(client: &reqwest::Client, url: &str, timeout: Duration) -> Option<u64> {
+    let probed = tokio::time::timeout(timeout, probe(client, url)).await;
+    probed.ok()?.ok()?.size
 }
 
 async fn probe_sizes_with(
@@ -127,13 +143,47 @@ async fn probe_sizes_with(
     let client = client.clone();
     let sizes = run_bounded(urls, PROBE_CONCURRENCY, move |url| {
         let client = client.clone();
-        async move {
-            let probed = tokio::time::timeout(timeout, probe(&client, &url)).await;
-            probed.ok()?.ok()?.size
-        }
+        async move { probe_size(&client, &url, timeout).await }
     })
     .await;
     sizes.into_iter().map(Option::flatten).collect()
+}
+
+fn probe_stream_with(
+    client: reqwest::Client,
+    urls: Vec<String>,
+    timeout: Duration,
+) -> mpsc::Receiver<(usize, Option<u64>)> {
+    // Room for every answer: the probes never wait on a slow reader.
+    let (tx, rx) = mpsc::channel(urls.len().max(1));
+    tokio::spawn(async move {
+        let permits = Arc::new(Semaphore::new(PROBE_CONCURRENCY));
+        let mut tasks = JoinSet::new();
+        for (index, url) in urls.into_iter().enumerate() {
+            let (permits, client) = (permits.clone(), client.clone());
+            tasks.spawn(async move {
+                let _permit = permits.acquire().await.ok();
+                (index, probe_size(&client, &url, timeout).await)
+            });
+        }
+        loop {
+            tokio::select! {
+                // Nobody listens any more: dropping `tasks` stops them.
+                () = tx.closed() => return,
+                joined = tasks.join_next() => match joined {
+                    Some(Ok(answer)) => {
+                        if tx.send(answer).await.is_err() {
+                            return;
+                        }
+                    }
+                    // A probe that panicked has no answer.
+                    Some(Err(_)) => {}
+                    None => return,
+                },
+            }
+        }
+    });
+    rx
 }
 
 /// Runs `f` on every item, `limit` at a time, and returns the results in the
@@ -475,6 +525,39 @@ mod tests {
         .await;
         held.abort();
         assert_eq!(sizes, [None, None]);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn a_streamed_probe_that_does_not_answer_is_none_after_the_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let held = tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                sockets.push(socket);
+            }
+        });
+        let started = std::time::Instant::now();
+        let urls = vec![
+            format!("http://{addr}/a.bin"),
+            "ftp://example.test/b.bin".to_string(),
+            format!("http://{addr}/c.bin"),
+        ];
+        let mut stream = probe_stream_with(
+            crate::network::build_client(&crate::network::ProxySetting::System),
+            urls,
+            Duration::from_millis(300),
+        );
+        let mut got = Vec::new();
+        while let Some(answer) = stream.recv().await {
+            got.push(answer);
+        }
+        held.abort();
+        // The link that cannot be probed answers first.
+        assert_eq!(got.first(), Some(&(1, None)));
+        got.sort();
+        assert_eq!(got, [(0, None), (1, None), (2, None)]);
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 

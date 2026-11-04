@@ -1,0 +1,251 @@
+// Advanced mode dialogs, laid over the whole window: removing a download
+// (finished files stay unless asked; an unfinished download's partial
+// files go) and signing in to a protected one. Escape cancels, Enter
+// confirms, Tab goes round the dialog's controls.
+import { Theme } from "../theme.slint";
+import { RemoveDialogVm, PasswordDialogVm } from "../types.slint";
+import { TextButton, CheckBox, LineEdit } from "../widgets.slint";
+
+// Dims the window and holds the dialog's card in its middle. Keys from
+// anywhere in the card: Escape is `escape`; an Enter no field or button
+// took is `enter`; Tab after the last control and Shift+Tab before the
+// first go round (`wrap`), so the focus stays in the dialog. The dialog
+// says where its ends are (`first-focused`, `last-focused`). Only a new
+// press of Enter confirms: the auto-repeats of the Enter held down on
+// the button that opened the dialog are ignored.
+export component Scrim inherits Rectangle {
+    in property <length> card-width: 380px;
+    in property <bool> first-focused;
+    in property <bool> last-focused;
+    callback escape();
+    callback enter();
+    // true: Tab after the last control; false: Shift+Tab before the first.
+    callback wrap(bool);
+
+    // Keys reach the dialog without a control taking the focus.
+    public function take-focus() {
+        keys.focus();
+    }
+
+    background: Theme.scrim;
+    keys := FocusScope {
+        width: root.width;
+        height: root.height;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.escape();
+                return accept;
+            }
+            if (event.text == Key.Return) {
+                if (!event.repeat) {
+                    root.enter();
+                }
+                return accept;
+            }
+            if (event.text == Key.Tab && !event.modifiers.shift && root.last-focused) {
+                root.wrap(true);
+                return accept;
+            }
+            if ((event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift))
+                && (root.first-focused || self.has-focus)) {
+                root.wrap(false);
+                return accept;
+            }
+            return reject;
+        }
+        // Clicks do not reach the screen behind.
+        TouchArea { }
+        Rectangle {
+            width: min(root.width - 32px, root.card-width);
+            height: card.preferred-height;
+            background: Theme.panel;
+            border-radius: 14px;
+            border-width: 1px;
+            border-color: Theme.line;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Theme.shadow;
+            card := VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+                @children
+            }
+        }
+    }
+}
+
+export component RemoveDialog inherits Scrim {
+    in property <RemoveDialogVm> dialog;
+    // id, whether finished files go too (an unfinished download's
+    // partial files always do)
+    callback confirm(int, bool);
+    callback cancel();
+
+    // Unticked each time the dialog opens: finished files are kept unless
+    // asked.
+    property <bool> delete-files: false;
+
+    first-focused: delete.focused;
+    last-focused: remove.focused;
+    init => {
+        root.take-focus();
+    }
+    escape => {
+        root.cancel();
+    }
+    enter => {
+        root.confirm(root.dialog.id, root.delete-files);
+    }
+    wrap(forward) => {
+        if (forward) {
+            delete.focus();
+        } else {
+            remove.focus();
+        }
+    }
+
+    Text {
+        text: @tr("Remove {0} from the list?", root.dialog.name);
+        wrap: word-wrap;
+        font-size: 15px;
+        font-weight: 700;
+        color: Theme.text;
+        accessible-role: text;
+        accessible-label: self.text;
+    }
+    // Space or Return on the box ticks it; it never removes.
+    delete := CheckBox {
+        text: @tr("Also delete the files");
+        checked <=> root.delete-files;
+    }
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        TextButton {
+            text: @tr("Cancel");
+            kind: "quiet";
+            clicked => {
+                root.cancel();
+            }
+        }
+        remove := TextButton {
+            text: @tr("Remove");
+            kind: "primary";
+            clicked => {
+                root.confirm(root.dialog.id, root.delete-files);
+            }
+        }
+    }
+}
+
+export component PasswordDialog inherits Scrim {
+    in property <PasswordDialogVm> dialog;
+    // What is typed; the app empties both as soon as it has them.
+    in-out property <string> user;
+    in-out property <string> password;
+    // id, user name, password
+    callback submit(int, string, string);
+    callback cancel();
+
+    property <bool> ready: !root.dialog.busy && root.user != "" && root.password != "";
+
+    function send() {
+        if (root.ready) {
+            root.submit(root.dialog.id, root.user, root.password);
+        }
+    }
+
+    // While it signs in, Cancel is the only control.
+    first-focused: user-field.has-focus || (root.dialog.busy && cancel.focused);
+    last-focused: sign-in.focused || (!root.ready && cancel.focused);
+    init => {
+        user-field.focus();
+    }
+    escape => {
+        root.cancel();
+    }
+    enter => {
+        root.send();
+    }
+    wrap(forward) => {
+        if (root.dialog.busy) {
+            cancel.focus();
+        } else if (forward) {
+            user-field.focus();
+        } else if (root.ready) {
+            sign-in.focus();
+        } else {
+            cancel.focus();
+        }
+    }
+
+    Text {
+        text: @tr("Sign in to download {0}", root.dialog.name);
+        wrap: word-wrap;
+        font-size: 15px;
+        font-weight: 700;
+        color: Theme.text;
+        accessible-role: text;
+        accessible-label: self.text;
+    }
+    if root.dialog.wrong: Text {
+        text: @tr("That user name or password didn't work. Try again.");
+        wrap: word-wrap;
+        font-size: 12px;
+        color: Theme.err;
+        accessible-role: text;
+        accessible-label: self.text;
+    }
+    user-field := LineEdit {
+        text <=> root.user;
+        enabled: !root.dialog.busy;
+        placeholder-text: @tr("User name");
+        accessible-label: @tr("User name");
+        // Enter: on to the password, or signs in when both are typed.
+        accepted => {
+            if (root.ready) {
+                root.send();
+            } else {
+                password-field.focus();
+            }
+        }
+    }
+    password-field := LineEdit {
+        input-type: InputType.password;
+        text <=> root.password;
+        enabled: !root.dialog.busy;
+        placeholder-text: @tr("Password");
+        accessible-label: @tr("Password");
+        accepted => {
+            root.send();
+        }
+    }
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        if root.dialog.busy: Text {
+            text: @tr("Signing in…");
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            font-size: 12px;
+            color: Theme.muted;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+        cancel := TextButton {
+            text: @tr("Cancel");
+            kind: "quiet";
+            clicked => {
+                root.cancel();
+            }
+        }
+        sign-in := TextButton {
+            text: @tr("Sign in");
+            kind: "primary";
+            enabled: root.ready;
+            clicked => {
+                root.send();
+            }
+        }
+    }
+}

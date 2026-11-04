@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::{broadcast, mpsc, watch};
@@ -18,6 +18,7 @@ use crate::torrent::hub::TorrentHub;
 use crate::when_done::{EngineLink, WhenDoneRunner};
 
 use super::actor::{Actor, Command, JobMsg};
+use super::detail::Details;
 use super::jobs::{downloaded, view_of};
 use super::keychain::Secrets;
 use super::media::restore_thumbnails;
@@ -89,6 +90,7 @@ pub(super) async fn assemble(
     let views = Arc::new(RwLock::new(views));
     let shared_settings = Arc::new(RwLock::new(settings.clone()));
     let keeping_awake = Arc::new(AtomicBool::new(false));
+    let peak_bps = Arc::new(AtomicU64::new(measured_peak.map_or(0, |(bps, _)| bps)));
     let media_global = speed_limit(&settings, measured_peak);
     let limiter = Limiter::new(media_global);
     let peak = PeakTracker::with_max(fresh_peak(measured_peak, unix_now()).unwrap_or(0));
@@ -103,7 +105,12 @@ pub(super) async fn assemble(
         })
     };
     let client = SharedClient::new(&settings.network.proxy);
-    let secrets = Secrets::new(config.secrets.clone(), &store.database_token()?);
+    let secrets = Secrets::new(
+        config.secrets.clone(),
+        &store.database_token()?,
+        Some(store.clone()),
+    );
+    let details = Details::new(store.clone());
     let (torrent_settings, _) = watch::channel(settings.torrent.clone());
     let tools = Arc::new(
         ToolManager::new(&config.data_dir, config.tool_sources, client.clone())
@@ -150,6 +157,7 @@ pub(super) async fn assemble(
         seed_rules: HashMap::new(),
         rates: None,
         measured_peak,
+        peak_bps: peak_bps.clone(),
         peak,
         transferred: 0,
         tools: tools.clone(),
@@ -157,12 +165,14 @@ pub(super) async fn assemble(
         media_rates: HashMap::new(),
         media_global,
         secrets: secrets.clone(),
+        details: details.clone(),
     };
     let engine = Engine {
         commands,
         events,
         views,
         settings: shared_settings,
+        peak_bps,
         keeping_awake,
         client: client.clone(),
         holds,
@@ -173,6 +183,7 @@ pub(super) async fn assemble(
         tools,
         data_dir: config.data_dir,
         secrets,
+        details,
     };
     Ok((engine, actor, commands_rx))
 }

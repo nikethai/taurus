@@ -11,7 +11,6 @@ use crate::filename::{PARTIAL_EXT, sanitize, unique_path};
 use crate::fixups;
 use crate::http::probe::validator_change;
 use crate::http::{JobOutcome, Probe, resolve_with};
-use crate::plan::DEFAULT_CONNECTIONS;
 use crate::store::{JobId, JobKind, JobRecord, JobState, NewJob, Store};
 
 use super::RemoveFiles;
@@ -20,7 +19,7 @@ use super::media::stored_media_view;
 use super::schedule::check_space;
 use super::settings::unix_now;
 use super::torrent::{stored_downloaded, stored_torrent_view};
-use super::{AddRequest, Event, JobView, io_error, no_such_job, read, write};
+use super::{AddRequest, Event, JobView, ProgressUnit, io_error, no_such_job, read, write};
 
 impl Actor {
     pub(super) fn add(&mut self, mut req: AddRequest, probe: &Probe) -> Result<JobId, CoreError> {
@@ -38,7 +37,7 @@ impl Actor {
         let file_name = path
             .file_name()
             .map_or(name, |n| n.to_string_lossy().into_owned());
-        let connections = req.connections.unwrap_or(DEFAULT_CONNECTIONS).max(1);
+        let connections = req.connections.unwrap_or(self.settings.connections).max(1);
         // The link that served the file (a confirm form's, if one was
         // followed), so segment requests skip the page.
         let url = probe.requested_url.to_string();
@@ -239,6 +238,7 @@ impl Actor {
         }
         self.store.delete_job(id)?;
         self.forget_credentials(job.as_ref());
+        self.details.forget(id);
         write(&self.views).remove(&id);
         self.emit(Event::JobRemoved(id));
         Ok(())
@@ -315,6 +315,7 @@ impl Actor {
             }
             view.finished_at = (state == JobState::Completed).then(unix_now);
             view.state = state;
+            view.progress_unit = ProgressUnit::of(view.kind, state);
             view.speed_bps = 0;
             write(&self.views).insert(id, view.clone());
             self.emit(Event::JobUpdated(view));
@@ -569,6 +570,7 @@ fn view_with(store: &Store, job: &JobRecord, downloaded: u64, known: Option<&Job
         finished_at,
         info_hash: job.info_hash.clone(),
         media: stored_media_view(job, known.and_then(|v| v.media.as_ref())),
+        progress_unit: ProgressUnit::of(job.kind, job.state),
     }
 }
 

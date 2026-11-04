@@ -1,0 +1,199 @@
+// Advanced Settings: the Engines, Appearance, Privacy and General sections.
+import { Theme } from "../theme.slint";
+import { Messages } from "../messages.slint";
+import { TextButton, Toggle, Segment, Segmented, ProgressBar } from "../widgets.slint";
+import { Swatch } from "../settings.slint";
+import { SettingsUi, ToolRowVm } from "settings_ui.slint";
+import { SectionHeading, FieldLabel, Hint, FieldError, Divider } from "settings_parts.slint";
+
+// One video tool: its name, version or state, and Roll back.
+component ToolRow inherits VerticalLayout {
+    in property <ToolRowVm> tool;
+    property <string> name: tool.kind == "ffmpeg" ? @tr("ffmpeg") : tool.kind == "deno" ? @tr("Deno") : @tr("yt-dlp");
+
+    spacing: 6px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+    accessible-role: groupbox;
+    accessible-label: root.name;
+    HorizontalLayout {
+        spacing: 10px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            FieldLabel {
+                text: root.name;
+            }
+            Hint {
+                text: root.tool.state == "installing" ? @tr("Installing…")
+                    : root.tool.state == "failed" ? @tr("Couldn't install it")
+                    : root.tool.version == "" ? @tr("Not installed")
+                    : @tr("Version {0}", root.tool.version);
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            TextButton {
+                text: @tr("Roll back");
+                accessible-label: @tr("Roll back {0}", root.name);
+                enabled: root.tool.state == "ready" && root.tool.version != "" && !SettingsUi.tools-busy;
+                clicked => {
+                    SettingsUi.rollback-tool(root.tool.kind);
+                }
+            }
+        }
+    }
+    if root.tool.state == "installing": ProgressBar {
+        progress: root.tool.progress;
+    }
+}
+
+export component EnginesSection inherits VerticalLayout {
+    spacing: 10px;
+    SectionHeading {
+        text: @tr("Engines");
+    }
+    Hint {
+        text: @tr("Video downloads use yt-dlp, ffmpeg and Deno. Check now looks for newer versions.");
+    }
+    for t[i] in SettingsUi.tools: VerticalLayout {
+        if i > 0: Divider { }
+        ToolRow {
+            tool: t;
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        TextButton {
+            text: @tr("Install");
+            enabled: SettingsUi.tools-missing && !SettingsUi.tools-busy;
+            clicked => {
+                SettingsUi.install-tools();
+            }
+        }
+        TextButton {
+            text: @tr("Check now");
+            enabled: !SettingsUi.tools-busy;
+            clicked => {
+                SettingsUi.check-tools();
+            }
+        }
+    }
+    if SettingsUi.tools-error != "": FieldError {
+        text: SettingsUi.tools-error == "no-previous" ? @tr("There is no earlier version to go back to.") : Messages.simple(SettingsUi.tools-error);
+    }
+}
+
+export component AppearanceSection inherits VerticalLayout {
+    property <[{value: string, label: string}]> themes: [
+        { value: "system", label: @tr("System") },
+        { value: "light", label: @tr("Light") },
+        { value: "dark", label: @tr("Dark") },
+    ];
+    property <[{value: string, label: string}]> accents: [
+        { value: "aldebaran", label: @tr("Aldebaran") },
+        { value: "cobalt", label: @tr("Cobalt") },
+        { value: "jade", label: @tr("Jade") },
+        { value: "grape", label: @tr("Grape") },
+        { value: "rose", label: @tr("Rose") },
+        { value: "sky", label: @tr("Sky") },
+    ];
+    property <string> theme: SettingsUi.settings.theme != "" ? SettingsUi.settings.theme : "system";
+    property <string> accent: SettingsUi.settings.accent != "" ? SettingsUi.settings.accent : "aldebaran";
+
+    spacing: 10px;
+    SectionHeading {
+        text: @tr("Appearance");
+    }
+    FieldLabel {
+        text: @tr("Theme");
+    }
+    Segmented {
+        for t in root.themes: Segment {
+            text: t.label;
+            selected: root.theme == t.value;
+            clicked => {
+                SettingsUi.changed("theme", t.value);
+            }
+        }
+    }
+    FieldLabel {
+        text: @tr("Accent");
+    }
+    HorizontalLayout {
+        spacing: 12px;
+        alignment: start;
+        for a in root.accents: Swatch {
+            name: a.value;
+            label: a.label;
+            selected: root.accent == a.value;
+            clicked => {
+                SettingsUi.changed("accent", a.value);
+            }
+        }
+    }
+    Toggle {
+        label: @tr("Color progress bars by file type");
+        checked: SettingsUi.vm.progress-by-type;
+        clicked => {
+            SettingsUi.changed("progress-by-type", SettingsUi.vm.progress-by-type ? "false" : "true");
+        }
+    }
+}
+
+export component PrivacySection inherits VerticalLayout {
+    spacing: 10px;
+    SectionHeading {
+        text: @tr("Privacy");
+    }
+    Hint {
+        text: @tr("Passwords you typed for downloads are kept in your computer's keychain.");
+    }
+    HorizontalLayout {
+        alignment: start;
+        TextButton {
+            text: @tr("Forget saved passwords");
+            enabled: SettingsUi.forget-state != "busy";
+            clicked => {
+                SettingsUi.forget-passwords();
+            }
+        }
+    }
+    if SettingsUi.forget-state == "done": Hint {
+        text: @tr("Removed {0}", SettingsUi.forget-count);
+    }
+    if SettingsUi.forget-state == "failed": FieldError {
+        text: @tr("Couldn't remove them. Try again.");
+    }
+}
+
+export component GeneralSection inherits VerticalLayout {
+    spacing: 10px;
+    SectionHeading {
+        text: @tr("General");
+    }
+    Toggle {
+        label: @tr("Offer to download copied links");
+        checked: SettingsUi.settings.offer-copied-links;
+        clicked => {
+            SettingsUi.changed("offer-copied-links", SettingsUi.settings.offer-copied-links ? "false" : "true");
+        }
+    }
+    Toggle {
+        label: @tr("Open Hyades at login");
+        checked: SettingsUi.settings.open-at-login;
+        clicked => {
+            SettingsUi.changed("open-at-login", SettingsUi.settings.open-at-login ? "false" : "true");
+        }
+    }
+    Toggle {
+        label: @tr("Show advanced options");
+        hint: @tr("Sources, filters and more details");
+        checked: SettingsUi.settings.advanced;
+        clicked => {
+            SettingsUi.changed("advanced", SettingsUi.settings.advanced ? "false" : "true");
+        }
+    }
+}

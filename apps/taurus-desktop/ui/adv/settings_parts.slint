@@ -1,0 +1,145 @@
+// Small pieces the Advanced Settings sections share.
+import { Theme } from "../theme.slint";
+import { SpinBox } from "std-widgets.slint";
+import { LineEdit } from "../widgets.slint";
+
+// A section's name, above its controls.
+export component SectionHeading inherits Text {
+    font-size: 16px;
+    font-weight: 700;
+    color: Theme.text;
+    accessible-role: text;
+    accessible-label: self.text;
+}
+
+// A control's name, above it.
+export component FieldLabel inherits Text {
+    font-size: 13px;
+    font-weight: 600;
+    color: Theme.text;
+    wrap: word-wrap;
+    accessible-role: none;
+}
+
+// A short note under a control.
+export component Hint inherits Text {
+    font-size: 12px;
+    color: Theme.muted;
+    wrap: word-wrap;
+    accessible-role: text;
+    accessible-label: self.text;
+}
+
+// Why the text typed above is not taken.
+export component FieldError inherits Text {
+    font-size: 12px;
+    color: Theme.err;
+    wrap: word-wrap;
+    accessible-role: text;
+    accessible-label: self.text;
+}
+
+export component Divider inherits Rectangle {
+    height: 1px;
+    background: Theme.line;
+}
+
+// A typed value, applied on Enter or when the field loses focus after an
+// edit, never while typing (each edit is only checked).
+export component CommitField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    // Shown after the field ("MB/s"), "" for none.
+    in property <string> unit;
+    in property <string> error;
+    in property <bool> invalid;
+    // The field takes the focus when this is (or turns) true.
+    in property <bool> focus-first: false;
+    in-out property <string> text;
+    callback edited(string);
+    callback commit(string);
+
+    // Edited since it was last applied.
+    property <bool> dirty: false;
+
+    changed focus-first => {
+        if (root.focus-first) {
+            edit.focus();
+        }
+    }
+
+    spacing: 4px;
+    FieldLabel {
+        text: root.label;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        edit := LineEdit {
+            horizontal-stretch: 1;
+            text <=> root.text;
+            placeholder-text: root.placeholder;
+            accessible-label: root.label;
+            init => {
+                if (root.focus-first) {
+                    self.focus();
+                }
+            }
+            edited(t) => {
+                root.dirty = true;
+                root.edited(t);
+            }
+            accepted(t) => {
+                root.dirty = false;
+                root.commit(t);
+            }
+            changed has-focus => {
+                if (!self.has-focus && root.dirty) {
+                    root.dirty = false;
+                    root.commit(self.text);
+                }
+            }
+        }
+        if root.unit != "": Text {
+            text: root.unit;
+            vertical-alignment: center;
+            font-size: 13px;
+            color: Theme.muted;
+            accessible-role: none;
+        }
+    }
+    if root.invalid: FieldError {
+        text: root.error;
+    }
+}
+
+// A whole number from `minimum` to `maximum`, with its name beside it.
+export component NumberRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <int> value;
+    in property <int> minimum: 1;
+    in property <int> maximum: 10;
+    callback changed(int);
+
+    // A step breaks the box's binding to `value`: later changes (the
+    // engine's, or a refused save put back) are copied in.
+    changed value => {
+        spin.value = root.value;
+    }
+
+    spacing: 12px;
+    FieldLabel {
+        text: root.label;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+    }
+    spin := SpinBox {
+        width: 120px;
+        minimum: root.minimum;
+        maximum: root.maximum;
+        value: root.value;
+        accessible-label: root.label;
+        edited(v) => {
+            root.changed(v);
+        }
+    }
+}

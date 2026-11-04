@@ -1,0 +1,279 @@
+// The video options of the Advanced Add screen (add.slint): quality,
+// format, subtitles and the browser to sign in with.
+import { Theme } from "../theme.slint";
+import { AdvAddVm, QualityVm, LangVm } from "../types.slint";
+import { Messages } from "../messages.slint";
+import { Pressable, TextButton, Segmented, Segment, CheckBox } from "../widgets.slint";
+import { ComboBox, ListView } from "std-widgets.slint";
+import { SectionLabel } from "detail_parts.slint";
+
+// The browsers yt-dlp can sign in with; Safari on macOS only.
+export component BrowserRow inherits HorizontalLayout {
+    in property <bool> is-macos;
+    // "chrome" | "firefox" | "safari" | "edge" | "brave"
+    callback picked(string);
+
+    spacing: 6px;
+    alignment: start;
+    TextButton {
+        text: @tr("Chrome");
+        kind: "quiet";
+        clicked => {
+            root.picked("chrome");
+        }
+    }
+    TextButton {
+        text: @tr("Firefox");
+        kind: "quiet";
+        clicked => {
+            root.picked("firefox");
+        }
+    }
+    if root.is-macos: TextButton {
+        text: @tr("Safari");
+        kind: "quiet";
+        clicked => {
+            root.picked("safari");
+        }
+    }
+    TextButton {
+        text: @tr("Edge");
+        kind: "quiet";
+        clicked => {
+            root.picked("edge");
+        }
+    }
+    TextButton {
+        text: @tr("Brave");
+        kind: "quiet";
+        clicked => {
+            root.picked("brave");
+        }
+    }
+}
+
+// A round mark (radio) or a box (check) before a label.
+component Mark inherits Rectangle {
+    in property <bool> on;
+    in property <bool> round;
+
+    width: 18px;
+    height: 18px;
+    border-radius: root.round ? 9px : 4px;
+    border-width: root.on && !root.round ? 0 : 1.5px;
+    border-color: root.on ? Theme.accent-base : Theme.muted;
+    background: root.on && !root.round ? Theme.accent-base : transparent;
+    if root.on && root.round: Rectangle {
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: Theme.accent-base;
+    }
+    if root.on && !root.round: Path {
+        width: 12px;
+        height: 12px;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: "M 2 6.5 L 5 9.5 L 10 3";
+        stroke: Theme.accent-text;
+        stroke-width: 2px;
+        fill: transparent;
+    }
+}
+
+component OptionRow inherits Pressable {
+    in property <string> text;
+    in property <string> detail;
+    in property <bool> on;
+    in property <bool> round;
+
+    height: 36px;
+    accessible-role: checkbox;
+    accessible-label: root.text;
+    accessible-checkable: true;
+    accessible-checked: root.on;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Mark {
+                on: root.on;
+                round: root.round;
+            }
+        }
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+            font-size: 13px;
+            color: Theme.text;
+            accessible-role: none;
+        }
+        Text {
+            text: root.detail;
+            vertical-alignment: center;
+            font-size: 12px;
+            color: Theme.muted;
+            accessible-role: none;
+        }
+    }
+}
+
+// A bordered, scrolling list of option rows.
+component OptionList inherits Rectangle {
+    in property <int> count;
+    in property <length> list-max: 216px;
+
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.line;
+    height: min(max(root.count, 1) * 36px + 8px, root.list-max);
+    @children
+}
+
+export component MediaOptions inherits VerticalLayout {
+    in property <AdvAddVm> vm;
+    in property <bool> is-macos;
+    callback field-changed(string, string);
+
+    pure function quality-label(q: QualityVm) -> string {
+        if (q.height > 0) {
+            return @tr("{0}p", q.height);
+        } else if (q.id == "audio-best") {
+            return @tr("Audio only · best");
+        } else if (q.id == "audio-small") {
+            return @tr("Audio only · smaller file");
+        }
+        return Messages.quality(q.id);
+    }
+
+    property <[string]> browsers: root.is-macos
+        ? ["", "chrome", "firefox", "safari", "edge", "brave"]
+        : ["", "chrome", "firefox", "edge", "brave"];
+
+    pure function browser-index(b: string) -> int {
+        if (b == "chrome") {
+            return 1;
+        } else if (b == "firefox") {
+            return 2;
+        } else if (b == "safari") {
+            return root.is-macos ? 3 : 0;
+        } else if (b == "edge") {
+            return root.is-macos ? 4 : 3;
+        } else if (b == "brave") {
+            return root.is-macos ? 5 : 4;
+        }
+        return 0;
+    }
+
+    spacing: 12px;
+
+    SectionLabel {
+        text: @tr("Quality");
+    }
+    OptionList {
+        count: root.vm.qualities.length;
+        ListView {
+            for q in root.vm.qualities: OptionRow {
+                text: root.quality-label(q);
+                detail: q.size-text;
+                on: q.id == root.vm.quality-id;
+                round: true;
+                accessible-role: radio-button;
+                clicked => {
+                    root.field-changed("quality", q.id);
+                }
+            }
+        }
+    }
+
+    if !root.vm.audio-only: SectionLabel {
+        text: @tr("Format");
+    }
+    if !root.vm.audio-only: Segmented {
+        Segment {
+            text: @tr("MP4");
+            selected: root.vm.container == "mp4";
+            clicked => {
+                root.field-changed("container", "mp4");
+            }
+        }
+        Segment {
+            text: @tr("MKV");
+            selected: root.vm.container == "mkv";
+            clicked => {
+                root.field-changed("container", "mkv");
+            }
+        }
+        Segment {
+            text: @tr("WebM");
+            selected: root.vm.container == "webm";
+            clicked => {
+                root.field-changed("container", "webm");
+            }
+        }
+    }
+
+    SectionLabel {
+        text: @tr("Subtitles");
+    }
+    if root.vm.subtitle-langs.length == 0: Text {
+        text: @tr("This video lists no subtitles.");
+        font-size: 12px;
+        color: Theme.muted;
+    }
+    if root.vm.subtitle-langs.length > 0: OptionList {
+        count: root.vm.subtitle-langs.length;
+        list-max: 152px;
+        ListView {
+            for l in root.vm.subtitle-langs: OptionRow {
+                text: l.code;
+                detail: l.auto ? @tr("generated") : "";
+                on: l.selected;
+                clicked => {
+                    root.field-changed("sub-lang", l.code);
+                }
+            }
+        }
+    }
+    CheckBox {
+        text: @tr("Include the site's generated captions");
+        checked: root.vm.auto-subs;
+        toggled => {
+            root.field-changed("auto-subs", self.checked ? "true" : "false");
+        }
+    }
+    if !root.vm.audio-only: CheckBox {
+        text: @tr("Put the subtitles into the video");
+        checked: root.vm.embed-subs;
+        toggled => {
+            root.field-changed("embed-subs", self.checked ? "true" : "false");
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 10px;
+        Text {
+            text: @tr("Sign in with");
+            width: 110px;
+            vertical-alignment: center;
+            font-size: 12px;
+            color: Theme.muted;
+        }
+        ComboBox {
+            horizontal-stretch: 1;
+            accessible-label: @tr("Sign in with the cookies of");
+            model: root.is-macos
+                ? [@tr("No browser"), @tr("Chrome"), @tr("Firefox"), @tr("Safari"), @tr("Edge"), @tr("Brave")]
+                : [@tr("No browser"), @tr("Chrome"), @tr("Firefox"), @tr("Edge"), @tr("Brave")];
+            current-index: root.browser-index(root.vm.cookies-browser);
+            selected => {
+                root.field-changed("cookies-browser", root.browsers[self.current-index]);
+            }
+        }
+    }
+}
