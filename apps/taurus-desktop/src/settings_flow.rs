@@ -57,6 +57,7 @@ pub fn settings_vm(s: &Settings) -> SettingsVm {
             _ => Default::default(),
         },
         advanced: s.ui.mode == UiMode::Advanced,
+        check_updates: s.ui.check_updates,
     }
 }
 
@@ -93,6 +94,10 @@ pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
         },
         "open-at-login" => match flag() {
             Some(b) => s.ui.open_at_login = b,
+            None => return false,
+        },
+        "check-updates" => match flag() {
+            Some(b) => s.ui.check_updates = b,
             None => return false,
         },
         "advanced" => match flag() {
@@ -313,6 +318,7 @@ mod tests {
             ("sort-by-type", "false"),
             ("offer-copied-links", "false"),
             ("open-at-login", "true"),
+            ("check-updates", "false"),
             ("folder", "/tmp/dl"),
         ] {
             assert!(apply_change(&mut s, key, value), "{key}");
@@ -332,6 +338,7 @@ mod tests {
             ("dark", "jade", "sleep")
         );
         assert!(!vm.sort_by_type && !vm.offer_copied_links && vm.open_at_login);
+        assert!(!vm.check_updates && !s.ui.check_updates);
 
         // Case does not matter; unknown keys and values change nothing.
         assert!(apply_change(&mut s, "accent", "ROSE"));

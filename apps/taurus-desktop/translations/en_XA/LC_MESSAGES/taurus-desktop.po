@@ -1138,6 +1138,22 @@ msgctxt "GeneralSection"
 msgid "Sources, filters and more details"
 msgstr "⟦Sóúrçés, fíltérs áñd móré détáíls··············⟧"
 
+msgctxt "GeneralSection"
+msgid "Check for updates automatically"
+msgstr "⟦Çhéçk fór úpdátés áútómátíçállý·············⟧"
+
+msgctxt "GeneralSection"
+msgid "Hyades {0}"
+msgstr "⟦Hyades {0}····⟧"
+
+msgctxt "GeneralSection"
+msgid "Check now"
+msgstr "⟦Çhéçk ñów····⟧"
+
+msgctxt "GeneralSection"
+msgid "Check for updates"
+msgstr "⟦Çhéçk fór úpdátés·······⟧"
+
 msgctxt "DownloadsSection"
 msgid "Downloads"
 msgstr "⟦Dówñlóáds····⟧"
@@ -2108,6 +2124,14 @@ msgctxt "Settings"
 msgid "Appearance"
 msgstr "⟦Áppéáráñçé····⟧"
 
+msgctxt "Settings"
+msgid "Hyades {0} · Free and open source"
+msgstr "⟦Hyades {0} · Fréé áñd ópéñ sóúrçé··············⟧"
+
+msgctxt "Settings"
+msgid "Restart to update to {0}"
+msgstr "⟦Réstárt tó úpdáté tó {0}··········⟧"
+
 msgctxt "ShellText"
 msgid "Open Hyades"
 msgstr "⟦Ópéñ Hyades·····⟧"
@@ -2143,6 +2167,66 @@ msgstr "⟦Hyades ís álréádý rúññíñg íñ áñóthér prógrám (hýá
 msgctxt "ShellText"
 msgid "Hyades couldn't open its data folder. Check that the drive is there and that you can write to it, then open Hyades again."
 msgstr "⟦Hyades çóúldñ't ópéñ íts dátá fóldér. Çhéçk thát thé drívé ís théré áñd thát ýóú çáñ wríté tó ít, théñ ópéñ Hyades ágáíñ.·················································⟧"
+
+msgctxt "UpdateUi"
+msgid "Checking…"
+msgstr "⟦Çhéçkíñg…····⟧"
+
+msgctxt "UpdateUi"
+msgid "You're up to date"
+msgstr "⟦Ýóú'ré úp tó dáté·······⟧"
+
+msgctxt "UpdateUi"
+msgid "Couldn't check for updates. Try again later."
+msgstr "⟦Çóúldñ't çhéçk fór úpdátés. Trý ágáíñ látér.··················⟧"
+
+msgctxt "UpdateUi"
+msgid "Downloading the update… {0}%"
+msgstr "⟦Dówñlóádíñg thé úpdáté… {0}%············⟧"
+
+msgctxt "UpdateUi"
+msgid "Hyades {0} is ready. Restart to update."
+msgstr "⟦Hyades {0} ís réádý. Réstárt tó úpdáté.················⟧"
+
+msgctxt "UpdateUi"
+msgid "Hyades {0} is out."
+msgstr "⟦Hyades {0} ís óút.········⟧"
+
+msgctxt "UpdateBanner"
+msgid "Hyades {0} is ready"
+msgstr "⟦Hyades {0} ís réádý········⟧"
+
+msgctxt "UpdateBanner"
+msgid "Hyades couldn't update itself here"
+msgstr "⟦Hyades çóúldñ't úpdáté ítsélf héré··············⟧"
+
+msgctxt "UpdateBanner"
+msgid "Hyades {0} is out"
+msgstr "⟦Hyades {0} ís óút·······⟧"
+
+msgctxt "UpdateBanner"
+msgid "Restart to update. Downloads continue afterwards."
+msgstr "⟦Réstárt tó úpdáté. Dówñlóáds çóñtíñúé áftérwárds.····················⟧"
+
+msgctxt "UpdateBanner"
+msgid "Get the new version from the website."
+msgstr "⟦Gét thé ñéw vérsíóñ fróm thé wébsíté.···············⟧"
+
+msgctxt "UpdateBanner"
+msgid "Later"
+msgstr "⟦Látér··⟧"
+
+msgctxt "UpdateBanner"
+msgid "Not now"
+msgstr "⟦Ñót ñów···⟧"
+
+msgctxt "UpdateBanner"
+msgid "Restart"
+msgstr "⟦Réstárt···⟧"
+
+msgctxt "UpdateBanner"
+msgid "Get it"
+msgstr "⟦Gét ít···⟧"
 
 msgctxt "LinkField"
 msgid "Paste a link"

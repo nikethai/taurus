@@ -7,6 +7,7 @@ import { IconButton, TextButton, LineEdit } from "../widgets.slint";
 import { LinkField } from "../welcome.slint";
 import { AdvList, SpeedFooter } from "main.slint";
 import { Sidebar } from "sidebar.slint";
+import { UpdateUi, UpdateBanner } from "../update.slint";
 
 export component AdvWide inherits Rectangle {
     in property <[AdvRowVm]> rows;
@@ -127,6 +128,11 @@ export component AdvWide inherits Rectangle {
                         }
                     }
                 }
+            }
+            if UpdateUi.banner: HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                UpdateBanner { }
             }
             AdvList {
                 vertical-stretch: 1;

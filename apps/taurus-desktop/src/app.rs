@@ -41,6 +41,8 @@ use crate::links::ClipboardFilter;
 use crate::pump::ViewState;
 use crate::settings_flow::SettingsWriter;
 use crate::shell_text::ShellStrings;
+use crate::update_apply::Restart;
+use crate::update_flow::{UpdateMsg, Updates};
 use crate::{AppWindow, icon};
 
 /// How often engine state reaches the window, at most.
@@ -111,6 +113,8 @@ pub(crate) enum UiMsg {
     },
     /// A tool action or forgetting passwords answered (Advanced Settings).
     Settings(SettingsMsg),
+    /// An update check or download moved on (`update_flow.rs`).
+    Update(UpdateMsg),
 }
 
 /// Hands links and clipboard text to the app from any thread.
@@ -181,6 +185,10 @@ pub struct App {
     pub(crate) offer_links: Arc<AtomicBool>,
     bridge: RefCell<Option<tokio::task::JoinHandle<()>>>,
     timer: Timer,
+    /// Hyades' own updates (`update_flow.rs`).
+    pub(crate) updates: Updates,
+    /// What `main` starts once the app has quit to update.
+    pending_restart: RefCell<Option<Restart>>,
 }
 
 /// Connects a window callback to an `App` method without keeping the app
@@ -239,6 +247,8 @@ impl App {
             offer_links,
             bridge: RefCell::new(None),
             timer: Timer::default(),
+            updates: Updates::default(),
+            pending_restart: RefCell::new(None),
         });
 
         let size = 64;
@@ -370,6 +380,7 @@ impl App {
             .rollback_tool(&kind));
         on!(settings, self, on_forget_passwords, |a| a
             .forget_passwords());
+        self.connect_updates(ui);
 
         let weak = Rc::downgrade(self);
         ui.window().on_close_requested(move || {
@@ -423,6 +434,18 @@ impl App {
             eprintln!("hyades: the engine did not stop within {QUIT_TIMEOUT:?}");
         }
         let _ = slint::quit_event_loop();
+    }
+
+    /// Quits so that `restart` runs after the engine has stopped (`main`
+    /// takes it with `pending_restart`).
+    pub fn restart_to_update(&self, restart: Restart) {
+        *self.pending_restart.borrow_mut() = Some(restart);
+        self.quit();
+    }
+
+    /// What to start after quitting, if the app quit to update.
+    pub fn pending_restart(&self) -> Option<Restart> {
+        self.pending_restart.borrow().clone()
     }
 
     /// Shows the window again (from the tray) and unminimizes it; it is not
@@ -539,6 +562,7 @@ impl App {
             UiMsg::AdvAdded { seq, result } => self.adv_added(seq, result),
             UiMsg::Grabbed { run, result } => self.grabbed(run, *result),
             UiMsg::Settings(msg) => self.settings_msg(msg),
+            UiMsg::Update(msg) => self.update_msg(msg),
         }
     }
 

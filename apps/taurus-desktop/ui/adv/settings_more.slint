@@ -4,6 +4,7 @@ import { Messages } from "../messages.slint";
 import { TextButton, Toggle, Segment, Segmented, ProgressBar } from "../widgets.slint";
 import { Swatch } from "../settings.slint";
 import { SettingsUi, ToolRowVm } from "settings_ui.slint";
+import { UpdateUi } from "../update.slint";
 import { SectionHeading, FieldLabel, Hint, FieldError, Divider } from "settings_parts.slint";
 
 // One video tool: its name, version or state, and Roll back.
@@ -194,6 +195,41 @@ export component GeneralSection inherits VerticalLayout {
         checked: SettingsUi.settings.advanced;
         clicked => {
             SettingsUi.changed("advanced", SettingsUi.settings.advanced ? "false" : "true");
+        }
+    }
+    Toggle {
+        label: @tr("Check for updates automatically");
+        checked: SettingsUi.settings.check-updates;
+        clicked => {
+            SettingsUi.changed("check-updates", SettingsUi.settings.check-updates ? "false" : "true");
+        }
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            FieldLabel {
+                text: @tr("Hyades {0}", UpdateUi.current);
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+            if UpdateUi.status() != "": Hint {
+                text: UpdateUi.status();
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            TextButton {
+                text: @tr("Check now");
+                // Engines has a "Check now" too.
+                accessible-label: @tr("Check for updates");
+                enabled: UpdateUi.state != "checking" && UpdateUi.state != "downloading";
+                clicked => {
+                    UpdateUi.check-now();
+                }
+            }
         }
     }
 }

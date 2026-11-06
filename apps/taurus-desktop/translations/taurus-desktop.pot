@@ -2,7 +2,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
-"POT-Creation-Date: 2026-11-06 13:51+0000\n"
+"POT-Creation-Date: 2026-11-06 15:03+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -1151,6 +1151,23 @@ msgctxt "GeneralSection"
 msgid "Sources, filters and more details"
 msgstr ""
 
+msgctxt "GeneralSection"
+msgid "Check for updates automatically"
+msgstr ""
+
+msgctxt "GeneralSection"
+msgid "Hyades {0}"
+msgstr ""
+
+msgctxt "GeneralSection"
+msgid "Check now"
+msgstr ""
+
+#. Engines has a "Check now" too.
+msgctxt "GeneralSection"
+msgid "Check for updates"
+msgstr ""
+
 msgctxt "DownloadsSection"
 msgid "Downloads"
 msgstr ""
@@ -2129,6 +2146,14 @@ msgctxt "Settings"
 msgid "Appearance"
 msgstr ""
 
+msgctxt "Settings"
+msgid "Hyades {0} · Free and open source"
+msgstr ""
+
+msgctxt "Settings"
+msgid "Restart to update to {0}"
+msgstr ""
+
 msgctxt "ShellText"
 msgid "Open Hyades"
 msgstr ""
@@ -2172,6 +2197,66 @@ msgctxt "ShellText"
 msgid ""
 "Hyades couldn't open its data folder. Check that the drive is there and that "
 "you can write to it, then open Hyades again."
+msgstr ""
+
+msgctxt "UpdateUi"
+msgid "Checking…"
+msgstr ""
+
+msgctxt "UpdateUi"
+msgid "You're up to date"
+msgstr ""
+
+msgctxt "UpdateUi"
+msgid "Couldn't check for updates. Try again later."
+msgstr ""
+
+msgctxt "UpdateUi"
+msgid "Downloading the update… {0}%"
+msgstr ""
+
+msgctxt "UpdateUi"
+msgid "Hyades {0} is ready. Restart to update."
+msgstr ""
+
+msgctxt "UpdateUi"
+msgid "Hyades {0} is out."
+msgstr ""
+
+msgctxt "UpdateBanner"
+msgid "Hyades {0} is ready"
+msgstr ""
+
+msgctxt "UpdateBanner"
+msgid "Hyades couldn't update itself here"
+msgstr ""
+
+msgctxt "UpdateBanner"
+msgid "Hyades {0} is out"
+msgstr ""
+
+msgctxt "UpdateBanner"
+msgid "Restart to update. Downloads continue afterwards."
+msgstr ""
+
+msgctxt "UpdateBanner"
+msgid "Get the new version from the website."
+msgstr ""
+
+msgctxt "UpdateBanner"
+msgid "Later"
+msgstr ""
+
+msgctxt "UpdateBanner"
+msgid "Not now"
+msgstr ""
+
+msgctxt "UpdateBanner"
+msgid "Restart"
+msgstr ""
+
+msgctxt "UpdateBanner"
+msgid "Get it"
 msgstr ""
 
 msgctxt "LinkField"

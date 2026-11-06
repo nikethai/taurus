@@ -23,6 +23,7 @@ use taurus_desktop::app::App;
 use taurus_desktop::i18n;
 use taurus_desktop::rows;
 use taurus_desktop::shell_text::ShellStrings;
+use taurus_desktop::update_apply::Restart;
 use taurus_desktop::{
     AdvRowVm, AppWindow, BannerVm, CountdownVm, DetailVm, FilesDialogVm, LinksUi, PasswordDialogVm,
     RemoveDialogVm, RowVm, Screen, SettingsUi, SettingsVm, Theme, TorrentFileVm, WhenDoneUi,
@@ -85,9 +86,11 @@ fn ui_smoke() {
     add_page_offers_find_files(&ui, &ctx);
     whendone_menu_sets_when_done_and_speed(&ui, &ctx);
     adv_settings_sections_and_values(&ui, &ctx);
+    check_updates_toggle_saves(&ui, &ctx);
     torrent_detail_files_and_overrides();
     adv_add_torrent_picker();
     quit_shuts_down_engine_cleanly(&ui, &ctx);
+    restart_records_and_quits();
 }
 
 fn window_title(ui: &AppWindow) {
@@ -4195,6 +4198,91 @@ fn adv_settings_sections_and_values(ui: &AppWindow, ctx: &Ctx) {
     assert_ne!(ui.get_screen(), Screen::Settings, "{WHAT}: Back");
     ui.invoke_setting_changed("advanced".into(), "false".into());
     ui.window().set_size(COMPACT);
+}
+
+/// Advanced Settings' General section: the running version with its own
+/// "Check now", and the automatic check switched off through the engine.
+fn check_updates_toggle_saves(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "check_updates_toggle_saves";
+    ui.window().set_size(SETTINGS_TALL);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    ui.set_screen(Screen::Settings);
+    refresh_tree(ui);
+    assert!(
+        ctx.engine.settings().ui.check_updates,
+        "{WHAT}: on by default"
+    );
+    let version = format!("Hyades {}", env!("CARGO_PKG_VERSION"));
+    assert!(shows_text(ui, &version), "{WHAT}: no {version:?} row");
+    only_with_role(ui, AccessibleRole::Button, "Check for updates", WHAT);
+    let toggle = only_with_role(
+        ui,
+        AccessibleRole::Switch,
+        "Check for updates automatically",
+        WHAT,
+    );
+    assert_eq!(toggle.accessible_checked(), Some(true), "{WHAT}: shown on");
+    toggle.invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: saved off"), || {
+        !ctx.engine.settings().ui.check_updates && toggle.accessible_checked() == Some(false)
+    });
+    ui.set_screen(Screen::Downloads);
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// Review Focus 4: a ready update's banner; "Later" hides it, and
+/// "Restart" records what to start and quits the normal way (window
+/// hidden, engine stopped). Simple Settings offers the restart too.
+fn restart_records_and_quits() {
+    const WHAT: &str = "restart_records_and_quits";
+    let ui = AppWindow::new().unwrap();
+    let ctx = Ctx::start(&ui);
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    ui.show().unwrap();
+    let title = "Hyades 1.1.0 is ready";
+    let shown = |label: &str| {
+        refresh_tree(&ui);
+        shows_text(&ui, label)
+    };
+    assert!(!shown(title), "{WHAT}: banner before any update");
+    let restart = Restart::Relaunch("/x".into());
+    ctx.app.show_update_ready("1.1.0", restart.clone());
+    wait_until(&format!("{WHAT}: banner"), || shown(title));
+    assert!(
+        shows_text(&ui, "Restart to update. Downloads continue afterwards."),
+        "{WHAT}: body"
+    );
+    only_button(&ui, "Later", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: Later hides it"), || !shown(title));
+
+    ui.set_screen(Screen::Settings);
+    refresh_tree(&ui);
+    let version = format!(
+        "Hyades {} · Free and open source",
+        env!("CARGO_PKG_VERSION")
+    );
+    assert!(shows_text(&ui, &version), "{WHAT}: no {version:?} footer");
+    only_button(&ui, "Restart to update to 1.1.0", WHAT);
+    ui.set_screen(Screen::Downloads);
+
+    ctx.app.show_update_ready("1.1.0", restart.clone());
+    wait_until(&format!("{WHAT}: banner again"), || shown(title));
+    assert_eq!(ctx.app.pending_restart(), None, "{WHAT}: recorded early");
+    only_button(&ui, "Restart", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        ctx.app.pending_restart(),
+        Some(restart),
+        "{WHAT}: not recorded"
+    );
+    assert!(!ui.window().is_visible(), "{WHAT}: window still shown");
+    ctx.rt.block_on(async {
+        let engine = Engine::open(EngineConfig::new(ctx.data_dir()))
+            .await
+            .unwrap_or_else(|e| panic!("{WHAT}: engine still running: {e}"));
+        engine.shutdown().await.unwrap();
+    });
 }
 
 /// The yt-dlp row's version on the Engines section.

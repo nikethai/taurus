@@ -8,6 +8,7 @@ import { IconButton, Pressable, TextButton } from "../widgets.slint";
 import { LinkField } from "../welcome.slint";
 import { AdvRow } from "row.slint";
 import { WhenDoneUi } from "whendone.slint";
+import { UpdateUi, UpdateBanner } from "../update.slint";
 
 component AdvTab inherits Pressable {
     in property <string> text;
@@ -303,6 +304,12 @@ export component AdvCompact inherits Rectangle {
                     }
                 }
             }
+        }
+
+        if UpdateUi.banner: HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            UpdateBanner { }
         }
 
         AdvList {

@@ -70,6 +70,9 @@ librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls
 # Tool archives (M5): reading in core, writing in the testkit's fake host.
 zip = { version = "9.2", default-features = false, features = ["deflate"] }
 tar = "0.4"
+# The macOS update bundle (.app.tar.gz) in the desktop app; pure-Rust
+# deflate (miniz_oxide), no zlib.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 
 # Update manifest signatures (M7): checking in core; signing in the testkit

@@ -7,6 +7,7 @@ import { IconButton, TextButton, Pressable } from "widgets.slint";
 import { LinkField } from "welcome.slint";
 import { Row } from "row.slint";
 import { ToolsBanner } from "banner.slint";
+import { UpdateUi, UpdateBanner } from "update.slint";
 
 component TabButton inherits Pressable {
     in property <string> text;
@@ -144,6 +145,12 @@ export component Downloads inherits Rectangle {
                     root.link-entered(link);
                 }
             }
+        }
+
+        if UpdateUi.banner: HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            UpdateBanner { }
         }
 
         if root.tools-banner != "": HorizontalLayout {
