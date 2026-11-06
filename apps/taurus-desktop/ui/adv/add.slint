@@ -309,8 +309,14 @@ export component AdvAdd inherits FocusScope {
                     }
                 }
 
+                // The side padding is on the row, not the card: the
+                // title's wrapped height is measured without the card's
+                // own padding, so it came out a line short.
                 if root.shown: Card {
+                    padding-x: 0;
                     HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
                         padding-top: 10px;
                         padding-bottom: 10px;
                         spacing: 14px;

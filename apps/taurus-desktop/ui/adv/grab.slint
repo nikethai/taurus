@@ -38,6 +38,7 @@ component Chip inherits Pressable {
             vertical-alignment: center;
             font-size: 12px;
             font-weight: root.selected ? 600 : 400;
+            overflow: elide;
             color: root.selected ? (root.kind == "" ? Theme.accent-ink : Theme.kind-fg(root.kind)) : Theme.text;
             accessible-role: none;
         }
@@ -197,6 +198,8 @@ export component AdvGrab inherits FocusScope {
                 spacing: 6px;
                 accessible-role: tab-list;
                 Chip {
+                    // "All" stays whole; the other chips elide first.
+                    min-width: self.preferred-width;
                     text: @tr("All");
                     count: root.vm.count-all;
                     selected: root.vm.chip == "all";

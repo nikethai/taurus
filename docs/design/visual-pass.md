@@ -149,3 +149,42 @@ purpose, with the reason.
 - [x] Colours — tinted section list with a line, chosen section on the selection tint in accent ink.
 - [x] Type — 13/500 entries, chosen 600.
 - [ ] stays: States — the header bar with Back stays (one Settings screen for both widths) instead of "‹ Back to downloads" in the section list; sections have no icons and keep the M6b names ("General" for "Browser", M6b plan).
+
+## Pseudo-locale (M7 Task 12)
+
+The app was run under Xvfb with `HYADES_LANG=en_XA` (every string padded
+to at least 1.4× and wrapped in ⟦…⟧) at 420×640, with the same seeded
+downloads, through every board above that fits that width (Simple
+welcome, downloads, add and settings; compact downloads, add, torrent,
+grab links, several links, when done and settings; the compact details
+of a failed, a torrent, a video and a live download) and every dialog:
+sign-in (with "wrong password"), remove, choose files, the update banner
+ready / available / couldn't update, the tools banner fetching and failed,
+the clipboard offer, the when-done countdown, and the footer with Resume
+all and "Then shut down". Long pages (settings, add) were also shot in a
+taller window so nothing below the fold was missed. English was shot
+again afterwards to check nothing changed there.
+
+Rules: buttons and tabs elide; sentences wrap; a row with an action keeps
+the action at its natural width and its text takes the rest; no fixed
+widths for English.
+
+- [x] Speed and ratio segments (when-done card, Settings → Downloads and
+  Torrents): labels ran over the next segment; now each label is bounded
+  by its segment and elides.
+- [x] Grab links type chips: the row ran past the right edge; chip labels
+  now elide (counts stay), and "All" keeps its natural width.
+- [x] Advanced Add card (video, file or torrent): with a title on two
+  lines, the last line ran below the card. The card's side padding now
+  sits on its row: wrapped text inside a `Card` is measured without the
+  card's own side padding, so it came out a line short.
+- [x] Text buttons elide when squeezed, so a long label never clips or
+  pushes another button out of the window (actions beside text keep their
+  width: the text gives way first).
+- [x] Detail labels (Saved to, Until ratio, …) wrap instead of being cut
+  at their 96 px column.
+- Checked and fine as they were: compact list rows, tabs, link row and
+  footer; Simple rows, tabs and footer; header titles; every dialog and
+  banner above (their sentences already wrap and their buttons fit).
+- `pseudo_fits_at_420` (tests/ui.rs) checks, under `en_XA` at 420 px,
+  the segment labels, the grab chips and buttons, and the Add card.

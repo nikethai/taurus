@@ -148,6 +148,9 @@ export component TextButton inherits Pressable {
             vertical-alignment: center;
             font-size: root.font-size;
             font-weight: root.kind == "primary" || root.kind == "quiet" ? 600 : 500;
+            // Squeezed by a long translation, the label elides; the
+            // button never clips or leaves the window.
+            overflow: elide;
             color: root.kind == "primary" ? Theme.accent-text
                 : root.kind == "quiet" ? Theme.accent-ink
                 : root.kind == "muted" ? Theme.muted : Theme.text;
@@ -391,7 +394,10 @@ export component Segment inherits Pressable {
     accessible-checkable: true;
     accessible-checked: selected;
 
+    // Bounded by the segment, so a long label elides inside it.
     Text {
+        x: 2px;
+        width: parent.width - 4px;
         text: root.text;
         horizontal-alignment: center;
         vertical-alignment: center;

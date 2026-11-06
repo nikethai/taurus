@@ -25,7 +25,7 @@ use taurus_desktop::rows;
 use taurus_desktop::shell_text::ShellStrings;
 use taurus_desktop::update_apply::Restart;
 use taurus_desktop::{
-    AdvAddVm, AdvRowVm, AppWindow, BannerVm, CountdownVm, DetailVm, FilesDialogVm, LinksUi,
+    AdvAddVm, AdvRowVm, AppWindow, BannerVm, CountdownVm, DetailVm, FilesDialogVm, GrabVm, LinksUi,
     PasswordDialogVm, RemoveDialogVm, RowVm, Screen, SettingsUi, SettingsVm, Theme, TorrentFileVm,
     WhenDoneUi,
 };
@@ -53,6 +53,7 @@ fn ui_smoke() {
     wide_detail_holds_long_names();
     wide_fits_at_900();
     compact_footer_fits_at_360();
+    pseudo_fits_at_420();
     torrent_add_scrolls_only_its_list();
     refused_add_leaves_no_band(&ui);
     let ctx = Ctx::start(&ui);
@@ -4690,6 +4691,114 @@ fn compact_footer_fits_at_360() {
     only_button(&ui, "Then shut down", WHAT);
     buttons_fit(&ui, 360.0, WHAT);
     ui.global::<WhenDoneUi>().set_when_done("nothing".into());
+}
+
+/// `inner` lies inside `outer` (half a pixel of rounding allowed).
+fn inside(inner: &ElementHandle, outer: &ElementHandle) -> bool {
+    let (i, o) = (inner.absolute_position(), outer.absolute_position());
+    let (is, os) = (inner.size(), outer.size());
+    i.x >= o.x - 0.5
+        && i.y >= o.y - 0.5
+        && i.x + is.width <= o.x + os.width + 0.5
+        && i.y + is.height <= o.y + os.height + 0.5
+}
+
+/// Under the pseudo-locale (every string at least 1.4x longer) a 420 px
+/// compact window keeps its text inside its controls and every action
+/// inside the window: the speed segments, the grab links chips and
+/// buttons, and the Add screen's video card.
+fn pseudo_fits_at_420() {
+    const WHAT: &str = "pseudo_fits_at_420";
+    let ui = AppWindow::new().unwrap();
+    ui.show().unwrap();
+    i18n::apply(Some("en_XA"));
+    ui.window().set_size(slint::LogicalSize::new(420.0, 640.0));
+    ui.set_layout("compact".into());
+    ui.set_screen(Screen::Downloads);
+
+    // The when-done card's speeds: each label stays in its segment.
+    ui.global::<WhenDoneUi>().set_open(true);
+    refresh_tree(&ui);
+    let segments = ElementHandle::find_by_element_type_name(&ui, "Segment").collect::<Vec<_>>();
+    assert!(segments.len() >= 4, "{WHAT}: {} segments", segments.len());
+    for seg in &segments {
+        for text in seg.query_descendants().match_type_name("Text").find_all() {
+            assert!(
+                inside(&text, seg),
+                "{WHAT}: {:?}'s label runs out of its segment",
+                seg.accessible_label()
+            );
+        }
+    }
+    buttons_fit(&ui, 420.0, WHAT);
+    ui.global::<WhenDoneUi>().set_open(false);
+
+    // Grab links: the type chips and the buttons stay in the window.
+    let links = ui.global::<LinksUi>();
+    links.set_grab(GrabVm {
+        page_url: "https://example.org/files/".into(),
+        chip: "all".into(),
+        count_all: 9,
+        count_video: 1,
+        count_docs: 2,
+        count_archives: 4,
+        count_images: 2,
+        shown_count: 9,
+        ..Default::default()
+    });
+    ui.set_screen(Screen::Grab);
+    refresh_tree(&ui);
+    let chips = ElementHandle::find_by_element_type_name(&ui, "Chip").collect::<Vec<_>>();
+    assert_eq!(chips.len(), 5, "{WHAT}: chips");
+    for chip in &chips {
+        assert!(
+            right_edge(chip) <= 420.5,
+            "{WHAT}: chip {:?} ends at {}",
+            chip.accessible_label(),
+            right_edge(chip)
+        );
+    }
+    buttons_fit(&ui, 420.0, WHAT);
+    links.set_grab(GrabVm::default());
+
+    // The Add screen's card holds its wrapped title and every line under it.
+    ui.set_adv_add(AdvAddVm {
+        kind: "media".into(),
+        badge: "media".into(),
+        title: "Sprite Fright — Blender Open Movie".into(),
+        uploader: "Blender Studio".into(),
+        duration_text: "10:24".into(),
+        size_text: "2.0 GB".into(),
+        checksum_ok: true,
+        ..Default::default()
+    });
+    ui.set_screen(Screen::Add);
+    refresh_tree(&ui);
+    let card = ElementHandle::find_by_element_type_name(&ui, "Card")
+        .find(|card| {
+            card.query_descendants()
+                .match_accessible_role(AccessibleRole::Text)
+                .find_all()
+                .iter()
+                .any(|t| {
+                    t.accessible_label()
+                        .is_some_and(|l| l.starts_with("Sprite"))
+                })
+        })
+        .expect("the video card");
+    for text in card.query_descendants().match_type_name("Text").find_all() {
+        assert!(
+            inside(&text, &card),
+            "{WHAT}: a line of the video card ends at {} below a card ending at {}",
+            text.absolute_position().y + text.size().height,
+            card.absolute_position().y + card.size().height
+        );
+    }
+    buttons_fit(&ui, 420.0, WHAT);
+
+    ui.set_screen(Screen::Downloads);
+    ui.set_adv_add(AdvAddVm::default());
+    i18n::apply(Some("en"));
 }
 
 /// Pause all / Resume all in Advanced follows what can be paused: with a
