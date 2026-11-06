@@ -139,6 +139,12 @@ fn swap_appimage(path: &Path, downloaded: &Path) -> Result<(), ApplyError> {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))?;
         }
+        // On disk before it takes the AppImage's name: a power loss must
+        // not leave a truncated AppImage.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&new)?
+            .sync_all()?;
         std::fs::rename(&new, path)
     })();
     result.map_err(|e| {
@@ -347,9 +353,23 @@ mod tests {
         let result = apply(&InstallKind::AppImage { path: path.clone() }, &downloaded);
         std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
         if probe.is_ok() {
-            // Running as root: every folder is writable.
-            eprintln!("skipped: the read-only folder is writable here");
-            return;
+            // Root ignores the mode bits, so the 0o555 folder cannot be
+            // checked here. Say so, and check a folder root cannot write
+            // to either; elsewhere fail instead of passing unchecked.
+            eprintln!(
+                "unwritable_appimage_falls_back: the 0o555 folder is writable \
+                 (running as root); checking /proc instead"
+            );
+            #[cfg(target_os = "linux")]
+            {
+                let in_proc = InstallKind::AppImage {
+                    path: PathBuf::from("/proc/Hyades.AppImage"),
+                };
+                assert_eq!(apply(&in_proc, &downloaded), Err(ApplyError::NotWritable));
+                return;
+            }
+            #[cfg(not(target_os = "linux"))]
+            panic!("cannot make a folder unwritable for this user (root?)");
         }
         assert_eq!(result, Err(ApplyError::NotWritable));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");

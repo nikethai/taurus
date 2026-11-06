@@ -225,7 +225,9 @@ export component GeneralSection inherits VerticalLayout {
                 text: @tr("Check now");
                 // Engines has a "Check now" too.
                 accessible-label: @tr("Check for updates");
-                enabled: UpdateUi.state != "checking" && UpdateUi.state != "downloading";
+                // A ready update is installed with Restart.
+                enabled: UpdateUi.state != "checking" && UpdateUi.state != "downloading"
+                    && UpdateUi.state != "ready";
                 clicked => {
                     UpdateUi.check-now();
                 }

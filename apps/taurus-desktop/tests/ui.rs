@@ -4248,7 +4248,7 @@ fn restart_records_and_quits() {
     };
     assert!(!shown(title), "{WHAT}: banner before any update");
     let restart = Restart::Relaunch("/x".into());
-    ctx.app.show_update_ready("1.1.0", restart.clone());
+    ctx.app.show_update_ready("1.1.0", Some(restart.clone()));
     wait_until(&format!("{WHAT}: banner"), || shown(title));
     assert!(
         shows_text(&ui, "Restart to update. Downloads continue afterwards."),
@@ -4267,7 +4267,33 @@ fn restart_records_and_quits() {
     only_button(&ui, "Restart to update to 1.1.0", WHAT);
     ui.set_screen(Screen::Downloads);
 
-    ctx.app.show_update_ready("1.1.0", restart.clone());
+    // Review Focus 3: Restart where the update cannot be put in place
+    // (this copy cannot update itself) offers the website instead.
+    ctx.app.show_update_ready("1.1.0", None);
+    wait_until(&format!("{WHAT}: banner for the failing install"), || {
+        shown(title)
+    });
+    only_button(&ui, "Restart", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: install failed"), || {
+        shown("Hyades couldn't update itself here")
+    });
+    assert!(
+        shows_text(&ui, "Get the new version from the website."),
+        "{WHAT}: fallback body"
+    );
+    only_button(&ui, "Get it", WHAT);
+    only_button(&ui, "Not now", WHAT);
+    assert_eq!(
+        ctx.app.pending_restart(),
+        None,
+        "{WHAT}: failed restart recorded"
+    );
+    assert!(
+        ui.window().is_visible(),
+        "{WHAT}: quit after a failed install"
+    );
+
+    ctx.app.show_update_ready("1.1.0", Some(restart.clone()));
     wait_until(&format!("{WHAT}: banner again"), || shown(title));
     assert_eq!(ctx.app.pending_restart(), None, "{WHAT}: recorded early");
     only_button(&ui, "Restart", WHAT).invoke_accessible_default_action();
