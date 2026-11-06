@@ -7,6 +7,10 @@ set -euo pipefail
 dist=${1:?usage: packaging/check-linux.sh <dist dir>}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 expected="$here/linux/dev.nikethai.hyades.desktop"
+# Every package installs its desktop entry under this name, and the
+# AppStream metainfo's launchable names it.
+entry=hyades.desktop
+metainfo=usr/share/metainfo/dev.nikethai.hyades.metainfo.xml
 
 fail() {
   echo "check-linux: $*" >&2
@@ -33,11 +37,14 @@ mime_types() {
 # .torrent files, like packaging/linux/dev.nikethai.hyades.desktop.
 check_desktop() {
   local file=$1 what=$2
-  [ "$(desktop_value "$file" Name)" = "Hyades" ] || fail "$what: Name is not Hyades"
-  desktop_value "$file" Exec | grep -Eqx 'hyades %[uU]' ||
-    fail "$what: Exec is '$(desktop_value "$file" Exec)', not 'hyades %u' or 'hyades %U'"
-  local mime
+  [ -f "$file" ] || fail "$what: no usr/share/applications/$entry"
+  local name exec mime
+  name=$(desktop_value "$file" Name)
+  exec=$(desktop_value "$file" Exec)
   mime=$(mime_types "$file")
+  [ "$name" = "Hyades" ] || fail "$what: Name is '$name', not Hyades"
+  grep -Eqx 'hyades %[uU]' <<<"$exec" ||
+    fail "$what: Exec is '$exec', not 'hyades %u' or 'hyades %U'"
   for type in x-scheme-handler/magnet application/x-bittorrent; do
     grep -qx "$type" <<<"$mime" || fail "$what: MimeType lacks $type"
   done
@@ -45,11 +52,17 @@ check_desktop() {
     fail "$what: MimeType differs from packaging/linux/dev.nikethai.hyades.desktop"
 }
 
-# The single file in $1 (described as $2).
-first_desktop() {
-  local files=("$1"/*.desktop)
-  [ ${#files[@]} -eq 1 ] || fail "$2: expected one .desktop file, found ${#files[@]}"
-  echo "${files[0]}"
+# The metainfo under unpacked package root $1 (described as $2) names the
+# package's desktop entry as its launchable.
+check_metainfo() {
+  local root=$1 what=$2
+  [ -f "$root/$metainfo" ] || fail "$what: no $metainfo"
+  local launchable
+  launchable=$(sed -n 's|.*<launchable type="desktop-id">\(.*\)</launchable>.*|\1|p' "$root/$metainfo")
+  [ "$launchable" = "$entry" ] ||
+    fail "$what: metainfo launchable is '$launchable', not $entry"
+  [ -f "$root/usr/share/applications/$launchable" ] ||
+    fail "$what: metainfo launchable $launchable is not in the package"
 }
 
 check_desktop "$expected" "packaging/linux/dev.nikethai.hyades.desktop"
@@ -59,16 +72,18 @@ debs=("$dist"/*.deb)
 [ ${#debs[@]} -gt 0 ] || fail "no .deb found in $dist"
 for deb in "${debs[@]}"; do
   name=$(basename "$deb")
+  contents=$(dpkg-deb -c "$deb") || fail "$name: dpkg-deb -c failed"
   # Paths with or without a leading "./", depending on the tool.
-  list=$(dpkg-deb -c "$deb" | awk '{ print $NF }' | sed 's|^\./||')
+  list=$(awk '{ print $NF }' <<<"$contents" | sed 's|^\./||')
   grep -qx 'usr/bin/hyades' <<<"$list" || fail "$name: no usr/bin/hyades"
-  grep -Eqx 'usr/share/applications/[^/]+\.desktop' <<<"$list" ||
-    fail "$name: no usr/share/applications/*.desktop"
+  grep -qx "usr/share/applications/$entry" <<<"$list" ||
+    fail "$name: no usr/share/applications/$entry"
   grep -Eqx 'usr/share/icons/hicolor/256x256/apps/[^/]+\.png' <<<"$list" ||
     fail "$name: no 256x256 icon"
   rm -rf "$work/deb"
-  dpkg-deb -x "$deb" "$work/deb"
-  check_desktop "$(first_desktop "$work/deb/usr/share/applications" "$name")" "$name"
+  dpkg-deb -x "$deb" "$work/deb" || fail "$name: dpkg-deb -x failed"
+  check_desktop "$work/deb/usr/share/applications/$entry" "$name"
+  check_metainfo "$work/deb" "$name"
 done
 
 # rpm
@@ -77,10 +92,10 @@ rpms=("$dist"/*.rpm)
 [ ${#rpms[@]} -gt 0 ] || fail "no .rpm found in $dist"
 for pkg in "${rpms[@]}"; do
   name=$(basename "$pkg")
-  list=$(rpm -qlp "$pkg" 2>/dev/null)
+  list=$(rpm -qlp "$pkg" 2>/dev/null) || fail "$name: rpm -qlp failed"
   grep -qx '/usr/bin/hyades' <<<"$list" || fail "$name: no /usr/bin/hyades"
-  grep -Eqx '/usr/share/applications/[^/]+\.desktop' <<<"$list" ||
-    fail "$name: no /usr/share/applications/*.desktop"
+  grep -qx "/usr/share/applications/$entry" <<<"$list" ||
+    fail "$name: no /usr/share/applications/$entry"
 done
 
 # AppImage (--appimage-extract needs no FUSE)
@@ -95,7 +110,8 @@ for app in "${appimages[@]}"; do
     fail "$name: --appimage-extract failed"
   root="$work/appimage/squashfs-root"
   [ -f "$root/usr/bin/hyades" ] || fail "$name: no usr/bin/hyades"
-  check_desktop "$(first_desktop "$root/usr/share/applications" "$name")" "$name"
+  check_desktop "$root/usr/share/applications/$entry" "$name"
+  check_metainfo "$root" "$name"
 done
 
 echo ok

@@ -19,7 +19,7 @@ summary = "Download files, videos and torrents."
 url = "https://github.com/nikethai/taurus"
 assets = [
     { source = "target/release/hyades", dest = "/usr/bin/hyades", mode = "755" },
-    { source = "packaging/linux/dev.nikethai.hyades.desktop", dest = "/usr/share/applications/dev.nikethai.hyades.desktop", mode = "644" },
+    { source = "packaging/linux/dev.nikethai.hyades.desktop", dest = "/usr/share/applications/hyades.desktop", mode = "644" },
     { source = "packaging/linux/dev.nikethai.hyades.metainfo.xml", dest = "/usr/share/metainfo/dev.nikethai.hyades.metainfo.xml", mode = "644" },
     { source = "packaging/icons/32.png", dest = "/usr/share/icons/hicolor/32x32/apps/dev.nikethai.hyades.png", mode = "644" },
     { source = "packaging/icons/64.png", dest = "/usr/share/icons/hicolor/64x64/apps/dev.nikethai.hyades.png", mode = "644" },

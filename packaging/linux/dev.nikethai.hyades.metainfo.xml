@@ -14,11 +14,14 @@
   <developer id="dev.nikethai">
     <name>nikethai</name>
   </developer>
-  <launchable type="desktop-id">dev.nikethai.hyades.desktop</launchable>
+  <launchable type="desktop-id">hyades.desktop</launchable>
   <url type="homepage">https://github.com/nikethai/taurus</url>
   <provides>
     <binary>hyades</binary>
     <mediatype>application/x-bittorrent</mediatype>
   </provides>
   <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0"/>
+  </releases>
 </component>

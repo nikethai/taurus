@@ -8,6 +8,7 @@ identifier = "dev.nikethai.hyades"
 publisher = "nikethai"
 authors = ["nikethai"]
 description = "Download files, videos and torrents."
+long-description = "Hyades downloads files, videos and torrents. It splits big downloads into parts, resumes after a crash, and keeps going in the background."
 homepage = "https://github.com/nikethai/taurus"
 license-file = "../LICENSE"
 icons = ["icons/*.png"]
