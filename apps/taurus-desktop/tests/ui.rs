@@ -23,8 +23,9 @@ use taurus_desktop::app::App;
 use taurus_desktop::i18n;
 use taurus_desktop::shell_text::simple_message;
 use taurus_desktop::{
-    AdvRowVm, AppWindow, BannerVm, DetailVm, FilesDialogVm, LinksUi, Messages, PasswordDialogVm,
-    RemoveDialogVm, RowVm, Screen, SettingsUi, SettingsVm, Theme, TorrentFileVm, WhenDoneUi,
+    AdvRowVm, AppWindow, BannerVm, CountdownVm, DetailVm, FilesDialogVm, LinksUi, Messages,
+    PasswordDialogVm, RemoveDialogVm, RowVm, Screen, SettingsUi, SettingsVm, Theme, TorrentFileVm,
+    WhenDoneUi,
 };
 use taurus_testkit::{
     FailAfter, FakeToolHost, FileSpec, TestServer, ToolRelease, TorrentSeeder, process_args_log,
@@ -188,6 +189,48 @@ fn bundled_pseudo_locale_applies(ui: &AppWindow) {
         "{WHAT}: {tagline:?}"
     );
     assert_eq!(ui.get_window_title(), "Hyades", "{WHAT}: title translated");
+    // Plurals and placeholders take another path at run time: the number
+    // and the argument are filled in, and the catalog's plural rule picks
+    // the form.
+    let countdown = |seconds| {
+        ui.set_countdown(CountdownVm {
+            visible: true,
+            action: "sleep".into(),
+            seconds,
+        });
+        refresh_tree(ui);
+        texts_containing(ui, "Sléépíñg íñ")
+    };
+    let one = countdown(1);
+    assert!(
+        !one.is_empty() && one.iter().all(|t| t.starts_with("⟦Sléépíñg íñ 1 séçóñd·")),
+        "{WHAT}: singular {one:?}"
+    );
+    let five = countdown(5);
+    assert!(
+        !five.is_empty()
+            && five
+                .iter()
+                .all(|t| t.starts_with("⟦Sléépíñg íñ 5 séçóñds·")),
+        "{WHAT}: plural {five:?}"
+    );
+    ui.set_countdown(CountdownVm::default());
+    ui.set_remove_dialog(RemoveDialogVm {
+        visible: true,
+        id: 7,
+        name: "a.bin".into(),
+    });
+    refresh_tree(ui);
+    let remove = texts_containing(ui, "Rémóvé a.bin");
+    assert!(
+        !remove.is_empty()
+            && remove
+                .iter()
+                .all(|t| t.starts_with("⟦Rémóvé a.bin fróm thé líst?·")),
+        "{WHAT}: placeholder {remove:?}"
+    );
+    ui.set_remove_dialog(RemoveDialogVm::default());
+    refresh_tree(ui);
     i18n::apply(Some("en"));
     let tagline = texts_containing(ui, "Downloads made simple");
     assert!(!tagline.is_empty(), "{WHAT}: no English tagline");

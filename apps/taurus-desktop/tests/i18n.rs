@@ -46,8 +46,45 @@ fn pseudo_catalog_covers_every_string() {
     }
 }
 
+/// The `en_XA` msgstrs of the message `id` in component `ctxt`.
+fn pseudo_strs(ctxt: &str, id: &str) -> Vec<String> {
+    let xa = po::parse(&read("translations/en_XA/LC_MESSAGES/taurus-desktop.po"));
+    let found = xa
+        .into_iter()
+        .find(|(e, _)| e.ctxt.as_deref() == Some(ctxt) && e.id == id);
+    found
+        .unwrap_or_else(|| panic!("en_XA lacks {ctxt} | {id}"))
+        .1
+}
+
+#[test]
+fn pseudo_catalog_keeps_plurals_and_placeholders() {
+    let plural = pseudo_strs("Countdown", "Sleeping in {n} second");
+    assert_eq!(plural.len(), 2, "{plural:?}");
+    assert!(
+        plural[0].starts_with("⟦Sléépíñg íñ {n} séçóñd·"),
+        "{plural:?}"
+    );
+    assert!(
+        plural[1].starts_with("⟦Sléépíñg íñ {n} séçóñds·"),
+        "{plural:?}"
+    );
+    assert!(plural.iter().all(|s| s.ends_with('⟧')), "{plural:?}");
+    let placeholder = pseudo_strs("RemoveDialog", "Remove {0} from the list?");
+    assert_eq!(placeholder.len(), 1, "{placeholder:?}");
+    assert!(
+        placeholder[0].starts_with("⟦Rémóvé {0} fróm thé líst?·"),
+        "{placeholder:?}"
+    );
+}
+
 #[test]
 fn product_name_is_not_translatable() {
+    let pot = po::parse(&read("translations/taurus-desktop.pot"));
+    assert!(
+        pot.iter().all(|(e, _)| e.id != "Hyades"),
+        "the .pot offers the product name for translation"
+    );
     let mut files = Vec::new();
     slint_files(&root().join("ui"), &mut files);
     assert!(!files.is_empty(), "no .slint files found");

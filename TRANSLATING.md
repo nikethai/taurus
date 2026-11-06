@@ -71,7 +71,9 @@ cargo xtask i18n pseudo
 ```
 
 and commit the results. CI runs `cargo xtask i18n check`, which fails when
-they are out of date. To bring a language up to date with a new template:
+they are out of date. The template carries no `#: file:line` references, so
+moving UI code without changing its text needs neither step; `msgctxt` (the
+component's name) says where a string is used. To bring a language up to date with a new template:
 
 ```
 msgmerge -U translations/vi/LC_MESSAGES/taurus-desktop.po translations/taurus-desktop.pot

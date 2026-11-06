@@ -85,7 +85,27 @@ fn extract(root: &Path, out: &Path) -> Result<(), String> {
     if !status.success() {
         return Err(format!("{EXTRACTOR} failed ({status})"));
     }
-    Ok(())
+    // The extractor has no option to leave out `#: file:line`; without them
+    // moving UI code changes nothing here.
+    let text = read(out)?;
+    std::fs::write(out, without_references(&text)).map_err(|e| format!("{}: {e}", out.display()))
+}
+
+/// `text` without its `#: file:line` reference comments.
+fn without_references(text: &str) -> String {
+    text.lines()
+        .filter(|l| !l.starts_with("#:"))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+/// The form `check` compares: no references and no `POT-Creation-Date`.
+fn normalised(text: &str) -> String {
+    without_references(text)
+        .lines()
+        .filter(|l| !l.starts_with("\"POT-Creation-Date:"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn catalog_path(root: &Path, lang: &str) -> PathBuf {
@@ -116,7 +136,7 @@ fn write_catalogs(root: &Path) -> Result<Vec<(&'static str, PathBuf)>, String> {
 }
 
 /// Re-extracts into a temporary file and compares it with the committed
-/// `.pot` (ignoring `POT-Creation-Date`), then compares both catalogs with
+/// `.pot` (ignoring `POT-Creation-Date` and any `#:` references), then compares both catalogs with
 /// what `pseudo` would write. Every difference is listed.
 fn check(root: &Path) -> Result<(), String> {
     let fresh_path = std::env::temp_dir().join(format!("hyades-i18n-{}.pot", std::process::id()));
@@ -128,8 +148,8 @@ fn check(root: &Path) -> Result<(), String> {
     let mut problems = Vec::new();
     diff(
         POT,
-        &without_date(&fresh),
-        &without_date(&committed),
+        &normalised(&fresh),
+        &normalised(&committed),
         &mut problems,
     );
     let entries = po::parse_pot(&committed);
@@ -157,13 +177,6 @@ fn check(root: &Path) -> Result<(), String> {
         "catalog out of date: run `cargo xtask i18n extract`, then `cargo xtask i18n pseudo`"
             .into(),
     )
-}
-
-fn without_date(text: &str) -> String {
-    text.lines()
-        .filter(|l| !l.starts_with("\"POT-Creation-Date:"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn key(e: &Entry) -> String {
@@ -194,5 +207,27 @@ fn diff(name: &str, expected: &str, actual: &str, problems: &mut Vec<String>) {
             Some((i, (w, h))) => format!("{name}:{}: expected {w:?}, found {h:?}", i + 1),
             None => format!("{name}: differs in length"),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const POT: &str = "\"POT-Creation-Date: 2026-11-06 13:15+0000\\n\"\n\n\
+        #: apps/taurus-desktop/ui/welcome.slint:145\n\
+        msgctxt \"Welcome\"\nmsgid \"Downloads made simple.\"\nmsgstr \"\"\n";
+
+    #[test]
+    fn moving_a_tr_line_keeps_the_normalised_pot() {
+        let moved = POT
+            .replace("welcome.slint:145", "welcome.slint:171")
+            .replace("13:15", "14:02");
+        assert_ne!(POT, moved);
+        assert_eq!(normalised(POT), normalised(&moved));
+        assert!(!without_references(POT).contains("#:"));
+        assert!(without_references(POT).contains("msgctxt \"Welcome\"\n"));
+        let reworded = POT.replace("made simple", "made easy");
+        assert_ne!(normalised(POT), normalised(&reworded));
     }
 }

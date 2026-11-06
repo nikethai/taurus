@@ -2,7 +2,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
-"POT-Creation-Date: 2026-11-06 13:18+0000\n"
+"POT-Creation-Date: 2026-11-06 13:35+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -12,1056 +12,829 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: apps/taurus-desktop/ui/add.slint:30
 msgctxt "Add"
 msgid "{0} · {1}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:44
 msgctxt "Add"
 msgid "Back"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:50
 msgctxt "Add"
 msgid "New download"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:65
 msgctxt "Add"
 msgid "Looking at the link…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:147
 msgctxt "Add"
 msgid "Live now"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:155
 msgctxt "Add"
 msgid "Starts at {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:155
 msgctxt "Add"
 msgid "Not started yet"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:162
 msgctxt "Add"
 msgid "Playlist · {n} video"
 msgid_plural "Playlist · {n} videos"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/add.slint:174
 msgctxt "Add"
 msgid "Video"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:181
 msgctxt "Add"
 msgid "Audio only"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:213
 msgctxt "Add"
 msgid "Size unknown"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:218
 msgctxt "Add"
 msgid "{n} file"
 msgid_plural "{n} files"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/add.slint:229
 msgctxt "Add"
 msgid "Save to"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:244
 msgctxt "Add"
 msgid "Downloads folder"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:254
 msgctxt "Add"
 msgid "Change"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:268
 msgctxt "Add"
 msgid "Quality"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:286
 msgctxt "Add"
 msgid "Other quality"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:303
 msgctxt "Add"
 msgid "This playlist has {n} video. Download it?"
 msgid_plural "This playlist has {n} videos. Download all of them?"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/add.slint:338
 msgctxt "Add"
 msgid "Close"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:338
 msgctxt "Add"
 msgid "Cancel"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:344
 msgctxt "Add"
 msgid "Show it"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:351
 msgctxt "Add"
 msgid "Record"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:351
 msgctxt "Add"
 msgid "Download"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:359
 msgctxt "Add"
 msgid "Download all"
 msgstr ""
 
-#: apps/taurus-desktop/ui/add.slint:369
 msgctxt "Add"
 msgid "About {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:43
 msgctxt "FileOptions"
 msgid "This link wants a user name and password. Enter them below."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:51
 msgctxt "FileOptions"
 msgid "A video site? Use your browser's sign-in instead:"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:66
-#: apps/taurus-desktop/ui/adv/add.slint:66
 msgctxt "FileOptions"
 msgid "File name"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:77
-#: apps/taurus-desktop/ui/adv/add.slint:77
 msgctxt "FileOptions"
 msgid "Connections"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:90
 msgctxt "FileOptions"
 msgid "Custom {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:100
 msgctxt "FileOptions"
 msgid "Mirrors (one link per line)"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:104
 msgctxt "FileOptions"
 msgid "Mirrors"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:112
 msgctxt "FileOptions"
 msgid "Checksum (SHA-256)"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:115
-#: apps/taurus-desktop/ui/adv/add.slint:115
 msgctxt "FileOptions"
 msgid "Optional"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:116
 msgctxt "FileOptions"
 msgid "Checksum"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:122
 msgctxt "FileOptions"
 msgid "That isn't a SHA-256 checksum (64 hex digits)."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:132
-#: apps/taurus-desktop/ui/adv/add.slint:132
 msgctxt "FileOptions"
 msgid "Referer"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:144
 msgctxt "FileOptions"
 msgid "Sign in"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:146
-#: apps/taurus-desktop/ui/adv/add.slint:146
 msgctxt "FileOptions"
 msgid "User name"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:156
 msgctxt "FileOptions"
 msgid "Type the password again"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:156
-#: apps/taurus-desktop/ui/adv/add.slint:156
 msgctxt "FileOptions"
 msgid "Password"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:218
 msgctxt "AdvAdd"
 msgid "{0} · {1}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:230
 msgctxt "AdvAdd"
 msgid "Back"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:237
 msgctxt "AdvAdd"
 msgid "New download"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:260
 msgctxt "AdvAdd"
 msgid "Getting the video tools…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:260
 msgctxt "AdvAdd"
 msgid "Looking at the link…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:277
 msgctxt "AdvAdd"
 msgid "This looks like a web page. Find the files it links to?"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:287
 msgctxt "AdvAdd"
 msgid "Find files →"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:319
 msgctxt "AdvAdd"
 msgid "Use your browser's sign-in:"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:385
 msgctxt "AdvAdd"
 msgid "About {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:386
 msgctxt "AdvAdd"
 msgid "Size unknown"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:391
 msgctxt "AdvAdd"
 msgid "Live now"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:397
 msgctxt "AdvAdd"
 msgid "Not started yet"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:402
 msgctxt "AdvAdd"
 msgid "Playlist · {n} video"
 msgid_plural "Playlist · {n} videos"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:465
 msgctxt "AdvAdd"
 msgid "Save to"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:479
 msgctxt "AdvAdd"
 msgid "Downloads folder"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:489
 msgctxt "AdvAdd"
 msgid "Change"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:497
 msgctxt "AdvAdd"
 msgid "{0} free"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:504
 msgctxt "AdvAdd"
 msgid "Start immediately"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:509
 msgctxt "AdvAdd"
 msgid "This playlist has {n} video. All of them will be downloaded."
 msgid_plural "This playlist has {n} videos. All of them will be downloaded."
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:543
 msgctxt "AdvAdd"
 msgid "Adding…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:550
 msgctxt "AdvAdd"
 msgid "Close"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:550
 msgctxt "AdvAdd"
 msgid "Cancel"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:557
 msgctxt "AdvAdd"
 msgid "Show it"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:564
 msgctxt "AdvAdd"
 msgid "Record"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add.slint:564
 msgctxt "AdvAdd"
 msgid "Download"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:19
 msgctxt "BrowserRow"
 msgid "Chrome"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:26
 msgctxt "BrowserRow"
 msgid "Firefox"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:33
 msgctxt "BrowserRow"
 msgid "Safari"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:40
 msgctxt "BrowserRow"
 msgid "Edge"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:47
 msgctxt "BrowserRow"
 msgid "Brave"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:145
 msgctxt "MediaOptions"
 msgid "{0}p"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:147
 msgctxt "MediaOptions"
 msgid "Audio only · best"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:149
 msgctxt "MediaOptions"
 msgid "Audio only · smaller file"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:176
 msgctxt "MediaOptions"
 msgid "Quality"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:195
 msgctxt "MediaOptions"
 msgid "Format"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:199
 msgctxt "MediaOptions"
 msgid "MP4"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:206
 msgctxt "MediaOptions"
 msgid "MKV"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:213
 msgctxt "MediaOptions"
 msgid "WebM"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:222
 msgctxt "MediaOptions"
 msgid "Subtitles"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:225
 msgctxt "MediaOptions"
 msgid "This video lists no subtitles."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:235
 msgctxt "MediaOptions"
 msgid "generated"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:244
 msgctxt "MediaOptions"
 msgid "Include the site's generated captions"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:251
 msgctxt "MediaOptions"
 msgid "Put the subtitles into the video"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:261
 msgctxt "MediaOptions"
 msgid "Sign in with"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:269
 msgctxt "MediaOptions"
 msgid "Sign in with the cookies of"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:271
-#: apps/taurus-desktop/ui/adv/add_media.slint:271
 msgctxt "MediaOptions"
 msgid "No browser"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:271
-#: apps/taurus-desktop/ui/adv/add_media.slint:271
 msgctxt "MediaOptions"
 msgid "Chrome"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:271
-#: apps/taurus-desktop/ui/adv/add_media.slint:271
 msgctxt "MediaOptions"
 msgid "Firefox"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:271
 msgctxt "MediaOptions"
 msgid "Safari"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:271
-#: apps/taurus-desktop/ui/adv/add_media.slint:271
 msgctxt "MediaOptions"
 msgid "Edge"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/add_media.slint:271
-#: apps/taurus-desktop/ui/adv/add_media.slint:271
 msgctxt "MediaOptions"
 msgid "Brave"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:43
 msgctxt "LineRow"
 msgid "File"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:45
 msgctxt "LineRow"
 msgid "Torrent"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:47
 msgctxt "LineRow"
 msgid "Video"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:49
 msgctxt "LineRow"
 msgid "Page"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:51
 msgctxt "LineRow"
 msgid "Not a link"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:81
 msgctxt "LineRow"
 msgid "Mirror of line {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:88
 msgctxt "LineRow"
 msgid "A web page: find the files it links to."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:98
 msgctxt "LineRow"
 msgid "Find files →"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:136
 msgctxt "AdvBatch"
 msgid "Back"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:142
 msgctxt "AdvBatch"
 msgid "Add several links"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:157
 msgctxt "AdvBatch"
 msgid "Links, one per line (lines starting with # are skipped)"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:162
 msgctxt "AdvBatch"
 msgid "Links"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:168
 msgctxt "AdvBatch"
 msgid "Treat copies as mirrors"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:169
 msgctxt "AdvBatch"
 msgid ""
 "Links to files with the same name become one download from several servers."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:191
 msgctxt "AdvBatch"
 msgid "Paste links above to see them here."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:207
 msgctxt "AdvBatch"
 msgid "Cancel"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/batch.slint:213
 msgctxt "AdvBatch"
 msgid "Add {n} download"
 msgid_plural "Add {n} downloads"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:44
 msgctxt "DetailPane"
 msgid "Speed"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:46
 msgctxt "DetailPane"
 msgid "Connections"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:48
 msgctxt "DetailPane"
 msgid "Segments"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:50
 msgctxt "DetailPane"
 msgid "Peers"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:52
 msgctxt "DetailPane"
 msgid "Uploaded"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:54
 msgctxt "DetailPane"
 msgid "Upload speed"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:56
 msgctxt "DetailPane"
 msgid "Ratio"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:58
-#: apps/taurus-desktop/ui/adv/detail.slint:58
 msgctxt "DetailPane"
 msgid "Files"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:60
 msgctxt "DetailPane"
 msgid "Videos"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:62
 msgctxt "DetailPane"
 msgid "Recorded"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:64
 msgctxt "DetailPane"
 msgid "Mirrors"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:66
 msgctxt "DetailPane"
 msgid "Checksum"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:68
 msgctxt "DetailPane"
 msgid "Referer"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:70
 msgctxt "DetailPane"
 msgid "Password"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:77
 msgctxt "DetailPane"
 msgid "Tools"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:79
 msgctxt "DetailPane"
 msgid "Waiting"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:81
 msgctxt "DetailPane"
 msgid "Download"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:83
 msgctxt "DetailPane"
 msgid "Record"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:85
 msgctxt "DetailPane"
 msgid "Finish"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:165
 msgctxt "DetailPane"
 msgid "Select a download to see its details."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:179
 msgctxt "DetailPane"
 msgid "Back"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:185
 msgctxt "DetailPane"
 msgid "Details"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:302
 msgctxt "DetailPane"
 msgid "Saved until Hyades quits"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:302
 msgctxt "DetailPane"
 msgid "Saved"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:305
 msgctxt "DetailPane"
 msgid "Saved to"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:309
 msgctxt "DetailPane"
 msgid "Link"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:343
 msgctxt "DetailPane"
 msgid "Skipped"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:362
 msgctxt "DetailPane"
 msgid "Choose files…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:387
 msgctxt "DetailPane"
 msgid "Keep sharing"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:392
 msgctxt "DetailPane"
 msgid "Until ratio"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:400
 msgctxt "DetailPane"
 msgid "Keep sharing until ratio"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:402
-#: apps/taurus-desktop/ui/adv/detail.slint:402
-#: apps/taurus-desktop/ui/adv/detail.slint:402
-#: apps/taurus-desktop/ui/adv/detail.slint:402
 msgctxt "DetailPane"
 msgid "As in Settings"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:402
-#: apps/taurus-desktop/ui/adv/detail.slint:402
 msgctxt "DetailPane"
 msgid "Stop when done"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:402
-#: apps/taurus-desktop/ui/adv/detail.slint:402
-#: apps/taurus-desktop/ui/adv/detail.slint:402
-#: apps/taurus-desktop/ui/adv/detail.slint:402
 msgctxt "DetailPane"
 msgid "No limit"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:414
 msgctxt "DetailPane"
 msgid "For at most"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:422
 msgctxt "DetailPane"
 msgid "Keep sharing for at most"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:424
-#: apps/taurus-desktop/ui/adv/detail.slint:424
 msgctxt "DetailPane"
 msgid "1 hour"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:424
-#: apps/taurus-desktop/ui/adv/detail.slint:424
 msgctxt "DetailPane"
 msgid "1 day"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:424
-#: apps/taurus-desktop/ui/adv/detail.slint:424
 msgctxt "DetailPane"
 msgid "1 week"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:426
 msgctxt "DetailPane"
 msgid "{0} s"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:442
 msgctxt "DetailPane"
 msgid "Try again"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:449
 msgctxt "DetailPane"
 msgid "Resume"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:457
 msgctxt "DetailPane"
 msgid "Pause"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:464
 msgctxt "DetailPane"
 msgid "Stop recording"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:471
 msgctxt "DetailPane"
 msgid "Open"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:478
 msgctxt "DetailPane"
 msgid "Show in folder"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:488
 msgctxt "DetailPane"
 msgid "Copy link"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:495
 msgctxt "DetailPane"
 msgid "Remove…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:503
 msgctxt "DetailPane"
 msgid "Enter password…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:510
 msgctxt "DetailPane"
 msgid "Use my browser's sign-in"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:521
 msgctxt "DetailPane"
 msgid "Chrome"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:528
 msgctxt "DetailPane"
 msgid "Firefox"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:535
 msgctxt "DetailPane"
 msgid "Safari"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:546
 msgctxt "DetailPane"
 msgid "Edge"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:553
 msgctxt "DetailPane"
 msgid "Brave"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:561
 msgctxt "DetailPane"
 msgid "Convert…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:570
 msgctxt "DetailPane"
 msgid "Convert to MP3"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail.slint:578
 msgctxt "DetailPane"
 msgid "Make a smaller MP4"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail_parts.slint:21
 msgctxt "SegmentMap"
 msgid "Segment map"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/detail_parts.slint:61
 msgctxt "Pair"
 msgid "{0}: {1}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/dialogs.slint:108
 msgctxt "RemoveDialog"
 msgid "Remove {0} from the list?"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/dialogs.slint:118
 msgctxt "RemoveDialog"
 msgid "Also delete the files"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/dialogs.slint:125
 msgctxt "RemoveDialog"
 msgid "Cancel"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/dialogs.slint:132
 msgctxt "RemoveDialog"
 msgid "Remove"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/dialogs.slint:183
 msgctxt "PasswordDialog"
 msgid "Sign in to download {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/dialogs.slint:192
 msgctxt "PasswordDialog"
 msgid "That user name or password didn't work. Try again."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/dialogs.slint:202
-#: apps/taurus-desktop/ui/adv/dialogs.slint:202
 msgctxt "PasswordDialog"
 msgid "User name"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/dialogs.slint:217
-#: apps/taurus-desktop/ui/adv/dialogs.slint:217
 msgctxt "PasswordDialog"
 msgid "Password"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/dialogs.slint:227
 msgctxt "PasswordDialog"
 msgid "Signing in…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/dialogs.slint:236
 msgctxt "PasswordDialog"
 msgid "Cancel"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/dialogs.slint:243
 msgctxt "PasswordDialog"
 msgid "Sign in"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:100
 msgctxt "GrabRow"
 msgid "Size unknown"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:137
 msgctxt "AdvGrab"
 msgid "Back"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:143
 msgctxt "AdvGrab"
 msgid "Grab links"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:162
 msgctxt "AdvGrab"
 msgid "Link to a web page or folder listing"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:163
 msgctxt "AdvGrab"
 msgid "Page link"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:169
 msgctxt "AdvGrab"
 msgid "Find files"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:178
 msgctxt "AdvGrab"
 msgid "Subfolders"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:179
 msgctxt "AdvGrab"
 msgid "Also look one level into the folders of a listing"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:191
 msgctxt "AdvGrab"
 msgid "Reading the page…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:201
 msgctxt "AdvGrab"
 msgid "This link isn't a web page, so it has no links to find."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:213
 msgctxt "AdvGrab"
 msgid "All"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:221
 msgctxt "AdvGrab"
 msgid "Video"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:230
 msgctxt "AdvGrab"
 msgid "Docs"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:239
 msgctxt "AdvGrab"
 msgid "Archives"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:248
 msgctxt "AdvGrab"
 msgid "Images"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:266
 msgctxt "AdvGrab"
 msgid "Extensions, like pdf zip"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:267
 msgctxt "AdvGrab"
 msgid "Filter by extension"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:273
 msgctxt "AdvGrab"
 msgid "Clear shown"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:273
 msgctxt "AdvGrab"
 msgid "Select all shown"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:283
 msgctxt "AdvGrab"
 msgid ""
 "This page links to more files than can be listed; only the first ones are "
 "shown."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:307
 msgctxt "AdvGrab"
 msgid "No files found on this page."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:307
 msgctxt "AdvGrab"
 msgid "No files match."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:328
 msgctxt "AdvGrab"
 msgid ""
 "{n} ticked file is in a folder whose name isn't safe to create, so it won't "
@@ -1072,1633 +845,1306 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:343
 msgctxt "AdvGrab"
 msgid "{n} selected · size unknown"
 msgid_plural "{n} selected · size unknown"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:344
 msgctxt "AdvGrab"
 msgid "{n} selected · at least {0}"
 msgid_plural "{n} selected · at least {0}"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:345
 msgctxt "AdvGrab"
 msgid "{n} selected · {0}"
 msgid_plural "{n} selected · {0}"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/adv/grab.slint:354
 msgctxt "AdvGrab"
 msgid "Download {n}"
 msgid_plural "Download {n}"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:123
 msgctxt "SpeedFooter"
 msgid "↓ {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:131
 msgctxt "SpeedFooter"
 msgid "↑ {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:197
 msgctxt "AdvCompact"
 msgid "Downloads"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:206
 msgctxt "AdvCompact"
 msgid "Close the link field"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:206
 msgctxt "AdvCompact"
 msgid "Add a download"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:213
 msgctxt "AdvCompact"
 msgid "Settings"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:248
 msgctxt "AdvCompact"
 msgid "Several links…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:256
 msgctxt "AdvCompact"
 msgid "Grab links from a page…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:281
 msgctxt "AdvCompact"
 msgid "Active"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:289
 msgctxt "AdvCompact"
 msgid "Waiting"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:297
 msgctxt "AdvCompact"
 msgid "Done"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:311
 msgctxt "AdvCompact"
 msgid "Nothing is downloading right now."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:312
 msgctxt "AdvCompact"
 msgid "Nothing is waiting."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/main.slint:312
 msgctxt "AdvCompact"
 msgid "Finished downloads show up here."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/row.slint:15
 msgctxt "SourceChip"
 msgid "Torrent"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/row.slint:17
 msgctxt "SourceChip"
 msgid "yt-dlp"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/row.slint:19
 msgctxt "SourceChip"
 msgid "Convert"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/row.slint:21
 msgctxt "SourceChip"
 msgid "HTTP"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/row.slint:125
 msgctxt "AdvRow"
 msgid "↓ {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/row.slint:140
 msgctxt "AdvRow"
 msgid "Try again"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/row.slint:148
 msgctxt "AdvRow"
 msgid "Open"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/row.slint:156
 msgctxt "AdvRow"
 msgid "Resume"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/row.slint:164
 msgctxt "AdvRow"
 msgid "Stop"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/row.slint:173
 msgctxt "AdvRow"
 msgid "Pause"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings.slint:43
 msgctxt "AdvSettings"
 msgid "Downloads"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings.slint:44
 msgctxt "AdvSettings"
 msgid "Torrents"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings.slint:45
 msgctxt "AdvSettings"
 msgid "Network"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings.slint:46
 msgctxt "AdvSettings"
 msgid "Engines"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings.slint:47
 msgctxt "AdvSettings"
 msgid "Appearance"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings.slint:48
 msgctxt "AdvSettings"
 msgid "Privacy"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings.slint:49
 msgctxt "AdvSettings"
 msgid "General"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings.slint:81
 msgctxt "AdvSettings"
 msgid "Back"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings.slint:88
 msgctxt "AdvSettings"
 msgid "Settings"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:12
 msgctxt "ToolRow"
 msgid "ffmpeg"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:12
 msgctxt "ToolRow"
 msgid "Deno"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:12
 msgctxt "ToolRow"
 msgid "yt-dlp"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:29
 msgctxt "ToolRow"
 msgid "Installing…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:30
 msgctxt "ToolRow"
 msgid "Couldn't install it"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:31
 msgctxt "ToolRow"
 msgid "Not installed"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:32
 msgctxt "ToolRow"
 msgid "Version {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:38
 msgctxt "ToolRow"
 msgid "Roll back"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:39
 msgctxt "ToolRow"
 msgid "Roll back {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:55
 msgctxt "EnginesSection"
 msgid "Engines"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:58
 msgctxt "EnginesSection"
 msgid ""
 "Video downloads use yt-dlp, ffmpeg and Deno. Check now looks for newer "
 "versions."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:70
 msgctxt "EnginesSection"
 msgid "Install"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:77
 msgctxt "EnginesSection"
 msgid "Check now"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:85
 msgctxt "EnginesSection"
 msgid "There is no earlier version to go back to."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:91
 msgctxt "AppearanceSection"
 msgid "System"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:92
 msgctxt "AppearanceSection"
 msgid "Light"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:93
 msgctxt "AppearanceSection"
 msgid "Dark"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:96
 msgctxt "AppearanceSection"
 msgid "Aldebaran"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:97
 msgctxt "AppearanceSection"
 msgid "Cobalt"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:98
 msgctxt "AppearanceSection"
 msgid "Jade"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:99
 msgctxt "AppearanceSection"
 msgid "Grape"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:100
 msgctxt "AppearanceSection"
 msgid "Rose"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:101
 msgctxt "AppearanceSection"
 msgid "Sky"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:108
 msgctxt "AppearanceSection"
 msgid "Appearance"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:111
 msgctxt "AppearanceSection"
 msgid "Theme"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:123
 msgctxt "AppearanceSection"
 msgid "Accent"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:138
 msgctxt "AppearanceSection"
 msgid "Color progress bars by file type"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:149
 msgctxt "PrivacySection"
 msgid "Privacy"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:152
 msgctxt "PrivacySection"
 msgid "Passwords you typed for downloads are kept in your computer's keychain."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:157
 msgctxt "PrivacySection"
 msgid "Forget saved passwords"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:165
 msgctxt "PrivacySection"
 msgid "Removed {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:168
 msgctxt "PrivacySection"
 msgid "Couldn't remove them. Try again."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:175
 msgctxt "GeneralSection"
 msgid "General"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:178
 msgctxt "GeneralSection"
 msgid "Offer to download copied links"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:185
 msgctxt "GeneralSection"
 msgid "Open Hyades at login"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:192
 msgctxt "GeneralSection"
 msgid "Show advanced options"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_more.slint:193
 msgctxt "GeneralSection"
 msgid "Sources, filters and more details"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:23
 msgctxt "DownloadsSection"
 msgid "Downloads"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:26
 msgctxt "DownloadsSection"
 msgid "Save downloads to"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:40
 msgctxt "DownloadsSection"
 msgid "Downloads folder"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:48
 msgctxt "DownloadsSection"
 msgid "Change"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:56
 msgctxt "DownloadsSection"
 msgid "Sort into folders by type"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:57
 msgctxt "DownloadsSection"
 msgid "Videos, Music and Documents"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:64
 msgctxt "DownloadsSection"
 msgid "Active downloads at once"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:71
 msgctxt "DownloadsSection"
 msgid "Connections per file"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:84
 msgctxt "DownloadsSection"
 msgid "Custom {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:89
 msgctxt "DownloadsSection"
 msgid "Speed"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:93
 msgctxt "DownloadsSection"
 msgid "Gentle"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:101
 msgctxt "DownloadsSection"
 msgid "Balanced"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:109
 msgctxt "DownloadsSection"
 msgid "Fastest"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:117
 msgctxt "DownloadsSection"
 msgid "Custom"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:127
 msgctxt "DownloadsSection"
 msgid "Custom speed in MB/s"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:129
 msgctxt "DownloadsSection"
 msgid "0.1 to 10000"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:130
 msgctxt "DownloadsSection"
 msgid "MB/s"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:133
 msgctxt "DownloadsSection"
 msgid "Use a dot for decimals, like 2.5."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:133
 msgctxt "DownloadsSection"
 msgid "Enter a speed from 0.1 to 10000 MB/s."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:142
 msgctxt "DownloadsSection"
 msgid "Verify checksums automatically"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:143
 msgctxt "DownloadsSection"
 msgid "When the site publishes one"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:150
 msgctxt "DownloadsSection"
 msgid "Keep the computer awake"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:151
 msgctxt "DownloadsSection"
 msgid "While downloads run"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:165
 msgctxt "TorrentsSection"
 msgid "Don't share"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:166
 msgctxt "TorrentsSection"
 msgid "0.5"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:167
 msgctxt "TorrentsSection"
 msgid "1"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:168
 msgctxt "TorrentsSection"
 msgid "2"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:169
 msgctxt "TorrentsSection"
 msgid "Never stop"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:172
 msgctxt "TorrentsSection"
 msgid "Off"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:173
 msgctxt "TorrentsSection"
 msgid "1 h"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:174
 msgctxt "TorrentsSection"
 msgid "24 h"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:175
 msgctxt "TorrentsSection"
 msgid "7 d"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:177
 msgctxt "TorrentsSection"
 msgid "Enter a speed from 0.01 to 10000 MB/s, or leave it empty for no limit."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:178
 msgctxt "TorrentsSection"
 msgid "Applies the next time Hyades starts."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:182
 msgctxt "TorrentsSection"
 msgid "Torrents"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:185
 msgctxt "TorrentsSection"
 msgid "Stop sharing at ratio"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:197
 msgctxt "TorrentsSection"
 msgid "Stop sharing after"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:209
 msgctxt "TorrentsSection"
 msgid "Upload limit"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:210
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:210
 msgctxt "TorrentsSection"
 msgid "No limit"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:211
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:211
 msgctxt "TorrentsSection"
 msgid "MB/s"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:223
 msgctxt "TorrentsSection"
 msgid "Torrent download limit"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:237
 msgctxt "TorrentsSection"
 msgid "Active torrents at once"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:244
 msgctxt "TorrentsSection"
 msgid "Peers per torrent"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:245
 msgctxt "TorrentsSection"
 msgid "Default"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:248
 msgctxt "TorrentsSection"
 msgid "Enter a number from 1 to 1000, or leave it empty for the default."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:257
 msgctxt "TorrentsSection"
 msgid "Listening port"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:258
 msgctxt "TorrentsSection"
 msgid "Random"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:261
 msgctxt "TorrentsSection"
 msgid "Enter a port from 1024 to 65535, or leave it empty for a random one."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:273
 msgctxt "TorrentsSection"
 msgid "UPnP"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:281
 msgctxt "TorrentsSection"
 msgid "DHT"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:299
 msgctxt "NetworkSection"
 msgid "Network"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:302
 msgctxt "NetworkSection"
 msgid "Proxy"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:306
 msgctxt "NetworkSection"
 msgid "System"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:314
 msgctxt "NetworkSection"
 msgid "None"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:322
 msgctxt "NetworkSection"
 msgid "Manual"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:331
 msgctxt "NetworkSection"
 msgid "Hyades connects directly, whatever your computer's settings say."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:331
 msgctxt "NetworkSection"
 msgid "Hyades uses your computer's proxy settings."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:334
 msgctxt "NetworkSection"
 msgid "Proxy URL"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:336
 msgctxt "NetworkSection"
 msgid "http://host:port or socks5h://host:port"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/settings_sections.slint:348
 msgctxt "NetworkSection"
 msgid "Not in use yet: press Enter to use this proxy."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/sidebar.slint:52
 msgctxt "Sidebar"
 msgid "Downloading"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/sidebar.slint:54
 msgctxt "Sidebar"
 msgid "Queued"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/sidebar.slint:56
 msgctxt "Sidebar"
 msgid "Paused"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/sidebar.slint:58
 msgctxt "Sidebar"
 msgid "Completed"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/sidebar.slint:60
 msgctxt "Sidebar"
 msgid "Failed"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/sidebar.slint:62
 msgctxt "Sidebar"
 msgid "HTTP"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/sidebar.slint:64
 msgctxt "Sidebar"
 msgid "Torrents"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/sidebar.slint:66
 msgctxt "Sidebar"
 msgid "Media"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/sidebar.slint:68
 msgctxt "Sidebar"
 msgid "All"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/sidebar.slint:80
 msgctxt "Sidebar"
 msgid "Library"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/sidebar.slint:87
 msgctxt "Sidebar"
 msgid "Sources"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:82
 msgctxt "TorrentPicker"
 msgid "{n} file selected · {0}"
 msgid_plural "{n} files selected · {0}"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:91
 msgctxt "TorrentPicker"
 msgid "All"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:99
 msgctxt "TorrentPicker"
 msgid "None"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:131
 msgctxt "TorrentPicker"
 msgid "Not enough space: {0} free"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:131
 msgctxt "TorrentPicker"
 msgid "{0} free"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:164
 msgctxt "TorrentOptions"
 msgid "Files"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:186
 msgctxt "TorrentOptions"
 msgid "Keep sharing"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:194
 msgctxt "TorrentOptions"
 msgid "Keep sharing until ratio"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:195
 msgctxt "TorrentOptions"
 msgid "As in Settings"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:195
 msgctxt "TorrentOptions"
 msgid "Stop when done"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:195
 msgctxt "TorrentOptions"
 msgid "Until ratio 1"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:195
 msgctxt "TorrentOptions"
 msgid "Until ratio 2"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:195
 msgctxt "TorrentOptions"
 msgid "No limit"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:246
 msgctxt "FilesDialog"
 msgid "Files of {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:274
 msgctxt "FilesDialog"
 msgid "Cancel"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/torrent.slint:281
 msgctxt "FilesDialog"
 msgid "Use these files"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:37
 msgctxt "WhenDoneUi"
 msgid "Notify"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:40
 msgctxt "WhenDoneUi"
 msgid "Then sleep"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:43
 msgctxt "WhenDoneUi"
 msgid "Then shut down"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:46
 msgctxt "WhenDoneUi"
 msgid "Then quit"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:48
 msgctxt "WhenDoneUi"
 msgid "When done"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:98
 msgctxt "WhenDonePopover"
 msgid "Do nothing"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:99
 msgctxt "WhenDonePopover"
 msgid "Just notify me"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:100
 msgctxt "WhenDonePopover"
 msgid "Put the computer to sleep"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:101
 msgctxt "WhenDonePopover"
 msgid "Shut down"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:102
 msgctxt "WhenDonePopover"
 msgid "Quit Hyades"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:144
 msgctxt "WhenDonePopover"
 msgid "When done and speed"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:151
 msgctxt "WhenDonePopover"
 msgid "When downloads finish"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:161
 msgctxt "WhenDonePopover"
 msgid "You get 60 seconds to cancel before it happens."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:169
 msgctxt "WhenDonePopover"
 msgid "Speed"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:174
 msgctxt "WhenDonePopover"
 msgid "Gentle"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:182
 msgctxt "WhenDonePopover"
 msgid "Balanced"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:190
 msgctxt "WhenDonePopover"
 msgid "Fastest"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:198
 msgctxt "WhenDonePopover"
 msgid "Custom"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:211
 msgctxt "WhenDonePopover"
 msgid "0.1 to 10000"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:212
 msgctxt "WhenDonePopover"
 msgid "Custom speed in MB/s"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:232
 msgctxt "WhenDonePopover"
 msgid "MB/s"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:240
 msgctxt "WhenDonePopover"
 msgid "Use a dot for decimals, like 2.5."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/whendone.slint:240
 msgctxt "WhenDonePopover"
 msgid "Enter a speed from 0.1 to 10000 MB/s."
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/wide.slint:61
-#: apps/taurus-desktop/ui/adv/wide.slint:61
 msgctxt "AdvWide"
 msgid "Search downloads"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/wide.slint:69
 msgctxt "AdvWide"
 msgid "Close the link field"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/wide.slint:69
 msgctxt "AdvWide"
 msgid "Add a download"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/wide.slint:76
 msgctxt "AdvWide"
 msgid "Settings"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/wide.slint:110
 msgctxt "AdvWide"
 msgid "Several links…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/wide.slint:118
 msgctxt "AdvWide"
 msgid "Grab links from a page…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/adv/wide.slint:134
 msgctxt "AdvWide"
 msgid "No downloads here."
 msgstr ""
 
 #. A magnet link has no host to name.
-#: apps/taurus-desktop/ui/banner.slint:32
 msgctxt "Banner"
 msgid "Download the link you copied from {0}?"
 msgstr ""
 
-#: apps/taurus-desktop/ui/banner.slint:33
 msgctxt "Banner"
 msgid "Download the torrent link you copied?"
 msgstr ""
 
-#: apps/taurus-desktop/ui/banner.slint:34
 msgctxt "Banner"
 msgid "Download the link you copied?"
 msgstr ""
 
-#: apps/taurus-desktop/ui/banner.slint:46
 msgctxt "Banner"
 msgid "Download"
 msgstr ""
 
-#: apps/taurus-desktop/ui/banner.slint:57
 msgctxt "Banner"
 msgid "Dismiss"
 msgstr ""
 
-#: apps/taurus-desktop/ui/banner.slint:85
 msgctxt "ToolsBanner"
 msgid "Couldn't get the video tools. Hyades will try again."
 msgstr ""
 
-#: apps/taurus-desktop/ui/banner.slint:86
 msgctxt "ToolsBanner"
 msgid "Getting video tools… {0}%"
 msgstr ""
 
-#: apps/taurus-desktop/ui/banner.slint:87
 msgctxt "ToolsBanner"
 msgid "Getting video tools…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/countdown.slint:34
 msgctxt "Countdown"
 msgid "Shutting down in {n} second"
 msgid_plural "Shutting down in {n} seconds"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/countdown.slint:35
 msgctxt "Countdown"
 msgid "Sleeping in {n} second"
 msgid_plural "Sleeping in {n} seconds"
 msgstr[0] ""
 msgstr[1] ""
 
-#: apps/taurus-desktop/ui/countdown.slint:48
 msgctxt "Countdown"
 msgid "Cancel"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:92
 msgctxt "Downloads"
 msgid "About {0} min left"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:94
 msgctxt "Downloads"
 msgid "Less than a minute left"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:96
 msgctxt "Downloads"
 msgid "About {0} h left"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:111
 msgctxt "Downloads"
 msgid "Downloads"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:120
 msgctxt "Downloads"
 msgid "Close the link field"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:120
 msgctxt "Downloads"
 msgid "Add a download"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:127
 msgctxt "Downloads"
 msgid "Settings"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:169
 msgctxt "Downloads"
 msgid "Downloading"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:177
 msgctxt "Downloads"
 msgid "Finished"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:193
 msgctxt "Downloads"
 msgid "Nothing is downloading right now."
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:193
 msgctxt "Downloads"
 msgid "Finished downloads show up here."
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:243
 msgctxt "Downloads"
 msgid "Everything is paused"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:255
 msgctxt "Downloads"
 msgid "Resume all"
 msgstr ""
 
-#: apps/taurus-desktop/ui/downloads.slint:255
 msgctxt "Downloads"
 msgid "Pause all"
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:7
 msgctxt "Messages"
 msgid "This link stopped working. It may have expired."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:9
 msgctxt "Messages"
 msgid "This site wants you to sign in first."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:11
 msgctxt "Messages"
 msgid ""
 "This site wants to check you're human. Open it in your browser and start the "
 "download there."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:13
 msgctxt "Messages"
 msgid ""
 "Your network wants you to sign in (hotel or café Wi-Fi?). Open your "
 "browser, then try again."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:15
 msgctxt "Messages"
 msgid "Too many people downloaded this file recently. Try again later."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:17
 msgctxt "Messages"
 msgid "Your disk is full. Free up some space, then try again."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:19
 msgctxt "Messages"
 msgid "The save folder isn't available. Is the drive plugged in?"
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:21
 msgctxt "Messages"
 msgid "Hyades can't save to this folder. Pick another one in Settings."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:23
 msgctxt "Messages"
 msgid "This file is too big for that drive. Pick another folder."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:25
 msgctxt "Messages"
 msgid ""
 "The downloaded file didn't match its checksum, so it was removed. Try again."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:27
 msgctxt "Messages"
 msgid "This link is a web page, not a file."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:29
 msgctxt "Messages"
 msgid "This torrent has unsafe file names, so it wasn't saved."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:31
 msgctxt "Messages"
 msgid "This download is already in your list."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:33
 msgctxt "Messages"
 msgid "This video is private or was removed."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:35
 msgctxt "Messages"
 msgid "This video isn't available in your country."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:37
 msgctxt "Messages"
 msgid ""
 "The video tools couldn't finish this file. The pieces were kept in the "
 "folder."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:39
 msgctxt "Messages"
 msgid "This needs your confirmation."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:41
 msgctxt "Messages"
 msgid "The file changed on the server, so the download started over."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:43
 msgctxt "Messages"
 msgid "Something went wrong. Try again."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:49
 msgctxt "Messages"
 msgid "1080p"
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:51
 msgctxt "Messages"
 msgid "720p"
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:53
 msgctxt "Messages"
 msgid "Best"
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:55
 msgctxt "Messages"
 msgid "Smaller file"
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:57
 msgctxt "Messages"
 msgid "Best available"
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:63
 msgctxt "minutes:seconds"
 msgid "{0}:{1}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:65
 msgctxt "Messages"
 msgid "{0} s"
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:72
 msgctxt "Messages"
 msgid "Waiting for a connection. Trying again in a moment."
 msgstr ""
 
-#: apps/taurus-desktop/ui/messages.slint:74
 msgctxt "Messages"
 msgid "Waiting for a connection. Trying again in {0}."
 msgstr ""
 
-#: apps/taurus-desktop/ui/row.slint:34 apps/taurus-desktop/ui/row.slint:95
 msgctxt "Row"
 msgid "Show in folder"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row.slint:40 apps/taurus-desktop/ui/row.slint:103
 msgctxt "Row"
 msgid "Remove from list"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row.slint:113
 msgctxt "Row"
 msgid "Try again"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row.slint:119
 msgctxt "Row"
 msgid "Open"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row.slint:126
 msgctxt "Row"
 msgid "Resume"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row.slint:132
 msgctxt "Row"
 msgid "Stop"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row.slint:140
 msgctxt "Row"
 msgid "Pause"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:12
-#: apps/taurus-desktop/ui/row_text.slint:12
-#: apps/taurus-desktop/ui/row_text.slint:12
 msgctxt "RowText"
 msgid "Getting video tools…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:14
 msgctxt "RowText"
 msgid "Waiting for the stream to start"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:16
 msgctxt "RowText"
 msgid "Recording live"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:18
 msgctxt "RowText"
 msgid "Recording live · {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:22
 msgctxt "RowText"
 msgid "Finishing up…"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:24
 msgctxt "RowText"
 msgid "{0} of {1} videos"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:29
 msgctxt "RowText"
 msgid "Getting video tools… Trying again in {0}."
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:33
 msgctxt "RowText"
 msgid "{0} so far"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:35
 msgctxt "RowText"
 msgid "{0} of {1} · About {2} min left"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:37
 msgctxt "RowText"
 msgid "{0} of {1} · Less than a minute left"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:39
 msgctxt "RowText"
 msgid "{0} of {1} · About {2} h left"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:41
 msgctxt "RowText"
 msgid "{0} of {1}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:44
 msgctxt "RowText"
 msgid "Paused · {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:46
 msgctxt "RowText"
 msgid "Paused · {0} of {1}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:48
 msgctxt "RowText"
 msgid "Waiting to start"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:52
 msgctxt "RowText"
 msgid "Sharing · ratio {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:60
-#: apps/taurus-desktop/ui/row_text.slint:60
 msgctxt "RowText"
 msgid "{0} · {1}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:71
 msgctxt "hours:minutes"
 msgid "{0}:{1}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:76
 msgctxt "short month and day"
 msgid "{0} {1}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:81
 msgctxt "short month"
 msgid "Jan"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:83
 msgctxt "short month"
 msgid "Feb"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:85
 msgctxt "short month"
 msgid "Mar"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:87
 msgctxt "short month"
 msgid "Apr"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:89
 msgctxt "short month"
 msgid "May"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:91
 msgctxt "short month"
 msgid "Jun"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:93
 msgctxt "short month"
 msgid "Jul"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:95
 msgctxt "short month"
 msgid "Aug"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:97
 msgctxt "short month"
 msgid "Sep"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:99
 msgctxt "short month"
 msgid "Oct"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:101
 msgctxt "short month"
 msgid "Nov"
 msgstr ""
 
-#: apps/taurus-desktop/ui/row_text.slint:103
 msgctxt "short month"
 msgid "Dec"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:80
 msgctxt "Settings"
 msgid "Gentle"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:81
 msgctxt "Settings"
 msgid "Balanced"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:82
 msgctxt "Settings"
 msgid "Fastest"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:85
 msgctxt "Settings"
 msgid "Do nothing"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:86
 msgctxt "Settings"
 msgid "Notify me"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:87
 msgctxt "Settings"
 msgid "Sleep"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:88
 msgctxt "Settings"
 msgid "Shut down"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:91
 msgctxt "Settings"
 msgid "System"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:92
 msgctxt "Settings"
 msgid "Light"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:93
 msgctxt "Settings"
 msgid "Dark"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:96
 msgctxt "Settings"
 msgid "Aldebaran"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:97
 msgctxt "Settings"
 msgid "Cobalt"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:98
 msgctxt "Settings"
 msgid "Jade"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:99
 msgctxt "Settings"
 msgid "Grape"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:100
 msgctxt "Settings"
 msgid "Rose"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:101
 msgctxt "Settings"
 msgid "Sky"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:122
 msgctxt "Settings"
 msgid "Back"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:128
 msgctxt "Settings"
 msgid "Settings"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:146
 msgctxt "Settings"
 msgid "Save downloads to"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:163
 msgctxt "Settings"
 msgid "Downloads folder"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:173
 msgctxt "Settings"
 msgid "Change"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:183
 msgctxt "Settings"
 msgid "Sort into folders by type"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:184
 msgctxt "Settings"
 msgid "Videos, Music and Documents"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:193
 msgctxt "Settings"
 msgid "Speed"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:207
 msgctxt "Settings"
 msgid "Custom · {0}"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:215
 msgctxt "Settings"
 msgid "When downloads finish"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:232
 msgctxt "Settings"
 msgid "Quit Hyades"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:240
 msgctxt "Settings"
 msgid "Links and startup"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:244
 msgctxt "Settings"
 msgid "Offer to download copied links"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:252
 msgctxt "Settings"
 msgid "Open Hyades at login"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:260
 msgctxt "Settings"
 msgid "Show advanced options"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:261
 msgctxt "Settings"
 msgid "Sources, filters and more details"
 msgstr ""
 
-#: apps/taurus-desktop/ui/settings.slint:270
 msgctxt "Settings"
 msgid "Appearance"
 msgstr ""
 
-#: apps/taurus-desktop/ui/welcome.slint:44
-#: apps/taurus-desktop/ui/welcome.slint:44
 msgctxt "LinkField"
 msgid "Paste a link"
 msgstr ""
 
-#: apps/taurus-desktop/ui/welcome.slint:63
 msgctxt "LinkField"
 msgid "Download this link"
 msgstr ""
 
-#: apps/taurus-desktop/ui/welcome.slint:109
 msgctxt "Welcome"
 msgid "Settings"
 msgstr ""
 
-#: apps/taurus-desktop/ui/welcome.slint:145
 msgctxt "Welcome"
 msgid "Downloads made simple."
 msgstr ""
 
-#: apps/taurus-desktop/ui/welcome.slint:165
 msgctxt "Welcome"
 msgid "Copy a link and Hyades offers to download it"
 msgstr ""
