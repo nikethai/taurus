@@ -116,3 +116,26 @@ xvfb-run -a timeout 5 squashfs-root/AppRun   # after hyades_*.AppImage --appimag
 
 Exit code 124 (stopped by `timeout`) with no panic on stderr means the app
 started.
+
+## Release builds and dry runs
+
+`.github/workflows/release.yml` builds every platform (Linux x64/arm64,
+Windows x64/arm64, macOS universal) with the flow above, renames the
+packages to the release asset names and uploads each platform's files as a
+workflow artifact `dist-<platform>`.
+
+- **Dry run on a pull request:** any pull request that changes
+  `.github/workflows/release.yml`, `packaging/**` or
+  `apps/taurus-desktop/Cargo.toml` runs the workflow as a dry run. It builds,
+  packages and checks everything (including `check-linux.sh`) and uploads the
+  artifacts; it never publishes, and it never uses the SignPath or Apple
+  secrets (macOS is signed ad hoc). To start one, open a pull request (a
+  draft is fine) that touches one of those paths; the packages are under the
+  run's *Artifacts*. A new push to the pull request cancels the older run.
+- **Manual run:** Actions → Release → *Run workflow*, with `dry_run` checked
+  (the default). This works only once `release.yml` is on the default branch.
+  It uses the signing secrets that are set.
+- **Release:** pushing a tag `v<version>` (the version in
+  `apps/taurus-desktop/Cargo.toml`) builds, signs `latest.json` and
+  `SHA256SUMS` with the minisign key, checks `latest.json` against
+  `update-key.pub`, and creates a draft release.

@@ -1,8 +1,11 @@
 name: Release
 
 # A `v*` tag builds every platform and creates a draft GitHub release.
-# Run it by hand with `dry_run` (the default) to build everything and keep
-# the packages as workflow artifacts, without a release.
+# A dry run builds, packages and checks everything and keeps the packages
+# as workflow artifacts, without a release: every pull request that touches
+# the packaging (R12), or a manual run with `dry_run` (the default). Only a
+# tag push, or a manual run with `dry_run` false, publishes. Pull request
+# dry runs never use the SignPath or Apple secrets (macOS signs ad hoc).
 #
 # Signing is optional per platform (D6): each signing step runs only when
 # its secret is set. Only the update manifest is always signed (minisign,
@@ -12,6 +15,11 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - packaging/**
+      - apps/taurus-desktop/Cargo.toml
   workflow_dispatch:
     inputs:
       dry_run:
@@ -21,6 +29,12 @@ on:
 
 permissions:
   contents: read
+
+# One run per tag (a second one waits; an in-flight publish is never
+# cancelled), and only the newest run per pull request.
+concurrency:
+  group: release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -82,10 +96,11 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       TARGET: ${{ matrix.target }}
-      # Whether the signing secrets are set (never the secrets themselves).
-      HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
-      HAS_APPLE_NOTARY: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
-      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+      # Whether to sign: the secrets are set (the flags hold true/false,
+      # never a secret) and this is not a pull request dry run (R12).
+      HAS_APPLE_CERTIFICATE: ${{ github.event_name != 'pull_request' && secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_SIGNING_IDENTITY != '' }}
+      HAS_APPLE_NOTARY: ${{ github.event_name != 'pull_request' && secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+      HAS_SIGNPATH: ${{ github.event_name != 'pull_request' && secrets.SIGNPATH_API_TOKEN != '' }}
     defaults:
       run:
         shell: bash
@@ -286,7 +301,11 @@ jobs:
   publish:
     name: Publish the draft release
     needs: [version, build]
-    if: ${{ !inputs.dry_run }}
+    # Fails closed: only a v* tag push, or a manual run whose dry_run is
+    # exactly false (event inputs are strings), publishes.
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -304,12 +323,14 @@ jobs:
           merge-multiple: true
       # NOTES.md stays outside dist/, so it is neither a release asset nor
       # listed in SHA256SUMS. A prerelease (1.0.0-rc.1) without its own
-      # section uses its version's (1.0.0).
+      # section uses its version's (1.0.0). A section ends at the next
+      # `## [` heading or at the link definitions (`[1.0.0]: https://…`).
       - name: Release notes from CHANGELOG.md
         run: |
           for v in "$VERSION" "${VERSION%%-*}"; do
             awk -v v="$v" '
               /^## \[/ { if (on) exit; on = ($2 == "[" v "]"); next }
+              on && /^\[.*\]:/ { exit }
               on { print }
             ' CHANGELOG.md > "$NOTES"
             if [ -s "$NOTES" ]; then break; fi
