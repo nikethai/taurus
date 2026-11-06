@@ -1,13 +1,18 @@
 //! Advanced mode's Add several links screen: the text is parsed
 //! (`batch.rs`) after each edit; "Add N downloads" adds the lines in order
 //! (`grab_flow::add_all`), each in the folder its kind is sorted into.
+//!
+//! The "Sign-in details" user name and password live only in the
+//! window's `LinksUi.batch-user` / `batch-password` until the batch is
+//! handed over: both are emptied as the requests are built, and no view
+//! model or log ever holds them.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use slint::{ComponentHandle, ModelRc, VecModel};
-use taurus_core::{AddRequest, JobKind};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use taurus_core::{AddRequest, Credentials, JobKind};
 
 use crate::app::App;
 use crate::batch::{self, BatchLine, LineKind};
@@ -58,6 +63,7 @@ impl App {
             return;
         };
         *self.batch.batch.borrow_mut() = Batch::default();
+        clear_sign_in(&ui);
         self.render_batch(&ui);
         ui.set_screen(Screen::Batch);
     }
@@ -100,27 +106,46 @@ impl App {
     }
 
     /// "Add N downloads": every added line, in order, each in the folder
-    /// its kind is sorted into.
+    /// its kind is sorted into; the sign-in details (when a user name is
+    /// typed) go with the web file lines.
     pub(crate) fn batch_add(&self) {
+        let Some(ui) = self.window.upgrade() else {
+            return;
+        };
         let lines = std::mem::take(&mut self.batch.batch.borrow_mut().lines);
-        let base = self.default_destination("").0;
-        let requests: Vec<(AddRequest, Option<PathBuf>)> = batch::to_requests(&lines, &base)
-            .into_iter()
-            .zip(lines.iter().filter(|l| batch::is_added(l)))
-            .map(|(mut request, line)| {
-                let (dest_dir, sorted) = self.default_destination(sort_kind(line));
-                request.dest_dir = dest_dir;
-                (request, sorted.then(|| base.clone()))
-            })
-            .collect();
-        if requests.is_empty() {
+        if !lines.iter().any(batch::is_added) {
             self.batch.batch.borrow_mut().lines = lines;
             return;
         }
+        let links = ui.global::<LinksUi>();
+        let (user, password) = (links.get_batch_user(), links.get_batch_password());
+        clear_sign_in(&ui);
+        let username = user.trim();
+        let credentials = (!username.is_empty()).then(|| Credentials {
+            username: username.to_owned(),
+            password: password.to_string(),
+        });
+        drop((user, password));
+        let base = self.default_destination("").0;
+        let requests: Vec<(AddRequest, Option<PathBuf>)> =
+            batch::to_requests(&lines, &base, credentials.as_ref())
+                .into_iter()
+                .zip(lines.iter().filter(|l| batch::is_added(l)))
+                .map(|(mut request, line)| {
+                    let (dest_dir, sorted) = self.default_destination(sort_kind(line));
+                    request.dest_dir = dest_dir;
+                    (request, sorted.then(|| base.clone()))
+                })
+                .collect();
         *self.batch.batch.borrow_mut() = Batch::default();
-        if let Some(ui) = self.window.upgrade() {
-            self.render_batch(&ui);
-        }
+        self.render_batch(&ui);
         self.add_all(requests);
     }
+}
+
+/// Empties the sign-in details the window holds.
+fn clear_sign_in(ui: &AppWindow) {
+    let links = ui.global::<LinksUi>();
+    links.set_batch_user(SharedString::new());
+    links.set_batch_password(SharedString::new());
 }

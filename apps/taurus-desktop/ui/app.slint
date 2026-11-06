@@ -19,7 +19,8 @@ import { FilesDialog } from "adv/torrent.slint";
 import { AdvCompact } from "adv/main.slint";
 import { AdvWide } from "adv/wide.slint";
 import { DetailPane } from "adv/detail.slint";
-import { RemoveDialog, PasswordDialog } from "adv/dialogs.slint";
+import { RemoveDialog } from "adv/dialogs.slint";
+import { PasswordDialog } from "dialogs.slint";
 import { Welcome } from "welcome.slint";
 import { Downloads } from "downloads.slint";
 import { Add } from "add.slint";
@@ -58,6 +59,8 @@ export component AppWindow inherits Window {
     // Video tools: "" | "installing" | "failed"; percent -1 = unknown.
     in property <string> tools-banner;
     in property <int> tools-percent: -1;
+    // Why the last fetch failed (ErrorKind::as_str()), "" when unknown.
+    in property <string> tools-error;
     in property <bool> has-tray;
     // Window (and taskbar) icon, drawn by the app.
     in property <image> app-icon;
@@ -137,7 +140,8 @@ export component AppWindow inherits Window {
     callback confirm-remove(int, bool);
     // "chrome" | "firefox" | "safari" | "edge" | "brave"
     callback retry-with-browser(int, string);
-    // "Enter password…": opens the sign-in dialog.
+    // "Enter password…" (Advanced detail) or a Simple row's "Sign in":
+    // opens the sign-in dialog.
     callback ask-password(int);
     // id, user name, password
     callback submit-password(int, string, string);
@@ -196,12 +200,20 @@ export component AppWindow inherits Window {
         root.width-changed();
     }
 
-    // A typed password never outlives the Advanced add screen or the
-    // sign-in dialog, whatever closes them (Back, Escape, a mode switch).
+    // A typed password never outlives the Advanced add screen, Several
+    // links or the sign-in dialog, whatever closes them (Back, Escape, a
+    // mode switch).
     property <bool> adv-add-open: root.screen == Screen.add && root.layout != "simple";
     changed adv-add-open => {
         if (!self.adv-add-open) {
             root.adv-password = "";
+        }
+    }
+    property <bool> batch-open: root.screen == Screen.batch;
+    changed batch-open => {
+        if (!self.batch-open) {
+            LinksUi.batch-user = "";
+            LinksUi.batch-password = "";
         }
     }
     property <bool> password-open: root.password-dialog.visible;
@@ -381,6 +393,7 @@ export component AppWindow inherits Window {
                     tab <=> root.tab;
                     tools-banner: root.tools-banner;
                     tools-percent: root.tools-percent;
+                    tools-error: root.tools-error;
                     link-entered(link) => {
                         root.link-entered(link);
                     }
@@ -395,6 +408,9 @@ export component AppWindow inherits Window {
                     }
                     retry(id) => {
                         root.retry(id);
+                    }
+                    sign-in(id) => {
+                        root.ask-password(id);
                     }
                     stop-recording(id) => {
                         root.stop-recording(id);

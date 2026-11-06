@@ -2,7 +2,8 @@
 // button: what Hyades does when every download is finished, and the speed
 // limit. A global holds what it shows and what it asks of the app (the app
 // sets it with `ui.global::<WhenDoneUi>()`), so the window passes nothing
-// along. Escape or a click outside closes it.
+// along. Escape, a click outside, or picking a choice or a preset speed
+// closes it; Custom keeps it open with its field focused.
 import { Theme } from "../theme.slint";
 import { Icon } from "../icons.slint";
 import { Pressable, Segmented, Segment, LineEdit } from "../widgets.slint";
@@ -104,6 +105,27 @@ export component WhenDonePopover inherits Rectangle {
 
     // The field's text changed since it was last applied.
     property <bool> dirty: false;
+    // Bumped by each pick of Custom: the field takes the focus.
+    property <int> focus-custom: 0;
+
+    // A when-done choice: a custom speed typed and not applied yet is
+    // applied first (as leaving the field would), then the popover closes.
+    function pick-when-done(value: string) {
+        if (root.dirty) {
+            root.dirty = false;
+            WhenDoneUi.custom-commit(WhenDoneUi.custom-text);
+        }
+        WhenDoneUi.pick-when-done(value);
+        WhenDoneUi.open = false;
+    }
+
+    // A preset speed replaces whatever was typed; the popover closes.
+    function pick-speed(value: string) {
+        root.dirty = false;
+        root.custom-mode = false;
+        WhenDoneUi.pick-speed(value);
+        WhenDoneUi.open = false;
+    }
 
     background: transparent;
     init => {
@@ -154,7 +176,7 @@ export component WhenDonePopover inherits Rectangle {
                 text: c.label;
                 selected: WhenDoneUi.when-done == c.value;
                 clicked => {
-                    WhenDoneUi.pick-when-done(c.value);
+                    root.pick-when-done(c.value);
                 }
             }
             if WhenDoneUi.when-done == "sleep" || WhenDoneUi.when-done == "shutdown": Text {
@@ -174,24 +196,21 @@ export component WhenDonePopover inherits Rectangle {
                     text: @tr("Gentle");
                     selected: !root.custom-mode && WhenDoneUi.speed == "gentle";
                     clicked => {
-                        root.custom-mode = false;
-                        WhenDoneUi.pick-speed("gentle");
+                        root.pick-speed("gentle");
                     }
                 }
                 Segment {
                     text: @tr("Balanced");
                     selected: !root.custom-mode && WhenDoneUi.speed == "balanced";
                     clicked => {
-                        root.custom-mode = false;
-                        WhenDoneUi.pick-speed("balanced");
+                        root.pick-speed("balanced");
                     }
                 }
                 Segment {
                     text: @tr("Fastest");
                     selected: !root.custom-mode && WhenDoneUi.speed == "fastest";
                     clicked => {
-                        root.custom-mode = false;
-                        WhenDoneUi.pick-speed("fastest");
+                        root.pick-speed("fastest");
                     }
                 }
                 Segment {
@@ -200,6 +219,7 @@ export component WhenDonePopover inherits Rectangle {
                     clicked => {
                         root.custom-mode = true;
                         WhenDoneUi.custom-chosen();
+                        root.focus-custom += 1;
                     }
                 }
             }
@@ -210,6 +230,11 @@ export component WhenDonePopover inherits Rectangle {
                     text <=> WhenDoneUi.custom-text;
                     placeholder-text: @tr("0.1 to 10000");
                     accessible-label: @tr("Custom speed in MB/s");
+                    // Custom picked again while the field is shown.
+                    property <int> asked: root.focus-custom;
+                    changed asked => {
+                        self.focus();
+                    }
                     init => {
                         self.focus();
                     }

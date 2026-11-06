@@ -191,22 +191,24 @@ fn tool_key(kind: ToolKind) -> &'static str {
 
 /// A tool's row on the Engines section.
 pub fn tool_row(status: &ToolStatus) -> ToolRowVm {
-    let (state, progress) = match &status.state {
-        ToolState::Missing => ("missing", -1.0),
+    let (state, progress, error) = match &status.state {
+        ToolState::Missing => ("missing", -1.0, ""),
         ToolState::Installing { downloaded, total } => (
             "installing",
             total
                 .filter(|&t| t > 0)
                 .map_or(-1.0, |t| (*downloaded).min(t) as f32 / t as f32),
+            "",
         ),
-        ToolState::Ready => ("ready", -1.0),
-        ToolState::Failed(_) => ("failed", -1.0),
+        ToolState::Ready => ("ready", -1.0, ""),
+        ToolState::Failed(kind) => ("failed", -1.0, kind.as_str()),
     };
     ToolRowVm {
         kind: tool_key(status.kind).into(),
         version: status.version.clone().unwrap_or_default().into(),
         state: state.into(),
         progress,
+        error_kind: error.into(),
     }
 }
 
@@ -523,6 +525,11 @@ mod tests {
             "missing"
         );
         let failed = ToolState::Failed(ErrorKind::ConnectionLost);
-        assert_eq!(tool_row(&status(failed, None)).state.as_str(), "failed");
+        let row = tool_row(&status(failed, None));
+        assert_eq!(
+            (row.state.as_str(), row.error_kind.as_str()),
+            ("failed", "connection_lost")
+        );
+        assert_eq!(tool_row(&status(ToolState::Ready, None)).error_kind, "");
     }
 }

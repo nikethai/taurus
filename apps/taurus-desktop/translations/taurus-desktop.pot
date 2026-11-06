@@ -2,7 +2,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
-"POT-Creation-Date: 2026-11-06 15:58+0000\n"
+"POT-Creation-Date: 2026-11-06 19:00+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -452,6 +452,22 @@ msgid "Paste links above to see them here."
 msgstr ""
 
 msgctxt "AdvBatch"
+msgid "Sign-in details"
+msgstr ""
+
+msgctxt "AdvBatch"
+msgid "Used for every web link above. Torrents and videos don't use them."
+msgstr ""
+
+msgctxt "AdvBatch"
+msgid "User name"
+msgstr ""
+
+msgctxt "AdvBatch"
+msgid "Password"
+msgstr ""
+
+msgctxt "AdvBatch"
 msgid "Cancel"
 msgstr ""
 
@@ -715,34 +731,6 @@ msgstr ""
 
 msgctxt "RemoveDialog"
 msgid "Remove"
-msgstr ""
-
-msgctxt "PasswordDialog"
-msgid "Sign in to download {0}"
-msgstr ""
-
-msgctxt "PasswordDialog"
-msgid "That user name or password didn't work. Try again."
-msgstr ""
-
-msgctxt "PasswordDialog"
-msgid "User name"
-msgstr ""
-
-msgctxt "PasswordDialog"
-msgid "Password"
-msgstr ""
-
-msgctxt "PasswordDialog"
-msgid "Signing in…"
-msgstr ""
-
-msgctxt "PasswordDialog"
-msgid "Cancel"
-msgstr ""
-
-msgctxt "PasswordDialog"
-msgid "Sign in"
 msgstr ""
 
 msgctxt "GrabRow"
@@ -1691,6 +1679,34 @@ msgctxt "Countdown"
 msgid "Cancel"
 msgstr ""
 
+msgctxt "PasswordDialog"
+msgid "Sign in to download {0}"
+msgstr ""
+
+msgctxt "PasswordDialog"
+msgid "That user name or password didn't work. Try again."
+msgstr ""
+
+msgctxt "PasswordDialog"
+msgid "User name"
+msgstr ""
+
+msgctxt "PasswordDialog"
+msgid "Password"
+msgstr ""
+
+msgctxt "PasswordDialog"
+msgid "Signing in…"
+msgstr ""
+
+msgctxt "PasswordDialog"
+msgid "Cancel"
+msgstr ""
+
+msgctxt "PasswordDialog"
+msgid "Sign in"
+msgstr ""
+
 msgctxt "Downloads"
 msgid "About {0} min left"
 msgstr ""
@@ -1827,6 +1843,10 @@ msgid "The file changed on the server, so the download started over."
 msgstr ""
 
 msgctxt "Messages"
+msgid "Hyades couldn't connect. Check your internet connection, then try again."
+msgstr ""
+
+msgctxt "Messages"
 msgid "Something went wrong. Try again."
 msgstr ""
 
@@ -1872,6 +1892,10 @@ msgstr ""
 
 msgctxt "Row"
 msgid "Remove from list"
+msgstr ""
+
+msgctxt "Row"
+msgid "Sign in"
 msgstr ""
 
 msgctxt "Row"

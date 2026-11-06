@@ -183,15 +183,16 @@ impl App {
             self.engine_settings();
         }
         if let Some(tools) = flush.tools {
-            let (state, percent) = match tools {
-                ToolsBanner::Hidden => ("", -1),
+            let (state, percent, error) = match tools {
+                ToolsBanner::Hidden => ("", -1, ""),
                 ToolsBanner::Installing { percent } => {
-                    ("installing", percent.map_or(-1, i32::from))
+                    ("installing", percent.map_or(-1, i32::from), "")
                 }
-                ToolsBanner::Failed => ("failed", -1),
+                ToolsBanner::Failed { kind } => ("failed", -1, kind.as_str()),
             };
             ui.set_tools_banner(state.into());
             ui.set_tools_percent(percent);
+            ui.set_tools_error(error.into());
             self.refresh_tools(&ui);
         }
         if let Some(when_done) = flush.when_done {

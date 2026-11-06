@@ -72,11 +72,14 @@ export component Downloads inherits Rectangle {
     // "" | "installing" | "failed"
     in property <string> tools-banner;
     in property <int> tools-percent: -1;
+    // Why the tools could not be fetched (ErrorKind::as_str()), "" if unknown.
+    in property <string> tools-error;
     callback link-entered(string);
     callback open-settings();
     callback pause(int);
     callback resume(int);
     callback retry(int);
+    callback sign-in(int);
     callback stop-recording(int);
     callback open-file(int);
     callback reveal(int);
@@ -159,6 +162,7 @@ export component Downloads inherits Rectangle {
             ToolsBanner {
                 state: root.tools-banner;
                 percent: root.tools-percent;
+                error-kind: root.tools-error;
             }
         }
 
@@ -218,6 +222,9 @@ export component Downloads inherits Rectangle {
                         }
                         retry(id) => {
                             root.retry(id);
+                        }
+                        sign-in(id) => {
+                            root.sign-in(id);
                         }
                         stop-recording(id) => {
                             root.stop-recording(id);

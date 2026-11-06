@@ -39,6 +39,8 @@ export global Messages {
             return @tr("This needs your confirmation.");
         } else if (kind == "file_changed_on_server") {
             return @tr("The file changed on the server, so the download started over.");
+        } else if (kind == "connection_lost") {
+            return @tr("Hyades couldn't connect. Check your internet connection, then try again.");
         }
         return @tr("Something went wrong. Try again.");
     }

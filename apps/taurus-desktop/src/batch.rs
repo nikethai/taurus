@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use taurus_core::AddRequest;
 use taurus_core::media::fast_path_host;
 use taurus_core::torrent::source::{Source, classify};
+use taurus_core::{AddRequest, Credentials};
 
 /// What one line links to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,8 +125,14 @@ pub fn is_added(line: &BatchLine) -> bool {
 
 /// One download per added line (`is_added`), saved in `dest`: mirrors go
 /// into their first line's `mirrors`; videos get the Simple defaults;
-/// pages and anything else that is not a link are left out.
-pub fn to_requests(lines: &[BatchLine], dest: &Path) -> Vec<AddRequest> {
+/// pages and anything else that is not a link are left out. `credentials`
+/// go with every web file line (the engine refuses them for torrents and
+/// videos).
+pub fn to_requests(
+    lines: &[BatchLine],
+    dest: &Path,
+    credentials: Option<&Credentials>,
+) -> Vec<AddRequest> {
     lines
         .iter()
         .filter(|l| is_added(l))
@@ -141,6 +147,7 @@ pub fn to_requests(lines: &[BatchLine], dest: &Path) -> Vec<AddRequest> {
                 url: l.text.clone(),
                 dest_dir: dest.to_path_buf(),
                 mirrors,
+                credentials: credentials.filter(|_| l.kind == LineKind::Http).cloned(),
                 ..Default::default()
             }
         })
@@ -193,7 +200,7 @@ mod tests {
         assert_eq!(lines[10].text, "http://mirror.example.net/b.zip");
         assert!(lines.iter().all(|l| l.mirror_of.is_none()));
         let dest = Path::new("/data/dl");
-        let urls: Vec<String> = to_requests(&lines, dest)
+        let urls: Vec<String> = to_requests(&lines, dest, None)
             .into_iter()
             .map(|r| {
                 assert_eq!(r.dest_dir, dest);
@@ -225,7 +232,7 @@ mod tests {
         let lines = parse_batch(text, true);
         let mirror_of: Vec<Option<usize>> = lines.iter().map(|l| l.mirror_of).collect();
         assert_eq!(mirror_of, vec![None, Some(1), None, Some(1), Some(1), None]);
-        let requests = to_requests(&lines, Path::new("/dl"));
+        let requests = to_requests(&lines, Path::new("/dl"), None);
         assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].url, "https://a.example.org/pub/Linux.ISO");
         assert_eq!(
@@ -242,7 +249,38 @@ mod tests {
         // Without the switch every copy is a download of its own.
         let plain = parse_batch(text, false);
         assert!(plain.iter().all(|l| l.mirror_of.is_none()));
-        assert_eq!(to_requests(&plain, Path::new("/dl")).len(), 6);
+        assert_eq!(to_requests(&plain, Path::new("/dl"), None).len(), 6);
+    }
+
+    #[test]
+    fn batch_credentials_go_to_web_files_only() {
+        let text = format!(
+            "https://example.org/a.zip\n{MAGNET}\nhttps://www.youtube.com/watch?v=abc\n\
+             https://mirror.example.net/A.ZIP\nhttps://example.org/b.bin\n"
+        );
+        let lines = parse_batch(&text, true);
+        let creds = Credentials {
+            username: "u".into(),
+            password: "p".into(),
+        };
+        let signed: Vec<(String, bool)> = to_requests(&lines, Path::new("/dl"), Some(&creds))
+            .into_iter()
+            .map(|r| (r.url, r.credentials == Some(creds.clone())))
+            .collect();
+        assert_eq!(
+            signed,
+            vec![
+                ("https://example.org/a.zip".to_string(), true),
+                (MAGNET.to_string(), false),
+                ("https://www.youtube.com/watch?v=abc".to_string(), false),
+                ("https://example.org/b.bin".to_string(), true),
+            ]
+        );
+        assert!(
+            to_requests(&lines, Path::new("/dl"), None)
+                .iter()
+                .all(|r| r.credentials.is_none())
+        );
     }
 
     #[test]

@@ -447,6 +447,22 @@ msgid "Paste links above to see them here."
 msgstr "⟦Pásté líñks ábóvé tó séé thém héré.··············⟧"
 
 msgctxt "AdvBatch"
+msgid "Sign-in details"
+msgstr "⟦Sígñ-íñ détáíls······⟧"
+
+msgctxt "AdvBatch"
+msgid "Used for every web link above. Torrents and videos don't use them."
+msgstr "⟦Úséd fór évérý wéb líñk ábóvé. Tórréñts áñd vídéós dóñ't úsé thém.···························⟧"
+
+msgctxt "AdvBatch"
+msgid "User name"
+msgstr "⟦Úsér ñámé····⟧"
+
+msgctxt "AdvBatch"
+msgid "Password"
+msgstr "⟦Pásswórd····⟧"
+
+msgctxt "AdvBatch"
 msgid "Cancel"
 msgstr "⟦Çáñçél···⟧"
 
@@ -711,34 +727,6 @@ msgstr "⟦Çáñçél···⟧"
 msgctxt "RemoveDialog"
 msgid "Remove"
 msgstr "⟦Rémóvé···⟧"
-
-msgctxt "PasswordDialog"
-msgid "Sign in to download {0}"
-msgstr "⟦Sígñ íñ tó dówñlóád {0}··········⟧"
-
-msgctxt "PasswordDialog"
-msgid "That user name or password didn't work. Try again."
-msgstr "⟦Thát úsér ñámé ór pásswórd dídñ't wórk. Trý ágáíñ.····················⟧"
-
-msgctxt "PasswordDialog"
-msgid "User name"
-msgstr "⟦Úsér ñámé····⟧"
-
-msgctxt "PasswordDialog"
-msgid "Password"
-msgstr "⟦Pásswórd····⟧"
-
-msgctxt "PasswordDialog"
-msgid "Signing in…"
-msgstr "⟦Sígñíñg íñ…·····⟧"
-
-msgctxt "PasswordDialog"
-msgid "Cancel"
-msgstr "⟦Çáñçél···⟧"
-
-msgctxt "PasswordDialog"
-msgid "Sign in"
-msgstr "⟦Sígñ íñ···⟧"
 
 msgctxt "GrabRow"
 msgid "Size unknown"
@@ -1676,6 +1664,34 @@ msgctxt "Countdown"
 msgid "Cancel"
 msgstr "⟦Çáñçél···⟧"
 
+msgctxt "PasswordDialog"
+msgid "Sign in to download {0}"
+msgstr "⟦Sígñ íñ tó dówñlóád {0}··········⟧"
+
+msgctxt "PasswordDialog"
+msgid "That user name or password didn't work. Try again."
+msgstr "⟦Thát úsér ñámé ór pásswórd dídñ't wórk. Trý ágáíñ.····················⟧"
+
+msgctxt "PasswordDialog"
+msgid "User name"
+msgstr "⟦Úsér ñámé····⟧"
+
+msgctxt "PasswordDialog"
+msgid "Password"
+msgstr "⟦Pásswórd····⟧"
+
+msgctxt "PasswordDialog"
+msgid "Signing in…"
+msgstr "⟦Sígñíñg íñ…·····⟧"
+
+msgctxt "PasswordDialog"
+msgid "Cancel"
+msgstr "⟦Çáñçél···⟧"
+
+msgctxt "PasswordDialog"
+msgid "Sign in"
+msgstr "⟦Sígñ íñ···⟧"
+
 msgctxt "Downloads"
 msgid "About {0} min left"
 msgstr "⟦Ábóút {0} míñ léft········⟧"
@@ -1805,6 +1821,10 @@ msgid "The file changed on the server, so the download started over."
 msgstr "⟦Thé fílé çháñgéd óñ thé sérvér, só thé dówñlóád stártéd óvér.·························⟧"
 
 msgctxt "Messages"
+msgid "Hyades couldn't connect. Check your internet connection, then try again."
+msgstr "⟦Hyades çóúldñ't çóññéçt. Çhéçk ýóúr íñtérñét çóññéçtíóñ, théñ trý ágáíñ.·····························⟧"
+
+msgctxt "Messages"
 msgid "Something went wrong. Try again."
 msgstr "⟦Sóméthíñg wéñt wróñg. Trý ágáíñ.·············⟧"
 
@@ -1851,6 +1871,10 @@ msgstr "⟦Shów íñ fóldér······⟧"
 msgctxt "Row"
 msgid "Remove from list"
 msgstr "⟦Rémóvé fróm líst·······⟧"
+
+msgctxt "Row"
+msgid "Sign in"
+msgstr "⟦Sígñ íñ···⟧"
 
 msgctxt "Row"
 msgid "Try again"

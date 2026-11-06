@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use slint::platform::WindowEvent;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use taurus_core::secrets::MemoryStore;
-use taurus_core::tools::ToolSources;
+use taurus_core::tools::{ToolSources, ToolState};
 use taurus_core::torrent::hub::TorrentTestNet;
 use taurus_core::{
     AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, PowerMode, ProxySetting,
@@ -25,8 +25,9 @@ use taurus_desktop::rows;
 use taurus_desktop::shell_text::ShellStrings;
 use taurus_desktop::update_apply::Restart;
 use taurus_desktop::{
-    AdvRowVm, AppWindow, BannerVm, CountdownVm, DetailVm, FilesDialogVm, LinksUi, PasswordDialogVm,
-    RemoveDialogVm, RowVm, Screen, SettingsUi, SettingsVm, Theme, TorrentFileVm, WhenDoneUi,
+    AdvAddVm, AdvRowVm, AppWindow, BannerVm, CountdownVm, DetailVm, FilesDialogVm, LinksUi,
+    PasswordDialogVm, RemoveDialogVm, RowVm, Screen, SettingsUi, SettingsVm, Theme, TorrentFileVm,
+    WhenDoneUi,
 };
 use taurus_testkit::{
     FailAfter, FakeToolHost, FileSpec, TestServer, ToolRelease, TorrentSeeder, process_args_log,
@@ -51,6 +52,7 @@ fn ui_smoke() {
     keyboard_tab_enter_escape();
     wide_detail_holds_long_names();
     torrent_add_scrolls_only_its_list();
+    refused_add_leaves_no_band(&ui);
     let ctx = Ctx::start(&ui);
     add_flow_shows_file_and_finishes(&ui, &ctx);
     settings_change_is_saved_and_shown(&ui, &ctx);
@@ -58,11 +60,13 @@ fn ui_smoke() {
     close_hides_to_tray_and_keeps_downloading(&ctx);
     failed_row_explains_and_retries(&ui, &ctx);
     duplicate_link_is_flagged(&ui, &ctx);
+    simple_row_offers_sign_in(&ui, &ctx);
     waiting_row_counts_down();
     torrent_row_shows_sharing();
     countdown_cancel();
     let media = MediaCtx::start();
     tools_offline_shows_failed_banner(&media);
+    tool_failure_shows_reason(&media);
     media_add_picks_quality_and_finishes(&media);
     live_recording_shows_and_stops(&media);
     large_playlist_asks_first(&media);
@@ -85,10 +89,13 @@ fn ui_smoke() {
     batch_copies_become_mirrors(&ui, &ctx);
     add_page_offers_find_files(&ui, &ctx);
     whendone_menu_sets_when_done_and_speed(&ui, &ctx);
+    whendone_pick_closes_menu(&ui, &ctx);
     adv_settings_sections_and_values(&ui, &ctx);
     check_updates_toggle_saves(&ui, &ctx);
+    interactive_widgets_are_accessible(&ui, &ctx);
     torrent_detail_files_and_overrides();
     adv_add_torrent_picker();
+    batch_password_applies_to_web_links();
     quit_shuts_down_engine_cleanly(&ui, &ctx);
     restart_records_and_quits();
     advanced_restart_after_later();
@@ -3583,7 +3590,12 @@ fn refresh_tree(ui: &AppWindow) {
     let _ = ElementQuery::from_root(ui).match_descendants().find_all();
 }
 
+/// The popover's radio button `label`; opens the popover first (as its
+/// footer button does) when a pick closed it.
 fn whendone_choice(ui: &AppWindow, label: &str, what: &str) -> ElementHandle {
+    if !ui.global::<WhenDoneUi>().get_open() {
+        ui.invoke_open_whendone();
+    }
     refresh_tree(ui);
     only_with_role(ui, AccessibleRole::RadioButton, label, what)
 }
@@ -3643,29 +3655,34 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     }
     assert!(texts_containing(ui, NOTE).is_empty(), "{WHAT}: early note");
 
-    // Then sleep: saved, the footer says so, the note shows.
+    // Then sleep: saved, the popover closes, the footer says so (its
+    // button opens the popover again), the note shows.
     whendone_choice(ui, "Put the computer to sleep", WHAT).invoke_accessible_default_action();
+    assert!(!state.get_open(), "{WHAT}: open after a pick");
     wait_until(&format!("{WHAT}: sleep saved"), || {
         ctx.engine.settings().when_done == WhenDone::Sleep
     });
     whendone_shown(ui, "sleep", WHAT);
-    assert!(!texts_containing(ui, NOTE).is_empty(), "{WHAT}: sleep note");
-    only_button(ui, "Then sleep", WHAT);
     assert!(labelled(ui, "When done").is_empty(), "{WHAT}: old label");
+    only_button(ui, "Then sleep", WHAT).invoke_accessible_default_action();
+    refresh_tree(ui);
+    assert!(!texts_containing(ui, NOTE).is_empty(), "{WHAT}: sleep note");
     whendone_choice(ui, "Shut down", WHAT).invoke_accessible_default_action();
     whendone_shown(ui, "shutdown", WHAT);
+    only_button(ui, "Then shut down", WHAT).invoke_accessible_default_action();
+    refresh_tree(ui);
     assert!(
         !texts_containing(ui, NOTE).is_empty(),
         "{WHAT}: shutdown note"
     );
-    only_button(ui, "Then shut down", WHAT);
     whendone_choice(ui, "Quit Hyades", WHAT).invoke_accessible_default_action();
     wait_until(&format!("{WHAT}: quit saved"), || {
         ctx.engine.settings().when_done == WhenDone::Quit
     });
     whendone_shown(ui, "quit", WHAT);
+    only_button(ui, "Then quit", WHAT).invoke_accessible_default_action();
+    refresh_tree(ui);
     assert!(texts_containing(ui, NOTE).is_empty(), "{WHAT}: quit note");
-    only_button(ui, "Then quit", WHAT);
     whendone_choice(ui, "Just notify me", WHAT).invoke_accessible_default_action();
     whendone_shown(ui, "notify", WHAT);
     only_button(ui, "Notify", WHAT);
@@ -3674,7 +3691,8 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
         ctx.engine.settings().when_done == WhenDone::Nothing
     });
     whendone_shown(ui, "nothing", WHAT);
-    only_button(ui, "When done", WHAT);
+    only_button(ui, "When done", WHAT).invoke_accessible_default_action();
+    refresh_tree(ui);
 
     // Presets, then Custom.
     only_with_role(ui, AccessibleRole::RadioButton, "Gentle", WHAT)
@@ -3682,8 +3700,7 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     wait_until(&format!("{WHAT}: gentle saved"), || {
         ctx.engine.settings().speed == SpeedLimit::Gentle
     });
-    only_with_role(ui, AccessibleRole::RadioButton, "Custom", WHAT)
-        .invoke_accessible_default_action();
+    whendone_choice(ui, "Custom", WHAT).invoke_accessible_default_action();
     refresh_tree(ui);
     let field = only_with_role(ui, AccessibleRole::TextInput, "Custom speed in MB/s", WHAT);
     assert_eq!(
@@ -3777,6 +3794,10 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     whendone_choice(ui, "Shut down", WHAT).invoke_accessible_default_action();
     assert!(state.get_custom_invalid(), "{WHAT}: pick cleared the error");
     whendone_choice(ui, "Do nothing", WHAT).invoke_accessible_default_action();
+    // Opened again on the custom speed: its field, focused.
+    ui.invoke_open_whendone();
+    refresh_tree(ui);
+    let field = only_with_role(ui, AccessibleRole::TextInput, "Custom speed in MB/s", WHAT);
     field.set_accessible_value("0.1");
     refresh_tree(ui);
     assert!(!state.get_custom_invalid(), "{WHAT}: 0.1 flagged");
@@ -4972,4 +4993,370 @@ fn keyboard_screens(ui: &AppWindow, calls: &Calls) {
     assert_eq!(taken(), Vec::<String>::new(), "{WHAT}: detail with dialog");
     press(ui, Key::Escape);
     assert_eq!(taken(), ["select -1"], "{WHAT}: detail after the dialog");
+}
+
+/// The Advanced add's refusal line: shown with the engine's reason, and
+/// once the reason is cleared (a field edited, or an add that went
+/// through) it takes no room at all.
+fn refused_add_leaves_no_band(ui: &AppWindow) {
+    const WHAT: &str = "refused_add_leaves_no_band";
+    let vm = AdvAddVm {
+        kind: "file".into(),
+        name: "refused.bin".into(),
+        checksum_ok: true,
+        ..Default::default()
+    };
+    ui.window().set_size(TALL);
+    ui.set_layout("compact".into());
+    ui.set_adv_add(AdvAddVm {
+        refused: "disk_full".into(),
+        ..vm.clone()
+    });
+    ui.set_screen(Screen::Add);
+    refresh_tree(ui);
+    let band = || {
+        ElementHandle::find_by_element_id(ui, "AdvAdd::refusal")
+            .next()
+            .unwrap_or_else(|| panic!("{WHAT}: no refusal line"))
+    };
+    assert!(band().size().height > 0.0, "{WHAT}: refusal not shown");
+    let reason = ui
+        .global::<taurus_desktop::Messages>()
+        .invoke_simple("disk_full".into());
+    assert!(
+        labelled(ui, &reason).iter().any(|e| e.size().width > 0.0),
+        "{WHAT}: the reason is not said"
+    );
+    ui.set_adv_add(vm);
+    refresh_tree(ui);
+    assert_eq!(band().size().height, 0.0, "{WHAT}: a blank band stays");
+    ui.set_screen(Screen::Welcome);
+    ui.set_adv_add(AdvAddVm::default());
+    ui.set_layout("simple".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// A Simple row that failed for want of a password offers "Sign in" in
+/// place of "Try again": it opens the sign-in dialog, whose user name and
+/// password reach the engine and are emptied at once; the download then
+/// finishes.
+fn simple_row_offers_sign_in(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "simple_row_offers_sign_in";
+    const NAME: &str = "simple-locked.bin";
+    const SIZE: usize = 256 * 1024;
+    // The probe when adding succeeds; the download is then refused (401).
+    let mut spec = FileSpec::new(SIZE);
+    spec.fail_after = Some(FailAfter {
+        after_requests: 1,
+        status: 401,
+        headers: vec![("WWW-Authenticate".into(), "Basic realm=\"test\"".into())],
+    });
+    let url = ctx.server.serve(NAME, spec);
+    let request = AddRequest {
+        url,
+        dest_dir: ctx.out(),
+        ..Default::default()
+    };
+    ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    ui.set_tab(0);
+    ui.set_screen(Screen::Downloads);
+    wait_until(&format!("{WHAT}: the row needs a sign-in"), || {
+        ui.get_downloading_rows()
+            .iter()
+            .any(|r| r.name == NAME && r.state == "failed" && r.error_kind == "needs_sign_in")
+    });
+    let mut protected = FileSpec::new(SIZE);
+    protected.basic_auth = Some(("u".into(), "p".into()));
+    ctx.server.replace(NAME, protected);
+    refresh_tree(ui);
+    assert!(
+        labelled(ui, "Try again")
+            .iter()
+            .all(|e| e.accessible_role() != Some(AccessibleRole::Button)),
+        "{WHAT}: still offers Try again"
+    );
+    only_button(ui, "Sign in", WHAT).invoke_accessible_default_action();
+    let dialog = ui.get_password_dialog();
+    assert!(dialog.visible, "{WHAT}: no dialog");
+    assert_eq!(dialog.name.as_str(), NAME, "{WHAT}: {dialog:?}");
+    refresh_tree(ui);
+    only_with_role(ui, AccessibleRole::TextInput, "User name", WHAT).set_accessible_value("u");
+    only_with_role(ui, AccessibleRole::TextInput, "Password", WHAT).set_accessible_value("p");
+    assert_eq!(ui.get_password_text().as_str(), "p", "{WHAT}: typed");
+    // The row's button and the dialog's: the dialog is drawn last.
+    let mut buttons: Vec<ElementHandle> = labelled(ui, "Sign in")
+        .into_iter()
+        .filter(|e| e.accessible_role() == Some(AccessibleRole::Button))
+        .collect();
+    assert_eq!(buttons.len(), 2, "{WHAT}: the row's and the dialog's");
+    buttons.pop().unwrap().invoke_accessible_default_action();
+    assert_eq!(ui.get_password_text().as_str(), "", "{WHAT}: password kept");
+    assert_eq!(ui.get_password_user().as_str(), "", "{WHAT}: user kept");
+    wait_until(&format!("{WHAT}: dialog closed"), || {
+        !ui.get_password_dialog().visible
+    });
+    wait_until(&format!("{WHAT}: {NAME} finished"), || {
+        job_named(ctx, NAME).is_some_and(|v| v.state == JobState::Completed)
+    });
+    assert_eq!(
+        std::fs::metadata(ctx.out().join(NAME))
+            .map(|m| m.len())
+            .ok(),
+        Some(SIZE as u64),
+        "{WHAT}: not saved in full"
+    );
+}
+
+/// While the tools' publisher stays unreachable (left offline by
+/// `tools_offline_shows_failed_banner`), the Downloads banner and the
+/// Engines section say why the tools could not be fetched.
+fn tool_failure_shows_reason(m: &MediaCtx) {
+    const WHAT: &str = "tool_failure_shows_reason";
+    let ui = &m.ui;
+    let failed = ToolState::Failed(ErrorKind::ConnectionLost);
+    assert!(
+        m.ctx
+            .engine
+            .tools_status()
+            .iter()
+            .any(|s| s.state == failed),
+        "{WHAT}: no tool failed"
+    );
+    let reason = ShellStrings::simple(ui, ErrorKind::ConnectionLost);
+    let shown = |where_: &str| {
+        refresh_tree(ui);
+        assert!(
+            labelled(ui, &reason).iter().any(|e| e.size().width > 0.0),
+            "{WHAT}: {where_} does not say {reason:?}"
+        );
+    };
+    ui.set_screen(Screen::Downloads);
+    wait_until(&format!("{WHAT}: banner says failed"), || {
+        ui.get_tools_banner() == "failed"
+    });
+    shown("the Downloads banner");
+
+    ui.window().set_size(SETTINGS_TALL);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    ui.set_screen(Screen::Settings);
+    refresh_tree(ui);
+    wait_until(&format!("{WHAT}: Engines lists the failure"), || {
+        ui.global::<SettingsUi>()
+            .get_tools()
+            .iter()
+            .any(|t| t.state == "failed")
+    });
+    shown("the Engines section");
+    ui.set_screen(Screen::Downloads);
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+    m.host.go_online();
+}
+
+/// Picking a when-done choice or a speed preset closes the popover;
+/// Custom keeps it open, with its field taking what is typed.
+fn whendone_pick_closes_menu(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "whendone_pick_closes_menu";
+    let state = ui.global::<WhenDoneUi>();
+    advanced_tall(ui, WHAT);
+    ui.invoke_open_whendone();
+    whendone_choice(ui, "Just notify me", WHAT).invoke_accessible_default_action();
+    assert!(!state.get_open(), "{WHAT}: open after Just notify me");
+    wait_until(&format!("{WHAT}: notify saved"), || {
+        ctx.engine.settings().when_done == WhenDone::Notify
+    });
+    ui.invoke_open_whendone();
+    refresh_tree(ui);
+    only_with_role(ui, AccessibleRole::RadioButton, "Gentle", WHAT)
+        .invoke_accessible_default_action();
+    assert!(!state.get_open(), "{WHAT}: open after Gentle");
+    wait_until(&format!("{WHAT}: gentle saved"), || {
+        ctx.engine.settings().speed == SpeedLimit::Gentle
+    });
+    ui.invoke_open_whendone();
+    refresh_tree(ui);
+    only_with_role(ui, AccessibleRole::RadioButton, "Custom", WHAT)
+        .invoke_accessible_default_action();
+    assert!(state.get_open(), "{WHAT}: Custom closed it");
+    refresh_tree(ui);
+    // The field has the focus: a key typed goes into it.
+    let before = state.get_custom_text().to_string();
+    ui.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: "5".into() });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: "5".into() });
+    let after = state.get_custom_text().to_string();
+    let typed_into = (0..=before.len()).any(|i| {
+        let mut t = before.clone();
+        t.insert(i, '5');
+        t == after
+    });
+    assert!(typed_into, "{WHAT}: the field is not focused: {after:?}");
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: slint::platform::Key::Escape.into(),
+    });
+    assert!(!state.get_open(), "{WHAT}: Escape");
+    let mut back = ctx.engine.settings();
+    back.when_done = WhenDone::Nothing;
+    back.speed = SpeedLimit::Fastest;
+    let engine = ctx.engine.clone();
+    ctx.rt.block_on(engine.set_settings(back)).unwrap();
+    wait_until(&format!("{WHAT}: back to the defaults"), || {
+        let s = ui.get_settings();
+        s.speed == "fastest" && s.when_done == "nothing"
+    });
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// Every button, check box, radio button and switch on the main, Add and
+/// Settings screens of both modes has a name for screen readers; the ones
+/// that are ticked or not say which.
+fn interactive_widgets_are_accessible(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "interactive_widgets_are_accessible";
+    let check = |screen: &str| {
+        refresh_tree(ui);
+        let mut bad = Vec::new();
+        let mut seen = 0;
+        for e in ElementQuery::from_root(ui).match_descendants().find_all() {
+            let Some(role) = e.accessible_role() else {
+                continue;
+            };
+            let checkable = matches!(
+                role,
+                AccessibleRole::Checkbox | AccessibleRole::RadioButton | AccessibleRole::Switch
+            );
+            if role != AccessibleRole::Button && !checkable {
+                continue;
+            }
+            seen += 1;
+            let label = e.accessible_label().unwrap_or_default();
+            let name = format!("{role:?} {label:?} {:?}", e.id().or_else(|| e.type_name()));
+            if label.trim().is_empty() {
+                bad.push(format!("{name}: no label"));
+            }
+            if checkable && e.accessible_checked().is_none() {
+                bad.push(format!("{name}: no checked state"));
+            }
+        }
+        assert!(seen > 0, "{WHAT}: {screen}: nothing interactive found");
+        assert!(bad.is_empty(), "{WHAT}: {screen}: {bad:#?}");
+    };
+    let url = ctx.server.serve("a11y.bin", FileSpec::new(64 * 1024));
+    let add = |screen: &str| {
+        ui.invoke_link_entered(url.as_str().into());
+        wait_until(&format!("{WHAT}: {screen} loaded"), || {
+            !ui.get_add().loading && !ui.get_adv_add().loading
+        });
+        check(screen);
+        ui.invoke_add_cancelled();
+        ui.set_screen(Screen::Downloads);
+    };
+
+    ui.window().set_size(SETTINGS_TALL);
+    ui.set_screen(Screen::Downloads);
+    check("Simple main");
+    ui.set_screen(Screen::Settings);
+    check("Simple Settings");
+    add("Simple Add");
+
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    assert_eq!(ui.get_layout().as_str(), "compact", "{WHAT}: Advanced");
+    ui.set_screen(Screen::Downloads);
+    check("Advanced main");
+    ui.set_screen(Screen::Settings);
+    check("Advanced Settings");
+    ui.set_screen(Screen::Downloads);
+    add("Advanced Add");
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// Several links with sign-in details: the user name and password go with
+/// the web link only (the engine refuses them on a torrent), and the
+/// password leaves the window as the batch is handed over.
+fn batch_password_applies_to_web_links() {
+    const WHAT: &str = "batch_password_applies_to_web_links";
+    let rt = runtime();
+    let seeder = rt.block_on(TorrentSeeder::start(
+        "batch-share.bin",
+        &[(
+            "batch-share.bin",
+            taurus_testkit::content(&FileSpec::new(32 * 1024)),
+        )],
+        None,
+    ));
+    let peer = seeder.addr;
+    let ui = AppWindow::new().unwrap();
+    let ctx = Ctx::start_with(&ui, rt, |config, settings| {
+        config.torrent_test = Some(TorrentTestNet {
+            initial_peers: vec![peer],
+            restore_in_place: false,
+        });
+        settings.ui.mode = UiMode::Advanced;
+    });
+    let mut spec = FileSpec::new(128 * 1024);
+    spec.basic_auth = Some(("u".into(), "p".into()));
+    let web = ctx.server.serve("batch-locked.zip", spec);
+    ui.show().unwrap();
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    wait_until(&format!("{WHAT}: compact"), || ui.get_layout() == "compact");
+    ui.invoke_open_batch();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Batch,
+        "{WHAT}: not on Several links"
+    );
+    links(&ui).invoke_batch_edited(format!("{web}\n{}\n", seeder.magnet).into());
+    assert_eq!(links(&ui).get_batch().add_count, 2, "{WHAT}: two downloads");
+    refresh_tree(&ui);
+    only_button(&ui, "Sign-in details", WHAT).invoke_accessible_default_action();
+    refresh_tree(&ui);
+    only_with_role(&ui, AccessibleRole::TextInput, "User name", WHAT).set_accessible_value("u");
+    only_with_role(&ui, AccessibleRole::TextInput, "Password", WHAT).set_accessible_value("p");
+    assert_eq!(
+        links(&ui).get_batch_password().as_str(),
+        "p",
+        "{WHAT}: typed"
+    );
+    only_button(&ui, "Add 2 downloads", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        links(&ui).get_batch_password().as_str(),
+        "",
+        "{WHAT}: password kept"
+    );
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Downloads,
+        "{WHAT}: not on the list"
+    );
+    wait_until(&format!("{WHAT}: the web file finished"), || {
+        job_named(&ctx, "batch-locked.zip").is_some_and(|v| v.state == JobState::Completed)
+    });
+    let torrent = || {
+        ctx.engine
+            .snapshot()
+            .into_iter()
+            .find(|v| v.kind == taurus_core::JobKind::Torrent)
+    };
+    wait_for(
+        Duration::from_secs(60),
+        &format!("{WHAT}: torrent added"),
+        || torrent().is_some(),
+    );
+    settle(Duration::from_millis(200));
+    assert_eq!(ui.get_screen(), Screen::Downloads, "{WHAT}: an add refused");
+    let has_password = |id| {
+        let _rt = ctx.rt.enter();
+        ctx.engine.job_detail(id).unwrap().has_password
+    };
+    let web_id = job_named(&ctx, "batch-locked.zip").unwrap().id;
+    assert!(has_password(web_id), "{WHAT}: the web link has no password");
+    assert!(
+        !has_password(torrent().unwrap().id),
+        "{WHAT}: the torrent got the password"
+    );
+    ctx.shutdown(WHAT);
+    drop(seeder);
 }

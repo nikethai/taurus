@@ -10,6 +10,8 @@ export component Row inherits Rectangle {
     callback pause(int);
     callback resume(int);
     callback retry(int);
+    // A download that wants a password: opens the sign-in dialog.
+    callback sign-in(int);
     callback stop-recording(int);
     callback open-file(int);
     callback reveal(int);
@@ -109,7 +111,13 @@ export component Row inherits Rectangle {
             }
             VerticalLayout {
                 alignment: center;
-                if root.item.state == "failed": TextButton {
+                if root.item.state == "failed" && root.item.error-kind == "needs_sign_in": TextButton {
+                    text: @tr("Sign in");
+                    clicked => {
+                        root.sign-in(root.item.id);
+                    }
+                }
+                if root.item.state == "failed" && root.item.error-kind != "needs_sign_in": TextButton {
                     text: @tr("Try again");
                     clicked => {
                         root.retry(root.item.id);

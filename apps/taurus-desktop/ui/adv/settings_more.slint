@@ -48,6 +48,10 @@ component ToolRow inherits VerticalLayout {
     if root.tool.state == "installing": ProgressBar {
         progress: root.tool.progress;
     }
+    // Why the last install failed.
+    if root.tool.state == "failed" && root.tool.error-kind != "": FieldError {
+        text: Messages.simple(root.tool.error-kind);
+    }
 }
 
 export component EnginesSection inherits VerticalLayout {

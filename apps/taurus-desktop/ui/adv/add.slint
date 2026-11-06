@@ -191,13 +191,6 @@ export component AdvAdd inherits FocusScope {
         && (vm.kind != "torrent" || vm.selected-count > 0)
         && !(vm.password-again && root.password == "");
     property <bool> sign-in-error: vm.error-kind == "needs_sign_in" || vm.error-kind == "blocked_by_bot_check";
-    property <string> refused: vm.refused;
-    property <bool> had-refusal: false;
-    changed refused => {
-        if (self.refused != "") {
-            self.had-refusal = true;
-        }
-    }
 
     // Escape cancels, from anywhere on the screen.
     focus-on-tab-navigation: false;
@@ -516,21 +509,23 @@ export component AdvAdd inherits FocusScope {
             }
         }
 
-        // Why the engine refused the add, under the form. Once shown, the
-        // line keeps its room (two lines at least): the form does not jump
-        // when it goes, as it does when a field is typed in.
-        if root.vm.refused != "" || root.had-refusal: HorizontalLayout {
-            padding-left: 20px;
-            padding-right: 20px;
-            padding-top: 8px;
-            Text {
-                text: root.vm.refused != "" ? Messages.simple(root.vm.refused) : "";
-                min-height: 36px;
-                wrap: word-wrap;
-                font-size: 13px;
-                color: Theme.err;
-                accessible-role: text;
-                accessible-label: self.text;
+        // Why the engine refused the add, under the form. Without a reason
+        // (none yet, or cleared by an edit or an add that went through)
+        // it takes no room.
+        refusal := VerticalLayout {
+            vertical-stretch: 0;
+            if root.vm.refused != "": HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 8px;
+                Text {
+                    text: Messages.simple(root.vm.refused);
+                    wrap: word-wrap;
+                    font-size: 13px;
+                    color: Theme.err;
+                    accessible-role: text;
+                    accessible-label: self.text;
+                }
             }
         }
 
