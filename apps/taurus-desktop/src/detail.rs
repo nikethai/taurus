@@ -142,24 +142,28 @@ fn strip_userinfo(link: &str) -> String {
 }
 
 /// `text` with every link in it (every `scheme://`, wherever it is)
-/// stripped of its `user[:password]@`. In text, a link's authority ends at
-/// the first `/`, `?`, `#`, whitespace, `,`, `)`, `]`, `>`, `"` or `'`; its
-/// last `@` ends the user part.
+/// stripped of its `user[:password]@`, erring toward removing too much: the
+/// user part ends at the last `@` before the first `/`, `?`, `#` or
+/// whitespace, so a password may hold anything else (`,`, `)`, `'`, ...).
+/// Without an `@` there, the host also ends at a `,`, `)`, `]`, `>`, `"` or
+/// `'`, so the next link in the same word is found.
 pub(crate) fn scrub_links(text: &str) -> String {
-    let ends = |c: char| c.is_whitespace() || "/?#,)]>\"'".contains(c);
+    let span_end = |c: char| c.is_whitespace() || "/?#".contains(c);
+    let host_end = |c: char| span_end(c) || ",)]>\"'".contains(c);
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(i) = rest.find("://") {
         let (head, tail) = rest.split_at(i + 3);
-        let end = tail.find(ends).unwrap_or(tail.len());
-        let authority = &tail[..end];
         out.push_str(head);
-        out.push_str(
-            authority
-                .rfind('@')
-                .map_or(authority, |at| &authority[at + 1..]),
-        );
-        rest = &tail[end..];
+        let span = &tail[..tail.find(span_end).unwrap_or(tail.len())];
+        rest = match span.rfind('@') {
+            Some(at) => &tail[at + 1..],
+            None => {
+                let end = tail.find(host_end).unwrap_or(tail.len());
+                out.push_str(&tail[..end]);
+                &tail[end..]
+            }
+        };
     }
     out.push_str(rest);
     out
@@ -468,6 +472,26 @@ mod tests {
         );
         assert_eq!(scrub_links("(https://u:p@h)"), "(https://h)");
         assert_eq!(scrub_links("see ftp://h/a@b"), "see ftp://h/a@b"); // '@' after the path stays
+    }
+
+    /// A password may hold `,`, `)`, `'` and the like (the URL parser
+    /// leaves them raw): the user part ends at the last `@` before the
+    /// first `/`, `?`, `#` or whitespace, which removes too much rather
+    /// than too little.
+    #[test]
+    fn scrub_links_any_password() {
+        assert_eq!(scrub_links("https://u:p,a)ss'x@h/y"), "https://h/y");
+        assert_eq!(scrub_links("x https://ann:it's@h/"), "x https://h/");
+        assert_eq!(scrub_links("(ftp://u:a]b>c\"d@h?q)"), "(ftp://h?q)");
+        assert_eq!(
+            scrub_links("1 http://a:b,c@h, 2 http://d:e@k#f"),
+            "1 http://h, 2 http://k#f"
+        );
+        // Without an `@`, the host still ends at a `,` or `)`.
+        assert_eq!(
+            scrub_links("(http://h),http://u:p@k"),
+            "(http://h),http://k"
+        );
     }
 
     #[test]

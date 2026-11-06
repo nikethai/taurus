@@ -37,7 +37,8 @@ pub(super) struct Recorded {
 impl TorrentHub {
     /// Before librqbit opens the torrent's files (into `output`, inside the
     /// job's save folder `save`), with `only_files` selected: records each
-    /// unselected file that is not on disk, and forgets the selected ones.
+    /// unselected file that is not on disk, and forgets the others (selected
+    /// ones, and any that is on disk now, whoever made it).
     pub fn note_placeholders(
         &self,
         save: &Path,
@@ -120,13 +121,13 @@ fn note(
 ) {
     recorded.save = save.to_path_buf();
     for file in &info.files {
-        if is_selected(only_files, file.index) {
+        let path = file_path(output, file);
+        // Selected, or on disk before librqbit opens the files (whoever
+        // made it): never a placeholder of this run.
+        if is_selected(only_files, file.index) || exists(&path) {
             recorded.files.remove(&file.index);
         } else {
-            let path = file_path(output, file);
-            if !exists(&path) {
-                recorded.files.insert(file.index, path);
-            }
+            recorded.files.insert(file.index, path);
         }
     }
 }
@@ -148,14 +149,35 @@ fn clean(recorded: &mut Recorded) {
 }
 
 /// Removes the empty folders above `file`, up to (not including) `save`.
+/// Stops at the first one that is not a real folder (a link, or on Windows
+/// a junction), or that is not empty.
 fn remove_empty_folders(file: &Path, save: &Path) {
     let mut folder = file.parent();
     while let Some(dir) = folder {
-        if dir == save || !dir.starts_with(save) || fs::remove_dir(dir).is_err() {
+        if dir == save || !dir.starts_with(save) || !is_real_dir(dir) {
+            break;
+        }
+        if fs::remove_dir(dir).is_err() {
             break;
         }
         folder = dir.parent();
     }
+}
+
+/// Whether `dir` is a folder itself, not a link (or reparse point) to one.
+fn is_real_dir(dir: &Path) -> bool {
+    let Ok(meta) = fs::symlink_metadata(dir) else {
+        return false;
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return false;
+        }
+    }
+    meta.is_dir() && !meta.file_type().is_symlink()
 }
 
 /// Whether anything is at `path` (a dangling link counts).
@@ -229,6 +251,56 @@ mod tests {
         // Selected now: forgotten, never deleted.
         note(&mut recorded, &save, &output, &t, Some(&[1, 2]));
         assert!(recorded.files.is_empty());
+    }
+
+    /// A recorded file that is gone, then made by someone else, is theirs:
+    /// the next run's note forgets it, and it is kept.
+    #[test]
+    fn file_made_later_by_someone_else_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let save = dir.path().join("save");
+        let output = save.join("t");
+        let t = info(&["a/x", "b"]);
+        let mut recorded = Recorded::default();
+        note(&mut recorded, &save, &output, &t, Some(&[1]));
+        open_all(&output, &t);
+        clean(&mut recorded);
+        assert!(!output.join("a").exists());
+        assert_eq!(recorded.files.len(), 1, "a missing file stays recorded");
+
+        fs::create_dir_all(output.join("a")).unwrap();
+        fs::write(output.join("a/x"), b"").unwrap();
+        // The next run.
+        note(&mut recorded, &save, &output, &t, Some(&[1]));
+        assert!(recorded.files.is_empty());
+        clean(&mut recorded);
+        assert_eq!(fs::metadata(output.join("a/x")).unwrap().len(), 0);
+    }
+
+    /// The folder walk stops at a link: neither it nor what it points to
+    /// is removed.
+    #[cfg(unix)]
+    #[test]
+    fn stops_at_a_linked_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let save = dir.path().join("save");
+        let output = save.join("t");
+        let elsewhere = dir.path().join("elsewhere");
+        fs::create_dir_all(elsewhere.join("in")).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, output.join("l")).unwrap();
+        let t = info(&["l/in/x", "b"]);
+        let mut recorded = Recorded::default();
+        note(&mut recorded, &save, &output, &t, Some(&[1]));
+        open_all(&output, &t);
+        clean(&mut recorded);
+        assert!(!elsewhere.join("in/x").exists());
+        // Through the link, "in" is a real, empty folder: it goes; the link
+        // and its target stay.
+        assert!(!elsewhere.join("in").exists());
+        assert!(fs::symlink_metadata(output.join("l")).unwrap().is_symlink());
+        assert!(elsewhere.is_dir());
+        assert!(output.is_dir());
     }
 
     #[test]
