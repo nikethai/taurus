@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Taurus — Welcome</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.tl{--bg:#FBFBFC;--bar:#F5F5F7;--panel:#FFFFFF;--line:#E5E5EA;--field:#C9C9D1;--text:#1B1B1F;--muted:#5F5F69;--chip:#EFEFF2;--input:#FFFFFF}
+.td{--bg:#1C1C1F;--bar:#232327;--panel:#26262A;--line:#34343A;--field:#4A4A53;--text:#ECECF0;--muted:#A2A2AD;--chip:#303036;--input:#1F1F23}
+.tl .k-disc{--kbg:#E3EDFF;--kfg:#2563C9}
+.tl .k-media{--kbg:#EEE6FF;--kfg:#6B3FD4}
+.tl .k-magnet{--kbg:#DDF4EF;--kfg:#0B7160}
+.td .k-disc{--kbg:rgba(91,143,240,.18);--kfg:#8DB2FF}
+.td .k-media{--kbg:rgba(155,120,255,.2);--kfg:#BBA4FF}
+.td .k-magnet{--kbg:rgba(44,199,170,.18);--kfg:#5AD8C2}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer}
+input{font:inherit;color:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.i{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+a{color:var(--accent-text)}a:hover{color:var(--text)}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="--accent: {{acc.base}}; --accent-strong: {{acc.strong}}; --accent-text: {{acc.text}}; --sel: {{acc.sel}}; width: 420px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.45;">
+
+<header style="flex: none; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px;">
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #28C840;"></span>
+<span style="flex: 1;"></span>
+<a href="SimpleSettings.dc.html" aria-label="Settings" title="Settings" style="width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--muted);"><svg class="i" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4"></path></svg></a>
+</header>
+
+<main style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 32px 24px; gap: 28px; text-align: center;">
+<div aria-hidden="true" style="width: 112px; height: 112px; border-radius: 32px; background: var(--sel); display: flex; align-items: center; justify-content: center;">
+<div style="width: 68px; height: 68px; border-radius: 20px; background: var(--accent-strong); color: #FFFFFF; display: flex; align-items: center; justify-content: center;">
+<svg class="i" width="34" height="34" viewBox="0 0 24 24" style="stroke-width: 2.2;"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"></path></svg>
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 8px;">
+<h1 style="margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.02em;">Paste a link to start</h1>
+<p style="margin: 0; color: var(--muted);">Files, videos, music or torrents.<br>Taurus figures out the rest.</p>
+</div>
+
+<div style="width: 100%; display: flex; gap: 8px;">
+<label for="sw-link" class="vh">Link</label>
+<input id="sw-link" type="url" placeholder="Paste a link" style="flex: 1; min-width: 0; height: 46px; box-sizing: border-box; padding: 0 16px; border-radius: 23px; border: 1px solid var(--field); background: var(--input); font-size: 15px;">
+<a href="SimpleAdd.dc.html" style="height: 46px; padding: 0 20px; border-radius: 23px; background: var(--accent-strong); color: #FFFFFF; display: flex; align-items: center; font-weight: 600; text-decoration: none;">Paste</a>
+</div>
+
+<ul style="margin: 0; padding: 0; list-style: none; width: 100%; display: flex; flex-direction: column; gap: 12px; text-align: left;">
+<li class="k-media" style="display: flex; align-items: center; gap: 12px;">
+<span style="width: 32px; height: 32px; border-radius: 9px; background: var(--kbg); color: var(--kfg); display: flex; align-items: center; justify-content: center; flex: none;"><svg class="i" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM10 9v6l5-3z"></path></svg></span>
+<span style="font-size: 13px; color: var(--muted);"><strong style="color: var(--text); font-weight: 600;">Copy a link anywhere.</strong> Taurus will offer to download it.</span>
+</li>
+<li class="k-disc" style="display: flex; align-items: center; gap: 12px;">
+<span style="width: 32px; height: 32px; border-radius: 9px; background: var(--kbg); color: var(--kfg); display: flex; align-items: center; justify-content: center; flex: none;"><svg class="i" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"></path></svg></span>
+<span style="font-size: 13px; color: var(--muted);"><strong style="color: var(--text); font-weight: 600;">Or drag one onto this window.</strong></span>
+</li>
+<li class="k-magnet" style="display: flex; align-items: center; gap: 12px;">
+<span style="width: 32px; height: 32px; border-radius: 9px; background: var(--kbg); color: var(--kfg); display: flex; align-items: center; justify-content: center; flex: none;"><svg class="i" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7V18a1.5 1.5 0 0 0 1.5 1.5h14a1.5 1.5 0 0 0 1.5-1.5V9a1.5 1.5 0 0 0-1.5-1.5h-7L10 5H5a1.5 1.5 0 0 0-1.5 1.5z"></path></svg></span>
+<span style="font-size: 13px; color: var(--muted);"><strong style="color: var(--text); font-weight: 600;">Files land in Downloads,</strong> sorted into Videos, Music and Documents.</span>
+</li>
+</ul>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false,"section":"Theme"},"accent":{"editor":"enum","options":["Aldebaran","Cobalt","Jade","Grape","Rose","Sky"],"default":"Aldebaran","section":"Theme"},"$preview":{"width":420,"height":640}}'>
+var ACC = {
+  Aldebaran: { l: { base: '#E8590C', strong: '#C2410C', text: '#B3410A', sel: 'rgba(232,89,12,.10)' }, d: { base: '#FF7A2E', strong: '#C2410C', text: '#FF9A5C', sel: 'rgba(255,122,46,.16)' } },
+  Cobalt: { l: { base: '#2F6FDE', strong: '#2457B8', text: '#2457B8', sel: 'rgba(47,111,222,.10)' }, d: { base: '#5B8FF0', strong: '#2F62C8', text: '#8DB2FF', sel: 'rgba(91,143,240,.16)' } },
+  Jade: { l: { base: '#0F9D76', strong: '#0B7258', text: '#0B7258', sel: 'rgba(15,157,118,.10)' }, d: { base: '#2CC799', strong: '#0B7258', text: '#5ADBB3', sel: 'rgba(44,199,153,.16)' } },
+  Grape: { l: { base: '#7C3AED', strong: '#6D28D9', text: '#6D28D9', sel: 'rgba(124,58,237,.10)' }, d: { base: '#A78BFA', strong: '#6D28D9', text: '#C4B5FD', sel: 'rgba(167,139,250,.16)' } },
+  Rose: { l: { base: '#E11D48', strong: '#BE123C', text: '#BE123C', sel: 'rgba(225,29,72,.09)' }, d: { base: '#FB7185', strong: '#BE123C', text: '#FDA4AF', sel: 'rgba(251,113,133,.16)' } },
+  Sky: { l: { base: '#0284C7', strong: '#0369A1', text: '#0369A1', sel: 'rgba(2,132,199,.10)' }, d: { base: '#38BDF8', strong: '#0369A1', text: '#7DD3FC', sel: 'rgba(56,189,248,.16)' } }
+};
+class Component extends DCLogic {
+  renderVals() {
+    var dark = this.props.dark ?? false;
+    return {
+      acc: (ACC[this.props.accent ?? 'Aldebaran'] || ACC.Aldebaran)[dark ? 'd' : 'l'],
+      themeClass: dark ? 'td' : 'tl'
+    };
+  }
+}
+</script>
+</body>
+</html>

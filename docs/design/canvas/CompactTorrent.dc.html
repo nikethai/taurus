@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Taurus — Add torrent</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.tl{--bg:#FBFBFC;--bar:#F3F3F5;--panel:#FFFFFF;--line:#E3E3E8;--field:#C9C9D1;--text:#1B1B1F;--muted:#5F5F69;--chip:#ECECF0;--track:#E2E2E7;--off:#8E8E99;--ok:#1F7A5C;--err:#BE3328;--hover:rgba(0,0,0,.045);--input:#FFFFFF}
+.td{--bg:#1C1C1F;--bar:#232327;--panel:#26262A;--line:#34343A;--field:#4A4A53;--text:#ECECF0;--muted:#A2A2AD;--chip:#303036;--track:#38383F;--off:#6E6E79;--ok:#4CC79A;--err:#FF6B5E;--hover:rgba(255,255,255,.055);--input:#1F1F23}
+.tl .k-media{--kbg:#EEE6FF;--kfg:#6B3FD4}
+.tl .k-magnet{--kbg:#DDF4EF;--kfg:#0B7160}
+.tl .k-image{--kbg:#E4F4DA;--kfg:#3B6D11}
+.tl .k-file{--kbg:#E8EAF2;--kfg:#4A5372}
+.td .k-media{--kbg:rgba(155,120,255,.2);--kfg:#BBA4FF}
+.td .k-magnet{--kbg:rgba(44,199,170,.18);--kfg:#5AD8C2}
+.td .k-image{--kbg:rgba(120,200,80,.18);--kfg:#93D96B}
+.td .k-file{--kbg:rgba(160,170,210,.16);--kfg:#B4BCDB}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;text-align:left}
+input{font:inherit;color:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input[type=checkbox]{accent-color:var(--accent-strong);width:15px;height:15px;margin:0;flex:none}
+input.sw{appearance:none;-webkit-appearance:none;width:32px;height:20px;border-radius:10px;background:var(--off);position:relative;cursor:pointer;margin:0;flex:none;transition:background .15s}
+input.sw::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#FFFFFF;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+input.sw:checked{background:var(--accent-strong)}
+input.sw:checked::after{transform:translateX(12px)}
+.i{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.hv:hover{background:var(--hover)}
+.num{font-variant-numeric:tabular-nums}
+a{color:var(--accent-text)}a:hover{color:var(--text)}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="--accent: {{acc.base}}; --accent-strong: {{acc.strong}}; --accent-text: {{acc.text}}; --sel: {{acc.sel}}; width: 420px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.4;">
+
+<header style="flex: none; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px; background: var(--bar); border-bottom: 1px solid var(--line);">
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #28C840;"></span>
+<h1 style="flex: 1; margin: 0; text-align: center; font-size: 13px; font-weight: 600;">Add torrent</h1>
+<a href="CompactMain.dc.html" aria-label="Close" title="Close" class="hv" style="width: 32px; height: 32px; border-radius: 7px; display: flex; align-items: center; justify-content: center; color: var(--muted);"><svg class="i" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></a>
+</header>
+
+<div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px;">
+<label for="ct-magnet" class="vh">Magnet link</label>
+<input id="ct-magnet" type="text" value="magnet:?xt=urn:btih:…&amp;dn=Sintel" readonly style="height: 34px; box-sizing: border-box; padding: 0 10px; border-radius: 9px; border: 1px solid var(--field); background: var(--input); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px;">
+
+<div class="k-magnet" style="display: flex; align-items: center; gap: 12px;">
+<span style="width: 40px; height: 40px; border-radius: 10px; background: var(--kbg); color: var(--kfg); display: flex; align-items: center; justify-content: center; flex: none;"><svg class="i" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v7a2 2 0 0 0 4 0V4h4v7a6 6 0 0 1-12 0zM6 8h4M14 8h4"></path></svg></span>
+<div style="flex: 1; min-width: 0;">
+<p style="margin: 0; display: flex; align-items: center; gap: 8px;"><span style="font-weight: 600; font-size: 14px;">Sintel</span><span style="padding: 0 6px; border-radius: 4px; background: var(--kbg); color: var(--kfg); font-size: 10.5px; font-weight: 600;">Torrent</span></p>
+<p class="num" style="margin: 2px 0 0; font-size: 12px; color: var(--muted);">11 files · 129 MB · 48 peers found</p>
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px;">
+<div style="display: flex; align-items: center; justify-content: space-between; padding: 0 4px;">
+<label style="display: flex; align-items: center; gap: 8px; font-weight: 600;"><input type="checkbox" checked="{{allOn}}" onChange="{{toggleAll}}">Files</label>
+<span class="num" style="font-size: 12px; color: var(--muted);">{{selCount}} of 11 selected</span>
+</div>
+<ul style="margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 11px; background: var(--panel);">
+<sc-for list="{{fileRows}}" as="f" hint-placeholder-count="2">
+<li class="{{f.kc}}" style="border-top: {{f.divider}};">
+<label style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px;">
+<input type="checkbox" checked="{{f.checked}}" onChange="{{f.toggle}}">
+<span style="width: 26px; height: 26px; border-radius: 7px; background: var(--kbg); color: var(--kfg); display: flex; align-items: center; justify-content: center; flex: none;"><svg class="i" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="{{f.icon}}"></path></svg></span>
+<span style="flex: 1; min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{f.name}}</span>
+<span class="num" style="font-size: 12px; color: var(--muted);">{{f.size}}</span>
+</label>
+</li>
+</sc-for>
+<li class="k-file" style="border-top: 1px solid var(--line);">
+<div style="display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px;">
+<input id="ct-subs" type="checkbox" checked="{{allSubs}}" onChange="{{toggleSubs}}" aria-label="All subtitles">
+<span style="width: 26px; height: 26px; border-radius: 7px; background: var(--kbg); color: var(--kfg); display: flex; align-items: center; justify-content: center; flex: none;"><svg class="i" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7V18a1.5 1.5 0 0 0 1.5 1.5h14a1.5 1.5 0 0 0 1.5-1.5V9a1.5 1.5 0 0 0-1.5-1.5h-7L10 5H5a1.5 1.5 0 0 0-1.5 1.5z"></path></svg></span>
+<button onClick="{{toggleOpen}}" aria-expanded="{{openStr}}" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; min-height: 36px;">
+<span style="font-weight: 500;">Subtitles</span>
+<span class="num" style="font-size: 12px; color: var(--muted);">{{subCount}} of 9</span>
+<svg class="i" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" style="margin-left: auto; color: var(--muted); transform: {{chevron}};"><path d="M9 6l6 6-6 6"></path></svg>
+</button>
+<span class="num" style="font-size: 12px; color: var(--muted);">26 KB</span>
+</div>
+<sc-if value="{{open}}" hint-placeholder-val="{{false}}">
+<ul style="margin: 0; padding: 0 0 6px; list-style: none;">
+<sc-for list="{{subRows}}" as="s" hint-placeholder-count="9">
+<li>
+<label style="display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 12px 0 48px;">
+<input type="checkbox" checked="{{s.checked}}" onChange="{{s.toggle}}">
+<span style="flex: 1; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px;">{{s.name}}</span>
+<span style="font-size: 12px; color: var(--muted);">{{s.lang}}</span>
+</label>
+</li>
+</sc-for>
+</ul>
+</sc-if>
+</li>
+</ul>
+</div>
+
+<div style="border: 1px solid var(--line); border-radius: 11px; background: var(--panel);">
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px;">
+<label for="ct-seq" style="flex: 1;"><span style="display: block; font-weight: 500;">Download in order</span><span style="display: block; font-size: 11.5px; color: var(--muted);">Start watching before it finishes.</span></label>
+<input id="ct-seq" class="sw" type="checkbox" role="switch" checked="{{seq}}" onChange="{{tSeq}}">
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line);">
+<label for="ct-seed" style="flex: 1;"><span style="display: block; font-weight: 500;">Keep sharing when done</span><span style="display: block; font-size: 11.5px; color: var(--muted);">Seeds until you've uploaded as much as you downloaded.</span></label>
+<input id="ct-seed" class="sw" type="checkbox" role="switch" checked="{{seed}}" onChange="{{tSeed}}">
+</div>
+</div>
+</div>
+
+<footer style="flex: none; display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--bar);">
+<span class="num" style="margin-right: auto; font-size: 12px; color: var(--muted);">≈ {{total}} · ~/Movies</span>
+<a href="CompactMain.dc.html" class="hv" style="height: 32px; padding: 0 12px; border-radius: 8px; display: flex; align-items: center; color: var(--text); text-decoration: none; font-weight: 500;">Cancel</a>
+<a href="CompactMain.dc.html" style="height: 32px; padding: 0 14px; border-radius: 8px; background: var(--accent-strong); display: flex; align-items: center; gap: 5px; color: #FFFFFF; text-decoration: none; font-weight: 600;"><svg class="i" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"></path></svg>Download</a>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false,"section":"Theme"},"accent":{"editor":"enum","options":["Aldebaran","Cobalt","Jade","Grape","Rose","Sky"],"default":"Aldebaran","section":"Theme"},"$preview":{"width":420,"height":640}}'>
+var ACC = {
+  Aldebaran: { l: { base: '#E8590C', strong: '#C2410C', text: '#B3410A', sel: 'rgba(232,89,12,.08)' }, d: { base: '#FF7A2E', strong: '#C2410C', text: '#FF9A5C', sel: 'rgba(255,122,46,.14)' } },
+  Cobalt: { l: { base: '#2F6FDE', strong: '#2457B8', text: '#2457B8', sel: 'rgba(47,111,222,.08)' }, d: { base: '#5B8FF0', strong: '#2F62C8', text: '#8DB2FF', sel: 'rgba(91,143,240,.15)' } },
+  Jade: { l: { base: '#0F9D76', strong: '#0B7258', text: '#0B7258', sel: 'rgba(15,157,118,.08)' }, d: { base: '#2CC799', strong: '#0B7258', text: '#5ADBB3', sel: 'rgba(44,199,153,.14)' } },
+  Grape: { l: { base: '#7C3AED', strong: '#6D28D9', text: '#6D28D9', sel: 'rgba(124,58,237,.08)' }, d: { base: '#A78BFA', strong: '#6D28D9', text: '#C4B5FD', sel: 'rgba(167,139,250,.15)' } },
+  Rose: { l: { base: '#E11D48', strong: '#BE123C', text: '#BE123C', sel: 'rgba(225,29,72,.07)' }, d: { base: '#FB7185', strong: '#BE123C', text: '#FDA4AF', sel: 'rgba(251,113,133,.14)' } },
+  Sky: { l: { base: '#0284C7', strong: '#0369A1', text: '#0369A1', sel: 'rgba(2,132,199,.08)' }, d: { base: '#38BDF8', strong: '#0369A1', text: '#7DD3FC', sel: 'rgba(56,189,248,.14)' } }
+};
+
+var FILES = [
+  { id: 'mp4', name: 'Sintel.mp4', kc: 'k-media', icon: 'M5 5h14a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM10 9v6l5-3z', mb: 129 },
+  { id: 'poster', name: 'poster.jpg', kc: 'k-image', icon: 'M4 5h16v14H4zM4 15l4.5-4.5 4 4 2.5-2.5L20 17M15.5 8.5v.01', mb: 0.046 }
+];
+var LANGS = [['de', 'German'], ['en', 'English'], ['es', 'Spanish'], ['fr', 'French'], ['it', 'Italian'], ['nl', 'Dutch'], ['pl', 'Polish'], ['pt', 'Portuguese'], ['ru', 'Russian']];
+var SRT_MB = 0.0029;
+
+function fmt(mb) {
+  if (mb >= 1000) return (mb / 1000).toFixed(2) + ' GB';
+  if (mb >= 10) return Math.round(mb) + ' MB';
+  if (mb >= 1) return mb.toFixed(1) + ' MB';
+  return Math.max(1, Math.round(mb * 1000)) + ' KB';
+}
+
+class Component extends DCLogic {
+  state = { files: { mp4: true, poster: true }, subs: { en: true }, open: false, seq: true, seed: true };
+
+  renderVals() {
+    var self = this;
+    var st = this.state;
+    var dark = this.props.dark ?? false;
+    var acc = (ACC[this.props.accent ?? 'Aldebaran'] || ACC.Aldebaran)[dark ? 'd' : 'l'];
+    var subCount = LANGS.filter(function (l) { return st.subs[l[0]]; }).length;
+    var fileCount = FILES.filter(function (f) { return st.files[f.id]; }).length;
+    var mb = FILES.reduce(function (s, f) { return s + (st.files[f.id] ? f.mb : 0); }, 0) + subCount * SRT_MB;
+    var allOn = fileCount === FILES.length && subCount === LANGS.length;
+    var setAll = function (on) {
+      var files = {}; FILES.forEach(function (f) { files[f.id] = on; });
+      var subs = {}; LANGS.forEach(function (l) { subs[l[0]] = on; });
+      self.setState({ files: files, subs: subs });
+    };
+    return {
+      acc: acc,
+      themeClass: dark ? 'td' : 'tl',
+      fileRows: FILES.map(function (f, i) {
+        return {
+          name: f.name, kc: f.kc, icon: f.icon, size: fmt(f.mb), checked: !!st.files[f.id],
+          divider: i === 0 ? '0' : '1px solid var(--line)',
+          toggle: function () { var o = Object.assign({}, self.state.files); o[f.id] = !o[f.id]; self.setState({ files: o }); }
+        };
+      }),
+      subRows: LANGS.map(function (l) {
+        return {
+          name: 'Sintel.' + l[0] + '.srt', lang: l[1], checked: !!st.subs[l[0]],
+          toggle: function () { var o = Object.assign({}, self.state.subs); o[l[0]] = !o[l[0]]; self.setState({ subs: o }); }
+        };
+      }),
+      subCount: subCount,
+      allSubs: subCount === LANGS.length,
+      toggleSubs: function () {
+        var on = subCount !== LANGS.length;
+        var subs = {}; LANGS.forEach(function (l) { subs[l[0]] = on; });
+        self.setState({ subs: subs });
+      },
+      open: st.open,
+      openStr: st.open ? 'true' : 'false',
+      chevron: st.open ? 'rotate(90deg)' : 'none',
+      toggleOpen: function () { self.setState({ open: !self.state.open }); },
+      selCount: fileCount + subCount,
+      allOn: allOn,
+      toggleAll: function () { setAll(!allOn); },
+      total: fmt(mb),
+      seq: st.seq, tSeq: function () { self.setState({ seq: !self.state.seq }); },
+      seed: st.seed, tSeed: function () { self.setState({ seed: !self.state.seed }); }
+    };
+  }
+}
+</script>
+</body>
+</html>

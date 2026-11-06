@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Taurus — Add a link</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.tl{--bg:#FBFBFC;--bar:#F3F3F5;--panel:#FFFFFF;--line:#E3E3E8;--field:#C9C9D1;--text:#1B1B1F;--muted:#5F5F69;--chip:#ECECF0;--track:#E2E2E7;--ok:#1F7A5C;--hover:rgba(0,0,0,.045);--input:#FFFFFF;--shadow:0 1px 2px rgba(0,0,0,.06),0 8px 24px rgba(0,0,0,.08)}
+.td{--bg:#1C1C1F;--bar:#232327;--panel:#26262A;--line:#35353B;--field:#4A4A53;--text:#ECECF0;--muted:#A2A2AD;--chip:#303036;--track:#38383F;--ok:#4CC79A;--hover:rgba(255,255,255,.055);--input:#1F1F23;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.4)}
+.tl .k-disc{--kbg:#E3EDFF;--kfg:#2563C9}
+.tl .k-media{--kbg:#EEE6FF;--kfg:#6B3FD4}
+.td .k-disc{--kbg:rgba(91,143,240,.18);--kfg:#8DB2FF}
+.td .k-media{--kbg:rgba(155,120,255,.2);--kfg:#BBA4FF}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;text-align:left}
+input,select{font:inherit;color:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input[type=checkbox]{accent-color:var(--accent-strong);width:15px;height:15px;margin:0}
+.i{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.hv:hover{background:var(--hover)}
+.num{font-variant-numeric:tabular-nums}
+a{color:var(--accent-text)}a:hover{color:var(--text)}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="--accent: {{acc.base}}; --accent-strong: {{acc.strong}}; --accent-text: {{acc.text}}; --sel: {{acc.sel}}; width: 420px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.4;">
+
+<header style="flex: none; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px; background: var(--bar); border-bottom: 1px solid var(--line);">
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #28C840;"></span>
+<h1 style="flex: 1; margin: 0; text-align: center; font-size: 13px; font-weight: 600;">Taurus</h1>
+<a href="CompactSettings.dc.html" aria-label="Settings" title="Settings" class="hv" style="width: 32px; height: 32px; border-radius: 7px; display: flex; align-items: center; justify-content: center; color: var(--muted);"><svg class="i" width="17" height="17" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4"></path></svg></a>
+</header>
+
+<div style="flex: none; padding: 12px 12px 10px; display: flex; gap: 8px;">
+<div style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 4px 0 10px; border-radius: 9px; border: 1.5px solid var(--accent); background: var(--input); color: var(--muted);">
+<svg class="i" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"></path></svg>
+<label for="ca-link" class="vh">Link to download</label>
+<input id="ca-link" type="url" value="https://www.youtube.com/watch?v=…" readonly style="flex: 1; min-width: 0; border: 0; background: transparent; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: var(--text);">
+<a href="CompactMain.dc.html" aria-label="Clear link" class="hv" style="width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted);"><svg class="i" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></a>
+</div>
+</div>
+
+<section aria-label="New download" style="flex: none; margin: 0 12px; padding: 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 14px;">
+<p class="k-media" style="margin: 0; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted);"><span style="padding: 1px 7px; border-radius: 4px; background: var(--kbg); color: var(--kfg); font-size: 11px; font-weight: 600;">yt-dlp</span>YouTube video detected · up to 4K</p>
+
+<div style="display: flex; gap: 12px; align-items: center;">
+<div role="img" aria-label="Video thumbnail placeholder" class="k-media" style="width: 88px; height: 50px; border-radius: 6px; background: var(--kbg); flex: none; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--kfg);">Thumbnail</div>
+<div style="min-width: 0;">
+<p style="margin: 0; font-weight: 600; line-height: 1.3;">Sprite Fright — Blender Open Movie</p>
+<p class="num" style="margin: 2px 0 0; font-size: 12px; color: var(--muted);">Blender Studio · 10:24</p>
+</div>
+</div>
+
+<fieldset style="margin: 0; padding: 0; border: 0;">
+<legend class="vh">Quality</legend>
+<div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px;">
+<sc-for list="{{qualities}}" as="o" hint-placeholder-count="5">
+<button onClick="{{o.pick}}" aria-pressed="{{o.pressed}}" style="display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 6px 2px; border-radius: 8px; border: 1.5px solid {{o.border}}; background: {{o.bg}};">
+<span style="font-weight: 600; font-size: 12.5px; color: {{o.color}};">{{o.label}}</span>
+<span class="num" style="font-size: 10.5px; color: var(--muted);">{{o.size}}</span>
+</button>
+</sc-for>
+</div>
+</fieldset>
+
+<div style="display: flex; gap: 8px; align-items: center;">
+<label for="ca-format" class="vh">Format</label>
+<sc-if value="{{isVideo}}" hint-placeholder-val="{{true}}">
+<select id="ca-format" value="{{fmt}}" onChange="{{onFmt}}" style="flex: 1; min-width: 0; height: 32px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--field); background: var(--input); font-size: 12.5px;">
+<option value="mp4">MP4</option>
+<option value="mkv">MKV</option>
+<option value="webm">WebM</option>
+</select>
+</sc-if>
+<sc-if value="{{isAudio}}" hint-placeholder-val="{{false}}">
+<select id="ca-format" value="m4a" style="flex: 1; min-width: 0; height: 32px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--field); background: var(--input); font-size: 12.5px;">
+<option value="m4a">M4A · AAC</option>
+</select>
+</sc-if>
+<button class="hv" style="flex: 1.4; min-width: 0; height: 32px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--field); display: flex; align-items: center; gap: 6px; font-size: 12.5px;"><svg class="i" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--muted);"><path d="M3.5 7V18a1.5 1.5 0 0 0 1.5 1.5h14a1.5 1.5 0 0 0 1.5-1.5V9a1.5 1.5 0 0 0-1.5-1.5h-7L10 5H5a1.5 1.5 0 0 0-1.5 1.5z"></path></svg><span class="vh">Save to </span>{{folder}}<span class="num" style="margin-left: auto; color: var(--muted); font-size: 11.5px;">212 GB free</span></button>
+</div>
+
+<div style="display: flex; gap: 16px; font-size: 12.5px;">
+<label style="display: flex; align-items: center; gap: 6px;"><input type="checkbox" checked="{{subs}}" onChange="{{toggleSubs}}">Subtitles</label>
+<label style="display: flex; align-items: center; gap: 6px;"><input type="checkbox" checked="{{embed}}" onChange="{{toggleEmbed}}">Thumbnail and chapters</label>
+</div>
+
+<div style="display: flex; align-items: center; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line);">
+<span class="num" style="margin-right: auto; font-size: 12px; color: var(--muted);">≈ {{size}}</span>
+<a href="CompactMain.dc.html" class="hv" style="height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); display: flex; align-items: center; color: var(--text); text-decoration: none; font-weight: 500;">Queue</a>
+<a href="CompactMain.dc.html" style="height: 32px; padding: 0 14px; border-radius: 8px; background: var(--accent-strong); display: flex; align-items: center; gap: 5px; color: #FFFFFF; text-decoration: none; font-weight: 600;"><svg class="i" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"></path></svg>Download</a>
+</div>
+</section>
+
+<div aria-hidden="true" style="flex: 1; min-height: 0; overflow: hidden; padding: 12px 6px 0; opacity: 0.4; display: flex; flex-direction: column; gap: 2px;">
+<div style="display: flex; align-items: center; gap: 10px; padding: 9px 8px;">
+<span class="k-disc" style="width: 32px; height: 32px; border-radius: 8px; background: var(--kbg); flex: none;"></span>
+<span style="flex: 1; display: flex; flex-direction: column; gap: 5px;"><span style="font-weight: 500;">ubuntu-24.04.3-desktop-amd64.iso</span><span style="display: block; height: 3px; border-radius: 2px; background: var(--track);"><span style="display: block; height: 100%; width: 62%; background: var(--accent);"></span></span></span>
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 9px 8px;">
+<span class="k-disc" style="width: 32px; height: 32px; border-radius: 8px; background: var(--kbg); flex: none;"></span>
+<span style="flex: 1; display: flex; flex-direction: column; gap: 5px;"><span style="font-weight: 500;">archlinux-2026.10.01-x86_64.iso</span><span style="display: block; height: 3px; border-radius: 2px; background: var(--track);"><span style="display: block; height: 100%; width: 88%; background: var(--accent);"></span></span></span>
+</div>
+</div>
+
+<footer style="flex: none; height: 40px; display: flex; align-items: center; gap: 14px; padding: 0 14px; border-top: 1px solid var(--line); background: var(--bar); font-size: 12px;">
+<span class="num" style="font-weight: 600;"><span class="vh">Download speed </span>↓ 31.2 MB/s</span>
+<span class="num" style="color: var(--muted);"><span class="vh">Upload speed </span>↑ 1.4 MB/s</span>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false,"section":"Theme"},"accent":{"editor":"enum","options":["Aldebaran","Cobalt","Jade","Grape","Rose","Sky"],"default":"Aldebaran","section":"Theme"},"$preview":{"width":420,"height":640}}'>
+var ACC = {
+  Grape: {
+    l: { base: '#7C3AED', strong: '#6D28D9', text: '#6D28D9', soft: 'rgba(124,58,237,.3)', sel: 'rgba(124,58,237,.08)' },
+    d: { base: '#A78BFA', strong: '#6D28D9', text: '#C4B5FD', soft: 'rgba(167,139,250,.38)', sel: 'rgba(167,139,250,.15)' }
+  },
+  Rose: {
+    l: { base: '#E11D48', strong: '#BE123C', text: '#BE123C', soft: 'rgba(225,29,72,.28)', sel: 'rgba(225,29,72,.07)' },
+    d: { base: '#FB7185', strong: '#BE123C', text: '#FDA4AF', soft: 'rgba(251,113,133,.38)', sel: 'rgba(251,113,133,.14)' }
+  },
+  Sky: {
+    l: { base: '#0284C7', strong: '#0369A1', text: '#0369A1', soft: 'rgba(2,132,199,.3)', sel: 'rgba(2,132,199,.08)' },
+    d: { base: '#38BDF8', strong: '#0369A1', text: '#7DD3FC', soft: 'rgba(56,189,248,.38)', sel: 'rgba(56,189,248,.14)' }
+  },
+  Aldebaran: {
+    l: { base: '#E8590C', strong: '#C2410C', text: '#B3410A', sel: 'rgba(232,89,12,.08)' },
+    d: { base: '#FF7A2E', strong: '#C2410C', text: '#FF9A5C', sel: 'rgba(255,122,46,.14)' }
+  },
+  Cobalt: {
+    l: { base: '#2F6FDE', strong: '#2457B8', text: '#2457B8', sel: 'rgba(47,111,222,.08)' },
+    d: { base: '#5B8FF0', strong: '#2F62C8', text: '#8DB2FF', sel: 'rgba(91,143,240,.15)' }
+  },
+  Jade: {
+    l: { base: '#0F9D76', strong: '#0B7258', text: '#0B7258', sel: 'rgba(15,157,118,.08)' },
+    d: { base: '#2CC799', strong: '#0B7258', text: '#5ADBB3', sel: 'rgba(44,199,153,.14)' }
+  }
+};
+
+var QUALITIES = [
+  { id: '2160p', label: '4K', size: '1.98 GB' },
+  { id: '1440p', label: '1440p', size: '1.12 GB' },
+  { id: '1080p', label: '1080p', size: '642 MB' },
+  { id: '720p', label: '720p', size: '318 MB' },
+  { id: 'audio', label: 'Audio', size: '18 MB' }
+];
+
+class Component extends DCLogic {
+  state = { quality: '2160p', fmt: 'mp4', subs: true, embed: true };
+
+  renderVals() {
+    var self = this;
+    var st = this.state;
+    var dark = this.props.dark ?? false;
+    var acc = (ACC[this.props.accent ?? 'Aldebaran'] || ACC.Aldebaran)[dark ? 'd' : 'l'];
+    var audio = st.quality === 'audio';
+    var q = QUALITIES.find(function (x) { return x.id === st.quality; });
+    var flip = function (key) { return function () { var o = {}; o[key] = !self.state[key]; self.setState(o); }; };
+    return {
+      acc: acc,
+      themeClass: dark ? 'td' : 'tl',
+      qualities: QUALITIES.map(function (o) {
+        var on = o.id === st.quality;
+        return {
+          label: o.label, size: o.size,
+          pressed: on ? 'true' : 'false',
+          border: on ? 'var(--accent)' : 'var(--line)',
+          bg: on ? 'var(--sel)' : 'transparent',
+          color: on ? 'var(--accent-text)' : 'var(--text)',
+          pick: function () { self.setState({ quality: o.id }); }
+        };
+      }),
+      isVideo: !audio,
+      isAudio: audio,
+      fmt: st.fmt,
+      onFmt: function (e) { self.setState({ fmt: e.target.value }); },
+      subs: st.subs, embed: st.embed,
+      toggleSubs: flip('subs'), toggleEmbed: flip('embed'),
+      folder: audio ? '~/Music' : '~/Movies',
+      size: q.size
+    };
+  }
+}
+</script>
+</body>
+</html>

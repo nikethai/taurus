@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Taurus — Downloads</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.tl{--bg:#FBFBFC;--bar:#F5F5F7;--panel:#FFFFFF;--line:#E5E5EA;--field:#C9C9D1;--text:#1B1B1F;--muted:#5F5F69;--chip:#EFEFF2;--track:#E4E4E9;--ok:#1F7A5C;--err:#BE3328;--hover:rgba(0,0,0,.04);--input:#FFFFFF}
+.td{--bg:#1C1C1F;--bar:#232327;--panel:#26262A;--line:#34343A;--field:#4A4A53;--text:#ECECF0;--muted:#A2A2AD;--chip:#303036;--track:#38383F;--ok:#4CC79A;--err:#FF6B5E;--hover:rgba(255,255,255,.05);--input:#1F1F23}
+.tl .k-disc{--kbg:#E3EDFF;--kfg:#2563C9}
+.tl .k-media{--kbg:#EEE6FF;--kfg:#6B3FD4}
+.tl .k-magnet{--kbg:#DDF4EF;--kfg:#0B7160}
+.tl .k-music{--kbg:#FFE4EF;--kfg:#C0266D}
+.tl .k-file{--kbg:#E8EAF2;--kfg:#4A5372}
+.tl .k-live{--kbg:#FFE5E2;--kfg:#C02B1E}
+.td .k-disc{--kbg:rgba(91,143,240,.18);--kfg:#8DB2FF}
+.td .k-media{--kbg:rgba(155,120,255,.2);--kfg:#BBA4FF}
+.td .k-magnet{--kbg:rgba(44,199,170,.18);--kfg:#5AD8C2}
+.td .k-music{--kbg:rgba(255,100,160,.18);--kfg:#FF8DBB}
+.td .k-file{--kbg:rgba(160,170,210,.16);--kfg:#B4BCDB}
+.td .k-live{--kbg:rgba(255,107,94,.18);--kfg:#FF8A7F}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;text-align:left}
+input{font:inherit;color:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.i{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.hv:hover{background:var(--hover)}
+.num{font-variant-numeric:tabular-nums}
+a{color:var(--accent-text)}a:hover{color:var(--text)}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="--accent: {{acc.base}}; --accent-strong: {{acc.strong}}; --accent-text: {{acc.text}}; --sel: {{acc.sel}}; width: 420px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.45;">
+
+<header style="flex: none; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px;">
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #28C840;"></span>
+<h1 style="flex: 1; margin: 0; text-align: center; font-size: 13px; font-weight: 600;">Taurus</h1>
+<a href="SimpleSettings.dc.html" aria-label="Settings" title="Settings" class="hv" style="width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--muted);"><svg class="i" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4"></path></svg></a>
+</header>
+
+<div style="flex: none; padding: 4px 16px 12px; display: flex; gap: 8px;">
+<label for="sm-link" class="vh">Link</label>
+<input id="sm-link" type="url" placeholder="Paste a link" style="flex: 1; min-width: 0; height: 42px; box-sizing: border-box; padding: 0 16px; border-radius: 21px; border: 1px solid var(--field); background: var(--input); font-size: 14px;">
+<a href="SimpleAdd.dc.html" style="height: 42px; padding: 0 18px; border-radius: 21px; background: var(--accent-strong); color: #FFFFFF; display: flex; align-items: center; font-weight: 600; text-decoration: none;">Paste</a>
+</div>
+
+<sc-if value="{{showBanner}}" hint-placeholder-val="{{true}}">
+<div class="k-media" style="flex: none; margin: 0 16px 12px; padding: 12px 12px 12px 14px; border-radius: 14px; background: var(--sel); display: flex; align-items: center; gap: 12px;">
+<span style="width: 34px; height: 34px; border-radius: 10px; background: var(--kbg); color: var(--kfg); display: flex; align-items: center; justify-content: center; flex: none;"><svg class="i" width="17" height="17" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM10 9v6l5-3z"></path></svg></span>
+<div style="flex: 1; min-width: 0;">
+<p style="margin: 0; font-weight: 600; font-size: 13.5px;">Download the video you copied?</p>
+<p style="margin: 0; font-size: 12.5px; color: var(--muted);">From youtube.com</p>
+</div>
+<button onClick="{{hideBanner}}" class="hv" style="height: 32px; padding: 0 10px; border-radius: 16px; font-size: 13px; font-weight: 500; color: var(--muted);">Not now</button>
+<a href="SimpleAdd.dc.html" style="height: 32px; padding: 0 14px; border-radius: 16px; background: var(--accent-strong); color: #FFFFFF; display: flex; align-items: center; font-size: 13px; font-weight: 600; text-decoration: none;">Download</a>
+</div>
+</sc-if>
+
+<div role="tablist" aria-label="Show" style="flex: none; align-self: center; margin-bottom: 8px; padding: 3px; border-radius: 10px; background: var(--chip); display: flex; gap: 2px;">
+<sc-for list="{{tabs}}" as="t" hint-placeholder-count="2">
+<button role="tab" aria-selected="{{t.selected}}" onClick="{{t.pick}}" style="height: 30px; padding: 0 18px; border-radius: 8px; background: {{t.bg}}; box-shadow: {{t.shadow}}; color: {{t.color}}; font-size: 13px; font-weight: 600;">{{t.label}}</button>
+</sc-for>
+</div>
+
+<section aria-label="Downloads" style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 8px; display: flex; flex-direction: column;">
+<sc-for list="{{rows}}" as="r" hint-placeholder-count="5">
+<div class="{{r.kc}}" style="display: flex; align-items: center; gap: 12px; padding: 12px 8px; border-radius: 14px;">
+<span style="width: 42px; height: 42px; border-radius: 12px; background: var(--kbg); color: var(--kfg); display: flex; align-items: center; justify-content: center; flex: none;"><svg class="i" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="{{r.icon}}"></path></svg></span>
+<div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;">
+<p style="margin: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{r.name}}</p>
+<sc-if value="{{r.showBar}}" hint-placeholder-val="{{true}}">
+<span style="display: block; height: 5px; border-radius: 3px; background: var(--track); overflow: hidden;"><span style="display: block; height: 100%; width: {{r.pct}}%; border-radius: 3px; background: {{r.bar}};"></span></span>
+</sc-if>
+<p class="num" style="margin: 0; font-size: 12.5px; color: {{r.noteColor}};">{{r.note}}</p>
+</div>
+<sc-if value="{{r.hasIcon}}" hint-placeholder-val="{{true}}">
+<button onClick="{{r.act}}" aria-label="{{r.actLabel}}" title="{{r.actLabel}}" class="hv" style="width: 36px; height: 36px; flex: none; border-radius: 18px; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; color: {{r.actColor}};"><svg class="i" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="{{r.actIcon}}"></path></svg></button>
+</sc-if>
+<sc-if value="{{r.hasText}}" hint-placeholder-val="{{false}}">
+<button onClick="{{r.act}}" class="hv" style="height: 32px; flex: none; padding: 0 14px; border-radius: 16px; border: 1px solid var(--line); font-size: 13px; font-weight: 600; color: var(--accent-text);">{{r.actLabel}}</button>
+</sc-if>
+</div>
+</sc-for>
+</section>
+
+<footer style="flex: none; height: 46px; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-top: 1px solid var(--line);">
+<p class="num" style="margin: 0; flex: 1; font-size: 13px; color: var(--muted);">{{summary}}</p>
+<button onClick="{{pauseAll}}" class="hv" style="height: 30px; padding: 0 12px; border-radius: 15px; font-size: 13px; font-weight: 500; color: var(--text);">{{allLabel}}</button>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false,"section":"Theme"},"accent":{"editor":"enum","options":["Aldebaran","Cobalt","Jade","Grape","Rose","Sky"],"default":"Aldebaran","section":"Theme"},"$preview":{"width":420,"height":640}}'>
+var ACC = {
+  Aldebaran: { l: { base: '#E8590C', strong: '#C2410C', text: '#B3410A', sel: 'rgba(232,89,12,.09)' }, d: { base: '#FF7A2E', strong: '#C2410C', text: '#FF9A5C', sel: 'rgba(255,122,46,.15)' } },
+  Cobalt: { l: { base: '#2F6FDE', strong: '#2457B8', text: '#2457B8', sel: 'rgba(47,111,222,.09)' }, d: { base: '#5B8FF0', strong: '#2F62C8', text: '#8DB2FF', sel: 'rgba(91,143,240,.15)' } },
+  Jade: { l: { base: '#0F9D76', strong: '#0B7258', text: '#0B7258', sel: 'rgba(15,157,118,.09)' }, d: { base: '#2CC799', strong: '#0B7258', text: '#5ADBB3', sel: 'rgba(44,199,153,.15)' } },
+  Grape: { l: { base: '#7C3AED', strong: '#6D28D9', text: '#6D28D9', sel: 'rgba(124,58,237,.09)' }, d: { base: '#A78BFA', strong: '#6D28D9', text: '#C4B5FD', sel: 'rgba(167,139,250,.15)' } },
+  Rose: { l: { base: '#E11D48', strong: '#BE123C', text: '#BE123C', sel: 'rgba(225,29,72,.08)' }, d: { base: '#FB7185', strong: '#BE123C', text: '#FDA4AF', sel: 'rgba(251,113,133,.15)' } },
+  Sky: { l: { base: '#0284C7', strong: '#0369A1', text: '#0369A1', sel: 'rgba(2,132,199,.09)' }, d: { base: '#38BDF8', strong: '#0369A1', text: '#7DD3FC', sel: 'rgba(56,189,248,.15)' } }
+};
+
+var IC = {
+  disc: 'M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4',
+  media: 'M5 5h14a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM10 9v6l5-3z',
+  magnet: 'M6 4h4v7a2 2 0 0 0 4 0V4h4v7a6 6 0 0 1-12 0zM6 8h4M14 8h4',
+  music: 'M9 17.5V6l10-2v11.5M9 17.5a2 2 0 1 1-4 0a2 2 0 1 1 4 0M19 15.5a2 2 0 1 1-4 0a2 2 0 1 1 4 0',
+  file: 'M7 3.5h7l4.5 4.5v12.5H7zM14 3.5V8h4.5',
+  live: 'M12 10.5a1.5 1.5 0 1 0 0 3a1.5 1.5 0 1 0 0-3M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8',
+  pause: 'M9 5.5v13M15 5.5v13',
+  play: 'M8 5.5v13l10.5-6.5z',
+  stop: 'M7 7h10v10H7z'
+};
+
+var ITEMS = [
+  { id: 'live', name: 'Lofi beats radio (live)', kind: 'live', status: 'recording', pct: 100, elapsed: '1:24:07' },
+  { id: 'ubuntu', name: 'ubuntu-24.04.3-desktop-amd64.iso', kind: 'disc', status: 'downloading', pct: 62, done: '3.8 GB', total: '6.1 GB', eta: 'About 2 min left' },
+  { id: 'sprite', name: 'Sprite Fright — Blender Open Movie', kind: 'media', status: 'downloading', pct: 41, done: '812 MB', total: '2 GB', eta: 'About 2 min left' },
+  { id: 'blender', name: 'blender-4.5.3-macos-arm64.dmg', kind: 'file', status: 'paused', pct: 27, done: '104 MB', total: '384 MB', eta: 'Less than a minute left' },
+  { id: 'notes', name: 'lecture-notes-week-07.pdf', kind: 'file', status: 'failed', pct: 0 },
+  { id: 'lofi', name: 'Rainy night piano (2 hour mix)', kind: 'music', status: 'done', size: '186 MB', when: 'Today' },
+  { id: 'debian', name: 'debian-13.1.0-amd64-netinst.iso', kind: 'magnet', status: 'done', size: '754 MB', when: 'Yesterday' },
+  { id: 'vlc', name: 'vlc-3.0.21-universal.dmg', kind: 'file', status: 'done', size: '98 MB', when: 'Oct 24' }
+];
+
+class Component extends DCLogic {
+  state = { tab: 'active', over: {}, banner: true };
+
+  set(id, s) { var o = Object.assign({}, this.state.over); o[id] = s; this.setState({ over: o }); }
+
+  renderVals() {
+    var self = this;
+    var st = this.state;
+    var dark = this.props.dark ?? false;
+    var acc = (ACC[this.props.accent ?? 'Aldebaran'] || ACC.Aldebaran)[dark ? 'd' : 'l'];
+    var items = ITEMS.map(function (it) { return Object.assign({}, it, { status: st.over[it.id] || it.status }); });
+    var activeList = items.filter(function (it) { return it.status !== 'done'; });
+    var doneList = items.filter(function (it) { return it.status === 'done'; });
+    var list = st.tab === 'active' ? activeList : doneList;
+    var running = items.filter(function (it) { return it.status === 'downloading'; });
+
+    var rows = list.map(function (it) {
+      var r = { name: it.name, kc: 'k-' + it.kind, icon: IC[it.kind], pct: it.pct, showBar: true, bar: 'var(--kfg)', noteColor: 'var(--muted)', hasIcon: true, hasText: false, actColor: 'var(--text)' };
+      if (it.status === 'recording') {
+        r.bar = 'var(--err)'; r.note = 'Recording live · ' + it.elapsed; r.noteColor = 'var(--err)';
+        r.actIcon = IC.stop; r.actLabel = 'Stop recording'; r.actColor = 'var(--err)';
+        r.act = function () { self.set(it.id, 'done'); };
+      } else if (it.status === 'downloading') {
+        r.note = it.done + ' of ' + it.total + ' · ' + it.eta;
+        r.actIcon = IC.pause; r.actLabel = 'Pause';
+        r.act = function () { self.set(it.id, 'paused'); };
+      } else if (it.status === 'paused') {
+        r.bar = 'var(--muted)'; r.note = 'Paused · ' + it.done + ' of ' + it.total;
+        r.actIcon = IC.play; r.actLabel = 'Resume';
+        r.act = function () { self.set(it.id, 'downloading'); };
+      } else if (it.status === 'failed') {
+        r.showBar = false; r.note = 'This link stopped working. It may have expired.'; r.noteColor = 'var(--err)';
+        r.hasIcon = false; r.hasText = true; r.actLabel = 'Try again';
+        r.act = function () { self.set(it.id, 'paused'); };
+      } else {
+        r.showBar = false; r.note = (it.size || 'Saved') + ' · ' + (it.when || 'Just now');
+        r.hasIcon = false; r.hasText = true; r.actLabel = 'Open';
+        r.act = function () {};
+      }
+      return r;
+    });
+
+    var summary;
+    if (running.length) summary = running.length + (running.length === 1 ? ' download' : ' downloads') + ' · all done in about 2 min';
+    else if (activeList.length) summary = 'Everything is paused';
+    else summary = 'All done';
+
+    return {
+      acc: acc,
+      themeClass: dark ? 'td' : 'tl',
+      showBanner: st.banner && st.tab === 'active',
+      hideBanner: function () { self.setState({ banner: false }); },
+      tabs: [['active', 'Downloading', activeList.length], ['done', 'Finished', doneList.length]].map(function (t) {
+        var on = st.tab === t[0];
+        return {
+          label: t[1] + ' ' + t[2],
+          selected: on ? 'true' : 'false',
+          bg: on ? 'var(--panel)' : 'transparent',
+          shadow: on ? '0 1px 3px rgba(0,0,0,.14)' : 'none',
+          color: on ? 'var(--text)' : 'var(--muted)',
+          pick: function () { self.setState({ tab: t[0] }); }
+        };
+      }),
+      rows: rows,
+      summary: summary,
+      allLabel: running.length ? 'Pause all' : 'Resume all',
+      pauseAll: function () {
+        var o = Object.assign({}, st.over);
+        items.forEach(function (it) {
+          if (running.length && it.status === 'downloading') o[it.id] = 'paused';
+          if (!running.length && it.status === 'paused') o[it.id] = 'downloading';
+        });
+        self.setState({ over: o });
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>
