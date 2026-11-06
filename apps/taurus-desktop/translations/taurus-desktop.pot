@@ -2,7 +2,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
-"POT-Creation-Date: 2026-11-06 20:23+0000\n"
+"POT-Creation-Date: 2026-11-06 21:22+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -1604,14 +1604,6 @@ msgstr ""
 
 msgctxt "AdvWide"
 msgid "Search downloads"
-msgstr ""
-
-msgctxt "AdvWide"
-msgid "Close the link field"
-msgstr ""
-
-msgctxt "AdvWide"
-msgid "Add a download"
 msgstr ""
 
 msgctxt "AdvWide"

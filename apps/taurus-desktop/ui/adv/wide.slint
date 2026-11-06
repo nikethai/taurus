@@ -35,6 +35,8 @@ export component AdvWide inherits Rectangle {
     callback open-whendone();
 
     in property <bool> all-paused;
+    // The window is 1100 px or wider.
+    in property <bool> roomy: true;
     callback pause-all();
     callback resume-all();
 
@@ -42,7 +44,8 @@ export component AdvWide inherits Rectangle {
 
     HorizontalLayout {
         Sidebar {
-            width: 220px;
+            // Narrower while the window leaves the list little room.
+            width: root.roomy ? 220px : 180px;
             counts: root.counts;
             filter <=> root.filter;
             filter-changed(key) => {
@@ -67,15 +70,22 @@ export component AdvWide inherits Rectangle {
                 Text {
                     text: @tr("Downloads");
                     vertical-alignment: center;
-                    horizontal-stretch: 1;
+                    // The search field gives way first.
+                    horizontal-stretch: 0;
+                    min-width: 60px;
+                    overflow: elide;
                     font-size: 18px;
                     font-weight: 700;
                     color: Theme.text;
                 }
                 VerticalLayout {
                     alignment: center;
+                    horizontal-stretch: 1;
+                    min-width: 120px;
+                    max-width: 240px;
                     LineEdit {
-                        width: 240px;
+                        min-width: 120px;
+                        preferred-width: 240px;
                         text <=> root.search-text;
                         placeholder-text: @tr("Search downloads");
                         accessible-label: @tr("Search downloads");
@@ -92,7 +102,9 @@ export component AdvWide inherits Rectangle {
                         border-radius: 8px;
                         background: root.pasting ? (self.hovered ? Theme.track : Theme.chip)
                             : self.pressed ? Theme.accent-strong.darker(0.15) : Theme.accent-strong;
-                        accessible-label: root.pasting ? @tr("Close the link field") : @tr("Add a download");
+                        accessible-label: @tr("New download");
+                        accessible-expandable: true;
+                        accessible-expanded: root.pasting;
                         clicked => {
                             root.pasting = !root.pasting;
                         }

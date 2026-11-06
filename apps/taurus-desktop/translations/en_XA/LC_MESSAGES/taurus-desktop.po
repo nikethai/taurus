@@ -1593,14 +1593,6 @@ msgid "Search downloads"
 msgstr "⟦Séárçh dówñlóáds·······⟧"
 
 msgctxt "AdvWide"
-msgid "Close the link field"
-msgstr "⟦Çlósé thé líñk fíéld········⟧"
-
-msgctxt "AdvWide"
-msgid "Add a download"
-msgstr "⟦Ádd á dówñlóád······⟧"
-
-msgctxt "AdvWide"
 msgid "New download"
 msgstr "⟦Ñéw dówñlóád·····⟧"
 

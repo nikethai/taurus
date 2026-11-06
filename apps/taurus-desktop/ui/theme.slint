@@ -2,7 +2,7 @@ import { Palette } from "std-widgets.slint";
 
 // Design tokens, from the design canvas (docs/design/canvas/*.dc.html):
 // the light/dark grounds and neutrals, the six accents (base, strong,
-// ink, soft, sel per scheme) and the file-type colors (light and dark).
+// ink, sel per scheme) and the file-type colors (light and dark).
 export global Theme {
     // system (default, follows the OS) | light | dark
     in-out property <string> scheme: "system";
@@ -41,7 +41,7 @@ export global Theme {
     out property <brush> ok: dark ? #4CC79A : #1F7A5C;
     out property <brush> err: dark ? #FF6B5E : #BE3328;
     // A switch's track when off (its knob is always white).
-    out property <brush> switch-off: dark ? #6E6E79 : #8E8E99;
+    out property <brush> switch-off: dark ? #737380 : #8E8E99;
     // Hover tint over any ground.
     out property <brush> hover: dark ? #FFFFFF0E : #0000000B;
     // Soft shadow under floating cards (banner, countdown).
@@ -93,8 +93,6 @@ export global Theme {
         : #FF9A5C;
     // Text/icon color placed on an accent fill.
     out property <brush> accent-text: #FFFFFF;
-    // Selected-but-not-done cells, chosen tiles' rings.
-    out property <brush> accent-soft: base-raw.with-alpha(dark ? 0.38 : 0.3);
     // Selected rows and chosen tiles.
     out property <brush> sel: base-raw.with-alpha(dark ? 0.13 : 0.08);
     // Progress bars take their file kind's color (ui.progress_by_type),
@@ -143,25 +141,5 @@ export global Theme {
             return dark ? #FF8A7F : #C02B1E;
         }
         return dark ? #B4BCDB : #4A5372;
-    }
-
-    // The in-between tone: segment cells being fetched.
-    public pure function kind-mid(kind: string) -> brush {
-        if (kind == "disc") {
-            return dark ? #8DB2FF73 : #93B4F0;
-        } else if (kind == "media") {
-            return dark ? #BBA4FF73 : #BCA3F3;
-        } else if (kind == "torrent" || kind == "magnet") {
-            return dark ? #5AD8C273 : #86D1C1;
-        } else if (kind == "archive") {
-            return dark ? #F5C25C73 : #EDC36F;
-        } else if (kind == "music") {
-            return dark ? #FF8DBB73 : #F29BBE;
-        } else if (kind == "image") {
-            return dark ? #93D96B73 : #A9D08A;
-        } else if (kind == "live") {
-            return dark ? #FF8A7F73 : #F2A49C;
-        }
-        return dark ? #B4BCDB66 : #AEB4CA;
     }
 }

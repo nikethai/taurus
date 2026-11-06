@@ -257,6 +257,22 @@ pub fn speeds(views: &[JobView]) -> (String, String) {
     (format::speed(down), format::speed(up))
 }
 
+/// The states "Pause all" pauses. Failed, sharing, recording and
+/// finished jobs are not among them, so they never hold the footer on
+/// "Pause all".
+pub const PAUSABLE: [JobState; 3] = [JobState::Downloading, JobState::Queued, JobState::Waiting];
+
+/// Whether "Pause all" offers to pause a job in `state`.
+pub fn pausable(state: JobState) -> bool {
+    PAUSABLE.contains(&state)
+}
+
+/// "Resume all" is offered once something is paused and nothing that
+/// "Pause all" pauses is left running.
+pub fn offers_resume_all(states: impl IntoIterator<Item = JobState> + Clone) -> bool {
+    states.clone().into_iter().any(|s| s == JobState::Paused) && !states.into_iter().any(pausable)
+}
+
 /// Footer numbers. `downloading` is the size of the Downloading tab and
 /// `finished` the size of the Finished tab. The overall time left is the
 /// bytes left over the summed speed of the Downloading jobs; Unknown when
@@ -292,7 +308,7 @@ pub fn summary(views: &[JobView]) -> SummaryVm {
         finished: finished as i32,
         eta_kind: eta_kind.into(),
         eta_value,
-        all_paused: !open.is_empty() && open.iter().all(|v| v.state == JobState::Paused),
+        all_paused: offers_resume_all(open.iter().map(|v| v.state)),
     }
 }
 
@@ -587,5 +603,25 @@ mod tests {
         assert!(s.all_paused);
         assert_eq!(s.eta_kind, "unknown");
         assert!(!summary(&[]).all_paused);
+    }
+
+    #[test]
+    fn resume_all_ignores_jobs_pause_all_leaves_alone() {
+        use JobState::*;
+        for s in [Downloading, Queued, Waiting] {
+            assert!(pausable(s), "{s:?}");
+        }
+        for s in [Paused, Failed, Seeding, Recording, Completed] {
+            assert!(!pausable(s), "{s:?}");
+        }
+        // A failed download, a sharing torrent and a live recording beside
+        // the paused one: Resume all.
+        assert!(offers_resume_all([Paused, Failed, Seeding, Recording]));
+        // Anything still pausable: Pause all.
+        assert!(!offers_resume_all([Paused, Queued]));
+        assert!(!offers_resume_all([Paused, Waiting, Failed]));
+        // Nothing paused: nothing to resume.
+        assert!(!offers_resume_all([Failed, Seeding]));
+        assert!(!offers_resume_all([]));
     }
 }

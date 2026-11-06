@@ -1593,14 +1593,6 @@ msgid "Search downloads"
 msgstr ""
 
 msgctxt "AdvWide"
-msgid "Close the link field"
-msgstr ""
-
-msgctxt "AdvWide"
-msgid "Add a download"
-msgstr ""
-
-msgctxt "AdvWide"
 msgid "New download"
 msgstr ""
 

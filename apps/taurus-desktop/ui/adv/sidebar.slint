@@ -5,7 +5,8 @@ import { FilterCountVm } from "../types.slint";
 import { Pressable, SectionTitle } from "../widgets.slint";
 import { Icon } from "../icons.slint";
 
-export component SidebarItem inherits Pressable {
+// An entry's look; a plain button (Settings).
+component SidebarRow inherits Pressable {
     in property <string> text;
     in property <int> count: -1;
     in property <bool> selected;
@@ -16,11 +17,7 @@ export component SidebarItem inherits Pressable {
     height: 34px;
     border-radius: 7px;
     background: selected ? Theme.sel : root.hovered ? Theme.hover : transparent;
-    accessible-role: list-item;
     accessible-label: text;
-    accessible-value: count;
-    accessible-item-selectable: true;
-    accessible-item-selected: selected;
 
     HorizontalLayout {
         padding-left: 10px;
@@ -53,6 +50,14 @@ export component SidebarItem inherits Pressable {
             accessible-role: none;
         }
     }
+}
+
+// A filter with its count.
+component SidebarItem inherits SidebarRow {
+    accessible-role: list-item;
+    accessible-value: root.count;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
 }
 
 export component Sidebar inherits Rectangle {
@@ -169,10 +174,9 @@ export component Sidebar inherits Rectangle {
         Rectangle {
             vertical-stretch: 1;
         }
-        SidebarItem {
+        SidebarRow {
             text: @tr("Settings");
             icon: "settings";
-            accessible-role: button;
             clicked => {
                 root.open-settings();
             }

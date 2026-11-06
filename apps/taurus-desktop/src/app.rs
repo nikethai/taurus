@@ -39,6 +39,7 @@ use crate::detail::warn;
 use crate::grab_flow::GrabState;
 use crate::links::ClipboardFilter;
 use crate::pump::ViewState;
+use crate::rows;
 use crate::settings_flow::SettingsWriter;
 use crate::shell_text::ShellStrings;
 use crate::update_apply::Restart;
@@ -459,17 +460,14 @@ impl App {
         }
     }
 
-    /// Every unfinished job is paused.
+    /// Something is paused and nothing "Pause all" pauses is running
+    /// (`rows::offers_resume_all`).
     pub fn all_paused(&self) -> bool {
         self.view.borrow().all_paused()
     }
 
     pub fn pause_all(&self) {
-        for id in
-            self.view
-                .borrow()
-                .ids_in(&[JobState::Downloading, JobState::Queued, JobState::Waiting])
-        {
+        for id in self.view.borrow().ids_in(&rows::PAUSABLE) {
             self.spawn_job(id, Job::Pause);
         }
     }

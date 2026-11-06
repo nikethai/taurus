@@ -29,6 +29,11 @@ The rpm is described in `[package.metadata.generate-rpm]` in
 embeds `icons/hyades.ico` and the version info (product name and file
 description "Hyades") in `hyades.exe`.
 
+The Inter font (`apps/taurus-desktop/ui/fonts/`, SIL Open Font License 1.1)
+is compiled into the binary, so no package installs a font file. Its
+copyright and licence travel inside the font data; the licence text is
+`apps/taurus-desktop/ui/fonts/OFL.txt`.
+
 ### How cargo-packager 0.11.8 reads these configs
 
 - It reads a single file per `--config`, with no include, so each

@@ -4,9 +4,9 @@
 import { Theme } from "../theme.slint";
 import { AdvRowVm, TabCountsVm } from "../types.slint";
 import { ListView } from "std-widgets.slint";
-import { Pressable, TextButton } from "../widgets.slint";
+import { Pressable, TextButton, QuietButton } from "../widgets.slint";
 import { Icon } from "../icons.slint";
-import { BarButton, ScreenBar } from "../chrome.slint";
+import { ScreenBar } from "../chrome.slint";
 import { LinkField } from "../welcome.slint";
 import { AdvRow } from "row.slint";
 import { WhenDoneUi } from "whendone.slint";
@@ -107,26 +107,6 @@ export component AdvList inherits Rectangle {
     }
 }
 
-// 36 px outlined icon button next to the link field.
-component SquareButton inherits Pressable {
-    in property <string> icon;
-    in property <string> label;
-
-    width: 36px;
-    height: 36px;
-    border-radius: 9px;
-    border-width: 1px;
-    border-color: Theme.line;
-    background: self.pressed ? Theme.track : self.hovered ? Theme.hover : transparent;
-    accessible-label: label;
-    Icon {
-        name: root.icon;
-        width: 16px;
-        height: 16px;
-        stroke: Theme.muted;
-    }
-}
-
 // Total download and upload speed, the when-done and speed button and
 // Pause all / Resume all.
 export component SpeedFooter inherits Rectangle {
@@ -139,6 +119,8 @@ export component SpeedFooter inherits Rectangle {
     callback resume-all();
 
     property <bool> chosen: WhenDoneUi.when-done != "" && WhenDoneUi.when-done != "nothing";
+    // A window under 400 px: Pause all / Resume all keeps only its icon.
+    in property <bool> narrow;
 
     height: 40px;
     background: Theme.toolbar;
@@ -191,6 +173,8 @@ export component SpeedFooter inherits Rectangle {
                 font-size: 12px;
                 color: Theme.muted;
                 horizontal-stretch: 1;
+                min-width: 0;
+                overflow: elide;
                 accessible-role: text;
                 accessible-label: @tr("↑ {0}", root.up);
             }
@@ -220,7 +204,9 @@ export component SpeedFooter inherits Rectangle {
                     }
                     whendone-label := Text {
                         visible: root.chosen;
-                        width: root.chosen ? self.preferred-width : 0;
+                        // Long labels elide rather than push Pause all out.
+                        width: root.chosen ? min(self.preferred-width, 110px) : 0;
+                        overflow: elide;
                         text: WhenDoneUi.footer-label(WhenDoneUi.when-done);
                         vertical-alignment: center;
                         font-size: 12px;
@@ -235,11 +221,13 @@ export component SpeedFooter inherits Rectangle {
             alignment: center;
             TextButton {
                 height: 28px;
-                min-width: 0;
+                // Never squeezed: it shows its whole label, or only its icon.
+                min-width: self.preferred-width;
                 kind: "muted";
                 font-size: 12px;
                 icon: root.all-paused ? "play" : "pause";
-                text: root.all-paused ? @tr("Resume all") : @tr("Pause all");
+                text: root.narrow ? "" : self.accessible-label;
+                accessible-label: root.all-paused ? @tr("Resume all") : @tr("Pause all");
                 clicked => {
                     if (root.all-paused) {
                         root.resume-all();
@@ -274,6 +262,7 @@ export component AdvCompact inherits Rectangle {
     callback open-whendone();
 
     in property <bool> all-paused;
+    in property <bool> narrow;
     callback pause-all();
     callback resume-all();
 
@@ -286,7 +275,8 @@ export component AdvCompact inherits Rectangle {
         ScreenBar {
             title: "Hyades";
             back: false;
-            BarButton {
+            QuietButton {
+                icon-size: 17px;
                 icon: "settings";
                 label: @tr("Settings");
                 clicked => {
@@ -318,14 +308,18 @@ export component AdvCompact inherits Rectangle {
                     link.send();
                 }
             }
-            SquareButton {
+            QuietButton {
+                size: 36px;
+                outlined: true;
                 icon: "list";
                 label: @tr("Several links…");
                 clicked => {
                     root.open-batch();
                 }
             }
-            SquareButton {
+            QuietButton {
+                size: 36px;
+                outlined: true;
                 icon: "globe";
                 label: @tr("Grab links from a page…");
                 clicked => {
@@ -408,6 +402,7 @@ export component AdvCompact inherits Rectangle {
             down: root.speed-down;
             up: root.speed-up;
             all-paused: root.all-paused;
+            narrow: root.narrow;
             open-whendone => { root.open-whendone(); }
             pause-all => { root.pause-all(); }
             resume-all => { root.resume-all(); }

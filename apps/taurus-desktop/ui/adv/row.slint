@@ -4,8 +4,7 @@
 import { Theme } from "../theme.slint";
 import { AdvRowVm } from "../types.slint";
 import { RowText } from "../row_text.slint";
-import { KindBadge, ProgressBar, Pressable } from "../widgets.slint";
-import { Icon } from "../icons.slint";
+import { KindBadge, ProgressBar, Pressable, QuietButton } from "../widgets.slint";
 
 // Where a download comes from: "HTTP", "Torrent", "yt-dlp", "Convert".
 export component SourceChip inherits Rectangle {
@@ -42,24 +41,6 @@ export component SourceChip inherits Rectangle {
             accessible-role: text;
             accessible-label: self.text;
         }
-    }
-}
-
-// The row's action: a quiet 32 px icon button.
-component RowAction inherits Pressable {
-    in property <string> icon;
-    in property <string> label;
-
-    width: 32px;
-    height: 32px;
-    border-radius: 7px;
-    background: self.pressed ? Theme.track : self.hovered ? Theme.hover : transparent;
-    accessible-label: label;
-    Icon {
-        name: root.icon;
-        width: 16px;
-        height: 16px;
-        stroke: Theme.muted;
     }
 }
 
@@ -176,28 +157,28 @@ export component AdvRow inherits Pressable {
         VerticalLayout {
             alignment: center;
             horizontal-stretch: 0;
-            if root.state == "failed": RowAction {
+            if root.state == "failed": QuietButton {
                 icon: "retry";
                 label: @tr("Try again");
                 clicked => {
                     root.retry(root.item.row.id);
                 }
             }
-            if root.state == "done": RowAction {
+            if root.state == "done": QuietButton {
                 icon: "file";
                 label: @tr("Open");
                 clicked => {
                     root.open-file(root.item.row.id);
                 }
             }
-            if root.state == "paused": RowAction {
+            if root.state == "paused": QuietButton {
                 icon: "play";
                 label: @tr("Resume");
                 clicked => {
                     root.resume(root.item.row.id);
                 }
             }
-            if root.state == "recording": RowAction {
+            if root.state == "recording": QuietButton {
                 icon: "stop";
                 label: @tr("Stop");
                 clicked => {
@@ -205,7 +186,7 @@ export component AdvRow inherits Pressable {
                 }
             }
             if root.state == "downloading" || root.state == "waiting"
-                || root.state == "queued" || root.state == "seeding": RowAction {
+                || root.state == "queued" || root.state == "seeding": QuietButton {
                 icon: "pause";
                 label: @tr("Pause");
                 clicked => {

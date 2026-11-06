@@ -3,8 +3,8 @@
 import { Theme } from "theme.slint";
 import { RowVm, SummaryVm } from "types.slint";
 import { ListView } from "std-widgets.slint";
-import { TextButton, Pressable } from "widgets.slint";
-import { ScreenBar, BarButton } from "chrome.slint";
+import { TextButton, Pressable, QuietButton } from "widgets.slint";
+import { ScreenBar } from "chrome.slint";
 import { LinkField } from "welcome.slint";
 import { Row } from "row.slint";
 import { ToolsBanner } from "banner.slint";
@@ -109,7 +109,8 @@ export component Downloads inherits Rectangle {
         ScreenBar {
             title: "Hyades";
             back: false;
-            BarButton {
+            QuietButton {
+                icon-size: 17px;
                 icon: "settings";
                 label: @tr("Settings");
                 clicked => {

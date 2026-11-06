@@ -5,7 +5,7 @@
 import { Theme } from "../theme.slint";
 import { ScreenBar, BarFooter } from "../chrome.slint";
 import { ScrollView } from "std-widgets.slint";
-import { Pressable } from "../widgets.slint";
+import { Pressable, Card } from "../widgets.slint";
 import { SettingsUi } from "settings_ui.slint";
 import { DownloadsSection, TorrentsSection, NetworkSection } from "settings_sections.slint";
 import { EnginesSection, AppearanceSection, PrivacySection, GeneralSection } from "settings_more.slint";
@@ -32,18 +32,6 @@ component SectionItem inherits Pressable {
         font-weight: root.selected ? 600 : 500;
         color: root.selected ? Theme.accent-ink : Theme.text;
         accessible-role: none;
-    }
-}
-
-// A section's group of settings on a panel.
-component SettingsCard inherits Rectangle {
-    background: Theme.panel;
-    border-radius: 11px;
-    border-width: 1px;
-    border-color: Theme.line;
-    VerticalLayout {
-        padding: 12px;
-        @children
     }
 }
 
@@ -124,13 +112,13 @@ export component AdvSettings inherits FocusScope {
                     padding-bottom: 20px;
                     spacing: 18px;
                     alignment: start;
-                    if root.shows("downloads"): SettingsCard { DownloadsSection { } }
-                    if root.shows("torrents"): SettingsCard { TorrentsSection { } }
-                    if root.shows("network"): SettingsCard { NetworkSection { } }
-                    if root.shows("engines"): SettingsCard { EnginesSection { } }
-                    if root.shows("appearance"): SettingsCard { AppearanceSection { } }
-                    if root.shows("privacy"): SettingsCard { PrivacySection { } }
-                    if root.shows("general"): SettingsCard { GeneralSection { } }
+                    if root.shows("downloads"): Card { padding-y: 12px; DownloadsSection { } }
+                    if root.shows("torrents"): Card { padding-y: 12px; TorrentsSection { } }
+                    if root.shows("network"): Card { padding-y: 12px; NetworkSection { } }
+                    if root.shows("engines"): Card { padding-y: 12px; EnginesSection { } }
+                    if root.shows("appearance"): Card { padding-y: 12px; AppearanceSection { } }
+                    if root.shows("privacy"): Card { padding-y: 12px; PrivacySection { } }
+                    if root.shows("general"): Card { padding-y: 12px; GeneralSection { } }
                 }
             }
         }

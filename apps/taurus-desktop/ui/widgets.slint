@@ -83,6 +83,31 @@ export component IconButton inherits Pressable {
     }
 }
 
+// Quiet icon-only button: a muted icon, a hover tint; `outlined` gives it
+// a ring and 9 px corners (the link row's buttons). Always set `label`.
+export component QuietButton inherits Pressable {
+    in property <string> icon;
+    in property <string> label;
+    in property <length> size: 32px;
+    in property <length> icon-size: 16px;
+    in property <bool> outlined: false;
+
+    width: size;
+    height: size;
+    border-radius: outlined ? 9px : 7px;
+    border-width: outlined ? 1px : 0;
+    border-color: Theme.line;
+    background: root.pressed ? Theme.track : root.hovered ? Theme.hover : transparent;
+    accessible-label: label;
+
+    Icon {
+        name: root.icon;
+        width: root.icon-size;
+        height: root.icon-size;
+        stroke: Theme.muted;
+    }
+}
+
 // Text button. kind: primary (accent fill) | secondary (outlined) |
 // plain (text only, hover tint) | muted (plain, muted text) | quiet
 // (accent-colored text).
@@ -456,16 +481,18 @@ export component LoadingDots inherits HorizontalLayout {
 
 // Panel with rounded corners holding a group of controls.
 export component Card inherits Rectangle {
+    in property <length> padding-x: 12px;
+    in property <length> padding-y: 2px;
     vertical-stretch: 0;
     background: Theme.panel;
     border-radius: 11px;
     border-width: 1px;
     border-color: Theme.line;
     VerticalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        padding-top: 2px;
-        padding-bottom: 2px;
+        padding-left: root.padding-x;
+        padding-right: root.padding-x;
+        padding-top: root.padding-y;
+        padding-bottom: root.padding-y;
         @children
     }
 }

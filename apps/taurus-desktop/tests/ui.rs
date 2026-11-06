@@ -51,6 +51,8 @@ fn ui_smoke() {
     media_rows_and_tools_banner_wording(&ui);
     keyboard_tab_enter_escape();
     wide_detail_holds_long_names();
+    wide_fits_at_900();
+    compact_footer_fits_at_360();
     torrent_add_scrolls_only_its_list();
     refused_add_leaves_no_band(&ui);
     let ctx = Ctx::start(&ui);
@@ -63,6 +65,7 @@ fn ui_smoke() {
     simple_row_offers_sign_in(&ui, &ctx);
     waiting_row_counts_down();
     torrent_row_shows_sharing();
+    pause_all_follows_the_list();
     countdown_cancel();
     let media = MediaCtx::start();
     tools_offline_shows_failed_banner(&media);
@@ -4585,6 +4588,195 @@ fn keyboard_tab_enter_escape() {
     keyboard_password_dialog(&ui, &calls);
     keyboard_files_dialog(&ui, &calls);
     keyboard_screens(&ui, &calls);
+}
+
+/// Where an element's right edge lies, in window coordinates.
+fn right_edge(e: &ElementHandle) -> f32 {
+    e.absolute_position().x + e.size().width
+}
+
+/// Every button shown in `ui` ends inside `width`.
+fn buttons_fit(ui: &AppWindow, width: f32, what: &str) {
+    refresh_tree(ui);
+    let buttons: Vec<ElementHandle> = ElementQuery::from_root(ui)
+        .match_descendants()
+        .match_accessible_role(AccessibleRole::Button)
+        .find_all();
+    assert!(!buttons.is_empty(), "{what}: no buttons");
+    for b in buttons.iter().filter(|b| b.size().width > 0.0) {
+        assert!(
+            right_edge(b) <= width + 0.5,
+            "{what}: {:?} ends at {} in a {width} px window",
+            b.accessible_label(),
+            right_edge(b)
+        );
+    }
+}
+
+/// At the 900 px threshold the wide layout fits: the sidebar, the list's
+/// top bar (its search field gives way) and the whole detail pane. Its
+/// "New download" link field closes on Escape and gives the focus back.
+fn wide_fits_at_900() {
+    use slint::platform::Key;
+    const WHAT: &str = "wide_fits_at_900";
+    let ui = AppWindow::new().unwrap();
+    ui.show().unwrap();
+    ui.window().set_size(slint::LogicalSize::new(900.0, 640.0));
+    ui.set_layout("wide".into());
+    ui.set_screen(Screen::Downloads);
+    let rows: Vec<AdvRowVm> = [row(1, "downloading"), row(2, "paused")]
+        .into_iter()
+        .map(|row| AdvRowVm {
+            row,
+            source: "HTTP".into(),
+            ..Default::default()
+        })
+        .collect();
+    ui.set_adv_rows(ModelRc::new(VecModel::from(rows)));
+    ui.set_detail(DetailVm {
+        visible: true,
+        row: row(1, "downloading"),
+        name: "file-1.zip".into(),
+        kind: "archive".into(),
+        source: "HTTP".into(),
+        big: "42%".into(),
+        folder: "/tmp/out".into(),
+        url: "https://example.org/file-1.zip".into(),
+        ..Default::default()
+    });
+    refresh_tree(&ui);
+    let pane = ElementHandle::find_by_element_type_name(&ui, "DetailPane")
+        .next()
+        .expect("the detail pane");
+    assert!(
+        right_edge(&pane) <= 900.5,
+        "{WHAT}: the pane ends at {}",
+        right_edge(&pane)
+    );
+    buttons_fit(&ui, 900.0, WHAT);
+
+    let shows = |label: &str| {
+        refresh_tree(&ui);
+        !labelled(&ui, label).is_empty()
+    };
+    only_button(&ui, "New download", WHAT).invoke_accessible_default_action();
+    assert!(shows("Paste a link"), "{WHAT}: the link field did not open");
+    press(&ui, Key::Escape);
+    assert!(!shows("Paste a link"), "{WHAT}: Escape left the field open");
+    press(&ui, " ");
+    assert!(shows("Paste a link"), "{WHAT}: New download lost the focus");
+    press(&ui, Key::Escape);
+    assert!(!shows("Paste a link"), "{WHAT}: field open again");
+}
+
+/// The compact footer keeps every action inside a 360 px window with the
+/// longest labels it shows (a when-done choice and Resume all).
+fn compact_footer_fits_at_360() {
+    const WHAT: &str = "compact_footer_fits_at_360";
+    let ui = AppWindow::new().unwrap();
+    ui.show().unwrap();
+    ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+    ui.set_layout("compact".into());
+    ui.set_screen(Screen::Downloads);
+    ui.set_speed_down_text("123.4 MB/s".into());
+    ui.set_speed_up_text("56.7 MB/s".into());
+    ui.set_summary(taurus_desktop::SummaryVm {
+        all_paused: true,
+        ..Default::default()
+    });
+    ui.global::<WhenDoneUi>().set_when_done("shutdown".into());
+    refresh_tree(&ui);
+    only_button(&ui, "Resume all", WHAT);
+    only_button(&ui, "Then shut down", WHAT);
+    buttons_fit(&ui, 360.0, WHAT);
+    ui.global::<WhenDoneUi>().set_when_done("nothing".into());
+}
+
+/// Pause all / Resume all in Advanced follows what can be paused: with a
+/// failed download and a sharing torrent in the list, Pause all turns
+/// into Resume all, which resumes the paused download.
+fn pause_all_follows_the_list() {
+    const WHAT: &str = "pause_all_follows_the_list";
+    let rt = runtime();
+    let seeder = rt.block_on(TorrentSeeder::start(
+        "pause-share.bin",
+        &[(
+            "pause-share.bin",
+            taurus_testkit::content(&FileSpec::new(64 * 1024)),
+        )],
+        None,
+    ));
+    let peer = seeder.addr;
+    let ui = AppWindow::new().unwrap();
+    let ctx = Ctx::start_with(&ui, rt, |config, settings| {
+        config.torrent_test = Some(TorrentTestNet {
+            initial_peers: vec![peer],
+            restore_in_place: false,
+        });
+        config.timing = Timing::fast_for_tests();
+        settings.torrent.stop_ratio = None;
+        settings.ui.mode = UiMode::Advanced;
+    });
+    ui.show().unwrap();
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    wait_until(&format!("{WHAT}: compact"), || ui.get_layout() == "compact");
+    let add = |url: String| {
+        let request = AddRequest {
+            url,
+            dest_dir: ctx.out(),
+            ..Default::default()
+        };
+        ctx.rt.block_on(ctx.engine.add(request)).unwrap()
+    };
+    let shared = add(seeder.magnet.clone());
+    let mut refused = FileSpec::new(256 * 1024);
+    refused.fail_after = Some(FailAfter {
+        after_requests: 1,
+        status: 403,
+        headers: Vec::new(),
+    });
+    let failed = add(ctx.server.serve("pause-refused.bin", refused));
+    let mut slow = FileSpec::new(20 * 1024 * 1024);
+    slow.bytes_per_sec = Some(256 * 1024);
+    let running = add(ctx.server.serve("pause-slow.bin", slow));
+    let state = |id: JobId| {
+        ctx.engine
+            .snapshot()
+            .into_iter()
+            .find(|v| v.id == id)
+            .map(|v| v.state)
+    };
+    wait_for(
+        Duration::from_secs(60),
+        &format!("{WHAT}: sharing, failed and downloading"),
+        || {
+            state(shared) == Some(JobState::Seeding)
+                && state(failed) == Some(JobState::Failed)
+                && state(running) == Some(JobState::Downloading)
+        },
+    );
+    let shows = |label: &str| {
+        refresh_tree(&ui);
+        labelled(&ui, label)
+            .iter()
+            .any(|e| e.accessible_role() == Some(AccessibleRole::Button))
+    };
+    wait_until(&format!("{WHAT}: Pause all"), || shows("Pause all"));
+    only_button(&ui, "Pause all", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: Resume all"), || {
+        state(running) == Some(JobState::Paused) && shows("Resume all")
+    });
+    only_button(&ui, "Resume all", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: resumed"), || {
+        matches!(
+            state(running),
+            Some(JobState::Downloading | JobState::Queued)
+        ) && shows("Pause all")
+    });
+    assert_eq!(state(shared), Some(JobState::Seeding), "{WHAT}: sharing");
+    ctx.shutdown(WHAT);
+    drop(seeder);
 }
 
 /// The wide layout's detail pane holds a 200-character name, a long

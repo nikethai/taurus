@@ -7,6 +7,10 @@ with seeded downloads (web files downloading, paused, done and failed, a
 torrent downloading and one sharing, a video downloading and a live
 recording) at 420×640 and 1280×800. Screenshots are kept out of the repo.
 
+Type: the app bundles Inter 4.1 (Regular, Medium, SemiBold, Bold; SIL OFL
+1.1, `apps/taurus-desktop/ui/fonts/`) and uses it as its default font, so
+the type checked here is what every system shows.
+
 Not compared, on purpose: sample text and data; "Hyades" in the app where
 the canvas says "Taurus"; the macOS traffic-light dots (window frame);
 anything where a plan decided behaviour differently (M6b ruling R1).
@@ -27,6 +31,7 @@ purpose, with the reason.
 - New window chrome (`ui/chrome.slint`): a 44 px header bar (tinted, title
   centred 13/600, Back on the left, actions on the right) and a tinted
   footer bar.
+- The switch's off colour is #8E8E99 light and #737380 dark (the canvas's #6E6E79 is 2.99:1 on the dark panel; #737380 reaches the 3:1 for controls).
 - Widgets: 32 px buttons with 8 px corners (primary, outlined, plain,
   muted, quiet; optional icon), segmented control (28 px segments, the
   chosen one raised with a shadow), switches 32/36/40 px with a white
@@ -71,7 +76,7 @@ purpose, with the reason.
 - [x] Sizes — 44 px header, 36 px link row, 28 px tabs on a 9 px track, rows 9/8 px padding with 32 px badges, 3 px bars, 32 px row actions, 40 px footer.
 - [x] Colours — source chips in their kind's colours (HTTP blue, Torrent teal, yt-dlp violet), bars by state (kind colour downloading, red recording or failed, grey paused, green done), selected row on the accent selection tint.
 - [x] Type — names 13/500, percent 12/600 (LIVE and Failed in red), status 11.5 muted.
-- [ ] stays: States — selecting a row opens its details over the list (M6b plan: "Back selects nothing"), not inline below the row; Add is off while the field is empty; a fourth button (Grab links from a page…) sits next to Several links so grab links stays reachable from the list.
+- [ ] stays: States — selecting a row opens its details over the list (M6b plan: "Back selects nothing"), not inline below the row; Add is off while the field is empty; a fourth button (Grab links from a page…) sits next to Several links so grab links stays reachable from the list. With "Do nothing" chosen the footer's when-done button shows only the moon (as on the canvas), not the M6b plan's "When done" label; its accessible name is still "When done", and any other choice shows its label ("Then sleep", …). Under 400 px Pause all / Resume all shows only its icon and a long when-done label elides, so the footer fits from the 360 px minimum. Resume all is offered once something is paused and nothing downloading, queued or waiting is left; failed, sharing and recording downloads do not count.
 
 ## Advanced compact · Add link (`CompactAdd`)
 
@@ -124,10 +129,10 @@ purpose, with the reason.
 ## Wide · Downloads (`Main`)
 
 - [x] Layout and order — sidebar (mark and name, Library and Sources with icons and counts, Settings at the bottom), top bar (title, search, New download), list, footer.
-- [x] Sizes — 220 px sidebar, 34 px entries, 56 px top bar, 32 px New download.
+- [x] Sizes — 220 px sidebar (180 px under 1100 px), 34 px entries, 56 px top bar, a search field of 120 to 240 px that gives way first, 32 px New download, a 260 to 300 px detail pane: everything fits from 900 px up.
 - [x] Colours — tinted sidebar, chosen entry on the selection tint in accent ink, sources in their kind's colours.
 - [x] Type — 13/500 entries, 11/600 muted section titles, 18/700 title.
-- [ ] stays: Rows and detail — the list uses the compact row (one row design for both layouts) rather than the canvas's two-column row; the sidebar has no speed graph card (no speed history is kept); the top bar has no Pause all / Remove selected icons (Pause all is in the footer; there is no multi-select); New download opens the link row (M6b "+" panel); the title stays "Downloads" with no item count line; the detail pane keeps its M6b buttons.
+- [ ] stays: Rows and detail — the list uses the compact row (one row design for both layouts) rather than the canvas's two-column row; the sidebar has no speed graph card (no speed history is kept); the top bar has no Pause all / Remove selected icons (Pause all is in the footer; there is no multi-select); New download opens the link row (M6b "+" panel); the search field is the std text field (no magnifier, no tinted fill); the title stays "Downloads" with no item count line; the detail pane keeps its M6b buttons.
 
 ## Wide · New download (`AddDownload`)
 
