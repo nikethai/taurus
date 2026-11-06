@@ -16,6 +16,7 @@ use librqbit::dht::Id20;
 use librqbit::limits::LimitsConfig;
 use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session};
 
+mod placeholders;
 mod reconcile;
 mod select;
 
@@ -75,6 +76,8 @@ pub struct TorrentHub {
     /// the highest it saved) is the same for two adds at once, and the
     /// second then gets the first's torrent back as "already managed".
     next_id: AtomicUsize,
+    /// See the `placeholders` module.
+    placeholders: Mutex<placeholders::Placeholders>,
 }
 
 impl TorrentHub {
@@ -103,6 +106,7 @@ impl TorrentHub {
             )),
             placement: Mutex::new(()),
             next_id: AtomicUsize::new(0),
+            placeholders: Mutex::default(),
         }
     }
 
@@ -152,12 +156,15 @@ impl TorrentHub {
     async fn start(&self) -> Result<Arc<Session>, CoreError> {
         // librqbit restores (and opens the files of) what it saved before
         // the reconcile below can drop it.
-        let keep: HashSet<String> = self
-            .store
-            .list_jobs()?
-            .into_iter()
+        let jobs = self.store.list_jobs()?;
+        let runnable: Vec<_> = jobs
+            .iter()
             .filter(|j| j.kind == JobKind::Torrent && may_run(j.state) && j.torrent_meta.is_some())
-            .filter_map(|j| j.info_hash)
+            .collect();
+        self.note_jobs(&runnable);
+        let keep: HashSet<String> = runnable
+            .iter()
+            .filter_map(|j| j.info_hash.clone())
             .collect();
         prune(&self.data_dir.join(SESSION_DIR), &keep).map_err(|e| CoreError {
             kind: ErrorKind::Unknown,
@@ -179,6 +186,10 @@ impl TorrentHub {
         if let Err(e) = self.reconcile_with(&session).await {
             session.cancellation_token().cancel();
             return Err(e);
+        }
+        // What librqbit made again as it restored the torrents.
+        for hash in &keep {
+            self.clean_placeholders(hash);
         }
         Ok(session)
     }

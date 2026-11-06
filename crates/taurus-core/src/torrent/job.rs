@@ -105,6 +105,10 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
     let mut downloaded = stored_progress(ctx, job, total)?;
     // A selection changed while the torrent was in the session (see
     // `select_files`; one being checked takes it once started, below).
+    // One that selects a file deleted as a placeholder opens it again.
+    ctx.hub
+        .reopen_deleted(&info, job.only_files.as_deref())
+        .await?;
     ctx.hub
         .select_files(&info, job.only_files.as_deref())
         .await?;
@@ -115,10 +119,15 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
 
     let output = stored_output_dir(&job.dest_dir, &job.file_name, &info);
     let meta = job.torrent_meta.as_deref().unwrap_or_default();
+    let only = job.only_files.as_deref();
+    ctx.hub
+        .note_placeholders(&job.dest_dir, &output, &info, only);
     let handle = ctx
         .hub
         .add_bytes(meta, &output, job.only_files.clone(), false)
         .await?;
+    // librqbit has made every file by now, selected or not.
+    ctx.hub.clean_placeholders(&info.info_hash);
     // Already in the session (restored by the hub, or left by an earlier
     // run), it may be paused; `is_paused` misses a start that librqbit
     // dropped while the files were checked.
@@ -152,6 +161,9 @@ async fn drive(ctx: &TorrentJobContext, job: &mut JobRecord) -> Result<JobOutcom
     };
     if let Err(e) = stopped {
         tracing::warn!(job = job.id.0, "could not stop the torrent: {e}");
+    }
+    if done {
+        ctx.hub.clean_placeholders(&info.info_hash);
     }
     let committed = ctx
         .store
@@ -403,6 +415,7 @@ async fn watch(
                 );
             }
             job.seed_started_at.get_or_insert_with(unix_now);
+            ctx.hub.clean_placeholders(&info.info_hash);
         }
         let seeding_for = before + since.elapsed();
         let policy = effective_policy(&ctx.settings.borrow(), &ctx.overrides.borrow());

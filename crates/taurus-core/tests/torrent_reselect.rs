@@ -186,15 +186,10 @@ async fn reselect_keeps_done_files_and_checks_space() {
     assert_eq!(fs::read(&a_path).unwrap(), a);
     // As the session counts it: whole pieces.
     let total = rig.view(id).total;
-    // librqbit creates every file; b.bin holds at most the end of a.bin's
-    // last piece.
+    // librqbit creates every file; a.bin is whole pieces, so b.bin gets
+    // none of its bytes, and the empty file is deleted.
     let b_path = rig.dest.join("pack/dir/b.bin");
-    let b_before = fs::read(&b_path).unwrap();
-    assert!(
-        b_before.len() < 64 * 1024,
-        "{} bytes of b.bin",
-        b_before.len()
-    );
+    assert!(!b_path.exists());
     let sent = seeder.uploaded_bytes();
 
     // b.bin does not fit: refused, nothing changes.
@@ -215,12 +210,15 @@ async fn reselect_keeps_done_files_and_checks_space() {
     assert_eq!(stored.total, Some(a.len() as u64));
     // Nor in the session: it downloads nothing of b.bin.
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(fs::read(&b_path).unwrap(), b_before);
+    assert!(!b_path.exists());
     assert_eq!(seeder.uploaded_bytes(), sent);
     assert_eq!(rig.view(id).state, JobState::Seeding);
 
     // With room for what b.bin still needs (not for both files), b.bin is
-    // downloaded beside a.bin, which is left alone.
+    // downloaded beside a.bin, whose data is left alone. librqbit opens the
+    // files again to make b.bin (it had the deleted one open) and checks
+    // them, which sets a.bin's length (and time) anew: only its bytes are
+    // compared, and none of them is downloaded again.
     FREE.store(SPACE_MARGIN + b.len() as u64 + 64 * 1024, Ordering::SeqCst);
     assert!(b.len() as u64 + 64 * 1024 < both);
     rig.engine
@@ -234,7 +232,13 @@ async fn reselect_keeps_done_files_and_checks_space() {
     })
     .await;
     assert_eq!(fs::read(&b_path).unwrap(), b);
-    assert_eq!(hash_and_mtime(&a_path), before, "a.bin was touched");
+    assert_eq!(hash_and_mtime(&a_path).0, before.0, "a.bin was changed");
+    let again = seeder.uploaded_bytes() - sent;
+    assert!(
+        again < b.len() as u64 + 64 * 1024,
+        "sent {again} bytes again"
+    );
+    let before = hash_and_mtime(&a_path);
     let stored = rig.stored(id);
     assert_eq!(stored.only_files, Some(vec![ia.min(ib), ia.max(ib)]));
     assert_eq!(stored.total, Some(both));

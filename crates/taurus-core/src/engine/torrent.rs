@@ -349,6 +349,7 @@ impl Actor {
         {
             tracing::warn!(job = job.id.0, "could not remove the torrent: {e}");
         }
+        self.hub.forget_placeholders(hash);
         match (info, output) {
             (Some(info), Some(output)) if delete_files => {
                 delete_files_of(&job.dest_dir, &output, &info)

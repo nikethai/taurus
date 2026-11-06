@@ -141,12 +141,28 @@ fn strip_userinfo(link: &str) -> String {
     }
 }
 
-/// `text` with every link in it (each word holding a `scheme://`)
-/// stripped of its `user[:password]@`.
+/// `text` with every link in it (every `scheme://`, wherever it is)
+/// stripped of its `user[:password]@`. In text, a link's authority ends at
+/// the first `/`, `?`, `#`, whitespace, `,`, `)`, `]`, `>`, `"` or `'`; its
+/// last `@` ends the user part.
 pub(crate) fn scrub_links(text: &str) -> String {
-    text.split_inclusive(char::is_whitespace)
-        .map(strip_userinfo)
-        .collect()
+    let ends = |c: char| c.is_whitespace() || "/?#,)]>\"'".contains(c);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("://") {
+        let (head, tail) = rest.split_at(i + 3);
+        let end = tail.find(ends).unwrap_or(tail.len());
+        let authority = &tail[..end];
+        out.push_str(head);
+        out.push_str(
+            authority
+                .rfind('@')
+                .map_or(authority, |at| &authority[at + 1..]),
+        );
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Prints `line` to stderr as Hyades' own, without the user name and
@@ -442,6 +458,16 @@ mod tests {
         let cells = segment_cells(&[seg(0, 4, 2)], 4, 8);
         assert_eq!(cells.len(), 8);
         assert_eq!(cells.iter().filter(|&&c| c == 1.0).count(), 4);
+    }
+
+    #[test]
+    fn scrub_links_every_occurrence() {
+        assert_eq!(
+            scrub_links("a https://u:p@h/x,https://v:q@k/y"),
+            "a https://h/x,https://k/y"
+        );
+        assert_eq!(scrub_links("(https://u:p@h)"), "(https://h)");
+        assert_eq!(scrub_links("see ftp://h/a@b"), "see ftp://h/a@b"); // '@' after the path stays
     }
 
     #[test]
