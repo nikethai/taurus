@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.nikethai.hyades</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Hyades</name>
+  <summary>Download files, videos and torrents.</summary>
+  <description>
+    <p>
+      Hyades is a download manager for files, videos and torrents, with
+      resumable segmented downloads, a download queue and magnet links.
+    </p>
+  </description>
+  <developer id="dev.nikethai">
+    <name>nikethai</name>
+  </developer>
+  <launchable type="desktop-id">dev.nikethai.hyades.desktop</launchable>
+  <url type="homepage">https://github.com/nikethai/taurus</url>
+  <provides>
+    <binary>hyades</binary>
+    <mediatype>application/x-bittorrent</mediatype>
+  </provides>
+  <content_rating type="oars-1.1"/>
+</component>

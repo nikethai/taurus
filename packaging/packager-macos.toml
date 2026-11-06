@@ -1,0 +1,20 @@
+# macOS: the .app bundle. `cargo packager -c packaging/packager-macos.toml`
+# from the repo root; see packaging/README.md. The first block repeats
+# packager-common.toml. No deep links or file associations (D4).
+name = "hyades"
+version = "0.1.0"
+product-name = "Hyades"
+identifier = "dev.nikethai.hyades"
+publisher = "nikethai"
+authors = ["nikethai"]
+description = "Download files, videos and torrents."
+homepage = "https://github.com/nikethai/taurus"
+license-file = "../LICENSE"
+icons = ["icons/*.png"]
+category = "Utility"
+binaries-dir = "../target/release"
+binaries = [{ path = "hyades", main = true }]
+formats = ["app"]
+
+[macos]
+minimum-system-version = "11.0"

@@ -1,5 +1,7 @@
 # Build output
 /target
+# Packages (packaging/README.md)
+/dist/
 
 # Taurus data files
 *.tapa
