@@ -18,6 +18,7 @@ pub mod detail;
 pub mod filters;
 pub mod format;
 pub mod grab_flow;
+pub mod i18n;
 pub mod icon;
 pub mod instance;
 pub mod links;

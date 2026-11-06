@@ -40,7 +40,7 @@ export {
 // `link-entered` / `link-dropped` / `banner-download` and to Downloads
 // after `add-confirmed`.
 export component AppWindow inherits Window {
-    in property <string> window-title: @tr("Hyades");
+    in property <string> window-title: "Hyades";
 
     in-out property <Screen> screen: Screen.welcome;
     in property <[RowVm]> downloading-rows;

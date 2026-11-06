@@ -20,6 +20,7 @@ use taurus_core::{
     Settings, SpeedLimit, ThemeChoice, Timing, UiMode, WhenDone,
 };
 use taurus_desktop::app::App;
+use taurus_desktop::i18n;
 use taurus_desktop::shell_text::simple_message;
 use taurus_desktop::{
     AdvRowVm, AppWindow, BannerVm, DetailVm, FilesDialogVm, LinksUi, Messages, PasswordDialogVm,
@@ -39,6 +40,7 @@ fn ui_smoke() {
     theme_defaults(&ui);
     system_theme_follows_os();
     welcome_has_paste_field(&ui);
+    bundled_pseudo_locale_applies(&ui);
     downloads_rows_show_status_and_retry(&ui);
     rows_banner_and_tips_wording(&ui);
     shell_text_mirrors_messages(&ui);
@@ -170,6 +172,28 @@ fn welcome_has_paste_field(ui: &AppWindow) {
             .iter()
             .any(|e| e.accessible_role() == Some(AccessibleRole::TextInput)),
         "welcome_has_paste_field: no text input labelled \"Paste a link\""
+    );
+}
+
+/// The bundled pseudo-locale reaches the window, and selecting `en` brings
+/// back the source text. The product name is never translated.
+fn bundled_pseudo_locale_applies(ui: &AppWindow) {
+    const WHAT: &str = "bundled_pseudo_locale_applies";
+    ui.set_screen(Screen::Welcome);
+    i18n::apply(Some("en_XA"));
+    let tagline = texts_containing(ui, "Dówñlóáds mádé símplé.");
+    assert!(!tagline.is_empty(), "{WHAT}: no pseudo tagline");
+    assert!(
+        tagline.iter().all(|t| t.starts_with('⟦')),
+        "{WHAT}: {tagline:?}"
+    );
+    assert_eq!(ui.get_window_title(), "Hyades", "{WHAT}: title translated");
+    i18n::apply(Some("en"));
+    let tagline = texts_containing(ui, "Downloads made simple");
+    assert!(!tagline.is_empty(), "{WHAT}: no English tagline");
+    assert!(
+        tagline.iter().all(|t| t == "Downloads made simple."),
+        "{WHAT}: {tagline:?}"
     );
 }
 

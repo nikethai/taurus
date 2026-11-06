@@ -16,7 +16,7 @@ use slint::ComponentHandle;
 use taurus_core::{Engine, EngineConfig};
 use taurus_desktop::app::App;
 use taurus_desktop::instance::{self, Instance};
-use taurus_desktop::{AppWindow, clipboard, links, shell_text, tray};
+use taurus_desktop::{AppWindow, clipboard, i18n, links, shell_text, tray};
 
 const CLIPBOARD_POLL: Duration = Duration::from_secs(1);
 
@@ -66,6 +66,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
 
     let ui = AppWindow::new()?;
+    let lang = std::env::var("HYADES_LANG").ok();
+    i18n::apply(i18n::choose(lang.as_deref(), engine.settings().ui.language.as_deref()).as_deref());
     let app_cell: Rc<OnceCell<Weak<App>>> = Rc::new(OnceCell::new());
     let tray = tray::build(tray_actions(&app_cell));
     let app = App::start(&ui, engine, rt.handle().clone(), tray.is_some());
