@@ -100,8 +100,12 @@ pub struct UpdateFlow {
     /// What Restart does instead of `apply` (tests).
     prepared: Option<Restart>,
     /// The version that could not be installed: for the rest of the run
-    /// nothing is downloaded again and the website is offered instead.
+    /// it is not downloaded again and the website is offered instead.
     failed_version: Option<String>,
+    /// The offer shown when "Check now" started.
+    offer: Option<UpdateState>,
+    /// See `check_failed()`.
+    check_failed: bool,
 }
 
 impl UpdateFlow {
@@ -116,6 +120,8 @@ impl UpdateFlow {
             warned: false,
             prepared: None,
             failed_version: None,
+            offer: None,
+            check_failed: false,
         }
     }
 
@@ -140,8 +146,10 @@ impl UpdateFlow {
             return false;
         }
         self.busy = true;
+        self.check_failed = false;
         if manual {
-            self.state = UpdateState::Checking;
+            let before = std::mem::replace(&mut self.state, UpdateState::Checking);
+            self.offer = is_offer(&before).then_some(before);
         }
         true
     }
@@ -153,53 +161,71 @@ impl UpdateFlow {
         r: Result<Option<Release>, UpdateError>,
     ) -> UpdateState {
         self.busy = false;
+        self.check_failed = false;
         // A ready update stays ready whatever a check says.
         if matches!(self.state, UpdateState::Ready { .. }) {
             return self.state.clone();
         }
-        // An automatic check that finds nothing keeps an offer shown.
-        let offered = matches!(
-            self.state,
-            UpdateState::Available { .. } | UpdateState::InstallFailed { .. }
-        );
-        let next = match r {
-            Err(e) if manual => {
+        // The offer shown before the check (hidden while "Check now" runs):
+        // a check that fails, or an automatic one that finds nothing,
+        // keeps it.
+        let offer = self
+            .offer
+            .take()
+            .or_else(|| is_offer(&self.state).then(|| self.state.clone()));
+        let next = match (r, offer) {
+            (Err(e), Some(offer)) => {
+                if manual {
+                    warn(format_args!("update check failed: {e}"));
+                    self.check_failed = true;
+                } else {
+                    self.warn_once(&e);
+                }
+                offer
+            }
+            (Err(e), None) if manual => {
                 warn(format_args!("update check failed: {e}"));
                 UpdateState::CheckFailed
             }
-            Err(e) => {
+            (Err(e), None) => {
                 self.warn_once(&e);
-                if offered {
-                    return self.state.clone();
-                }
                 UpdateState::Idle
             }
-            Ok(None) if manual => UpdateState::UpToDate,
-            Ok(None) if offered => return self.state.clone(),
-            Ok(None) => UpdateState::Idle,
-            Ok(Some(release)) => {
-                let version = release.version.to_string();
-                let page = release.page.clone();
-                let downloads = release.asset.is_some()
-                    && self.kind != InstallKind::NotifyOnly
-                    && self.failed_version.is_none();
-                let failed_again = self.failed_version.as_deref() == Some(version.as_str());
-                self.release = Some(release);
-                if failed_again {
-                    UpdateState::InstallFailed { page }
-                } else if downloads {
-                    self.busy = true;
-                    UpdateState::Downloading {
-                        version,
-                        percent: 0,
-                    }
-                } else {
-                    UpdateState::Available { version, page }
-                }
-            }
+            (Ok(None), _) if manual => UpdateState::UpToDate,
+            (Ok(None), Some(offer)) => offer,
+            (Ok(None), None) => UpdateState::Idle,
+            (Ok(Some(release)), _) => self.found(release),
         };
         self.state = next.clone();
         next
+    }
+
+    /// The state for a newer `release`: downloaded, or offered from the
+    /// website when this copy cannot update itself, the release has no
+    /// asset for it, or this very version failed to install this run.
+    fn found(&mut self, release: Release) -> UpdateState {
+        let version = release.version.to_string();
+        let page = release.page.clone();
+        let failed_again = self.failed_version.as_deref() == Some(version.as_str());
+        let downloads = release.asset.is_some() && self.kind != InstallKind::NotifyOnly;
+        self.release = Some(release);
+        if failed_again {
+            UpdateState::InstallFailed { page }
+        } else if downloads {
+            self.busy = true;
+            UpdateState::Downloading {
+                version,
+                percent: 0,
+            }
+        } else {
+            UpdateState::Available { version, page }
+        }
+    }
+
+    /// The last "Check now" failed while an offer stayed shown (the
+    /// status line says so).
+    pub fn check_failed(&self) -> bool {
+        self.check_failed
     }
 
     /// The asset to download while the state is `Downloading`.
@@ -274,6 +300,14 @@ impl UpdateFlow {
             warn(format_args!("update check failed: {e}"));
         }
     }
+}
+
+/// An offer the banner shows: a version to get from the website.
+fn is_offer(state: &UpdateState) -> bool {
+    matches!(
+        state,
+        UpdateState::Available { .. } | UpdateState::InstallFailed { .. }
+    )
 }
 
 /// Deletes every file in `dir` but the newest (left-over downloads, and
@@ -528,6 +562,7 @@ impl App {
         global.set_state(name.into());
         global.set_version(version.into());
         global.set_percent(percent);
+        global.set_check_failed(flow.as_ref().is_some_and(UpdateFlow::check_failed));
         let offers = matches!(name, "available" | "ready" | "install-failed");
         global.set_banner(offers && !self.updates.dismissed.get());
     }
@@ -694,14 +729,10 @@ mod tests {
     }
 
     /// Review #2: after a failed install, later automatic checks neither
-    /// download the same version again nor hide the website offer; a
-    /// newer version is offered from the website too.
+    /// download the same version again nor hide the website offer.
     #[test]
     fn no_download_again_after_a_failed_install() {
-        let mut f = ready_flow(InstallKind::AppImage {
-            path: PathBuf::from("/no-such-folder-hyades/Hyades.AppImage"),
-        });
-        assert!(f.restart().is_some_and(|r| r.is_err()));
+        let mut f = failed_flow();
         let failed = f.state().clone();
         assert!(matches!(failed, UpdateState::InstallFailed { .. }));
 
@@ -712,17 +743,58 @@ mod tests {
         let offline = Err(UpdateError::Offline("no route".into()));
         assert_eq!(f.on_check_result(false, offline), failed, "offer hidden");
         assert_eq!(f.on_check_result(false, Ok(None)), failed);
+    }
 
+    /// A flow whose 1.1.0 failed to install (its folder does not exist).
+    fn failed_flow() -> UpdateFlow {
+        let mut f = ready_flow(InstallKind::AppImage {
+            path: PathBuf::from("/no-such-folder-hyades/Hyades.AppImage"),
+        });
+        assert!(f.restart().is_some_and(|r| r.is_err()));
+        f
+    }
+
+    /// Re-review: the failed version only is blocked; a newer one found
+    /// later in the run downloads as usual.
+    #[test]
+    fn newer_version_downloads_after_a_failed_install() {
+        let mut f = failed_flow();
         let mut newer = release(true);
         newer.version = semver::Version::new(1, 2, 0);
-        let available = f.on_check_result(false, Ok(Some(newer)));
-        assert!(
-            matches!(&available, UpdateState::Available { version, .. } if version == "1.2.0"),
-            "{available:?}"
+        assert!(f.begin_check(false));
+        assert_eq!(
+            f.on_check_result(false, Ok(Some(newer))),
+            UpdateState::Downloading {
+                version: "1.2.0".into(),
+                percent: 0
+            }
         );
-        assert_eq!(f.download_job(), None);
+        assert!(f.download_job().is_some(), "1.2.0 not downloaded");
+    }
+
+    /// Re-review: "Check now" failing keeps the website offer shown
+    /// (Available or InstallFailed) and says the check failed; the next
+    /// check clears that.
+    #[test]
+    fn manual_check_failure_keeps_an_offer() {
+        let mut f = flow(InstallKind::NotifyOnly);
+        let available = f.on_check_result(false, Ok(Some(release(true))));
+        assert!(matches!(available, UpdateState::Available { .. }));
+        assert!(f.begin_check(true));
+        assert_eq!(f.state(), &UpdateState::Checking);
         let offline = Err(UpdateError::Offline("no route".into()));
-        assert_eq!(f.on_check_result(false, offline), available);
+        assert_eq!(f.on_check_result(true, offline), available);
+        assert!(f.check_failed());
+        assert!(f.begin_check(false));
+        assert!(!f.check_failed(), "still flagged after a new check");
+        assert_eq!(f.on_check_result(false, Ok(None)), available);
+
+        let mut f = failed_flow();
+        let failed = f.state().clone();
+        assert!(f.begin_check(true));
+        let offline = Err(UpdateError::Offline("no route".into()));
+        assert_eq!(f.on_check_result(true, offline), failed);
+        assert!(f.check_failed());
     }
 
     /// Against a signed fake release: the check finds 1.1.0 with this

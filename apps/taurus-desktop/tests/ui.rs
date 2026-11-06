@@ -91,6 +91,7 @@ fn ui_smoke() {
     adv_add_torrent_picker();
     quit_shuts_down_engine_cleanly(&ui, &ctx);
     restart_records_and_quits();
+    advanced_restart_after_later();
 }
 
 fn window_title(ui: &AppWindow) {
@@ -4309,6 +4310,49 @@ fn restart_records_and_quits() {
             .unwrap_or_else(|e| panic!("{WHAT}: engine still running: {e}"));
         engine.shutdown().await.unwrap();
     });
+}
+
+/// Re-review: in Advanced mode, with a ready update's banner dismissed,
+/// Advanced Settings' update button reads "Restart to update to …" (not
+/// "Check now") and restarts the same way as the banner.
+fn advanced_restart_after_later() {
+    const WHAT: &str = "advanced_restart_after_later";
+    let ui = AppWindow::new().unwrap();
+    let ctx = Ctx::start(&ui);
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    assert_eq!(ui.get_layout().as_str(), "compact", "{WHAT}: Advanced");
+    ui.show().unwrap();
+    let title = "Hyades 1.1.0 is ready";
+    let shown = |label: &str| {
+        refresh_tree(&ui);
+        shows_text(&ui, label)
+    };
+    let restart = Restart::Relaunch("/y".into());
+    ctx.app.show_update_ready("1.1.0", Some(restart.clone()));
+    wait_until(&format!("{WHAT}: banner above the list"), || shown(title));
+    only_button(&ui, "Later", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: Later hides it"), || !shown(title));
+
+    ui.window().set_size(SETTINGS_TALL);
+    ui.set_screen(Screen::Settings);
+    refresh_tree(&ui);
+    assert!(
+        shows_text(&ui, "Hyades 1.1.0 is ready. Restart to update."),
+        "{WHAT}: status line"
+    );
+    assert!(
+        labelled(&ui, "Check for updates").is_empty(),
+        "{WHAT}: Check now offered while ready"
+    );
+    only_button(&ui, "Restart to update to 1.1.0", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        ctx.app.pending_restart(),
+        Some(restart),
+        "{WHAT}: not recorded"
+    );
+    assert!(!ui.window().is_visible(), "{WHAT}: window still shown");
 }
 
 /// The yt-dlp row's version on the Engines section.

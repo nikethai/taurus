@@ -221,15 +221,21 @@ export component GeneralSection inherits VerticalLayout {
         }
         VerticalLayout {
             alignment: center;
+            // Restart while an update is ready (the banner may have been
+            // dismissed), else Check now.
             TextButton {
-                text: @tr("Check now");
+                property <bool> ready: UpdateUi.state == "ready";
+                text: self.ready ? @tr("Restart to update to {0}", UpdateUi.version) : @tr("Check now");
                 // Engines has a "Check now" too.
-                accessible-label: @tr("Check for updates");
-                // A ready update is installed with Restart.
-                enabled: UpdateUi.state != "checking" && UpdateUi.state != "downloading"
-                    && UpdateUi.state != "ready";
+                accessible-label: self.ready ? self.text : @tr("Check for updates");
+                kind: self.ready ? "primary" : "secondary";
+                enabled: UpdateUi.state != "checking" && UpdateUi.state != "downloading";
                 clicked => {
-                    UpdateUi.check-now();
+                    if (self.ready) {
+                        UpdateUi.restart();
+                    } else {
+                        UpdateUi.check-now();
+                    }
                 }
             }
         }

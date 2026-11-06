@@ -2,7 +2,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
-"POT-Creation-Date: 2026-11-06 15:03+0000\n"
+"POT-Creation-Date: 2026-11-06 15:58+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -1157,6 +1157,10 @@ msgstr ""
 
 msgctxt "GeneralSection"
 msgid "Hyades {0}"
+msgstr ""
+
+msgctxt "GeneralSection"
+msgid "Restart to update to {0}"
 msgstr ""
 
 msgctxt "GeneralSection"

@@ -1147,6 +1147,10 @@ msgid "Hyades {0}"
 msgstr ""
 
 msgctxt "GeneralSection"
+msgid "Restart to update to {0}"
+msgstr ""
+
+msgctxt "GeneralSection"
 msgid "Check now"
 msgstr ""
 

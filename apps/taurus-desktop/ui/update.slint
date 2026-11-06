@@ -13,6 +13,8 @@ export global UpdateUi {
     in property <int> percent;
     // The running version.
     in property <string> current;
+    // The last "Check now" failed while an offer stayed shown.
+    in property <bool> check-failed;
     // The banner is shown (available, ready or install-failed, and not
     // dismissed since launch).
     in property <bool> banner;
@@ -33,7 +35,7 @@ export global UpdateUi {
         if (self.state == "up-to-date") {
             return @tr("You're up to date");
         }
-        if (self.state == "check-failed") {
+        if (self.state == "check-failed" || self.check-failed) {
             return @tr("Couldn't check for updates. Try again later.");
         }
         if (self.state == "downloading") {
