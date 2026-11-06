@@ -80,7 +80,9 @@ pub(crate) enum UiMsg {
         seq: u64,
         result: Result<(), CoreError>,
     },
-    /// Saving the settings failed: show what the engine has.
+    /// A settings save ended: show what the engine has (a failed one's
+    /// change is not kept).
+    SettingsSaved,
     SettingsFailed,
     /// Links from a second launch; empty means "show the window".
     Forwarded(Vec<String>),
@@ -128,6 +130,13 @@ impl AppSender {
 
     pub(crate) fn send(&self, msg: UiMsg) {
         let _ = self.0.send(msg);
+    }
+
+    /// A sender whose messages the test reads.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> (AppSender, mpsc::Receiver<UiMsg>) {
+        let (tx, rx) = mpsc::channel();
+        (AppSender(tx), rx)
     }
 }
 
@@ -519,7 +528,7 @@ impl App {
             UiMsg::Inspected { seq, result } => self.inspected(seq, *result),
             UiMsg::AddFailed(kind) => self.add_failed(kind),
             UiMsg::MediaAdded { seq, result } => self.media_added(seq, result),
-            UiMsg::SettingsFailed => self.settings_failed(self.engine.settings()),
+            UiMsg::SettingsSaved | UiMsg::SettingsFailed => self.engine_settings(),
             UiMsg::Forwarded(links) => self.forwarded(links),
             UiMsg::Clipboard(text) => self.clipboard_text(&text),
             UiMsg::Link(link) => self.offer_link(link),

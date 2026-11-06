@@ -37,6 +37,7 @@ fn ui_smoke() {
     let ui = AppWindow::new().unwrap();
     window_title(&ui);
     theme_defaults(&ui);
+    system_theme_follows_os();
     welcome_has_paste_field(&ui);
     downloads_rows_show_status_and_retry(&ui);
     rows_banner_and_tips_wording(&ui);
@@ -92,14 +93,71 @@ fn window_title(ui: &AppWindow) {
 fn theme_defaults(ui: &AppWindow) {
     let theme = ui.global::<Theme>();
     let color = |r, g, b| slint::Color::from_rgb_u8(r, g, b);
-    theme.set_dark(false);
+    let pick = |scheme: &str| {
+        theme.set_scheme(scheme.into());
+        theme.invoke_sync_palette();
+    };
+    pick("light");
     assert_eq!(theme.get_bg().color(), color(0xFB, 0xFB, 0xFC));
-    theme.set_dark(true);
+    pick("dark");
     assert_eq!(theme.get_bg().color(), color(0x1C, 0x1C, 0x1F));
     assert_eq!(theme.get_accent_base().color(), color(0xE8, 0x59, 0x0C));
+    pick("system");
 }
 
 /// Elements whose accessible label is exactly `label`.
+/// With the System theme the app and the std widgets follow the OS scheme
+/// live, at launch and after Dark or Light was picked (review N2). The OS
+/// scheme is set the way the winit backend's theme observer sets it: Slint
+/// has no public API for that, so this uses its private one.
+fn system_theme_follows_os() {
+    use slint::private_unstable_api::re_exports::{ColorScheme, WindowInner};
+    // A fresh window: its theme has never been touched.
+    let ui = AppWindow::new().unwrap();
+    let theme = ui.global::<Theme>();
+    let os = |scheme| {
+        WindowInner::from_pub(ui.window())
+            .context()
+            .set_color_scheme(scheme)
+    };
+    let pick = |scheme: &str| {
+        theme.set_scheme(scheme.into());
+        theme.invoke_sync_palette();
+    };
+    // Launch with Dark saved: settings are pushed before the OS scheme is known.
+    pick("dark");
+    os(ColorScheme::Light);
+    assert!(theme.get_dark(), "Dark forces dark");
+    assert!(theme.get_palette_dark(), "Dark forces the std palette dark");
+    pick("system");
+    assert!(!theme.get_dark(), "Dark -> System on a light OS");
+    assert!(!theme.get_palette_dark(), "std palette left forced dark");
+    os(ColorScheme::Dark);
+    assert!(theme.get_dark(), "System follows the OS turning dark");
+    assert!(
+        theme.get_palette_dark(),
+        "std palette follows the OS turning dark"
+    );
+    pick("light");
+    assert!(!theme.get_dark(), "Light forces light on a dark OS");
+    assert!(
+        !theme.get_palette_dark(),
+        "Light forces the std palette light"
+    );
+    pick("system");
+    assert!(theme.get_dark(), "Light -> System on a dark OS");
+    assert!(theme.get_palette_dark(), "std palette left forced light");
+    os(ColorScheme::Light);
+    assert!(!theme.get_dark(), "System follows the OS turning light");
+    assert!(
+        !theme.get_palette_dark(),
+        "std palette follows the OS turning light"
+    );
+    // Back to what the testing backend reports: no OS scheme, read as light.
+    os(ColorScheme::Unknown);
+    assert!(!theme.get_dark(), "an unknown OS scheme reads as light");
+}
+
 fn labelled(ui: &AppWindow, label: &str) -> Vec<ElementHandle> {
     ElementHandle::find_by_accessible_label(ui, label).collect()
 }
@@ -1990,7 +2048,10 @@ fn password_cleared_after_submit(ui: &AppWindow, ctx: &Ctx) {
 
     ui.window().set_size(TALL);
     open_detail(ui, "Waiting", "locked.bin", WHAT);
-    assert!(ui.get_detail().needs_password, "{WHAT}: needs-password");
+    // The window learns of the failure on a later tick than the engine.
+    wait_until(&format!("{WHAT}: needs-password"), || {
+        ui.get_detail().needs_password
+    });
     wait_until(&format!("{WHAT}: dialog shown"), || {
         ui.get_password_dialog().visible
     });
