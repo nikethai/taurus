@@ -14,7 +14,7 @@ pub struct VideoFlags {
     #[arg(long)]
     pub audio: bool,
     /// Video links: best, audio (as --audio), small (with --audio: a small MP3), or a
-    /// height such as 1080p, 720p or 480p (taurus inspect lists a video's); one that
+    /// height such as 1080p, 720p or 480p (hyades-cli inspect lists a video's); one that
     /// the video lacks falls back to best [default: best]
     #[arg(long, value_name = "QUALITY", value_parser = parse_quality)]
     pub quality: Option<Quality>,

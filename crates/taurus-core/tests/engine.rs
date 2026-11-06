@@ -562,7 +562,7 @@ async fn second_engine_on_same_data_dir_is_refused() {
     assert_eq!(
         err.detail,
         format!(
-            "another taurus instance is using {}",
+            "another Hyades instance is using {}",
             fx.data_dir().display()
         )
     );

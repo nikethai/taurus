@@ -72,7 +72,7 @@ const DB_FILE: &str = "taurus.db";
 const LOCK_FILE: &str = "taurus.lock";
 /// Start of the detail of the error `Engine::open` returns when another
 /// engine holds the data dir.
-const IN_USE: &str = "another taurus instance is using";
+const IN_USE: &str = "another Hyades instance is using";
 
 type Views = Arc<RwLock<HashMap<JobId, JobView>>>;
 

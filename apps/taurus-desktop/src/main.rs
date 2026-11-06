@@ -96,14 +96,13 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The same folder as the CLI: `TAURUS_DATA_DIR`, else the OS data dir.
+/// The same folder as the CLI: `HYADES_DATA_DIR` (or the older
+/// `TAURUS_DATA_DIR`), else the OS data dir.
 fn data_dir() -> Result<PathBuf, String> {
-    if let Some(dir) = std::env::var_os("TAURUS_DATA_DIR").filter(|d| !d.is_empty()) {
-        return Ok(dir.into());
-    }
-    directories::ProjectDirs::from("dev", "nikethai", "taurus")
-        .map(|dirs| dirs.data_dir().to_path_buf())
-        .ok_or_else(|| "no data directory found; set TAURUS_DATA_DIR".to_string())
+    taurus_core::system::data_dir(
+        std::env::var_os("HYADES_DATA_DIR"),
+        std::env::var_os("TAURUS_DATA_DIR"),
+    )
 }
 
 /// Tray actions that reach the app once it exists (the tray is made first

@@ -9,6 +9,10 @@ license.workspace = true
 repository.workspace = true
 build = "build.rs"
 
+[[bin]]
+name = "hyades"
+path = "src/main.rs"
+
 [dependencies]
 taurus-core = { workspace = true }
 slint = { workspace = true }

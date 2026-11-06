@@ -38,9 +38,9 @@ impl Fixture {
         }
     }
 
-    /// `taurus --data-dir <tmp>/data`, never reading the user's real data dir.
+    /// `hyades-cli --data-dir <tmp>/data`, never reading the user's real data dir.
     fn taurus(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_taurus"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_hyades-cli"));
         // Passwords stay in memory (never the real keychain) and none comes
         // from the environment unless a test sets one.
         cmd.env_remove("TAURUS_DATA_DIR")
@@ -78,7 +78,7 @@ impl Fixture {
 async fn output(mut cmd: Command) -> Output {
     tokio::time::timeout(TIMEOUT, cmd.output())
         .await
-        .expect("taurus did not finish in 60 s")
+        .expect("hyades-cli did not finish in 60 s")
         .expect("run taurus")
 }
 
@@ -151,7 +151,7 @@ async fn kill_then_resume() {
             .next_line()
             .await
             .unwrap()
-            .expect("taurus ended before downloading 12 MiB");
+            .expect("hyades-cli ended before downloading 12 MiB");
         let event: serde_json::Value = serde_json::from_str(&line).unwrap();
         let downloaded = event["Progress"]["downloaded"].as_u64().unwrap_or(0);
         // 1.5 s in at 8 MiB/s: past the ~1 s progress commit cadence.
@@ -223,7 +223,7 @@ async fn ctrl_c_then_run() {
         .next_line()
         .await
         .unwrap()
-        .expect("taurus ended before showing progress");
+        .expect("hyades-cli ended before showing progress");
     assert!(first.starts_with("#1 x.bin"), "{first}");
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let pid = child.id().unwrap().to_string();
@@ -241,7 +241,7 @@ async fn ctrl_c_then_run() {
     assert_eq!(status.code(), Some(2), "{rest:?}");
     assert!(
         rest.iter()
-            .any(|l| l == "Stopped. Unfinished downloads continue with: taurus run"),
+            .any(|l| l == "Stopped. Unfinished downloads continue with: hyades-cli run"),
         "{rest:?}"
     );
     assert!(!rest.iter().any(|l| l.contains("Paused")), "{rest:?}");
@@ -299,7 +299,7 @@ async fn beside_running_add() {
             .next_line()
             .await
             .unwrap()
-            .expect("taurus ended before any progress");
+            .expect("hyades-cli ended before any progress");
         if line.contains("\"Progress\"") {
             break;
         }
@@ -317,7 +317,7 @@ async fn beside_running_add() {
     assert_exit(&resume, 1);
     let stderr = String::from_utf8_lossy(&resume.stderr);
     assert!(
-        stderr.contains("another taurus instance"),
+        stderr.contains("another Hyades instance"),
         "stderr: {stderr}"
     );
 
@@ -1002,7 +1002,7 @@ async fn stop_recording() {
             .next_line()
             .await
             .unwrap()
-            .expect("taurus ended before recording");
+            .expect("hyades-cli ended before recording");
         if line.contains("\"Progress\"") {
             break;
         }
@@ -1585,7 +1585,7 @@ async fn login_after_restart() {
             .next_line()
             .await
             .unwrap()
-            .expect("taurus ended early");
+            .expect("hyades-cli ended early");
         let event: Value = serde_json::from_str(&line).unwrap();
         if event["Progress"]["downloaded"].as_u64().unwrap_or(0) > 4 * MIB as u64 {
             break;
@@ -1893,12 +1893,12 @@ async fn a_held_data_dir_is_reported_before_the_password_is_asked() {
         .await;
     assert_exit(&output, 1);
     let err = stderr(&output);
-    assert!(err.contains("another taurus instance"), "{err}");
+    assert!(err.contains("another Hyades instance"), "{err}");
     assert!(!err.contains("terminal"), "{err}");
     let output = fx.run(&["login", "1", "--user", "bob"]).await;
     assert_exit(&output, 1);
     let err = stderr(&output);
-    assert!(err.contains("another taurus instance"), "{err}");
+    assert!(err.contains("another Hyades instance"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2001,7 +2001,7 @@ async fn torrent_select_command() {
     assert_exit(&output, 0);
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("Download 1: 2 files selected."), "{text}");
-    assert!(text.contains("taurus run"), "{text}");
+    assert!(text.contains("hyades-cli run"), "{text}");
     let list = fx.run(&["--json", "list"]).await;
     let jobs: Value = serde_json::from_slice(&list.stdout).unwrap();
     assert_eq!(jobs[0]["state"], "Queued");

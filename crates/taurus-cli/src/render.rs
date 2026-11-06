@@ -66,14 +66,14 @@ pub fn outcome_line(view: &JobView) -> String {
             "Seeding, sharing with peers: {}",
             view.dest_dir.join(&view.file_name).display()
         ),
-        JobState::Paused => format!("Paused (continue with: taurus resume {})", view.id.0),
+        JobState::Paused => format!("Paused (continue with: hyades-cli resume {})", view.id.0),
         JobState::Failed => match &view.error {
             Some((kind, detail)) => format!("Failed: {kind:?}: {detail}"),
             None => "Failed".to_string(),
         },
         // Left so by Ctrl-C: the next queue run starts it.
         JobState::Queued | JobState::Waiting => {
-            format!("{:?} (continue with: taurus run)", view.state)
+            format!("{:?} (continue with: hyades-cli run)", view.state)
         }
         JobState::Downloading | JobState::Recording => format!("{:?}", view.state),
     }
@@ -127,7 +127,7 @@ pub fn fired_line(action: WhenDone, command: Option<&str>, dry_run: bool) -> Opt
 /// Printed when the queue is done and when-done is Notify.
 pub const ALL_FINISHED: &str = "All downloads finished.";
 /// Printed after Ctrl-C when some download of the run is not done.
-pub const STOPPED: &str = "Stopped. Unfinished downloads continue with: taurus run";
+pub const STOPPED: &str = "Stopped. Unfinished downloads continue with: hyades-cli run";
 
 fn when_done_name(action: WhenDone) -> &'static str {
     match action {
@@ -382,7 +382,7 @@ mod tests {
         );
         assert_eq!(
             outcome_line(&view(JobState::Paused)),
-            "Paused (continue with: taurus resume 7)"
+            "Paused (continue with: hyades-cli resume 7)"
         );
         let mut failed = view(JobState::Failed);
         failed.error = Some((ErrorKind::LinkExpired, "HTTP 404".to_string()));
@@ -393,7 +393,7 @@ mod tests {
         );
         assert_eq!(
             outcome_line(&view(JobState::Queued)),
-            "Queued (continue with: taurus run)"
+            "Queued (continue with: hyades-cli run)"
         );
     }
 

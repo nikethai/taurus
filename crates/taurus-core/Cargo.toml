@@ -24,6 +24,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 fs4 = { workspace = true }
 dunce = { workspace = true }
+directories = { workspace = true }
 keepawake = { workspace = true }
 keyring = { workspace = true }
 getrandom = { workspace = true }

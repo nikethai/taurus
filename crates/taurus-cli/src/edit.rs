@@ -188,7 +188,7 @@ pub async fn torrent_select(engine: &Engine, args: SelectArgs, json: bool) -> Re
         if count == 1 { "" } else { "s" }
     );
     if state == JobState::Queued {
-        println!("Run taurus run to download them.");
+        println!("Run hyades-cli run to download them.");
     }
     Ok(ExitCode::SUCCESS)
 }

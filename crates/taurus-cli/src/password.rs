@@ -11,7 +11,7 @@ use crate::Result;
 use crate::test_hooks;
 
 const NO_TERMINAL: &str = "a password can only be typed on a terminal; \
-     run taurus from one (it is never taken from an option or a pipe)";
+     run hyades-cli from one (it is never taken from an option or a pipe)";
 
 /// The user name `user` with the password typed (not echoed) on the
 /// terminal. Fails, saying so, when there is no terminal or nothing was

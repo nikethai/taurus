@@ -1,4 +1,4 @@
-//! `taurus stop <ID>`: ends a running video download or live recording and
+//! `hyades-cli stop <ID>`: ends a running video download or live recording and
 //! keeps what was downloaded.
 //!
 //! The job runs in the process that holds the data dir (`add`, `run` or the

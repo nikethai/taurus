@@ -25,7 +25,8 @@ pub const FAILED_TITLE: &str = "Download stopped";
 pub const ALL_DONE_TITLE: &str = "All downloads finished";
 
 /// Start-up message box: the command-line program holds the data folder.
-pub const OPEN_IN_USE: &str = "Hyades is already running in another program (the command-line taurus). Close it, then open Hyades again.";
+pub const OPEN_IN_USE: &str =
+    "Hyades is already running in another program (hyades-cli). Close it, then open Hyades again.";
 /// Start-up message box: the data folder could not be opened otherwise.
 pub const OPEN_FAILED: &str = "Hyades couldn't open its data folder. Check that the drive is there and that you can write to it, then open Hyades again.";
 

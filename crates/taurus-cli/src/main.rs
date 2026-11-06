@@ -32,7 +32,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// Segmented, resumable downloads.
 #[derive(Parser)]
-#[command(name = "taurus", version)]
+#[command(name = "hyades-cli", version)]
 struct Cli {
     /// Where the job database lives [default: $TAURUS_DATA_DIR, else the OS data dir]
     #[arg(long, value_name = "PATH")]
@@ -49,7 +49,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Queue downloads, then run the queue in the foreground until it is idle; Ctrl-C stops (taurus run continues)
+    /// Queue downloads, then run the queue in the foreground until it is idle; Ctrl-C stops (hyades-cli run continues)
     Add {
         /// Web links, magnet links, .torrent files or .torrent links
         #[arg(
@@ -87,7 +87,7 @@ enum Command {
         #[command(flatten)]
         video: Box<VideoFlags>,
     },
-    /// Continue paused or failed downloads, then run the queue until it is idle; Ctrl-C stops (taurus run continues)
+    /// Continue paused or failed downloads, then run the queue until it is idle; Ctrl-C stops (hyades-cli run continues)
     Resume {
         #[arg(value_name = "ID", required = true)]
         ids: Vec<i64>,
@@ -112,7 +112,7 @@ enum Command {
         #[command(subcommand)]
         action: JobAction,
     },
-    /// Run the queued and waiting downloads until the queue is idle; Ctrl-C stops (taurus run continues)
+    /// Run the queued and waiting downloads until the queue is idle; Ctrl-C stops (hyades-cli run continues)
     Run,
     /// Start a queued or waiting download at once, even past max_active, then run the queue
     StartNow { id: i64 },
@@ -348,7 +348,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 
 /// The user name and password the command signs in with, asked for on the
 /// terminal: `add --user`, and `login` for a stored web download. Another
-/// taurus holding the data dir is reported before anything is asked.
+/// hyades-cli holding the data dir is reported before anything is asked.
 async fn ask_credentials(
     command: &Command,
     data_dir: &Path,
@@ -583,17 +583,17 @@ fn print_list(views: &[JobView], json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `--data-dir`, else `TAURUS_DATA_DIR`, else the OS data dir.
+/// `--data-dir`, else `HYADES_DATA_DIR` (or the older `TAURUS_DATA_DIR`),
+/// else the OS data dir.
 fn data_dir(flag: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(dir) = flag {
         return Ok(dir);
     }
-    if let Some(dir) = std::env::var_os("TAURUS_DATA_DIR").filter(|d| !d.is_empty()) {
-        return Ok(dir.into());
-    }
-    directories::ProjectDirs::from("dev", "nikethai", "taurus")
-        .map(|dirs| dirs.data_dir().to_path_buf())
-        .ok_or_else(|| "no data directory found; pass --data-dir or set TAURUS_DATA_DIR".into())
+    taurus_core::system::data_dir(
+        std::env::var_os("HYADES_DATA_DIR"),
+        std::env::var_os("TAURUS_DATA_DIR"),
+    )
+    .map_err(|e| format!("{e} or pass --data-dir").into())
 }
 
 pub(crate) fn default_dest_dir() -> Result<PathBuf> {
