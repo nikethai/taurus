@@ -59,3 +59,45 @@ jobs:
         with:
           tool: slint-tr-extractor@1.18.1
       - run: cargo xtask i18n check
+
+  # Pull requests that touch the packaging build the Linux packages and run
+  # packaging/check-linux.sh on them (the release workflow does the same).
+  packaging-changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        name: Did packaging/, the desktop Cargo.toml or a workflow change?
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --name-only "$BASE" HEAD |
+            grep -Eq '^(packaging/|apps/taurus-desktop/Cargo\.toml$|\.github/workflows/)'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  package-linux:
+    needs: packaging-changes
+    if: needs.packaging-changes.outputs.changed == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev rpm
+      - name: Install the packaging tools
+        run: cargo install --locked cargo-packager@0.11.8 cargo-generate-rpm@0.21.1
+      # No --target: the app lands in target/release/, where the packager
+      # configs read it (packaging/README.md).
+      - run: cargo build --release --locked -p taurus-desktop
+      - run: cargo packager -c packaging/packager-linux.toml --out-dir pkg
+      - run: cargo generate-rpm -p apps/taurus-desktop -o pkg/
+      - run: packaging/check-linux.sh pkg

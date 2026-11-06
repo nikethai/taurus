@@ -1,0 +1,346 @@
+name: Release
+
+# A `v*` tag builds every platform and creates a draft GitHub release.
+# Run it by hand with `dry_run` (the default) to build everything and keep
+# the packages as workflow artifacts, without a release.
+#
+# Signing is optional per platform (D6): each signing step runs only when
+# its secret is set. Only the update manifest is always signed (minisign,
+# HYADES_MINISIGN_KEY), and the release fails if it does not verify against
+# packaging/update-key.pub.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and upload workflow artifacts only (no release)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Once, before the builds: a tag must name the version in Cargo.toml.
+  version:
+    name: Check the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - id: version
+        name: Compare the tag with the Cargo version
+        run: |
+          cargo_version=$(cargo metadata --format-version 1 --no-deps |
+            jq -r '.packages[] | select(.name == "taurus-desktop") | .version')
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "${GITHUB_REF_NAME#v}" != "$cargo_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo version $cargo_version"
+            exit 1
+          fi
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.id }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            deb-arch: amd64
+          - id: linux-arm64
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            arch: aarch64
+            deb-arch: arm64
+          - id: windows-x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            arch: x64
+          - id: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            arch: arm64
+          - id: macos
+            runner: macos-latest
+            target: aarch64-apple-darwin,x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      # SignPath reads the uploaded artifacts with the job token.
+      actions: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      # Whether the signing secrets are set (never the secrets themselves).
+      HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_APPLE_NOTARY: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.id }}
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        # ci.yml's libraries, plus rpm for check-linux.sh.
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev rpm
+      - name: Install the packaging tools
+        # taiki-e/install-action has neither tool; `cargo install` skips a
+        # tool already in the cached ~/.cargo/bin.
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            cargo install --locked cargo-packager@0.11.8 cargo-generate-rpm@0.21.1
+          else
+            cargo install --locked cargo-packager@0.11.8
+          fi
+
+      # cargo-packager 0.11.8 ignores --binaries-dir: the configs read the
+      # app from target/release/ (packaging/README.md), so it is copied there.
+      - name: Build
+        if: runner.os != 'macOS'
+        run: |
+          cargo build --release --locked -p taurus-desktop -p taurus-cli --target "$TARGET"
+          mkdir -p target/release
+          cp "target/$TARGET/release/hyades${{ runner.os == 'Windows' && '.exe' || '' }}" target/release/
+      - name: Build (universal)
+        if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cargo build --release --locked -p taurus-desktop -p taurus-cli \
+            --target aarch64-apple-darwin --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release target/release
+          for bin in hyades hyades-cli; do
+            lipo -create "target/aarch64-apple-darwin/release/$bin" "target/x86_64-apple-darwin/release/$bin" \
+              -output "target/universal-apple-darwin/release/$bin"
+          done
+          cp target/universal-apple-darwin/release/hyades target/release/
+
+      - name: Upload hyades.exe for signing
+        id: unsigned-exe
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-exe-${{ matrix.id }}
+          path: target/release/hyades.exe
+          if-no-files-found: error
+      - name: Sign hyades.exe
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: target/release
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo packager -c packaging/packager-linux.toml --target "$TARGET" --out-dir pkg
+          # rpm versions cannot hold "-": 1.0.0-rc.1 becomes 1.0.0~rc.1.
+          rpm_version=$(printf '%s' "$VERSION" | tr '-' '~')
+          cargo generate-rpm -p apps/taurus-desktop --target "$TARGET" \
+            -s "version = \"$rpm_version\"" -o pkg/
+      - name: Check the Linux packages
+        if: runner.os == 'Linux'
+        run: packaging/check-linux.sh pkg
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: cargo packager -c packaging/packager-windows.toml --target "$TARGET" --out-dir pkg
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: cargo packager -c packaging/packager-macos.toml --out-dir pkg
+
+      - name: Upload the installer for signing
+        id: unsigned-setup
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-setup-${{ matrix.id }}
+          path: pkg/*-setup.exe
+          if-no-files-found: error
+      - name: Sign the installer
+        if: runner.os == 'Windows' && env.HAS_SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned-setup.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: pkg
+
+      - name: Import the Apple certificate
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/hyades.keychain-db"
+          keychain_password=$(openssl rand -base64 32)
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          existing=$(security list-keychains -d user | tr -d '"')
+          # shellcheck disable=SC2086 # one keychain path per word
+          security list-keychains -d user -s "$keychain" $existing
+      - name: Sign Hyades.app
+        if: runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ "$HAS_APPLE_CERTIFICATE" = true ]; then
+            codesign --force --options runtime --timestamp \
+              --entitlements packaging/macos/entitlements.plist -s "$APPLE_SIGNING_IDENTITY" pkg/Hyades.app
+          else
+            codesign --force -s - pkg/Hyades.app
+          fi
+      - name: Update archive and DMG
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist dmg
+          # No AppleDouble (._*) entries in the archives.
+          export COPYFILE_DISABLE=1
+          tar -czf "dist/Hyades_${VERSION}_universal.app.tar.gz" -C pkg Hyades.app
+          ditto pkg/Hyades.app dmg/Hyades.app
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname Hyades -srcfolder dmg -ov -format UDZO "dist/Hyades_${VERSION}_universal.dmg"
+      - name: Sign and notarize the DMG
+        if: runner.os == 'macOS' && env.HAS_APPLE_NOTARY == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          dmg="dist/Hyades_${VERSION}_universal.dmg"
+          codesign --force --timestamp -s "$APPLE_SIGNING_IDENTITY" "$dmg"
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$dmg"
+      - name: Remove the keychain
+        if: always() && runner.os == 'macOS' && env.HAS_APPLE_CERTIFICATE == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/hyades.keychain-db" || true
+
+      # The exact names of the release assets (xtask manifest expects them).
+      - name: Collect (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          mv pkg/*.AppImage "dist/Hyades_${VERSION}_${{ matrix.arch }}.AppImage"
+          mv pkg/*.deb "dist/hyades_${VERSION}_${{ matrix.deb-arch }}.deb"
+          mv pkg/*.rpm "dist/hyades-${VERSION}-1.${{ matrix.arch }}.rpm"
+          tar -czf "dist/hyades-cli-${VERSION}-${TARGET}.tar.gz" \
+            -C "target/$TARGET/release" hyades-cli -C "$GITHUB_WORKSPACE" LICENSE
+      - name: Collect (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir -p dist
+          mv pkg/*-setup.exe "dist/Hyades_${VERSION}_${{ matrix.arch }}-setup.exe"
+      - name: CLI archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          Compress-Archive -Path "target/$env:TARGET/release/hyades-cli.exe", LICENSE
+          -DestinationPath "dist/hyades-cli-$env:VERSION-$env:TARGET.zip"
+      - name: Collect (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          COPYFILE_DISABLE=1 tar -czf "dist/hyades-cli-${VERSION}-universal-apple-darwin.tar.gz" \
+            -C target/universal-apple-darwin/release hyades-cli -C "$GITHUB_WORKSPACE" LICENSE
+      - name: List the release files
+        run: ls -l dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.id }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish the draft release
+    needs: [version, build]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      NOTES: ${{ github.workspace }}/NOTES.md
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      # NOTES.md stays outside dist/, so it is neither a release asset nor
+      # listed in SHA256SUMS. A prerelease (1.0.0-rc.1) without its own
+      # section uses its version's (1.0.0).
+      - name: Release notes from CHANGELOG.md
+        run: |
+          for v in "$VERSION" "${VERSION%%-*}"; do
+            awk -v v="$v" '
+              /^## \[/ { if (on) exit; on = ($2 == "[" v "]"); next }
+              on { print }
+            ' CHANGELOG.md > "$NOTES"
+            if [ -s "$NOTES" ]; then break; fi
+          done
+          if [ ! -s "$NOTES" ]; then
+            echo "::error::CHANGELOG.md has no section for $VERSION"
+            exit 1
+          fi
+      - name: Manifest
+        run: >-
+          cargo xtask manifest --version "$VERSION" --dist dist
+          --base-url "https://github.com/nikethai/taurus/releases/download/v$VERSION/"
+          --notes "$NOTES"
+      # xtask is already built by the step above, so no build script runs
+      # with the key in its environment.
+      - name: Sign
+        env:
+          HYADES_MINISIGN_KEY: ${{ secrets.HYADES_MINISIGN_KEY }}
+          HYADES_MINISIGN_PASSWORD: ${{ secrets.HYADES_MINISIGN_PASSWORD }}
+        run: cargo xtask sign dist/latest.json dist/SHA256SUMS
+      - name: Verify the manifest as installed copies will
+        run: |
+          if ! cargo xtask verify-manifest dist/latest.json dist/latest.json.minisig packaging/update-key.pub; then
+            echo "::error::latest.json does not verify against packaging/update-key.pub; installed copies would reject this release, so none was created"
+            exit 1
+          fi
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          case "$VERSION" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "v$VERSION" dist/* --draft --title "Hyades $VERSION" \
+            --notes-file "$NOTES" --target "$GITHUB_SHA" "${prerelease[@]}"
