@@ -1,89 +1,74 @@
 //! Text the OS shows outside Slint: the tray icon and its menu, desktop
 //! notifications, the login item and the message box shown when the app
-//! cannot start. Fixed sentences only, each used whole
-//! or next to a file name, never built from pieces, so they can move to the
-//! translation catalog as they are. Everything inside the window lives in
-//! the `.slint` files.
+//! cannot start. The sentences live in the translation catalog
+//! (`ShellText` in `ui/shell_text.slint`, `Messages.simple` for errors);
+//! `ShellStrings` reads them from the window once the language is applied.
+//! Only the product name, which is never translated, is a Rust constant.
 
+use slint::ComponentHandle;
 use taurus_core::{CoreError, ErrorKind};
+
+use crate::{AppWindow, Messages, ShellText};
 
 /// Product name: tray tooltip, notification app name, login item name.
 pub const APP_NAME: &str = "Hyades";
 
-pub const TRAY_OPEN: &str = "Open Hyades";
-pub const TRAY_PAUSE_ALL: &str = "Pause all";
-pub const TRAY_RESUME_ALL: &str = "Resume all";
-pub const TRAY_QUIT: &str = "Quit";
-
-/// Title of the notification for a finished download; its body is the
-/// file name.
-pub const FINISHED_TITLE: &str = "Download finished";
-/// Title of the notification for a failed download; its body is the file
-/// name, then `simple_message` of the error on its own line.
-pub const FAILED_TITLE: &str = "Download stopped";
-/// The when-done "Notify me" notification.
-pub const ALL_DONE_TITLE: &str = "All downloads finished";
-
-/// Start-up message box: the command-line program holds the data folder.
-pub const OPEN_IN_USE: &str =
-    "Hyades is already running in another program (hyades-cli). Close it, then open Hyades again.";
-/// Start-up message box: the data folder could not be opened otherwise.
-pub const OPEN_FAILED: &str = "Hyades couldn't open its data folder. Check that the drive is there and that you can write to it, then open Hyades again.";
-
-/// What the start-up message box says when `Engine::open` failed.
-pub fn open_failed(e: &CoreError) -> &'static str {
-    if e.is_instance_locked() {
-        OPEN_IN_USE
-    } else {
-        OPEN_FAILED
-    }
+/// The `ShellText` global in the window's language, one field per
+/// property. The language is fixed for the life of the process, so these
+/// are read once at start.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShellStrings {
+    pub tray_open: String,
+    pub tray_pause_all: String,
+    pub tray_resume_all: String,
+    pub tray_quit: String,
+    /// Title of the notification for a finished download; its body is the
+    /// file name.
+    pub finished_title: String,
+    /// Title of the notification for a failed download; its body is the
+    /// file name, then `simple` of the error on its own line.
+    pub failed_title: String,
+    /// The when-done "Notify me" notification.
+    pub all_done_title: String,
+    /// Start-up message box: the command-line program holds the data folder.
+    pub open_in_use: String,
+    /// Start-up message box: the data folder could not be opened otherwise.
+    pub open_failed: String,
 }
 
-/// The Simple-mode sentence for an error kind, word for word what
-/// `Messages.simple` in `ui/messages.slint` says (a UI test compares them
-/// for every kind).
-pub fn simple_message(kind: ErrorKind) -> &'static str {
-    match kind {
-        ErrorKind::LinkExpired => "This link stopped working. It may have expired.",
-        ErrorKind::NeedsSignIn => "This site wants you to sign in first.",
-        ErrorKind::BlockedByBotCheck => {
-            "This site wants to check you're human. Open it in your browser and start the download there."
+impl ShellStrings {
+    /// Reads the `ShellText` global. Works on a window that is not shown
+    /// yet and before the event loop runs.
+    pub fn from_ui(ui: &AppWindow) -> ShellStrings {
+        let text = ui.global::<ShellText>();
+        ShellStrings {
+            tray_open: text.get_tray_open().into(),
+            tray_pause_all: text.get_tray_pause_all().into(),
+            tray_resume_all: text.get_tray_resume_all().into(),
+            tray_quit: text.get_tray_quit().into(),
+            finished_title: text.get_finished_title().into(),
+            failed_title: text.get_failed_title().into(),
+            all_done_title: text.get_all_done_title().into(),
+            open_in_use: text.get_open_in_use().into(),
+            open_failed: text.get_open_failed().into(),
         }
-        ErrorKind::CaptivePortal => {
-            "Your network wants you to sign in (hotel or café Wi-Fi?). Open your browser, then try again."
+    }
+
+    /// The Simple-mode sentence for an error kind: `Messages.simple` with
+    /// the key the rows use (`ErrorKind::as_str`, see `rows::row_of`).
+    pub fn simple(ui: &AppWindow, kind: ErrorKind) -> String {
+        ui.global::<Messages>()
+            .invoke_simple(kind.as_str().into())
+            .into()
+    }
+
+    /// What the start-up message box says when `Engine::open` failed.
+    pub fn open_error(&self, e: &CoreError) -> &str {
+        if e.is_instance_locked() {
+            &self.open_in_use
+        } else {
+            &self.open_failed
         }
-        ErrorKind::QuotaExceeded => {
-            "Too many people downloaded this file recently. Try again later."
-        }
-        ErrorKind::DiskFull => "Your disk is full. Free up some space, then try again.",
-        ErrorKind::FolderUnavailable => "The save folder isn't available. Is the drive plugged in?",
-        ErrorKind::NoPermission => {
-            "Hyades can't save to this folder. Pick another one in Settings."
-        }
-        ErrorKind::FileTooLargeForDisk => {
-            "This file is too big for that drive. Pick another folder."
-        }
-        ErrorKind::ChecksumMismatch => {
-            "The downloaded file didn't match its checksum, so it was removed. Try again."
-        }
-        ErrorKind::SiteNotSupported => "This link is a web page, not a file.",
-        ErrorKind::UnsafeTorrent => "This torrent has unsafe file names, so it wasn't saved.",
-        ErrorKind::AlreadyAdded => "This download is already in your list.",
-        ErrorKind::MediaUnavailable => "This video is private or was removed.",
-        ErrorKind::MediaRegionLocked => "This video isn't available in your country.",
-        ErrorKind::ToolFailed => {
-            "The video tools couldn't finish this file. The pieces were kept in the folder."
-        }
-        ErrorKind::NeedsConfirmation => "This needs your confirmation.",
-        ErrorKind::FileChangedOnServer => {
-            "The file changed on the server, so the download started over."
-        }
-        ErrorKind::ConnectionLost
-        | ErrorKind::Timeout
-        | ErrorKind::RateLimited
-        | ErrorKind::ToolMissing
-        | ErrorKind::NoPeers
-        | ErrorKind::Unknown => "Something went wrong. Try again.",
     }
 }
 
@@ -91,13 +76,29 @@ pub fn simple_message(kind: ErrorKind) -> &'static str {
 mod tests {
     use super::*;
 
+    fn strings() -> ShellStrings {
+        let s = |t: &str| t.to_string();
+        ShellStrings {
+            tray_open: s("open"),
+            tray_pause_all: s("pause"),
+            tray_resume_all: s("resume"),
+            tray_quit: s("quit"),
+            finished_title: s("finished"),
+            failed_title: s("failed"),
+            all_done_title: s("all done"),
+            open_in_use: s("in use"),
+            open_failed: s("open failed"),
+        }
+    }
+
     #[test]
     fn open_failure_says_why() {
+        let shell = strings();
         let other = CoreError {
             kind: ErrorKind::NoPermission,
             detail: "permission denied".into(),
         };
-        assert_eq!(open_failed(&other), OPEN_FAILED);
+        assert_eq!(shell.open_error(&other), "open failed");
 
         // The data folder held by another engine (as the CLI would).
         let dir = tempfile::tempdir().unwrap();
@@ -106,20 +107,8 @@ mod tests {
             let config = || taurus_core::EngineConfig::new(dir.path());
             let first = taurus_core::Engine::open(config()).await.unwrap();
             let held = taurus_core::Engine::open(config()).await.err().unwrap();
-            assert_eq!(open_failed(&held), OPEN_IN_USE);
+            assert_eq!(shell.open_error(&held), "in use");
             first.shutdown().await.unwrap();
         });
-    }
-
-    #[test]
-    fn every_error_kind_has_a_simple_message() {
-        for kind in ErrorKind::ALL {
-            let text = simple_message(kind);
-            assert!(text.ends_with(['.', '?']), "{kind:?}: {text:?}");
-        }
-        assert_eq!(
-            simple_message(ErrorKind::Unknown),
-            "Something went wrong. Try again."
-        );
     }
 }

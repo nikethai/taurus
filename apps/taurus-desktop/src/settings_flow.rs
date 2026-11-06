@@ -265,7 +265,7 @@ impl App {
     /// `next` (changed at `key`) becomes the UI's settings and is saved.
     pub(crate) fn change_settings(&self, key: &str, next: Settings) {
         if key == "open-at-login"
-            && self.os_shell.get()
+            && self.os_shell.get().is_some()
             && let Err(e) = login::set_open_at_login(next.ui.open_at_login)
         {
             eprintln!("hyades: open at login: {e}");

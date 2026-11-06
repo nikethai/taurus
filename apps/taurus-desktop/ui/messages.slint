@@ -1,5 +1,5 @@
 // Plain-language (Simple mode) sentences for engine error kinds and the
-// retry wait. The Rust text used for OS notifications must mirror `simple`.
+// retry wait. OS notifications read `simple` too (ShellStrings::simple).
 export global Messages {
     // `kind` is ErrorKind::as_str(), e.g. "link_expired".
     public pure function simple(kind: string) -> string {

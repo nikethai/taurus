@@ -2108,6 +2108,42 @@ msgctxt "Settings"
 msgid "Appearance"
 msgstr ""
 
+msgctxt "ShellText"
+msgid "Open Hyades"
+msgstr ""
+
+msgctxt "ShellText"
+msgid "Pause all"
+msgstr ""
+
+msgctxt "ShellText"
+msgid "Resume all"
+msgstr ""
+
+msgctxt "ShellText"
+msgid "Quit"
+msgstr ""
+
+msgctxt "ShellText"
+msgid "Download finished"
+msgstr ""
+
+msgctxt "ShellText"
+msgid "Download stopped"
+msgstr ""
+
+msgctxt "ShellText"
+msgid "All downloads finished"
+msgstr ""
+
+msgctxt "ShellText"
+msgid "Hyades is already running in another program (hyades-cli). Close it, then open Hyades again."
+msgstr ""
+
+msgctxt "ShellText"
+msgid "Hyades couldn't open its data folder. Check that the drive is there and that you can write to it, then open Hyades again."
+msgstr ""
+
 msgctxt "LinkField"
 msgid "Paste a link"
 msgstr ""

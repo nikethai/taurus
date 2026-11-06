@@ -2108,6 +2108,42 @@ msgctxt "Settings"
 msgid "Appearance"
 msgstr "⟦Áppéáráñçé····⟧"
 
+msgctxt "ShellText"
+msgid "Open Hyades"
+msgstr "⟦Ópéñ Hyades·····⟧"
+
+msgctxt "ShellText"
+msgid "Pause all"
+msgstr "⟦Páúsé áll····⟧"
+
+msgctxt "ShellText"
+msgid "Resume all"
+msgstr "⟦Résúmé áll····⟧"
+
+msgctxt "ShellText"
+msgid "Quit"
+msgstr "⟦Qúít··⟧"
+
+msgctxt "ShellText"
+msgid "Download finished"
+msgstr "⟦Dówñlóád fíñíshéd·······⟧"
+
+msgctxt "ShellText"
+msgid "Download stopped"
+msgstr "⟦Dówñlóád stóppéd·······⟧"
+
+msgctxt "ShellText"
+msgid "All downloads finished"
+msgstr "⟦Áll dówñlóáds fíñíshéd·········⟧"
+
+msgctxt "ShellText"
+msgid "Hyades is already running in another program (hyades-cli). Close it, then open Hyades again."
+msgstr "⟦Hyades ís álréádý rúññíñg íñ áñóthér prógrám (hýádés-çlí). Çlósé ít, théñ ópéñ Hyades ágáíñ.·····································⟧"
+
+msgctxt "ShellText"
+msgid "Hyades couldn't open its data folder. Check that the drive is there and that you can write to it, then open Hyades again."
+msgstr "⟦Hyades çóúldñ't ópéñ íts dátá fóldér. Çhéçk thát thé drívé ís théré áñd thát ýóú çáñ wríté tó ít, théñ ópéñ Hyades ágáíñ.·················································⟧"
+
 msgctxt "LinkField"
 msgid "Paste a link"
 msgstr "⟦Pásté á líñk·····⟧"

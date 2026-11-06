@@ -2,7 +2,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
-"POT-Creation-Date: 2026-11-06 13:35+0000\n"
+"POT-Creation-Date: 2026-11-06 13:51+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -2127,6 +2127,51 @@ msgstr ""
 
 msgctxt "Settings"
 msgid "Appearance"
+msgstr ""
+
+msgctxt "ShellText"
+msgid "Open Hyades"
+msgstr ""
+
+msgctxt "ShellText"
+msgid "Pause all"
+msgstr ""
+
+msgctxt "ShellText"
+msgid "Resume all"
+msgstr ""
+
+msgctxt "ShellText"
+msgid "Quit"
+msgstr ""
+
+#. Notification for a finished download; its body is the file name.
+msgctxt "ShellText"
+msgid "Download finished"
+msgstr ""
+
+#. Notification for a failed download; its body is the file name and why.
+msgctxt "ShellText"
+msgid "Download stopped"
+msgstr ""
+
+#. The when-done "Notify me" notification.
+msgctxt "ShellText"
+msgid "All downloads finished"
+msgstr ""
+
+#. Start-up message box: the command-line program holds the data folder.
+msgctxt "ShellText"
+msgid ""
+"Hyades is already running in another program (hyades-cli). Close it, then "
+"open Hyades again."
+msgstr ""
+
+#. Start-up message box: the data folder could not be opened otherwise.
+msgctxt "ShellText"
+msgid ""
+"Hyades couldn't open its data folder. Check that the drive is there and that "
+"you can write to it, then open Hyades again."
 msgstr ""
 
 msgctxt "LinkField"

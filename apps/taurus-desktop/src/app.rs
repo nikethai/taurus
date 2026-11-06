@@ -13,7 +13,7 @@
 //! the Settings screen in `settings_flow.rs` (Advanced Settings in
 //! `adv_settings.rs`), applying engine state to the window in `pump.rs`.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -40,6 +40,7 @@ use crate::grab_flow::GrabState;
 use crate::links::ClipboardFilter;
 use crate::pump::ViewState;
 use crate::settings_flow::SettingsWriter;
+use crate::shell_text::ShellStrings;
 use crate::{AppWindow, icon};
 
 /// How often engine state reaches the window, at most.
@@ -147,8 +148,9 @@ pub struct App {
     pub(crate) tx: AppSender,
     rx: mpsc::Receiver<UiMsg>,
     has_tray: bool,
-    /// Desktop notifications and the login item are used (off in tests).
-    pub(crate) os_shell: Cell<bool>,
+    /// Set when desktop notifications and the login item are used (never
+    /// in tests): the notification titles, read once at start.
+    pub(crate) os_shell: OnceCell<ShellStrings>,
     quitting: Cell<bool>,
     pub(crate) filter: RefCell<ClipboardFilter>,
     /// The link the clipboard banner offers.
@@ -217,7 +219,7 @@ impl App {
             tx,
             rx,
             has_tray,
-            os_shell: Cell::new(false),
+            os_shell: OnceCell::new(),
             quitting: Cell::new(false),
             filter: RefCell::new(ClipboardFilter::new()),
             banner_link: RefCell::new(None),
@@ -380,10 +382,10 @@ impl App {
         });
     }
 
-    /// Turns on desktop notifications and the login item. Off by default so
-    /// tests never touch the OS.
-    pub fn use_os_shell(&self) {
-        self.os_shell.set(true);
+    /// Turns on desktop notifications (titled from `text`) and the login
+    /// item. Off by default so tests never touch the OS.
+    pub fn use_os_shell(&self, text: ShellStrings) {
+        let _ = self.os_shell.set(text);
     }
 
     /// For other threads: forwarded links and clipboard text.

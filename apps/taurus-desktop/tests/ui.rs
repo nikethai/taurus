@@ -21,11 +21,11 @@ use taurus_core::{
 };
 use taurus_desktop::app::App;
 use taurus_desktop::i18n;
-use taurus_desktop::shell_text::simple_message;
+use taurus_desktop::rows;
+use taurus_desktop::shell_text::ShellStrings;
 use taurus_desktop::{
-    AdvRowVm, AppWindow, BannerVm, CountdownVm, DetailVm, FilesDialogVm, LinksUi, Messages,
-    PasswordDialogVm, RemoveDialogVm, RowVm, Screen, SettingsUi, SettingsVm, Theme, TorrentFileVm,
-    WhenDoneUi,
+    AdvRowVm, AppWindow, BannerVm, CountdownVm, DetailVm, FilesDialogVm, LinksUi, PasswordDialogVm,
+    RemoveDialogVm, RowVm, Screen, SettingsUi, SettingsVm, Theme, TorrentFileVm, WhenDoneUi,
 };
 use taurus_testkit::{
     FailAfter, FakeToolHost, FileSpec, TestServer, ToolRelease, TorrentSeeder, process_args_log,
@@ -42,9 +42,10 @@ fn ui_smoke() {
     system_theme_follows_os();
     welcome_has_paste_field(&ui);
     bundled_pseudo_locale_applies(&ui);
+    shell_text_follows_language(&ui);
     downloads_rows_show_status_and_retry(&ui);
     rows_banner_and_tips_wording(&ui);
-    shell_text_mirrors_messages(&ui);
+    shell_simple_message_matches_window(&ui);
     media_rows_and_tools_banner_wording(&ui);
     keyboard_tab_enter_escape();
     wide_detail_holds_long_names();
@@ -388,16 +389,84 @@ fn rows_banner_and_tips_wording(ui: &AppWindow) {
     ui.set_tab(0);
 }
 
-/// The OS notification text (Rust) says exactly what the screens say.
-fn shell_text_mirrors_messages(ui: &AppWindow) {
-    let messages = ui.global::<Messages>();
+/// The text the OS shows outside the window (tray menu, notification
+/// titles, start-up message box) comes from the catalog and follows the
+/// selected language like the window does.
+fn shell_text_follows_language(ui: &AppWindow) {
+    const WHAT: &str = "shell_text_follows_language";
+    i18n::apply(Some("en_XA"));
+    let pseudo = ShellStrings::from_ui(ui);
+    for (name, text) in [
+        ("tray_open", &pseudo.tray_open),
+        ("tray_pause_all", &pseudo.tray_pause_all),
+        ("tray_resume_all", &pseudo.tray_resume_all),
+        ("tray_quit", &pseudo.tray_quit),
+        ("finished_title", &pseudo.finished_title),
+        ("failed_title", &pseudo.failed_title),
+        ("all_done_title", &pseudo.all_done_title),
+        ("open_in_use", &pseudo.open_in_use),
+        ("open_failed", &pseudo.open_failed),
+    ] {
+        assert!(text.starts_with('⟦'), "{WHAT}: {name} {text:?}");
+    }
+    i18n::apply(Some("en"));
+    let en = ShellStrings::from_ui(ui);
+    assert_eq!(en.tray_quit, "Quit", "{WHAT}");
+    assert_eq!(en.tray_open, "Open Hyades", "{WHAT}");
+    assert_eq!(en.tray_pause_all, "Pause all", "{WHAT}");
+    assert_eq!(en.tray_resume_all, "Resume all", "{WHAT}");
+    assert_eq!(en.finished_title, "Download finished", "{WHAT}");
+    assert_eq!(en.failed_title, "Download stopped", "{WHAT}");
+    assert_eq!(en.all_done_title, "All downloads finished", "{WHAT}");
+    assert_eq!(
+        en.open_in_use,
+        "Hyades is already running in another program (hyades-cli). Close it, then open Hyades again.",
+        "{WHAT}"
+    );
+    assert_eq!(
+        en.open_failed,
+        "Hyades couldn't open its data folder. Check that the drive is there and that you can write to it, then open Hyades again.",
+        "{WHAT}"
+    );
+}
+
+/// The failed-download notification says, for every error kind, what the
+/// Simple row of that failed download says.
+fn shell_simple_message_matches_window(ui: &AppWindow) {
+    const WHAT: &str = "shell_simple_message_matches_window";
+    ui.set_tab(0);
+    ui.set_screen(Screen::Downloads);
     for kind in ErrorKind::ALL {
-        assert_eq!(
-            simple_message(kind),
-            messages.invoke_simple(kind.as_str().into()).as_str(),
-            "shell_text_mirrors_messages: {kind:?}"
+        let view = taurus_core::JobView {
+            id: JobId(1),
+            url: "https://example.org/a.bin".into(),
+            source_url: "https://example.org/a.bin".into(),
+            file_name: "a.bin".into(),
+            dest_dir: PathBuf::from("/tmp"),
+            state: JobState::Failed,
+            total: Some(1000),
+            downloaded: 0,
+            speed_bps: 0,
+            resumable: true,
+            error: Some((kind, String::new())),
+            kind: taurus_core::JobKind::Http,
+            torrent: None,
+            retry_at: None,
+            finished_at: None,
+            info_hash: None,
+            media: None,
+            progress_unit: Default::default(),
+        };
+        let row = rows::row_of(&view, 0);
+        ui.set_downloading_rows(ModelRc::new(VecModel::from(vec![row])));
+        refresh_tree(ui);
+        let text = ShellStrings::simple(ui, kind);
+        assert!(
+            labelled(ui, &text).iter().any(|e| e.size().width > 0.0),
+            "{WHAT}: {kind:?}: the row does not show {text:?}"
         );
     }
+    ui.set_downloading_rows(ModelRc::default());
 }
 
 /// A real engine in a temp dir, a local web server and the app on top.

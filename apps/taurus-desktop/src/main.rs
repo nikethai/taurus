@@ -16,7 +16,8 @@ use slint::ComponentHandle;
 use taurus_core::{Engine, EngineConfig};
 use taurus_desktop::app::App;
 use taurus_desktop::instance::{self, Instance};
-use taurus_desktop::{AppWindow, clipboard, i18n, links, shell_text, tray};
+use taurus_desktop::shell_text::{self, ShellStrings};
+use taurus_desktop::{AppWindow, clipboard, i18n, links, tray};
 
 const CLIPBOARD_POLL: Duration = Duration::from_secs(1);
 
@@ -50,6 +51,13 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         let _guard = rt.enter();
         listener.into_stream()
     };
+    // The window (not shown yet) comes first: the start-up message box
+    // reads its words from it. Until the engine is open only
+    // `HYADES_LANG` (or the OS locale) can pick the language.
+    let ui = AppWindow::new()?;
+    let lang = std::env::var("HYADES_LANG").ok();
+    let early = i18n::choose(lang.as_deref(), None);
+    i18n::apply(early.as_deref());
     let engine = match rt.block_on(Engine::open(EngineConfig::new(&data_dir))) {
         Ok(engine) => engine,
         Err(e) => {
@@ -58,21 +66,25 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Error)
                 .set_title(shell_text::APP_NAME)
-                .set_description(shell_text::open_failed(&e))
+                .set_description(ShellStrings::from_ui(&ui).open_error(&e))
                 .set_buttons(rfd::MessageButtons::Ok)
                 .show();
             return Ok(ExitCode::FAILURE);
         }
     };
+    // Now the saved language too; it stays for the life of the process, so
+    // the tray and notification words are read once, here.
+    let chosen = i18n::choose(lang.as_deref(), engine.settings().ui.language.as_deref());
+    if chosen != early {
+        i18n::apply(chosen.as_deref());
+    }
+    let text = ShellStrings::from_ui(&ui);
 
-    let ui = AppWindow::new()?;
-    let lang = std::env::var("HYADES_LANG").ok();
-    i18n::apply(i18n::choose(lang.as_deref(), engine.settings().ui.language.as_deref()).as_deref());
     let app_cell: Rc<OnceCell<Weak<App>>> = Rc::new(OnceCell::new());
-    let tray = tray::build(tray_actions(&app_cell));
+    let tray = tray::build(tray_actions(&app_cell), &text);
     let app = App::start(&ui, engine, rt.handle().clone(), tray.is_some());
     let _ = app_cell.set(Rc::downgrade(&app));
-    app.use_os_shell();
+    app.use_os_shell(text);
 
     let sender = app.sender();
     rt.spawn(async move {
