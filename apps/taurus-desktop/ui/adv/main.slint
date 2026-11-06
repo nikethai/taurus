@@ -4,7 +4,9 @@
 import { Theme } from "../theme.slint";
 import { AdvRowVm, TabCountsVm } from "../types.slint";
 import { ListView } from "std-widgets.slint";
-import { IconButton, Pressable, TextButton } from "../widgets.slint";
+import { Pressable, TextButton } from "../widgets.slint";
+import { Icon } from "../icons.slint";
+import { BarButton, ScreenBar } from "../chrome.slint";
 import { LinkField } from "../welcome.slint";
 import { AdvRow } from "row.slint";
 import { WhenDoneUi } from "whendone.slint";
@@ -15,14 +17,15 @@ component AdvTab inherits Pressable {
     in property <int> count;
     in property <bool> selected;
 
-    height: 32px;
+    height: 28px;
     min-width: 0;
     preferred-width: 0;
     horizontal-stretch: 1;
-    border-radius: 8px;
-    background: selected ? Theme.panel : root.hovered ? Theme.track : transparent;
-    border-width: selected ? 1px : 0;
-    border-color: Theme.line;
+    border-radius: 7px;
+    background: selected ? Theme.panel : root.hovered ? Theme.hover : transparent;
+    drop-shadow-color: selected ? #0000001F : transparent;
+    drop-shadow-offset-y: 1px;
+    drop-shadow-blur: 2px;
     accessible-role: tab;
     accessible-label: text;
     accessible-value: count;
@@ -35,17 +38,17 @@ component AdvTab inherits Pressable {
         Text {
             text: root.text;
             vertical-alignment: center;
-            font-size: 12px;
-            font-weight: root.selected ? 600 : 400;
+            font-size: 13px;
+            font-weight: root.selected ? 600 : 500;
             color: root.selected ? Theme.text : Theme.muted;
             accessible-role: none;
         }
         Text {
             text: root.count;
             vertical-alignment: center;
-            font-size: 11px;
-            font-weight: 600;
-            color: root.selected ? Theme.accent-strong : Theme.muted;
+            font-size: 11.5px;
+            font-weight: 500;
+            color: Theme.muted;
             accessible-role: none;
         }
     }
@@ -66,8 +69,9 @@ export component AdvList inherits Rectangle {
     // position); the empty text lies over it.
     ListView {
         for r in root.rows: HorizontalLayout {
-            padding-left: 8px;
-            padding-right: 8px;
+            padding-left: 6px;
+            padding-right: 6px;
+            padding-bottom: 2px;
             AdvRow {
                 item: r;
                 select(id) => {
@@ -103,56 +107,146 @@ export component AdvList inherits Rectangle {
     }
 }
 
-// Total download and upload speed.
+// 36 px outlined icon button next to the link field.
+component SquareButton inherits Pressable {
+    in property <string> icon;
+    in property <string> label;
+
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: Theme.line;
+    background: self.pressed ? Theme.track : self.hovered ? Theme.hover : transparent;
+    accessible-label: label;
+    Icon {
+        name: root.icon;
+        width: 16px;
+        height: 16px;
+        stroke: Theme.muted;
+    }
+}
+
+// Total download and upload speed, the when-done and speed button and
+// Pause all / Resume all.
 export component SpeedFooter inherits Rectangle {
     in property <string> down;
     in property <string> up;
+    in property <bool> all-paused;
     // The when-done button: opens the when-done and speed popover.
     callback open-whendone();
+    callback pause-all();
+    callback resume-all();
 
-    height: 36px;
+    property <bool> chosen: WhenDoneUi.when-done != "" && WhenDoneUi.when-done != "nothing";
+
+    height: 40px;
+    background: Theme.toolbar;
     Rectangle {
         y: 0;
         height: 1px;
         background: Theme.line;
     }
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        spacing: 16px;
-        Text {
-            text: @tr("↓ {0}", root.down);
-            vertical-alignment: center;
-            font-size: 12px;
-            color: Theme.muted;
-            accessible-role: text;
-            accessible-label: self.text;
-        }
-        Text {
-            text: @tr("↑ {0}", root.up);
-            vertical-alignment: center;
-            font-size: 12px;
-            color: Theme.muted;
-            horizontal-stretch: 1;
-            accessible-role: text;
-            accessible-label: self.text;
-        }
-        Pressable {
-            width: whendone-label.preferred-width + 20px;
-            border-radius: 8px;
-            background: self.pressed ? Theme.track : self.hovered ? Theme.chip : transparent;
-            accessible-label: whendone-label.text;
-            clicked => {
-                root.open-whendone();
+        padding-left: 14px;
+        padding-right: 8px;
+        spacing: 14px;
+        HorizontalLayout {
+            spacing: 4px;
+            horizontal-stretch: 0;
+            VerticalLayout {
+                alignment: center;
+                Icon {
+                    name: "arrow-down";
+                    width: 13px;
+                    height: 13px;
+                    stroke: Theme.accent-ink;
+                }
             }
-            whendone-label := Text {
-                text: WhenDoneUi.footer-label(WhenDoneUi.when-done);
-                horizontal-alignment: center;
+            Text {
+                text: root.down;
                 vertical-alignment: center;
                 font-size: 12px;
                 font-weight: 600;
-                color: Theme.accent-strong;
-                accessible-role: none;
+                color: Theme.text;
+                accessible-role: text;
+                accessible-label: @tr("↓ {0}", root.down);
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                Icon {
+                    name: "up";
+                    width: 13px;
+                    height: 13px;
+                    stroke: Theme.muted;
+                }
+            }
+            Text {
+                text: root.up;
+                vertical-alignment: center;
+                font-size: 12px;
+                color: Theme.muted;
+                horizontal-stretch: 1;
+                accessible-role: text;
+                accessible-label: @tr("↑ {0}", root.up);
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Pressable {
+                height: 28px;
+                width: root.chosen ? whendone-row.preferred-width + 20px : 28px;
+                border-radius: 7px;
+                background: root.chosen ? Theme.sel : self.pressed ? Theme.track : self.hovered ? Theme.hover : transparent;
+                accessible-label: whendone-label.text;
+                clicked => {
+                    root.open-whendone();
+                }
+                whendone-row := HorizontalLayout {
+                    alignment: center;
+                    spacing: 5px;
+                    VerticalLayout {
+                        alignment: center;
+                        Icon {
+                            name: "moon";
+                            width: 14px;
+                            height: 14px;
+                            stroke: root.chosen ? Theme.accent-ink : Theme.muted;
+                        }
+                    }
+                    whendone-label := Text {
+                        visible: root.chosen;
+                        width: root.chosen ? self.preferred-width : 0;
+                        text: WhenDoneUi.footer-label(WhenDoneUi.when-done);
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: Theme.accent-ink;
+                        accessible-role: none;
+                    }
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            TextButton {
+                height: 28px;
+                min-width: 0;
+                kind: "muted";
+                font-size: 12px;
+                icon: root.all-paused ? "play" : "pause";
+                text: root.all-paused ? @tr("Resume all") : @tr("Pause all");
+                clicked => {
+                    if (root.all-paused) {
+                        root.resume-all();
+                    } else {
+                        root.pause-all();
+                    }
+                }
             }
         }
     }
@@ -179,7 +273,9 @@ export component AdvCompact inherits Rectangle {
     // The footer's when-done button.
     callback open-whendone();
 
-    property <bool> pasting: false;
+    in property <bool> all-paused;
+    callback pause-all();
+    callback resume-all();
 
     function pick(i: int) {
         root.tab = i;
@@ -187,29 +283,10 @@ export component AdvCompact inherits Rectangle {
     }
 
     VerticalLayout {
-        padding-top: 12px;
-        spacing: 10px;
-
-        HorizontalLayout {
-            padding-left: 16px;
-            padding-right: 8px;
-            spacing: 4px;
-            Text {
-                text: @tr("Downloads");
-                vertical-alignment: center;
-                font-size: 18px;
-                font-weight: 700;
-                color: Theme.text;
-                horizontal-stretch: 1;
-            }
-            add-button := IconButton {
-                icon: root.pasting ? "close" : "plus";
-                label: root.pasting ? @tr("Close the link field") : @tr("Add a download");
-                clicked => {
-                    root.pasting = !root.pasting;
-                }
-            }
-            IconButton {
+        ScreenBar {
+            title: "Hyades";
+            back: false;
+            BarButton {
                 icon: "settings";
                 label: @tr("Settings");
                 clicked => {
@@ -218,62 +295,52 @@ export component AdvCompact inherits Rectangle {
             }
         }
 
-        // Escape from the field closes the panel; the focus goes back to "+".
-        if root.pasting: FocusScope {
-            focus-on-tab-navigation: false;
-            key-pressed(event) => {
-                if (event.text == Key.Escape) {
-                    root.pasting = false;
-                    add-button.focus();
-                    return accept;
+        HorizontalLayout {
+            padding: 12px;
+            padding-bottom: 8px;
+            spacing: 8px;
+            link := LinkField {
+                field-height: 36px;
+                pill: false;
+                show-icon: true;
+                inline-button: false;
+                entered(l) => {
+                    root.link-entered(l);
                 }
-                return reject;
             }
-            VerticalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                spacing: 6px;
-                LinkField {
-                    field-height: 44px;
-                    init => {
-                        self.focus-input();
-                    }
-                    entered(link) => {
-                        root.pasting = false;
-                        root.link-entered(link);
-                    }
+            TextButton {
+                height: 36px;
+                min-width: 0;
+                kind: "primary";
+                text: @tr("Add");
+                enabled: link.has-text;
+                clicked => {
+                    link.send();
                 }
-                HorizontalLayout {
-                    spacing: 4px;
-                    TextButton {
-                        text: @tr("Several links…");
-                        kind: "quiet";
-                        clicked => {
-                            root.pasting = false;
-                            root.open-batch();
-                        }
-                    }
-                    TextButton {
-                        text: @tr("Grab links from a page…");
-                        kind: "quiet";
-                        clicked => {
-                            root.pasting = false;
-                            root.open-grab();
-                        }
-                    }
-                    Rectangle {
-                        horizontal-stretch: 1;
-                    }
+            }
+            SquareButton {
+                icon: "list";
+                label: @tr("Several links…");
+                clicked => {
+                    root.open-batch();
+                }
+            }
+            SquareButton {
+                icon: "globe";
+                label: @tr("Grab links from a page…");
+                clicked => {
+                    root.open-grab();
                 }
             }
         }
 
         HorizontalLayout {
-            padding-left: 16px;
-            padding-right: 16px;
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-bottom: 6px;
             Rectangle {
                 background: Theme.chip;
-                border-radius: 10px;
+                border-radius: 9px;
                 accessible-role: tab-list;
                 HorizontalLayout {
                     padding: 3px;
@@ -307,8 +374,8 @@ export component AdvCompact inherits Rectangle {
         }
 
         if UpdateUi.banner: HorizontalLayout {
-            padding-left: 16px;
-            padding-right: 16px;
+            padding-left: 12px;
+            padding-right: 12px;
             UpdateBanner { }
         }
 
@@ -340,7 +407,10 @@ export component AdvCompact inherits Rectangle {
         SpeedFooter {
             down: root.speed-down;
             up: root.speed-up;
+            all-paused: root.all-paused;
             open-whendone => { root.open-whendone(); }
+            pause-all => { root.pause-all(); }
+            resume-all => { root.resume-all(); }
         }
     }
 }

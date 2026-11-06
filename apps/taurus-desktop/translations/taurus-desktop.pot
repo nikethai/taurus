@@ -2,7 +2,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
-"POT-Creation-Date: 2026-11-06 19:00+0000\n"
+"POT-Creation-Date: 2026-11-06 20:23+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -184,10 +184,6 @@ msgstr ""
 
 msgctxt "AdvAdd"
 msgid "{0} · {1}"
-msgstr ""
-
-msgctxt "AdvAdd"
-msgid "Back"
 msgstr ""
 
 msgctxt "AdvAdd"
@@ -423,10 +419,6 @@ msgid "Find files →"
 msgstr ""
 
 msgctxt "AdvBatch"
-msgid "Back"
-msgstr ""
-
-msgctxt "AdvBatch"
 msgid "Add several links"
 msgstr ""
 
@@ -555,10 +547,6 @@ msgstr ""
 
 msgctxt "DetailPane"
 msgid "Select a download to see its details."
-msgstr ""
-
-msgctxt "DetailPane"
-msgid "Back"
 msgstr ""
 
 msgctxt "DetailPane"
@@ -738,10 +726,6 @@ msgid "Size unknown"
 msgstr ""
 
 msgctxt "AdvGrab"
-msgid "Back"
-msgstr ""
-
-msgctxt "AdvGrab"
 msgid "Grab links"
 msgstr ""
 
@@ -865,20 +849,20 @@ msgctxt "SpeedFooter"
 msgid "↑ {0}"
 msgstr ""
 
-msgctxt "AdvCompact"
-msgid "Downloads"
+msgctxt "SpeedFooter"
+msgid "Resume all"
 msgstr ""
 
-msgctxt "AdvCompact"
-msgid "Close the link field"
-msgstr ""
-
-msgctxt "AdvCompact"
-msgid "Add a download"
+msgctxt "SpeedFooter"
+msgid "Pause all"
 msgstr ""
 
 msgctxt "AdvCompact"
 msgid "Settings"
+msgstr ""
+
+msgctxt "AdvCompact"
+msgid "Add"
 msgstr ""
 
 msgctxt "AdvCompact"
@@ -927,6 +911,18 @@ msgstr ""
 
 msgctxt "SourceChip"
 msgid "HTTP"
+msgstr ""
+
+msgctxt "AdvRow"
+msgid "LIVE"
+msgstr ""
+
+msgctxt "AdvRow"
+msgid "Failed"
+msgstr ""
+
+msgctxt "percent done"
+msgid "{0}%"
 msgstr ""
 
 msgctxt "AdvRow"
@@ -979,10 +975,6 @@ msgstr ""
 
 msgctxt "AdvSettings"
 msgid "General"
-msgstr ""
-
-msgctxt "AdvSettings"
-msgid "Back"
 msgstr ""
 
 msgctxt "AdvSettings"
@@ -1444,6 +1436,10 @@ msgctxt "Sidebar"
 msgid "Sources"
 msgstr ""
 
+msgctxt "Sidebar"
+msgid "Settings"
+msgstr ""
+
 msgctxt "TorrentPicker"
 msgid "{n} file selected · {0}"
 msgid_plural "{n} files selected · {0}"
@@ -1603,6 +1599,10 @@ msgid "Enter a speed from 0.1 to 10000 MB/s."
 msgstr ""
 
 msgctxt "AdvWide"
+msgid "Downloads"
+msgstr ""
+
+msgctxt "AdvWide"
 msgid "Search downloads"
 msgstr ""
 
@@ -1615,7 +1615,7 @@ msgid "Add a download"
 msgstr ""
 
 msgctxt "AdvWide"
-msgid "Settings"
+msgid "New download"
 msgstr ""
 
 msgctxt "AdvWide"
@@ -1661,6 +1661,10 @@ msgstr ""
 
 msgctxt "ToolsBanner"
 msgid "Getting video tools…"
+msgstr ""
+
+msgctxt "ScreenBar"
+msgid "Back"
 msgstr ""
 
 msgctxt "Countdown"
@@ -1717,18 +1721,6 @@ msgstr ""
 
 msgctxt "Downloads"
 msgid "About {0} h left"
-msgstr ""
-
-msgctxt "Downloads"
-msgid "Downloads"
-msgstr ""
-
-msgctxt "Downloads"
-msgid "Close the link field"
-msgstr ""
-
-msgctxt "Downloads"
-msgid "Add a download"
 msgstr ""
 
 msgctxt "Downloads"

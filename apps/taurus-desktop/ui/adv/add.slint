@@ -4,11 +4,12 @@
 // sign-in; torrents: the file picker and sharing), where it goes, and
 // "Start immediately".
 import { Theme } from "../theme.slint";
+import { ScreenBar, BarFooter } from "../chrome.slint";
 import { Icon } from "../icons.slint";
 import { AdvAddVm } from "../types.slint";
 import { Messages } from "../messages.slint";
 import {
-    IconButton, TextButton, KindBadge, LoadingDots, Card, Segmented, Segment, CheckBox, LineEdit, TextEdit,
+    TextButton, KindBadge, LoadingDots, Card, Segmented, Segment, CheckBox, LineEdit, TextEdit,
 } from "../widgets.slint";
 import { ScrollView } from "std-widgets.slint";
 import { SectionLabel } from "detail_parts.slint";
@@ -34,7 +35,7 @@ component FileOptions inherits VerticalLayout {
     spacing: 12px;
 
     if root.vm.needs-user: Rectangle {
-        background: Theme.accent-soft;
+        background: Theme.sel;
         border-radius: 12px;
         VerticalLayout {
             padding: 12px;
@@ -214,33 +215,19 @@ export component AdvAdd inherits FocusScope {
     }
 
     VerticalLayout {
-        HorizontalLayout {
-            padding: 14px;
-            padding-left: 20px;
-            spacing: 8px;
-            IconButton {
-                icon: "back";
-                label: @tr("Back");
-                clicked => {
-                    root.password = "";
-                    root.cancelled();
-                }
-            }
-            Text {
-                text: @tr("New download");
-                vertical-alignment: center;
-                font-size: 20px;
-                font-weight: 700;
-                color: Theme.text;
+        ScreenBar {
+            title: @tr("New download");
+            back-clicked => {
+                root.password = "";
+                root.cancelled();
             }
         }
 
         ScrollView {
             vertical-stretch: 1;
             VerticalLayout {
-                padding: 20px;
-                padding-top: 0;
-                spacing: 14px;
+                padding: 12px;
+                spacing: 12px;
                 alignment: start;
 
                 if root.vm.loading: Card {
@@ -261,7 +248,7 @@ export component AdvAdd inherits FocusScope {
                 }
 
                 if root.page-url != "" && !root.shown: Rectangle {
-                    background: Theme.accent-soft;
+                    background: Theme.sel;
                     border-radius: 12px;
                     HorizontalLayout {
                         padding: 12px;
@@ -401,7 +388,7 @@ export component AdvAdd inherits FocusScope {
                 }
 
                 if root.shown && root.vm.duplicate: Rectangle {
-                    background: Theme.accent-soft;
+                    background: Theme.sel;
                     border-radius: 12px;
                     HorizontalLayout {
                         padding: 14px;
@@ -515,8 +502,8 @@ export component AdvAdd inherits FocusScope {
         refusal := VerticalLayout {
             vertical-stretch: 0;
             if root.vm.refused != "": HorizontalLayout {
-                padding-left: 20px;
-                padding-right: 20px;
+                padding-left: 12px;
+                padding-right: 12px;
                 padding-top: 8px;
                 Text {
                     text: Messages.simple(root.vm.refused);
@@ -529,19 +516,18 @@ export component AdvAdd inherits FocusScope {
             }
         }
 
-        HorizontalLayout {
-            padding: 20px;
-            padding-top: 10px;
-            alignment: end;
-            spacing: 10px;
+        BarFooter {
             if root.vm.busy: Text {
                 text: @tr("Adding…");
                 vertical-alignment: center;
-                horizontal-stretch: 1;
                 font-size: 12px;
                 color: Theme.muted;
             }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
             TextButton {
+                kind: "plain";
                 text: root.failed ? @tr("Close") : @tr("Cancel");
                 clicked => {
                     root.password = "";
@@ -558,6 +544,7 @@ export component AdvAdd inherits FocusScope {
             if root.options: TextButton {
                 text: root.vm.live != "" ? @tr("Record") : @tr("Download");
                 kind: "primary";
+                icon: root.vm.live != "" ? "" : "down";
                 enabled: root.ready;
                 clicked => {
                     root.confirmed(root.start-now);

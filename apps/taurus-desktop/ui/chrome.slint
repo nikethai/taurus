@@ -1,0 +1,96 @@
+// The canvas's window chrome: a screen's header bar (title centered,
+// Back on the left, an action on the right) and its footer bar.
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+import { Pressable } from "widgets.slint";
+
+// Square icon button of the bars: muted icon, hover tint.
+export component BarButton inherits Pressable {
+    in property <string> icon;
+    in property <string> label;
+    in property <length> icon-size: 17px;
+
+    width: 32px;
+    height: 32px;
+    border-radius: 7px;
+    background: root.pressed ? Theme.track : root.hovered ? Theme.hover : transparent;
+    accessible-label: label;
+
+    Icon {
+        name: root.icon;
+        width: root.icon-size;
+        height: root.icon-size;
+        stroke: Theme.muted;
+        stroke-width: 1.8px;
+    }
+}
+
+// 44 px header: title centered over the whole bar. `back` shows Back
+// on the left; children go on the right.
+export component ScreenBar inherits Rectangle {
+    in property <string> title;
+    in property <bool> back: true;
+    callback back-clicked();
+
+    height: 44px;
+    background: Theme.toolbar;
+
+    Text {
+        x: 48px;
+        width: parent.width - 96px;
+        text: root.title;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-size: 13px;
+        font-weight: 600;
+        color: Theme.text;
+        overflow: elide;
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 2px;
+        alignment: space-between;
+        VerticalLayout {
+            alignment: center;
+            if root.back: BarButton {
+                icon: "back";
+                label: @tr("Back");
+                icon-size: 16px;
+                clicked => {
+                    root.back-clicked();
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 2px;
+            @children
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.line;
+    }
+}
+
+// Footer bar: tinted, a line on top, 10/12 padding.
+export component BarFooter inherits Rectangle {
+    background: Theme.toolbar;
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.line;
+    }
+    HorizontalLayout {
+        padding-top: 10px;
+        padding-bottom: 10px;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
+        @children
+    }
+}

@@ -3,8 +3,9 @@
 // sections on the left and the chosen one beside it. What it shows and
 // asks of the app goes through `SettingsUi`.
 import { Theme } from "../theme.slint";
+import { ScreenBar, BarFooter } from "../chrome.slint";
 import { ScrollView } from "std-widgets.slint";
-import { IconButton, Pressable } from "../widgets.slint";
+import { Pressable } from "../widgets.slint";
 import { SettingsUi } from "settings_ui.slint";
 import { DownloadsSection, TorrentsSection, NetworkSection } from "settings_sections.slint";
 import { EnginesSection, AppearanceSection, PrivacySection, GeneralSection } from "settings_more.slint";
@@ -15,7 +16,7 @@ component SectionItem inherits Pressable {
 
     height: 34px;
     border-radius: 8px;
-    background: selected ? Theme.sel : root.hovered ? Theme.chip : transparent;
+    background: selected ? Theme.sel : root.hovered ? Theme.hover : transparent;
     accessible-role: list-item;
     accessible-label: text;
     accessible-item-selectable: true;
@@ -28,9 +29,21 @@ component SectionItem inherits Pressable {
         vertical-alignment: center;
         overflow: elide;
         font-size: 13px;
-        font-weight: root.selected ? 600 : 400;
-        color: Theme.text;
+        font-weight: root.selected ? 600 : 500;
+        color: root.selected ? Theme.accent-ink : Theme.text;
         accessible-role: none;
+    }
+}
+
+// A section's group of settings on a panel.
+component SettingsCard inherits Rectangle {
+    background: Theme.panel;
+    border-radius: 11px;
+    border-width: 1px;
+    border-color: Theme.line;
+    VerticalLayout {
+        padding: 12px;
+        @children
     }
 }
 
@@ -69,35 +82,24 @@ export component AdvSettings inherits FocusScope {
     }
 
     VerticalLayout {
-        padding-top: 14px;
-
-        HorizontalLayout {
-            padding-left: 20px;
-            padding-right: 20px;
-            padding-bottom: 8px;
-            spacing: 8px;
-            IconButton {
-                icon: "back";
-                label: @tr("Back");
-                clicked => {
-                    SettingsUi.leave();
-                    root.back();
-                }
-            }
-            Text {
-                text: @tr("Settings");
-                vertical-alignment: center;
-                font-size: 20px;
-                font-weight: 700;
-                color: Theme.text;
+        ScreenBar {
+            title: @tr("Settings");
+            back-clicked => {
+                SettingsUi.leave();
+                root.back();
             }
         }
 
         HorizontalLayout {
             vertical-stretch: 1;
             if root.wide: Rectangle {
-                width: 200px;
-                background: Theme.chip;
+                width: 220px;
+                background: Theme.toolbar;
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    background: Theme.line;
+                }
                 VerticalLayout {
                     padding: 12px;
                     spacing: 2px;
@@ -115,19 +117,20 @@ export component AdvSettings inherits FocusScope {
             ScrollView {
                 horizontal-stretch: 1;
                 VerticalLayout {
-                    padding-left: 20px;
-                    padding-right: 20px;
-                    padding-top: 8px;
-                    padding-bottom: 24px;
-                    spacing: 28px;
+                    // Wide: a column of at most 720 px.
+                    padding-left: root.wide ? 32px : 12px;
+                    padding-right: root.wide ? max(32px, root.width - 220px - 32px - 720px) : 12px;
+                    padding-top: root.wide ? 24px : 14px;
+                    padding-bottom: 20px;
+                    spacing: 18px;
                     alignment: start;
-                    if root.shows("downloads"): DownloadsSection { }
-                    if root.shows("torrents"): TorrentsSection { }
-                    if root.shows("network"): NetworkSection { }
-                    if root.shows("engines"): EnginesSection { }
-                    if root.shows("appearance"): AppearanceSection { }
-                    if root.shows("privacy"): PrivacySection { }
-                    if root.shows("general"): GeneralSection { }
+                    if root.shows("downloads"): SettingsCard { DownloadsSection { } }
+                    if root.shows("torrents"): SettingsCard { TorrentsSection { } }
+                    if root.shows("network"): SettingsCard { NetworkSection { } }
+                    if root.shows("engines"): SettingsCard { EnginesSection { } }
+                    if root.shows("appearance"): SettingsCard { AppearanceSection { } }
+                    if root.shows("privacy"): SettingsCard { PrivacySection { } }
+                    if root.shows("general"): SettingsCard { GeneralSection { } }
                 }
             }
         }

@@ -251,12 +251,8 @@ export component AppWindow inherits Window {
                 padding-top: 12px;
                 Banner {
                     banner: root.banner;
-                    download => {
-                        root.banner-download();
-                    }
-                    dismiss => {
-                        root.banner-dismiss();
-                    }
+                    download => { root.banner-download(); }
+                    dismiss => { root.banner-dismiss(); }
                 }
             }
 
@@ -273,15 +269,16 @@ export component AppWindow inherits Window {
                         tab <=> root.adv-tab;
                         speed-down: root.speed-down-text;
                         speed-up: root.speed-up-text;
+                        all-paused: root.summary.all-paused;
+                        pause-all => { root.pause-all(); }
+                        resume-all => { root.resume-all(); }
                         tab-changed(i) => { root.tab-changed(i); }
                         select(id) => { root.select(id); }
                         link-entered(link) => { root.link-entered(link); }
                         open-whendone => { root.open-whendone(); }
                         open-batch => { root.open-batch(); }
                         open-grab => { root.open-grab(""); }
-                        open-settings => {
-                            root.screen = Screen.settings;
-                        }
+                        open-settings => { root.screen = Screen.settings; }
                         pause(id) => { root.pause(id); }
                         resume(id) => { root.resume(id); }
                         retry(id) => { root.retry(id); }
@@ -298,6 +295,9 @@ export component AppWindow inherits Window {
                             speed-down: root.speed-down-text;
                             speed-up: root.speed-up-text;
                             search-text <=> root.search-text;
+                            all-paused: root.summary.all-paused;
+                            pause-all => { root.pause-all(); }
+                            resume-all => { root.resume-all(); }
                             filter-changed(key) => { root.filter-changed(key); }
                             search-changed(text) => { root.search-changed(text); }
                             select(id) => { root.select(id); }
@@ -305,9 +305,7 @@ export component AppWindow inherits Window {
                             open-whendone => { root.open-whendone(); }
                             open-batch => { root.open-batch(); }
                             open-grab => { root.open-grab(""); }
-                            open-settings => {
-                                root.screen = Screen.settings;
-                            }
+                            open-settings => { root.screen = Screen.settings; }
                             pause(id) => { root.pause(id); }
                             resume(id) => { root.resume(id); }
                             retry(id) => { root.retry(id); }
@@ -333,54 +331,26 @@ export component AppWindow inherits Window {
                             back => {
                                 root.select(-1);
                             }
-                            pause(id) => {
-                                root.pause(id);
-                            }
-                            resume(id) => {
-                                root.resume(id);
-                            }
-                            retry(id) => {
-                                root.retry(id);
-                            }
-                            open-file(id) => {
-                                root.open-file(id);
-                            }
-                            reveal(id) => {
-                                root.reveal(id);
-                            }
-                            stop-recording(id) => {
-                                root.stop-recording(id);
-                            }
-                            copy-link(id) => {
-                                root.copy-link(id);
-                            }
-                            convert(id, preset) => {
-                                root.convert(id, preset);
-                            }
-                            ask-remove(id) => {
-                                root.ask-remove(id);
-                            }
-                            retry-with-browser(id, browser) => {
-                                root.retry-with-browser(id, browser);
-                            }
-                            ask-password(id) => {
-                                root.ask-password(id);
-                            }
-                            choose-files(id) => {
-                                root.choose-files(id);
-                            }
-                            set-override(id, field, value) => {
-                                root.set-override(id, field, value);
-                            }
+                            pause(id) => { root.pause(id); }
+                            resume(id) => { root.resume(id); }
+                            retry(id) => { root.retry(id); }
+                            open-file(id) => { root.open-file(id); }
+                            reveal(id) => { root.reveal(id); }
+                            stop-recording(id) => { root.stop-recording(id); }
+                            copy-link(id) => { root.copy-link(id); }
+                            convert(id, preset) => { root.convert(id, preset); }
+                            ask-remove(id) => { root.ask-remove(id); }
+                            retry-with-browser(id, browser) => { root.retry-with-browser(id, browser); }
+                            ask-password(id) => { root.ask-password(id); }
+                            choose-files(id) => { root.choose-files(id); }
+                            set-override(id, field, value) => { root.set-override(id, field, value); }
                         }
                     }
                 }
 
                 if !root.advanced-list && root.screen == Screen.welcome: Welcome {
                     offer-copied-links: root.settings.offer-copied-links;
-                    link-entered(link) => {
-                        root.link-entered(link);
-                    }
+                    link-entered(link) => { root.link-entered(link); }
                     open-settings => {
                         root.screen = Screen.settings;
                     }
@@ -394,49 +364,25 @@ export component AppWindow inherits Window {
                     tools-banner: root.tools-banner;
                     tools-percent: root.tools-percent;
                     tools-error: root.tools-error;
-                    link-entered(link) => {
-                        root.link-entered(link);
-                    }
+                    link-entered(link) => { root.link-entered(link); }
                     open-settings => {
                         root.screen = Screen.settings;
                     }
-                    pause(id) => {
-                        root.pause(id);
-                    }
-                    resume(id) => {
-                        root.resume(id);
-                    }
-                    retry(id) => {
-                        root.retry(id);
-                    }
-                    sign-in(id) => {
-                        root.ask-password(id);
-                    }
-                    stop-recording(id) => {
-                        root.stop-recording(id);
-                    }
-                    open-file(id) => {
-                        root.open-file(id);
-                    }
-                    reveal(id) => {
-                        root.reveal(id);
-                    }
-                    remove(id) => {
-                        root.remove(id);
-                    }
-                    pause-all => {
-                        root.pause-all();
-                    }
-                    resume-all => {
-                        root.resume-all();
-                    }
+                    pause(id) => { root.pause(id); }
+                    resume(id) => { root.resume(id); }
+                    retry(id) => { root.retry(id); }
+                    sign-in(id) => { root.ask-password(id); }
+                    stop-recording(id) => { root.stop-recording(id); }
+                    open-file(id) => { root.open-file(id); }
+                    reveal(id) => { root.reveal(id); }
+                    remove(id) => { root.remove(id); }
+                    pause-all => { root.pause-all(); }
+                    resume-all => { root.resume-all(); }
                 }
 
                 if root.screen == Screen.add && root.layout == "simple": Add {
                     add: root.add;
-                    confirmed => {
-                        root.add-confirmed();
-                    }
+                    confirmed => { root.add-confirmed(); }
                     cancelled => {
                         root.add-cancelled();
                         root.home();
@@ -445,18 +391,10 @@ export component AppWindow inherits Window {
                         root.add-cancelled();
                         root.screen = Screen.downloads;
                     }
-                    choose-folder => {
-                        root.choose-folder();
-                    }
-                    media-mode-changed(mode) => {
-                        root.media-mode-changed(mode);
-                    }
-                    quality-cycled => {
-                        root.quality-cycled();
-                    }
-                    playlist-confirmed => {
-                        root.playlist-confirmed();
-                    }
+                    choose-folder => { root.choose-folder(); }
+                    media-mode-changed(mode) => { root.media-mode-changed(mode); }
+                    quality-cycled => { root.quality-cycled(); }
+                    playlist-confirmed => { root.playlist-confirmed(); }
                 }
 
                 if root.screen == Screen.add && root.layout != "simple": AdvAdd {
@@ -469,18 +407,10 @@ export component AppWindow inherits Window {
                     is-macos: root.is-macos;
                     tools-banner: root.tools-banner;
                     password <=> root.adv-password;
-                    field-changed(field, value) => {
-                        root.adv-field-changed(field, value);
-                    }
-                    toggle-file(i) => {
-                        root.adv-toggle-file(i);
-                    }
-                    toggle-all(on) => {
-                        root.adv-toggle-all(on);
-                    }
-                    toggle-group(path) => {
-                        root.adv-toggle-group(path);
-                    }
+                    field-changed(field, value) => { root.adv-field-changed(field, value); }
+                    toggle-file(i) => { root.adv-toggle-file(i); }
+                    toggle-all(on) => { root.adv-toggle-all(on); }
+                    toggle-group(path) => { root.adv-toggle-group(path); }
                     confirmed(start-now) => {
                         root.adv-add-confirmed(start-now);
                     }
@@ -492,9 +422,7 @@ export component AppWindow inherits Window {
                         root.add-cancelled();
                         root.screen = Screen.downloads;
                     }
-                    choose-folder => {
-                        root.choose-folder();
-                    }
+                    choose-folder => { root.choose-folder(); }
                 }
 
                 if root.screen == Screen.grab: AdvGrab {
@@ -505,12 +433,8 @@ export component AppWindow inherits Window {
                 }
 
                 if root.screen == Screen.batch: AdvBatch {
-                    find-files(url) => {
-                        root.open-grab(url);
-                    }
-                    back => {
-                        root.home();
-                    }
+                    find-files(url) => { root.open-grab(url); }
+                    back => { root.home(); }
                 }
 
                 if root.screen == Screen.settings && root.layout != "simple": AdvSettings {
@@ -520,15 +444,9 @@ export component AppWindow inherits Window {
 
                 if root.screen == Screen.settings && root.layout == "simple": Settings {
                     settings: root.settings;
-                    changed(key, value) => {
-                        root.setting-changed(key, value);
-                    }
-                    choose-folder => {
-                        root.choose-folder();
-                    }
-                    back => {
-                        root.home();
-                    }
+                    changed(key, value) => { root.setting-changed(key, value); }
+                    choose-folder => { root.choose-folder(); }
+                    back => { root.home(); }
                 }
             }
 
@@ -537,9 +455,7 @@ export component AppWindow inherits Window {
                 padding-top: 0;
                 Countdown {
                     countdown: root.countdown;
-                    cancel => {
-                        root.cancel-countdown();
-                    }
+                    cancel => { root.cancel-countdown(); }
                 }
             }
         }
@@ -565,15 +481,9 @@ export component AppWindow inherits Window {
         width: root.width;
         height: root.height;
         dialog: root.files-dialog;
-        toggle-file(i) => {
-            root.adv-toggle-file(i);
-        }
-        toggle-all(on) => {
-            root.adv-toggle-all(on);
-        }
-        toggle-group(path) => {
-            root.adv-toggle-group(path);
-        }
+        toggle-file(i) => { root.adv-toggle-file(i); }
+        toggle-all(on) => { root.adv-toggle-all(on); }
+        toggle-group(path) => { root.adv-toggle-group(path); }
         confirm(id, chosen) => {
             root.files-chosen(id, chosen);
             root.files-dialog.visible = false;
@@ -591,9 +501,7 @@ export component AppWindow inherits Window {
         dialog: root.password-dialog;
         user <=> root.password-user;
         password <=> root.password-text;
-        submit(id, user, password) => {
-            root.submit-password(id, user, password);
-        }
+        submit(id, user, password) => { root.submit-password(id, user, password); }
         cancel => {
             root.password-dialog.visible = false;
             root.password-user = "";

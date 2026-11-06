@@ -4,7 +4,8 @@
 import { Theme } from "../theme.slint";
 import { AdvRowVm } from "../types.slint";
 import { RowText } from "../row_text.slint";
-import { IconButton, TextButton, KindBadge, ProgressBar, Pressable } from "../widgets.slint";
+import { KindBadge, ProgressBar, Pressable } from "../widgets.slint";
+import { Icon } from "../icons.slint";
 
 // Where a download comes from: "HTTP", "Torrent", "yt-dlp", "Convert".
 export component SourceChip inherits Rectangle {
@@ -21,24 +22,44 @@ export component SourceChip inherits Rectangle {
         return @tr("HTTP");
     }
 
+    // The kind whose colors the chip takes.
+    property <string> tint: source == "Torrent" ? "magnet" : source == "yt-dlp" ? "media"
+        : source == "Convert" ? "file" : "disc";
+
     horizontal-stretch: 0;
-    height: 18px;
-    border-radius: 5px;
-    background: Theme.chip;
-    border-width: 1px;
-    border-color: Theme.line;
+    height: 16px;
+    border-radius: 4px;
+    background: Theme.kind-bg(tint);
     HorizontalLayout {
-        padding-left: 6px;
-        padding-right: 6px;
+        padding-left: 5px;
+        padding-right: 5px;
         Text {
             text: root.label(root.source);
             vertical-alignment: center;
-            font-size: 10px;
+            font-size: 10.5px;
             font-weight: 600;
-            color: Theme.muted;
+            color: Theme.kind-fg(root.tint);
             accessible-role: text;
             accessible-label: self.text;
         }
+    }
+}
+
+// The row's action: a quiet 32 px icon button.
+component RowAction inherits Pressable {
+    in property <string> icon;
+    in property <string> label;
+
+    width: 32px;
+    height: 32px;
+    border-radius: 7px;
+    background: self.pressed ? Theme.track : self.hovered ? Theme.hover : transparent;
+    accessible-label: label;
+    Icon {
+        name: root.icon;
+        width: 16px;
+        height: 16px;
+        stroke: Theme.muted;
     }
 }
 
@@ -53,13 +74,14 @@ export component AdvRow inherits Pressable {
 
     property <string> state: item.row.state;
     property <bool> active: state == "downloading" || state == "recording";
-    property <bool> shows-bar: state != "done" && state != "failed" && state != "seeding"
-        && (item.row.progress >= 0 || active);
+    property <bool> finished: state == "done" || state == "seeding";
+    property <bool> shows-bar: finished || item.row.progress >= 0 || active;
+    property <bool> alarm: state == "failed" || state == "recording";
 
     min-height: layout.min-height;
     preferred-height: layout.preferred-height;
     border-radius: 10px;
-    background: item.selected ? Theme.sel : root.hovered ? Theme.chip : transparent;
+    background: item.selected ? Theme.sel : root.hovered ? Theme.hover : transparent;
     accessible-role: list-item;
     accessible-label: item.row.name;
     accessible-item-selectable: true;
@@ -70,11 +92,14 @@ export component AdvRow inherits Pressable {
     }
 
     layout := HorizontalLayout {
-        padding: 8px;
+        padding-top: 9px;
+        padding-bottom: 9px;
+        padding-left: 8px;
+        padding-right: 4px;
         spacing: 10px;
 
         VerticalLayout {
-            alignment: start;
+            alignment: center;
             horizontal-stretch: 0;
             KindBadge {
                 kind: root.item.row.kind;
@@ -84,38 +109,53 @@ export component AdvRow inherits Pressable {
 
         VerticalLayout {
             alignment: center;
-            spacing: 4px;
+            spacing: 5px;
             horizontal-stretch: 1;
             HorizontalLayout {
-                spacing: 6px;
+                spacing: 8px;
                 Text {
                     text: root.item.row.name;
                     color: Theme.text;
                     font-size: 13px;
-                    font-weight: 600;
+                    font-weight: 500;
                     overflow: elide;
                     horizontal-stretch: 1;
                     accessible-role: none;
                 }
+                if root.state == "recording" || root.state == "failed"
+                    || ((root.state == "downloading" || root.state == "paused") && root.item.row.progress >= 0): Text {
+                    text: root.state == "recording" ? @tr("LIVE")
+                        : root.state == "failed" ? @tr("Failed")
+                        : @tr("percent done" => "{0}%", floor(root.item.row.progress * 100));
+                    color: root.alarm ? Theme.err : Theme.text;
+                    font-size: 12px;
+                    font-weight: 600;
+                    horizontal-stretch: 0;
+                    accessible-role: none;
+                }
+            }
+            if root.shows-bar: ProgressBar {
+                thickness: 3px;
+                progress: root.finished || root.state == "recording" ? 1 : root.item.row.progress;
+                bar-color: root.alarm ? Theme.err
+                    : root.finished ? Theme.ok
+                    : root.state == "downloading" ? Theme.bar(root.item.row.kind)
+                    : root.state == "paused" ? Theme.muted : Theme.track;
+                moving: root.active;
+            }
+            HorizontalLayout {
+                spacing: 6px;
                 VerticalLayout {
                     alignment: center;
                     SourceChip {
                         source: root.item.source;
                     }
                 }
-            }
-            if root.shows-bar: ProgressBar {
-                progress: root.item.row.progress;
-                bar-color: root.state == "paused" ? Theme.muted : Theme.bar(root.item.row.kind);
-                moving: root.active;
-            }
-            HorizontalLayout {
-                spacing: 8px;
                 Text {
                     text: RowText.status(root.item.row);
-                    color: root.state == "failed" ? Theme.err
-                        : root.state == "recording" ? Theme.kind-fg("live") : Theme.muted;
-                    font-size: 11px;
+                    color: root.alarm ? Theme.err : Theme.muted;
+                    font-size: 11.5px;
+                    vertical-alignment: center;
                     overflow: elide;
                     horizontal-stretch: 1;
                     accessible-role: text;
@@ -124,7 +164,8 @@ export component AdvRow inherits Pressable {
                 if root.item.speed-text != "": Text {
                     text: @tr("↓ {0}", root.item.speed-text);
                     color: Theme.muted;
-                    font-size: 11px;
+                    font-size: 11.5px;
+                    vertical-alignment: center;
                     horizontal-stretch: 0;
                     accessible-role: text;
                     accessible-label: self.text;
@@ -135,43 +176,38 @@ export component AdvRow inherits Pressable {
         VerticalLayout {
             alignment: center;
             horizontal-stretch: 0;
-            if root.state == "failed": IconButton {
+            if root.state == "failed": RowAction {
                 icon: "retry";
                 label: @tr("Try again");
-                size: 30px;
                 clicked => {
                     root.retry(root.item.row.id);
                 }
             }
-            if root.state == "done": IconButton {
+            if root.state == "done": RowAction {
                 icon: "file";
                 label: @tr("Open");
-                size: 30px;
                 clicked => {
                     root.open-file(root.item.row.id);
                 }
             }
-            if root.state == "paused": IconButton {
+            if root.state == "paused": RowAction {
                 icon: "play";
                 label: @tr("Resume");
-                size: 30px;
                 clicked => {
                     root.resume(root.item.row.id);
                 }
             }
-            if root.state == "recording": IconButton {
+            if root.state == "recording": RowAction {
                 icon: "stop";
                 label: @tr("Stop");
-                size: 30px;
                 clicked => {
                     root.stop-recording(root.item.row.id);
                 }
             }
             if root.state == "downloading" || root.state == "waiting"
-                || root.state == "queued" || root.state == "seeding": IconButton {
+                || root.state == "queued" || root.state == "seeding": RowAction {
                 icon: "pause";
                 label: @tr("Pause");
-                size: 30px;
                 clicked => {
                     root.pause(root.item.row.id);
                 }

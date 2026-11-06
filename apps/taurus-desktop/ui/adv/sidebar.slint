@@ -3,15 +3,19 @@
 import { Theme } from "../theme.slint";
 import { FilterCountVm } from "../types.slint";
 import { Pressable, SectionTitle } from "../widgets.slint";
+import { Icon } from "../icons.slint";
 
-component SidebarItem inherits Pressable {
+export component SidebarItem inherits Pressable {
     in property <string> text;
-    in property <int> count;
+    in property <int> count: -1;
     in property <bool> selected;
+    in property <string> icon;
+    // Sources take their kind's color.
+    in property <string> tint;
 
-    height: 32px;
-    border-radius: 8px;
-    background: selected ? Theme.sel : root.hovered ? Theme.chip : transparent;
+    height: 34px;
+    border-radius: 7px;
+    background: selected ? Theme.sel : root.hovered ? Theme.hover : transparent;
     accessible-role: list-item;
     accessible-label: text;
     accessible-value: count;
@@ -21,18 +25,27 @@ component SidebarItem inherits Pressable {
     HorizontalLayout {
         padding-left: 10px;
         padding-right: 10px;
-        spacing: 8px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                name: root.icon;
+                width: 16px;
+                height: 16px;
+                stroke: root.tint != "" ? Theme.kind-fg(root.tint) : root.selected ? Theme.accent-ink : Theme.text;
+            }
+        }
         Text {
             text: root.text;
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
             font-size: 13px;
-            font-weight: root.selected ? 600 : 400;
-            color: Theme.text;
+            font-weight: root.selected ? 600 : 500;
+            color: root.selected ? Theme.accent-ink : Theme.text;
             accessible-role: none;
         }
-        Text {
+        if root.count >= 0: Text {
             text: root.count;
             vertical-alignment: center;
             font-size: 12px;
@@ -46,6 +59,28 @@ export component Sidebar inherits Rectangle {
     in property <[FilterCountVm]> counts;
     in-out property <string> filter;
     callback filter-changed(string);
+    callback open-settings();
+
+    pure function icon(key: string) -> string {
+        if (key == "downloading") {
+            return "arrow-down";
+        } else if (key == "queued") {
+            return "list";
+        } else if (key == "paused") {
+            return "pause";
+        } else if (key == "completed") {
+            return "check";
+        } else if (key == "failed") {
+            return "alert";
+        } else if (key == "http") {
+            return "globe";
+        } else if (key == "torrents") {
+            return "magnet";
+        } else if (key == "media") {
+            return "media";
+        }
+        return "inbox";
+    }
 
     pure function label(key: string) -> string {
         if (key == "downloading") {
@@ -68,32 +103,78 @@ export component Sidebar inherits Rectangle {
         return @tr("All");
     }
 
-    background: Theme.chip;
+    background: Theme.toolbar;
 
     VerticalLayout {
         padding: 12px;
         padding-top: 16px;
         spacing: 2px;
-        alignment: start;
-        SectionTitle {
-            height: 22px;
-            text: @tr("Library");
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-bottom: 14px;
+            spacing: 10px;
+            alignment: start;
+            Rectangle {
+                width: 28px;
+                height: 28px;
+                border-radius: 8px;
+                background: Theme.accent-strong;
+                Icon {
+                    name: "down";
+                    width: 16px;
+                    height: 16px;
+                    stroke: Theme.accent-text;
+                }
+            }
+            Text {
+                text: "Hyades";
+                vertical-alignment: center;
+                font-size: 15px;
+                font-weight: 700;
+                color: Theme.text;
+                accessible-role: none;
+            }
+        }
+        HorizontalLayout {
+            padding-left: 10px;
+            SectionTitle {
+                height: 22px;
+                font-size: 11px;
+                text: @tr("Library");
+            }
         }
         // Counts come in sidebar order; Sources start at "http".
         for c in root.counts: VerticalLayout {
             spacing: 2px;
-            if c.key == "http": SectionTitle {
-                height: 34px;
-                text: @tr("Sources");
+            if c.key == "http": HorizontalLayout {
+                padding-left: 10px;
+                SectionTitle {
+                    height: 40px;
+                    font-size: 11px;
+                    text: @tr("Sources");
+                }
             }
             SidebarItem {
                 text: root.label(c.key);
+                icon: root.icon(c.key);
+                tint: c.key == "http" ? "disc" : c.key == "torrents" ? "magnet" : c.key == "media" ? "media" : "";
                 count: c.count;
                 selected: root.filter == c.key;
                 clicked => {
                     root.filter = c.key;
                     root.filter-changed(c.key);
                 }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+        }
+        SidebarItem {
+            text: @tr("Settings");
+            icon: "settings";
+            accessible-role: button;
+            clicked => {
+                root.open-settings();
             }
         }
     }

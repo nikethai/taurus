@@ -67,7 +67,7 @@ export component Row inherits Rectangle {
                 text: root.item.name;
                 color: Theme.text;
                 font-size: 14px;
-                font-weight: 600;
+                font-weight: 500;
                 overflow: elide;
             }
             if root.shows-bar: ProgressBar {
@@ -131,6 +131,7 @@ export component Row inherits Rectangle {
                 }
                 if root.item.state == "paused": IconButton {
                     icon: "play";
+                    outlined: true;
                     label: @tr("Resume");
                     clicked => {
                         root.resume(root.item.id);
@@ -145,6 +146,7 @@ export component Row inherits Rectangle {
                 if root.item.state == "downloading" || root.item.state == "waiting"
                     || root.item.state == "queued" || root.item.state == "seeding": IconButton {
                     icon: "pause";
+                    outlined: true;
                     label: @tr("Pause");
                     clicked => {
                         root.pause(root.item.id);

@@ -3,9 +3,10 @@
 // window, with Back. Segment map (web downloads), media steps, numbers,
 // torrent files and sharing rules, and the actions that fit the download.
 import { Theme } from "../theme.slint";
+import { ScreenBar, BarFooter } from "../chrome.slint";
 import { DetailVm } from "../types.slint";
 import { RowText } from "../row_text.slint";
-import { IconButton, TextButton, KindBadge, ProgressBar } from "../widgets.slint";
+import { TextButton, KindBadge, ProgressBar } from "../widgets.slint";
 import { ComboBox, ListView, ScrollView } from "std-widgets.slint";
 import { SourceChip } from "row.slint";
 import { SegmentMap, Pair, SectionLabel } from "detail_parts.slint";
@@ -171,22 +172,10 @@ export component DetailPane inherits FocusScope {
     }
 
     if root.detail.visible: VerticalLayout {
-        if root.show-back: HorizontalLayout {
-            padding: 8px;
-            spacing: 4px;
-            IconButton {
-                icon: "back";
-                label: @tr("Back");
-                clicked => {
-                    root.back();
-                }
-            }
-            Text {
-                text: @tr("Details");
-                vertical-alignment: center;
-                font-size: 16px;
-                font-weight: 700;
-                color: Theme.text;
+        if root.show-back: ScreenBar {
+            title: @tr("Details");
+            back-clicked => {
+                root.back();
             }
         }
 
@@ -275,7 +264,7 @@ export component DetailPane inherits FocusScope {
                     for s in root.detail.steps: Rectangle {
                         height: 22px;
                         border-radius: 6px;
-                        background: s.state == "current" ? Theme.accent-soft : Theme.chip;
+                        background: s.state == "current" ? Theme.sel : Theme.chip;
                         HorizontalLayout {
                             padding-left: 8px;
                             padding-right: 8px;
@@ -286,7 +275,7 @@ export component DetailPane inherits FocusScope {
                                 font-weight: s.state == "current" ? 600 : 400;
                                 color: s.state == "done" ? Theme.ok
                                     : s.state == "failed" ? Theme.err
-                                    : s.state == "current" ? Theme.accent-strong : Theme.muted;
+                                    : s.state == "current" ? Theme.accent-ink : Theme.muted;
                                 accessible-role: text;
                                 accessible-label: self.text;
                             }

@@ -75,7 +75,7 @@ export component ToolsBanner inherits Rectangle {
     // Why it failed: ErrorKind::as_str(), "" when unknown.
     in property <string> error-kind;
 
-    background: state == "failed" ? Theme.kind-bg("live") : Theme.accent-soft;
+    background: state == "failed" ? Theme.kind-bg("live") : Theme.sel;
     border-radius: 10px;
     accessible-role: AccessibleRole.banner;
 

@@ -116,6 +116,9 @@ fn theme_defaults(ui: &AppWindow) {
     assert_eq!(theme.get_bg().color(), color(0xFB, 0xFB, 0xFC));
     pick("dark");
     assert_eq!(theme.get_bg().color(), color(0x1C, 0x1C, 0x1F));
+    assert_eq!(theme.get_accent_base().color(), color(0xFF, 0x7A, 0x2E));
+    assert_eq!(theme.get_accent_strong().color(), color(0xC2, 0x41, 0x0C));
+    pick("light");
     assert_eq!(theme.get_accent_base().color(), color(0xE8, 0x59, 0x0C));
     pick("system");
 }
@@ -1938,15 +1941,21 @@ fn http_detail_shows_cells(ui: &AppWindow, ctx: &Ctx, id: JobId) {
     // The detail is fetched again only while the window is shown.
     ui.show().unwrap();
     ui.window().set_size(TALL);
-    // The list's own state (here its open link field; also its scroll
-    // position) outlives the detail laid over it.
-    only_button(ui, "Add a download", WHAT).invoke_accessible_default_action();
-    let link_field = || {
+    // The list's own state (here what is typed in its link field; also
+    // its scroll position) outlives the detail laid over it.
+    let link_text = || {
         labelled(ui, "Paste a link")
-            .iter()
-            .any(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+            .into_iter()
+            .find(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+            .map(|e| e.accessible_value().unwrap_or_default().to_string())
     };
-    assert!(link_field(), "{WHAT}: no link field");
+    let link_field = || link_text().is_some();
+    labelled(ui, "Paste a link")
+        .into_iter()
+        .find(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+        .expect("the link field")
+        .set_accessible_value("half-typed");
+    assert_eq!(link_text().as_deref(), Some("half-typed"), "{WHAT}: typed");
     open_detail(ui, "Waiting", "adv.bin", WHAT);
     assert!(!link_field(), "{WHAT}: the list shows under the detail");
     assert_eq!(ui.get_selected_id(), id.0 as i32, "{WHAT}: selected");
@@ -1996,11 +2005,16 @@ fn http_detail_shows_cells(ui: &AppWindow, ctx: &Ctx, id: JobId) {
     ui.invoke_banner_dismiss();
 
     close_detail(ui, WHAT);
-    assert!(
-        link_field(),
+    assert_eq!(
+        link_text().as_deref(),
+        Some("half-typed"),
         "{WHAT}: the list was rebuilt under the detail"
     );
-    only_button(ui, "Close the link field", WHAT).invoke_accessible_default_action();
+    labelled(ui, "Paste a link")
+        .into_iter()
+        .find(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+        .expect("the link field")
+        .set_accessible_value("");
     ui.window().set_size(COMPACT);
 }
 
@@ -3017,14 +3031,13 @@ fn advanced_tall(ui: &AppWindow, what: &str) {
     assert_eq!(ui.get_layout().as_str(), "compact", "{what}: Advanced");
 }
 
-/// Grab links opened from the "+" panel: a folder listing's links are
+/// Grab links opened from the link row: a folder listing's links are
 /// counted by type chip, the Subfolders switch reads it again with its
 /// subfolder, and a chip and an extension filter narrow the list.
 fn grab_listing_chip_counts(ui: &AppWindow, ctx: &Ctx) {
     const WHAT: &str = "grab_listing_chip_counts";
     let url = serve_listing(ctx);
     advanced_tall(ui, WHAT);
-    only_button(ui, "Add a download", WHAT).invoke_accessible_default_action();
     only_button(ui, "Grab links from a page…", WHAT).invoke_accessible_default_action();
     assert_eq!(ui.get_screen(), Screen::Grab, "{WHAT}: not on Grab");
     assert_eq!(
@@ -3319,7 +3332,7 @@ fn grab_500_links_streams_sizes(ui: &AppWindow, ctx: &Ctx) {
     ui.window().set_size(COMPACT);
 }
 
-/// Add several links, opened from the "+" panel: the same file on two
+/// Add several links, opened from the link row: the same file on two
 /// servers, with "Treat copies as mirrors" on, is one download with one
 /// mirror; a web page line offers "Find files →", which opens Grab links.
 fn batch_copies_become_mirrors(ui: &AppWindow, ctx: &Ctx) {
@@ -3330,7 +3343,6 @@ fn batch_copies_become_mirrors(ui: &AppWindow, ctx: &Ctx) {
     let second = mirror.serve("elsewhere/TWIN.bin", spec);
     let page = format!("{}/listing/", ctx.server.base_url());
     advanced_tall(ui, WHAT);
-    only_button(ui, "Add a download", WHAT).invoke_accessible_default_action();
     only_button(ui, "Several links…", WHAT).invoke_accessible_default_action();
     assert_eq!(
         ui.get_screen(),
@@ -4500,9 +4512,8 @@ fn press_shift_tab(ui: &AppWindow) {
 }
 
 /// Keyboard use of Advanced mode, on a window of its own (no engine: the
-/// callbacks are recorded). Tab goes through the header, the tabs, each
-/// row then its action, and the footer; Escape closes the "+" panel and
-/// gives the focus back to "+". Each dialog takes the keys when it opens:
+/// callbacks are recorded). Tab goes through the header, the link row,
+/// the tabs, each row then its action, and the footer. Each dialog takes the keys when it opens:
 /// Escape cancels it, Enter confirms it, Tab goes round its controls
 /// without leaving it. Escape goes back from the compact detail (after a
 /// dialog over it closed, too), Grab links, Several links, Advanced add
@@ -4547,24 +4558,11 @@ fn keyboard_tab_enter_escape() {
     };
     refresh_tree(&ui);
 
-    // The first Tab reaches "+": it opens the link field, Escape closes
-    // it and "+" has the focus again.
-    press(&ui, Key::Tab);
-    press(&ui, " ");
-    assert!(
-        shows("Paste a link"),
-        "{WHAT}: \"+\" did not open the field"
-    );
-    press(&ui, Key::Escape);
-    assert!(!shows("Paste a link"), "{WHAT}: Escape left the field open");
-    press(&ui, " ");
-    assert!(shows("Paste a link"), "{WHAT}: \"+\" lost the focus");
-    press(&ui, Key::Escape);
-    assert!(!shows("Paste a link"), "{WHAT}: field open again");
-
-    // Then Settings, the three tabs, and each row followed by its action.
-    // Space presses what has the focus.
-    for _ in 0..5 {
+    // Settings, the link field, Several links, Grab links (Add is off
+    // while the field is empty), the three tabs, then each row followed by
+    // its action. Space presses what has the focus.
+    assert!(shows("Paste a link"), "{WHAT}: the link field is shown");
+    for _ in 0..8 {
         press(&ui, Key::Tab);
     }
     for _ in 0..4 {

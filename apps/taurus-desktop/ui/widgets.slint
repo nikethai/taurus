@@ -59,52 +59,73 @@ export component IconButton inherits Pressable {
     in property <string> label;
     // Accent fill instead of a quiet hover circle.
     in property <bool> filled: false;
+    // A ringed circle on the panel color.
+    in property <bool> outlined: false;
     in property <length> size: 36px;
 
     width: size;
     height: size;
     border-radius: self.height / 2;
     opacity: root.enabled ? 1 : 0.45;
-    background: filled ? (root.pressed ? Theme.accent-strong : Theme.accent-base)
-        : root.pressed ? Theme.track : root.hovered ? Theme.chip : transparent;
+    background: filled ? (root.pressed ? Theme.accent-strong.darker(0.15) : Theme.accent-strong)
+        : root.pressed ? Theme.track : root.hovered ? Theme.chip : outlined ? Theme.panel : transparent;
+    border-width: outlined ? 1px : 0;
+    border-color: Theme.line;
     accessible-label: label;
 
     Icon {
         name: root.icon;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: root.size * 0.5;
-        height: root.size * 0.5;
+        width: root.size * (root.outlined ? 0.42 : 0.5);
+        height: root.size * (root.outlined ? 0.42 : 0.5);
         stroke: root.filled ? Theme.accent-text : Theme.text;
     }
 }
 
-// Text button. kind: primary (accent fill) | secondary (outlined) | quiet.
+// Text button. kind: primary (accent fill) | secondary (outlined) |
+// plain (text only, hover tint) | muted (plain, muted text) | quiet
+// (accent-colored text).
 export component TextButton inherits Pressable {
     in property <string> text;
     in property <string> kind: "secondary";
+    in property <length> font-size: 13px;
+    // An icon before the text ("" for none).
+    in property <string> icon;
 
-    height: 36px;
-    min-width: 72px;
-    border-radius: 10px;
+    height: 32px;
+    min-width: 64px;
+    horizontal-stretch: 0;
+    border-radius: 8px;
     opacity: root.enabled ? 1 : 0.45;
-    background: kind == "primary" ? (root.pressed ? Theme.accent-strong : Theme.accent-base)
-        : root.pressed ? Theme.track : root.hovered ? Theme.chip : kind == "quiet" ? transparent : Theme.panel;
+    background: kind == "primary" ? (root.pressed ? Theme.accent-strong.darker(0.15) : Theme.accent-strong)
+        : root.pressed ? Theme.track : root.hovered ? Theme.hover : kind == "secondary" ? Theme.panel : transparent;
     border-width: kind == "secondary" ? 1px : 0;
     border-color: Theme.line;
     accessible-label: text;
 
     HorizontalLayout {
-        padding-left: 14px;
-        padding-right: 14px;
+        padding-left: root.kind == "primary" ? 14px : root.kind == "muted" ? 10px : 12px;
+        padding-right: root.kind == "primary" ? 14px : root.kind == "muted" ? 10px : 12px;
+        spacing: 5px;
         alignment: center;
-        Text {
+        if root.icon != "": VerticalLayout {
+            alignment: center;
+            Icon {
+                name: root.icon;
+                width: root.font-size + 1px;
+                height: root.font-size + 1px;
+                stroke: label.color;
+            }
+        }
+        label := Text {
             text: root.text;
             vertical-alignment: center;
-            font-size: 13px;
-            font-weight: 600;
+            font-size: root.font-size;
+            font-weight: root.kind == "primary" || root.kind == "quiet" ? 600 : 500;
             color: root.kind == "primary" ? Theme.accent-text
-                : root.kind == "quiet" ? Theme.accent-strong : Theme.text;
+                : root.kind == "quiet" ? Theme.accent-ink
+                : root.kind == "muted" ? Theme.muted : Theme.text;
             accessible-role: none;
         }
     }
@@ -115,16 +136,16 @@ export component TriBox inherits Rectangle {
     // "all" | "some" | "none"
     in property <string> state;
 
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
     border-radius: 4px;
     border-width: root.state == "none" ? 1.5px : 0;
     border-color: Theme.muted;
-    background: root.state == "none" ? transparent : Theme.accent-base;
+    background: root.state == "none" ? transparent : Theme.accent-strong;
 
     if root.state == "all": Path {
-        width: 12px;
-        height: 12px;
+        width: 11px;
+        height: 11px;
         viewbox-width: 12;
         viewbox-height: 12;
         commands: "M 2 6.5 L 5 9.5 L 10 3";
@@ -172,7 +193,7 @@ export component CheckBox inherits Pressable {
             vertical-alignment: center;
             horizontal-stretch: 1;
             wrap: word-wrap;
-            font-size: 14px;
+            font-size: 13px;
             color: Theme.text;
             accessible-role: none;
         }
@@ -263,11 +284,14 @@ export component TextEdit inherits Rectangle {
     }
 }
 
-// On/off switch with a label and an optional hint under it.
+// On/off switch with a label and an optional hint under it. The track
+// is `track-width` wide (32, 36 or 40 px in the canvas).
 export component Toggle inherits Pressable {
     in property <string> label;
     in property <string> hint;
     in property <bool> checked;
+    in property <length> track-width: 32px;
+    in property <length> label-size: 13px;
 
     accessible-role: switch;
     accessible-label: label;
@@ -280,18 +304,19 @@ export component Toggle inherits Pressable {
         spacing: 12px;
         VerticalLayout {
             alignment: center;
-            spacing: 2px;
+            spacing: 1px;
             Text {
                 text: root.label;
                 color: Theme.text;
-                font-size: 14px;
+                font-size: root.label-size;
+                font-weight: 500;
                 wrap: word-wrap;
                 accessible-role: none;
             }
             if root.hint != "": Text {
                 text: root.hint;
                 color: Theme.muted;
-                font-size: 12px;
+                font-size: 11.5px;
                 wrap: word-wrap;
                 accessible-role: none;
             }
@@ -299,18 +324,21 @@ export component Toggle inherits Pressable {
         VerticalLayout {
             alignment: center;
             Rectangle {
-                width: 40px;
-                height: 24px;
+                width: root.track-width;
+                height: (root.track-width - 32px) / 2 + 20px;
                 border-radius: self.height / 2;
-                background: root.checked ? Theme.accent-base : Theme.track;
+                background: root.checked ? Theme.accent-strong : Theme.switch-off;
                 animate background { duration: 120ms; }
                 Rectangle {
-                    width: 18px;
-                    height: 18px;
+                    width: parent.height - 6px;
+                    height: self.width;
                     y: 3px;
                     x: root.checked ? parent.width - self.width - 3px : 3px;
                     border-radius: self.height / 2;
-                    background: root.checked ? Theme.accent-text : Theme.muted;
+                    background: #FFFFFF;
+                    drop-shadow-color: #0000004D;
+                    drop-shadow-offset-y: 1px;
+                    drop-shadow-blur: 2px;
                     animate x {
                         duration: 120ms;
                         easing: ease-out;
@@ -326,12 +354,13 @@ export component Segment inherits Pressable {
     in property <string> text;
     in property <bool> selected;
 
-    height: 32px;
+    height: 28px;
     horizontal-stretch: 1;
-    border-radius: 8px;
-    background: selected ? Theme.panel : root.hovered ? Theme.track : transparent;
-    border-width: selected ? 1px : 0;
-    border-color: Theme.line;
+    border-radius: 7px;
+    background: selected ? Theme.panel : root.hovered ? Theme.hover : transparent;
+    drop-shadow-color: selected ? #0000001F : transparent;
+    drop-shadow-offset-y: 1px;
+    drop-shadow-blur: 2px;
     accessible-role: radio-button;
     accessible-label: text;
     accessible-checkable: true;
@@ -342,7 +371,7 @@ export component Segment inherits Pressable {
         horizontal-alignment: center;
         vertical-alignment: center;
         font-size: 13px;
-        font-weight: root.selected ? 600 : 400;
+        font-weight: root.selected ? 600 : 500;
         color: root.selected ? Theme.text : Theme.muted;
         overflow: elide;
         accessible-role: none;
@@ -352,7 +381,7 @@ export component Segment inherits Pressable {
 // Track that holds Segments side by side.
 export component Segmented inherits Rectangle {
     background: Theme.chip;
-    border-radius: 10px;
+    border-radius: 9px;
     HorizontalLayout {
         padding: 3px;
         spacing: 3px;
@@ -367,7 +396,7 @@ export component KindBadge inherits Rectangle {
 
     width: size;
     height: size;
-    border-radius: 10px;
+    border-radius: size / 4;
     background: Theme.kind-bg(kind);
 
     Icon {
@@ -386,8 +415,9 @@ export component ProgressBar inherits Rectangle {
     in property <float> progress;
     in property <brush> bar-color: Theme.accent-base;
     in property <bool> moving: true;
+    in property <length> thickness: 4px;
 
-    height: 4px;
+    height: thickness;
     border-radius: 2px;
     background: Theme.track;
     clip: true;
@@ -428,14 +458,14 @@ export component LoadingDots inherits HorizontalLayout {
 export component Card inherits Rectangle {
     vertical-stretch: 0;
     background: Theme.panel;
-    border-radius: 12px;
+    border-radius: 11px;
     border-width: 1px;
     border-color: Theme.line;
     VerticalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        padding-top: 8px;
-        padding-bottom: 8px;
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 2px;
+        padding-bottom: 2px;
         @children
     }
 }
@@ -443,7 +473,7 @@ export component Card inherits Rectangle {
 // Section title above a Card.
 export component SectionTitle inherits Text {
     // Room above the title separates it from the previous group.
-    height: 30px;
+    height: 28px;
     vertical-alignment: bottom;
     color: Theme.muted;
     font-size: 12px;

@@ -6,54 +6,72 @@ export component Icon inherits Path {
 
     pure function shape(n: string) -> string {
         if (n == "down") {
-            return "M12 4 V16 M6 11 L12 17 L18 11 M5 21 H19";
+            return "M12 4v11M7 10.5l5 5 5-5M5 20h14";
         } else if (n == "plus") {
             return "M12 5 V19 M5 12 H19";
         } else if (n == "pause") {
-            return "M8 5 V19 M16 5 V19";
+            return "M9 5.5v13M15 5.5v13";
         } else if (n == "play") {
-            return "M7 4 L19 12 L7 20 Z";
+            return "M8 5.5v13l10.5-6.5z";
         } else if (n == "stop") {
-            return "M6 6 H18 V18 H6 Z";
+            return "M7 7h10v10H7z";
         } else if (n == "retry") {
-            return "M20 12 A8 8 0 1 1 17.66 6.34 L20 8.5 M20 3.5 V8.5 H15";
+            return "M4.5 12a7.5 7.5 0 0 1 13.4-4.6M19.5 12a7.5 7.5 0 0 1-13.4 4.6M18.5 3.5v4h-4M5.5 20.5v-4h4";
         } else if (n == "folder") {
-            return "M3 7 A2 2 0 0 1 5 5 H9 L11 7.5 H19 A2 2 0 0 1 21 9.5 V17 A2 2 0 0 1 19 19 H5 A2 2 0 0 1 3 17 Z";
+            return "M3.5 7V18a1.5 1.5 0 0 0 1.5 1.5h14a1.5 1.5 0 0 0 1.5-1.5V9a1.5 1.5 0 0 0-1.5-1.5h-7L10 5H5a1.5 1.5 0 0 0-1.5 1.5z";
         } else if (n == "trash") {
-            return "M4 7 H20 M10 11 V17 M14 11 V17 M6 7 L7 19 A2 2 0 0 0 9 21 H15 A2 2 0 0 0 17 19 L18 7 M9 7 V4 H15 V7";
+            return "M4 7h16M10 7V4.5h4V7M6.5 7l.9 12.5h9.2L17.5 7";
         } else if (n == "settings") {
-            return "M4 7 H14 M18 7 H20 M4 17 H6 M10 17 H20 M16 4 V10 M8 14 V20";
+            return "M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4";
         } else if (n == "close") {
             return "M6 6 L18 18 M18 6 L6 18";
         } else if (n == "back") {
             return "M19 12 H5 M11 6 L5 12 L11 18";
         } else if (n == "disc") {
-            return "M21 12 A9 9 0 1 1 3 12 A9 9 0 1 1 21 12 Z M14.5 12 A2.5 2.5 0 1 1 9.5 12 A2.5 2.5 0 1 1 14.5 12 Z";
+            return "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4";
         } else if (n == "media") {
-            return "M5 4 H19 A2 2 0 0 1 21 6 V18 A2 2 0 0 1 19 20 H5 A2 2 0 0 1 3 18 V6 A2 2 0 0 1 5 4 Z M10 9 L15 12 L10 15 Z";
+            return "M5 5h14a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM10 9v6l5-3z";
         } else if (n == "magnet") {
-            return "M5 3 V12 A7 7 0 0 0 19 12 V3 H15 V12 A3 3 0 0 1 9 12 V3 Z M5 8 H9 M15 8 H19";
+            return "M6 4h4v7a2 2 0 0 0 4 0V4h4v7a6 6 0 0 1-12 0zM6 8h4M14 8h4";
         } else if (n == "archive") {
-            return "M4 5 H20 V9 H4 Z M5 9 V19 H19 V9 M10 13 H14";
+            return "M4 5h16v4H4zM5.5 9v10h13V9M10 13h4";
         } else if (n == "music") {
-            return "M9 18 V5 L20 3 V16 M9 18 A3 3 0 1 1 3 18 A3 3 0 1 1 9 18 Z M20 16 A3 3 0 1 1 14 16 A3 3 0 1 1 20 16 Z";
+            return "M9 17.5V6l10-2v11.5M9 17.5a2 2 0 1 1-4 0a2 2 0 1 1 4 0M19 15.5a2 2 0 1 1-4 0a2 2 0 1 1 4 0";
         } else if (n == "image") {
-            return "M5 4 H19 A2 2 0 0 1 21 6 V18 A2 2 0 0 1 19 20 H5 A2 2 0 0 1 3 18 V6 A2 2 0 0 1 5 4 Z M3 16 L8 11 L13 16 L16 13 L21 18 M9 8 A1 1 0 1 1 7 8 A1 1 0 1 1 9 8 Z";
+            return "M4 5h16v14H4zM4 15l4.5-4.5 4 4 2.5-2.5L20 17M15.5 8.5v.01";
         } else if (n == "live") {
-            return "M13.5 12 A1.5 1.5 0 1 1 10.5 12 A1.5 1.5 0 1 1 13.5 12 Z M8 8 A5.5 5.5 0 0 0 8 16 M16 8 A5.5 5.5 0 0 1 16 16 M5 5 A10 10 0 0 0 5 19 M19 5 A10 10 0 0 1 19 19";
+            return "M12 10.5a1.5 1.5 0 1 0 0 3a1.5 1.5 0 1 0 0-3M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8";
         } else if (n == "link") {
-            return "M9 7 H7 A5 5 0 0 0 7 17 H9 M15 7 H17 A5 5 0 0 1 17 17 H15 M8 12 H16";
+            return "M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1";
         } else if (n == "check") {
-            return "M4 12.5 L9.5 18 L20 6.5";
+            return "M5 12.5l4.5 4.5L19 7.5";
         } else if (n == "chevron") {
             return "M9 6 L15 12 L9 18";
         } else if (n == "chevron-down") {
             return "M6 9 L12 15 L18 9";
         } else if (n == "moon") {
-            return "M20 14.5 A8.5 8.5 0 1 1 9.5 4 A6.5 6.5 0 0 0 20 14.5 Z";
+            return "M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z";
+        } else if (n == "globe") {
+            return "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M4 12h16M12 4c2.5 2.2 3.5 5 3.5 8s-1 5.8-3.5 8M12 4c-2.5 2.2-3.5 5-3.5 8s1 5.8 3.5 8";
+        } else if (n == "inbox") {
+            return "M4 13.5L6.2 5h11.6l2.2 8.5V19H4zM4 13.5h4.5l1.2 2h4.6l1.2-2H20";
+        } else if (n == "alert") {
+            return "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 8v5M12 16v.01";
+        } else if (n == "list") {
+            return "M9 6h11M9 12h11M9 18h11M4.5 6v.01M4.5 12v.01M4.5 18v.01";
+        } else if (n == "up") {
+            return "M12 19V5M6.5 10.5L12 5l5.5 5.5";
+        } else if (n == "arrow-down") {
+            return "M12 5v14M6.5 13.5L12 19l5.5-5.5";
+        } else if (n == "clock") {
+            return "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 8v4.5l3 2";
+        } else if (n == "copy") {
+            return "M9 9h10v10H9zM15 9V5H5v10h4";
+        } else if (n == "search") {
+            return "M11 5a6 6 0 1 0 0 12a6 6 0 1 0 0-12M19.5 19.5l-4.2-4.2";
         }
         // "file" and any unknown name
-        return "M14 3 H7 A2 2 0 0 0 5 5 V19 A2 2 0 0 0 7 21 H17 A2 2 0 0 0 19 19 V8 Z M14 3 V8 H19";
+        return "M7 3.5h7l4.5 4.5v12.5H7zM14 3.5V8h4.5";
     }
 
     viewbox-width: 24;
@@ -63,7 +81,7 @@ export component Icon inherits Path {
     commands: shape(name);
     fill: transparent;
     stroke: Theme.text;
-    stroke-width: 1.75px;
+    stroke-width: 1.8px;
     stroke-line-cap: round;
     stroke-line-join: round;
 }

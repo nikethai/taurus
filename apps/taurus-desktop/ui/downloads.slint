@@ -3,7 +3,8 @@
 import { Theme } from "theme.slint";
 import { RowVm, SummaryVm } from "types.slint";
 import { ListView } from "std-widgets.slint";
-import { IconButton, TextButton, Pressable } from "widgets.slint";
+import { TextButton, Pressable } from "widgets.slint";
+import { ScreenBar, BarButton } from "chrome.slint";
 import { LinkField } from "welcome.slint";
 import { Row } from "row.slint";
 import { ToolsBanner } from "banner.slint";
@@ -19,10 +20,11 @@ component TabButton inherits Pressable {
     min-width: 0;
     preferred-width: 0;
     horizontal-stretch: 1;
-    border-radius: 9px;
-    background: selected ? Theme.panel : root.hovered ? Theme.track : transparent;
-    border-width: selected ? 1px : 0;
-    border-color: Theme.line;
+    border-radius: 8px;
+    background: selected ? Theme.panel : root.hovered ? Theme.hover : transparent;
+    drop-shadow-color: selected ? #0000001F : transparent;
+    drop-shadow-offset-y: 1px;
+    drop-shadow-blur: 2px;
     accessible-role: tab;
     accessible-label: text;
     accessible-item-selectable: true;
@@ -35,7 +37,7 @@ component TabButton inherits Pressable {
             text: root.text;
             vertical-alignment: center;
             font-size: 13px;
-            font-weight: root.selected ? 600 : 400;
+            font-weight: root.selected ? 600 : 500;
             color: root.selected ? Theme.text : Theme.muted;
             accessible-role: none;
         }
@@ -45,7 +47,7 @@ component TabButton inherits Pressable {
                 min-width: 22px;
                 height: 18px;
                 border-radius: 9px;
-                background: root.selected ? Theme.accent-soft : Theme.track;
+                background: root.selected ? Theme.sel : Theme.track;
                 HorizontalLayout {
                     padding-left: 6px;
                     padding-right: 6px;
@@ -55,7 +57,7 @@ component TabButton inherits Pressable {
                         vertical-alignment: center;
                         font-size: 11px;
                         font-weight: 600;
-                        color: root.selected ? Theme.accent-strong : Theme.muted;
+                        color: root.selected ? Theme.accent-ink : Theme.muted;
                         accessible-role: none;
                     }
                 }
@@ -88,7 +90,6 @@ export component Downloads inherits Rectangle {
     callback resume-all();
 
     // The plus button shows the paste field above the tabs.
-    property <bool> pasting: false;
     property <[RowVm]> rows: tab == 0 ? downloading-rows : finished-rows;
 
     pure function time-left(s: SummaryVm) -> string {
@@ -103,30 +104,12 @@ export component Downloads inherits Rectangle {
     }
 
     VerticalLayout {
-        padding-top: 14px;
-        padding-bottom: 12px;
         spacing: 12px;
 
-        HorizontalLayout {
-            padding-left: 20px;
-            padding-right: 12px;
-            spacing: 4px;
-            Text {
-                text: @tr("Downloads");
-                vertical-alignment: center;
-                font-size: 20px;
-                font-weight: 700;
-                color: Theme.text;
-                horizontal-stretch: 1;
-            }
-            IconButton {
-                icon: root.pasting ? "close" : "plus";
-                label: root.pasting ? @tr("Close the link field") : @tr("Add a download");
-                clicked => {
-                    root.pasting = !root.pasting;
-                }
-            }
-            IconButton {
+        ScreenBar {
+            title: "Hyades";
+            back: false;
+            BarButton {
                 icon: "settings";
                 label: @tr("Settings");
                 clicked => {
@@ -135,30 +118,26 @@ export component Downloads inherits Rectangle {
             }
         }
 
-        if root.pasting: HorizontalLayout {
-            padding-left: 20px;
-            padding-right: 20px;
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
             LinkField {
-                field-height: 48px;
-                init => {
-                    self.focus-input();
-                }
+                field-height: 44px;
                 entered(link) => {
-                    root.pasting = false;
                     root.link-entered(link);
                 }
             }
         }
 
         if UpdateUi.banner: HorizontalLayout {
-            padding-left: 20px;
-            padding-right: 20px;
+            padding-left: 16px;
+            padding-right: 16px;
             UpdateBanner { }
         }
 
         if root.tools-banner != "": HorizontalLayout {
-            padding-left: 20px;
-            padding-right: 20px;
+            padding-left: 16px;
+            padding-right: 16px;
             ToolsBanner {
                 state: root.tools-banner;
                 percent: root.tools-percent;
@@ -167,11 +146,11 @@ export component Downloads inherits Rectangle {
         }
 
         HorizontalLayout {
-            padding-left: 20px;
-            padding-right: 20px;
+            padding-left: 16px;
+            padding-right: 16px;
             Rectangle {
                 background: Theme.chip;
-                border-radius: 12px;
+                border-radius: 10px;
                 accessible-role: tab-list;
                 HorizontalLayout {
                     padding: 3px;
@@ -244,7 +223,7 @@ export component Downloads inherits Rectangle {
         }
 
         if root.tab == 0 && root.downloading-rows.length > 0: Rectangle {
-            height: 52px;
+            height: 44px;
             HorizontalLayout {
                 padding-left: 20px;
                 padding-right: 20px;
@@ -266,6 +245,7 @@ export component Downloads inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     TextButton {
+                        kind: "plain";
                         text: root.summary.all-paused ? @tr("Resume all") : @tr("Pause all");
                         clicked => {
                             if (root.summary.all-paused) {

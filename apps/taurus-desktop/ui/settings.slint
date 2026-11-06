@@ -41,7 +41,7 @@ component Choice inherits Pressable {
                 name: "check";
                 width: 18px;
                 height: 18px;
-                stroke: Theme.accent-strong;
+                stroke: Theme.accent-ink;
                 stroke-width: 2.25px;
             }
         }
@@ -181,6 +181,8 @@ export component Settings inherits Rectangle {
                     }
                     Divider { }
                     Toggle {
+                        track-width: 40px;
+                        label-size: 14px;
                         label: @tr("Sort into folders by type");
                         hint: @tr("Videos, Music and Documents");
                         checked: root.settings.sort-by-type;
@@ -242,6 +244,8 @@ export component Settings inherits Rectangle {
                 }
                 Card {
                     Toggle {
+                        track-width: 40px;
+                        label-size: 14px;
                         label: @tr("Offer to download copied links");
                         checked: root.settings.offer-copied-links;
                         clicked => {
@@ -250,6 +254,8 @@ export component Settings inherits Rectangle {
                     }
                     Divider { }
                     Toggle {
+                        track-width: 40px;
+                        label-size: 14px;
                         label: @tr("Open Hyades at login");
                         checked: root.settings.open-at-login;
                         clicked => {
@@ -258,6 +264,8 @@ export component Settings inherits Rectangle {
                     }
                     Divider { }
                     Toggle {
+                        track-width: 40px;
+                        label-size: 14px;
                         label: @tr("Show advanced options");
                         hint: @tr("Sources, filters and more details");
                         checked: root.settings.advanced;

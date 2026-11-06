@@ -183,10 +183,6 @@ msgid "{0} · {1}"
 msgstr "⟦{0} · {1}····⟧"
 
 msgctxt "AdvAdd"
-msgid "Back"
-msgstr "⟦Báçk··⟧"
-
-msgctxt "AdvAdd"
 msgid "New download"
 msgstr "⟦Ñéw dówñlóád·····⟧"
 
@@ -419,10 +415,6 @@ msgid "Find files →"
 msgstr "⟦Fíñd fílés →·····⟧"
 
 msgctxt "AdvBatch"
-msgid "Back"
-msgstr "⟦Báçk··⟧"
-
-msgctxt "AdvBatch"
 msgid "Add several links"
 msgstr "⟦Ádd sévérál líñks·······⟧"
 
@@ -551,10 +543,6 @@ msgstr "⟦Fíñísh···⟧"
 msgctxt "DetailPane"
 msgid "Select a download to see its details."
 msgstr "⟦Séléçt á dówñlóád tó séé íts détáíls.···············⟧"
-
-msgctxt "DetailPane"
-msgid "Back"
-msgstr "⟦Báçk··⟧"
 
 msgctxt "DetailPane"
 msgid "Details"
@@ -733,10 +721,6 @@ msgid "Size unknown"
 msgstr "⟦Sízé úñkñówñ·····⟧"
 
 msgctxt "AdvGrab"
-msgid "Back"
-msgstr "⟦Báçk··⟧"
-
-msgctxt "AdvGrab"
 msgid "Grab links"
 msgstr "⟦Gráb líñks····⟧"
 
@@ -854,21 +838,21 @@ msgctxt "SpeedFooter"
 msgid "↑ {0}"
 msgstr "⟦↑ {0}··⟧"
 
-msgctxt "AdvCompact"
-msgid "Downloads"
-msgstr "⟦Dówñlóáds····⟧"
+msgctxt "SpeedFooter"
+msgid "Resume all"
+msgstr "⟦Résúmé áll····⟧"
 
-msgctxt "AdvCompact"
-msgid "Close the link field"
-msgstr "⟦Çlósé thé líñk fíéld········⟧"
-
-msgctxt "AdvCompact"
-msgid "Add a download"
-msgstr "⟦Ádd á dówñlóád······⟧"
+msgctxt "SpeedFooter"
+msgid "Pause all"
+msgstr "⟦Páúsé áll····⟧"
 
 msgctxt "AdvCompact"
 msgid "Settings"
 msgstr "⟦Séttíñgs····⟧"
+
+msgctxt "AdvCompact"
+msgid "Add"
+msgstr "⟦Ádd··⟧"
 
 msgctxt "AdvCompact"
 msgid "Several links…"
@@ -917,6 +901,18 @@ msgstr "⟦Çóñvért···⟧"
 msgctxt "SourceChip"
 msgid "HTTP"
 msgstr "⟦HTTP··⟧"
+
+msgctxt "AdvRow"
+msgid "LIVE"
+msgstr "⟦LÍVÉ··⟧"
+
+msgctxt "AdvRow"
+msgid "Failed"
+msgstr "⟦Fáíléd···⟧"
+
+msgctxt "percent done"
+msgid "{0}%"
+msgstr "⟦{0}%··⟧"
 
 msgctxt "AdvRow"
 msgid "↓ {0}"
@@ -969,10 +965,6 @@ msgstr "⟦Príváçý···⟧"
 msgctxt "AdvSettings"
 msgid "General"
 msgstr "⟦Géñérál···⟧"
-
-msgctxt "AdvSettings"
-msgid "Back"
-msgstr "⟦Báçk··⟧"
 
 msgctxt "AdvSettings"
 msgid "Settings"
@@ -1430,6 +1422,10 @@ msgctxt "Sidebar"
 msgid "Sources"
 msgstr "⟦Sóúrçés···⟧"
 
+msgctxt "Sidebar"
+msgid "Settings"
+msgstr "⟦Séttíñgs····⟧"
+
 msgctxt "TorrentPicker"
 msgid "{n} file selected · {0}"
 msgid_plural "{n} files selected · {0}"
@@ -1589,6 +1585,10 @@ msgid "Enter a speed from 0.1 to 10000 MB/s."
 msgstr "⟦Éñtér á spééd fróm 0.1 tó 10000 MB/s.···············⟧"
 
 msgctxt "AdvWide"
+msgid "Downloads"
+msgstr "⟦Dówñlóáds····⟧"
+
+msgctxt "AdvWide"
 msgid "Search downloads"
 msgstr "⟦Séárçh dówñlóáds·······⟧"
 
@@ -1601,8 +1601,8 @@ msgid "Add a download"
 msgstr "⟦Ádd á dówñlóád······⟧"
 
 msgctxt "AdvWide"
-msgid "Settings"
-msgstr "⟦Séttíñgs····⟧"
+msgid "New download"
+msgstr "⟦Ñéw dówñlóád·····⟧"
 
 msgctxt "AdvWide"
 msgid "Several links…"
@@ -1647,6 +1647,10 @@ msgstr "⟦Géttíñg vídéó tóóls… {0}%··········⟧"
 msgctxt "ToolsBanner"
 msgid "Getting video tools…"
 msgstr "⟦Géttíñg vídéó tóóls…········⟧"
+
+msgctxt "ScreenBar"
+msgid "Back"
+msgstr "⟦Báçk··⟧"
 
 msgctxt "Countdown"
 msgid "Shutting down in {n} second"
@@ -1703,18 +1707,6 @@ msgstr "⟦Léss tháñ á míñúté léft··········⟧"
 msgctxt "Downloads"
 msgid "About {0} h left"
 msgstr "⟦Ábóút {0} h léft·······⟧"
-
-msgctxt "Downloads"
-msgid "Downloads"
-msgstr "⟦Dówñlóáds····⟧"
-
-msgctxt "Downloads"
-msgid "Close the link field"
-msgstr "⟦Çlósé thé líñk fíéld········⟧"
-
-msgctxt "Downloads"
-msgid "Add a download"
-msgstr "⟦Ádd á dówñlóád······⟧"
 
 msgctxt "Downloads"
 msgid "Settings"

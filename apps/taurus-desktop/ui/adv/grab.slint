@@ -2,10 +2,11 @@
 // to, sorted into type chips, filtered by extension, with their sizes as
 // they are probed, and "Download N" for the ticked ones.
 import { Theme } from "../theme.slint";
+import { ScreenBar, BarFooter } from "../chrome.slint";
 import { GrabVm, GrabRowVm } from "../types.slint";
 import { Messages } from "../messages.slint";
 import {
-    IconButton, TextButton, KindBadge, LoadingDots, Pressable, Toggle, TriBox, LineEdit,
+    TextButton, KindBadge, LoadingDots, Pressable, Toggle, TriBox, LineEdit,
 } from "../widgets.slint";
 import { ListView } from "std-widgets.slint";
 import { LinksUi } from "links.slint";
@@ -20,7 +21,7 @@ component Chip inherits Pressable {
 
     height: 28px;
     border-radius: 14px;
-    background: selected ? (kind == "" ? Theme.accent-soft : Theme.kind-bg(kind))
+    background: selected ? (kind == "" ? Theme.sel : Theme.kind-bg(kind))
         : root.hovered ? Theme.track : Theme.chip;
     accessible-role: tab;
     accessible-label: text;
@@ -37,7 +38,7 @@ component Chip inherits Pressable {
             vertical-alignment: center;
             font-size: 12px;
             font-weight: root.selected ? 600 : 400;
-            color: root.selected ? (root.kind == "" ? Theme.accent-strong : Theme.kind-fg(root.kind)) : Theme.text;
+            color: root.selected ? (root.kind == "" ? Theme.accent-ink : Theme.kind-fg(root.kind)) : Theme.text;
             accessible-role: none;
         }
         Text {
@@ -45,7 +46,7 @@ component Chip inherits Pressable {
             vertical-alignment: center;
             font-size: 11px;
             font-weight: 600;
-            color: root.kind == "" ? Theme.accent-strong : Theme.kind-fg(root.kind);
+            color: root.kind == "" ? Theme.accent-ink : Theme.kind-fg(root.kind);
             accessible-role: none;
         }
     }
@@ -128,29 +129,15 @@ export component AdvGrab inherits FocusScope {
     property <bool> listed: !vm.loading && vm.error-kind == "" && vm.page-url != "";
 
     VerticalLayout {
-        HorizontalLayout {
-            padding: 14px;
-            padding-left: 20px;
-            spacing: 8px;
-            IconButton {
-                icon: "back";
-                label: @tr("Back");
-                clicked => {
-                    root.back();
-                }
-            }
-            Text {
-                text: @tr("Grab links");
-                vertical-alignment: center;
-                font-size: 20px;
-                font-weight: 700;
-                color: Theme.text;
+        ScreenBar {
+            title: @tr("Grab links");
+            back-clicked => {
+                root.back();
             }
         }
 
         VerticalLayout {
-            padding-left: 20px;
-            padding-right: 20px;
+            padding: 12px;
             spacing: 10px;
             vertical-stretch: 1;
 
@@ -334,10 +321,7 @@ export component AdvGrab inherits FocusScope {
             }
         }
 
-        HorizontalLayout {
-            padding: 20px;
-            padding-top: 10px;
-            spacing: 10px;
+        BarFooter {
             Text {
                 text: !root.listed ? ""
                     : root.vm.selected-count > 0 && root.vm.unknown-count == root.vm.selected-count ? @tr("{n} selected · size unknown" | "{n} selected · size unknown" % root.vm.selected-count)
@@ -353,6 +337,7 @@ export component AdvGrab inherits FocusScope {
             TextButton {
                 text: @tr("Download {n}" | "Download {n}" % root.vm.selected-count);
                 kind: "primary";
+                icon: "down";
                 enabled: root.listed && root.vm.selected-count > 0;
                 clicked => {
                     LinksUi.grab-download();
