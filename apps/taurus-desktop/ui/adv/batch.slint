@@ -206,8 +206,13 @@ export component AdvBatch inherits FocusScope {
                 accessible-label: @tr("Sign-in details");
                 accessible-expandable: true;
                 accessible-expanded: root.sign-in-open;
+                // Collapsed, the details go: nothing hidden is applied.
                 clicked => {
                     root.sign-in-open = !root.sign-in-open;
+                    if (!root.sign-in-open) {
+                        LinksUi.batch-user = "";
+                        LinksUi.batch-password = "";
+                    }
                 }
                 HorizontalLayout {
                     spacing: 6px;

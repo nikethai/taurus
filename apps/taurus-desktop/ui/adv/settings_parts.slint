@@ -53,7 +53,8 @@ export component CommitField inherits VerticalLayout {
     in property <string> unit;
     in property <string> error;
     in property <bool> invalid;
-    // The field takes the focus when this is (or turns) true.
+    // The field takes the focus when this is (or turns) true, its text
+    // selected so that typing replaces it.
     in property <bool> focus-first: false;
     in-out property <string> text;
     callback edited(string);
@@ -65,6 +66,7 @@ export component CommitField inherits VerticalLayout {
     changed focus-first => {
         if (root.focus-first) {
             edit.focus();
+            edit.select-all();
         }
     }
 
@@ -82,6 +84,7 @@ export component CommitField inherits VerticalLayout {
             init => {
                 if (root.focus-first) {
                     self.focus();
+                    self.select-all();
                 }
             }
             edited(t) => {

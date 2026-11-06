@@ -3793,8 +3793,9 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     // A radio pick leaves the error: the field still holds bad text.
     whendone_choice(ui, "Shut down", WHAT).invoke_accessible_default_action();
     assert!(state.get_custom_invalid(), "{WHAT}: pick cleared the error");
+    assert!(state.get_open(), "{WHAT}: closed with the refusal shown");
     whendone_choice(ui, "Do nothing", WHAT).invoke_accessible_default_action();
-    // Opened again on the custom speed: its field, focused.
+    // Opened afresh, as the footer button does: the saved speed, focused.
     ui.invoke_open_whendone();
     refresh_tree(ui);
     let field = only_with_role(ui, AccessibleRole::TextInput, "Custom speed in MB/s", WHAT);
@@ -3996,6 +3997,28 @@ fn adv_settings_sections_and_values(ui: &AppWindow, ctx: &Ctx) {
         ctx.engine.settings().speed
             == SpeedLimit::Custom {
                 bytes_per_sec: 1_500_000,
+            }
+    });
+    // Picking Custom selects the limit it fills in: typing replaces it.
+    radio("Balanced").invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: balanced saved"), || {
+        ctx.engine.settings().speed == SpeedLimit::Balanced
+    });
+    radio("Custom").invoke_accessible_default_action();
+    refresh_tree(ui);
+    assert!(
+        !ui.global::<SettingsUi>().get_custom_text().is_empty(),
+        "{WHAT}: Custom not prefilled"
+    );
+    ui.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: "5".into() });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: "5".into() });
+    enter();
+    wait_until(&format!("{WHAT}: 5 MB/s saved"), || {
+        ctx.engine.settings().speed
+            == SpeedLimit::Custom {
+                bytes_per_sec: 5_000_000,
             }
     });
     radio("Fastest").invoke_accessible_default_action();
@@ -5179,19 +5202,57 @@ fn whendone_pick_closes_menu(ui: &AppWindow, ctx: &Ctx) {
         .invoke_accessible_default_action();
     assert!(state.get_open(), "{WHAT}: Custom closed it");
     refresh_tree(ui);
-    // The field has the focus: a key typed goes into it.
-    let before = state.get_custom_text().to_string();
+    // The field has the focus with the limit it was filled with (Gentle's)
+    // selected: a typed "5" replaces it, and Enter applies 5 MB/s.
+    assert!(
+        !state.get_custom_text().is_empty(),
+        "{WHAT}: Custom not prefilled"
+    );
     ui.window()
         .dispatch_event(WindowEvent::KeyPressed { text: "5".into() });
     ui.window()
         .dispatch_event(WindowEvent::KeyReleased { text: "5".into() });
-    let after = state.get_custom_text().to_string();
-    let typed_into = (0..=before.len()).any(|i| {
-        let mut t = before.clone();
-        t.insert(i, '5');
-        t == after
+    assert_eq!(
+        state.get_custom_text().as_str(),
+        "5",
+        "{WHAT}: typing did not replace the limit"
+    );
+    let enter = || {
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: slint::platform::Key::Return.into(),
+        });
+    };
+    enter();
+    let custom = |mb: u64| SpeedLimit::Custom {
+        bytes_per_sec: mb * 1_000_000,
+    };
+    wait_until(&format!("{WHAT}: 5 MB/s saved"), || {
+        ctx.engine.settings().speed == custom(5)
     });
-    assert!(typed_into, "{WHAT}: the field is not focused: {after:?}");
+    // Typed and not applied yet: a when-done pick applies it, then closes.
+    let field = || only_with_role(ui, AccessibleRole::TextInput, "Custom speed in MB/s", WHAT);
+    field().set_accessible_value("3");
+    whendone_choice(ui, "Do nothing", WHAT).invoke_accessible_default_action();
+    assert!(
+        !state.get_open(),
+        "{WHAT}: open after a pick with a speed typed"
+    );
+    wait_until(&format!("{WHAT}: 3 MB/s and nothing saved"), || {
+        let s = ctx.engine.settings();
+        s.speed == custom(3) && s.when_done == WhenDone::Nothing
+    });
+    // Refused text: the pick keeps the popover open, saying why.
+    ui.invoke_open_whendone();
+    refresh_tree(ui);
+    field().set_accessible_value("2,5");
+    whendone_choice(ui, "Just notify me", WHAT).invoke_accessible_default_action();
+    assert!(state.get_open(), "{WHAT}: closed on refused text");
+    refresh_tree(ui);
+    assert!(
+        !texts_containing(ui, "Use a dot for decimals").is_empty(),
+        "{WHAT}: the refusal is not shown"
+    );
+    assert_eq!(ctx.engine.settings().speed, custom(3), "{WHAT}: 2,5 saved");
     ui.window().dispatch_event(WindowEvent::KeyPressed {
         text: slint::platform::Key::Escape.into(),
     });
@@ -5209,9 +5270,10 @@ fn whendone_pick_closes_menu(ui: &AppWindow, ctx: &Ctx) {
     ui.window().set_size(COMPACT);
 }
 
-/// Every button, check box, radio button and switch on the main, Add and
-/// Settings screens of both modes has a name for screen readers; the ones
-/// that are ticked or not say which.
+/// Every button, check box, radio button and switch (and every tab, list
+/// item and text field) on the main, Add and Settings screens of both
+/// modes has a name for screen readers; the ones that are ticked or not
+/// say which.
 fn interactive_widgets_are_accessible(ui: &AppWindow, ctx: &Ctx) {
     const WHAT: &str = "interactive_widgets_are_accessible";
     let check = |screen: &str| {
@@ -5226,7 +5288,15 @@ fn interactive_widgets_are_accessible(ui: &AppWindow, ctx: &Ctx) {
                 role,
                 AccessibleRole::Checkbox | AccessibleRole::RadioButton | AccessibleRole::Switch
             );
-            if role != AccessibleRole::Button && !checkable {
+            // Also the other controls that take the focus or a click.
+            let named = matches!(
+                role,
+                AccessibleRole::Button
+                    | AccessibleRole::Tab
+                    | AccessibleRole::ListItem
+                    | AccessibleRole::TextInput
+            );
+            if !named && !checkable {
                 continue;
             }
             seen += 1;
@@ -5357,6 +5427,38 @@ fn batch_password_applies_to_web_links() {
         !has_password(torrent().unwrap().id),
         "{WHAT}: the torrent got the password"
     );
+
+    // Collapsed, the details are emptied and nothing is applied.
+    let plain = ctx
+        .server
+        .serve("batch-plain.zip", FileSpec::new(64 * 1024));
+    // The list's screen is drawn first, so Several links opens anew.
+    refresh_tree(&ui);
+    ui.invoke_open_batch();
+    links(&ui).invoke_batch_edited(format!("{plain}\n").into());
+    refresh_tree(&ui);
+    only_button(&ui, "Sign-in details", WHAT).invoke_accessible_default_action();
+    refresh_tree(&ui);
+    only_with_role(&ui, AccessibleRole::TextInput, "User name", WHAT).set_accessible_value("u");
+    only_with_role(&ui, AccessibleRole::TextInput, "Password", WHAT).set_accessible_value("p");
+    let details = only_button(&ui, "Sign-in details", WHAT);
+    assert_eq!(details.accessible_expanded(), Some(true), "{WHAT}");
+    details.invoke_accessible_default_action();
+    assert_eq!(details.accessible_expanded(), Some(false), "{WHAT}");
+    assert_eq!(
+        (
+            links(&ui).get_batch_user().as_str(),
+            links(&ui).get_batch_password().as_str()
+        ),
+        ("", ""),
+        "{WHAT}: kept after collapsing"
+    );
+    only_button(&ui, "Add 1 download", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: the plain file finished"), || {
+        job_named(&ctx, "batch-plain.zip").is_some_and(|v| v.state == JobState::Completed)
+    });
+    let plain_id = job_named(&ctx, "batch-plain.zip").unwrap().id;
+    assert!(!has_password(plain_id), "{WHAT}: collapsed details applied");
     ctx.shutdown(WHAT);
     drop(seeder);
 }

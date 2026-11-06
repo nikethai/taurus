@@ -109,14 +109,19 @@ export component WhenDonePopover inherits Rectangle {
     property <int> focus-custom: 0;
 
     // A when-done choice: a custom speed typed and not applied yet is
-    // applied first (as leaving the field would), then the popover closes.
+    // applied first (as leaving the field would), then the popover
+    // closes, unless the field shows refused text: it stays open, showing
+    // why.
+    // (Escape and a click outside close it without applying the text.)
     function pick-when-done(value: string) {
         if (root.dirty) {
             root.dirty = false;
             WhenDoneUi.custom-commit(WhenDoneUi.custom-text);
         }
         WhenDoneUi.pick-when-done(value);
-        WhenDoneUi.open = false;
+        if (!(root.custom-mode && WhenDoneUi.custom-invalid)) {
+            WhenDoneUi.open = false;
+        }
     }
 
     // A preset speed replaces whatever was typed; the popover closes.
@@ -230,13 +235,17 @@ export component WhenDonePopover inherits Rectangle {
                     text <=> WhenDoneUi.custom-text;
                     placeholder-text: @tr("0.1 to 10000");
                     accessible-label: @tr("Custom speed in MB/s");
-                    // Custom picked again while the field is shown.
+                    // Focused with its text selected, so that typing
+                    // replaces the limit it was filled with. Also when
+                    // Custom is picked again while the field is shown.
                     property <int> asked: root.focus-custom;
                     changed asked => {
                         self.focus();
+                        self.select-all();
                     }
                     init => {
                         self.focus();
+                        self.select-all();
                     }
                     edited(t) => {
                         root.dirty = true;

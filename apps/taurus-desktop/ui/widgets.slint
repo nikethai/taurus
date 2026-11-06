@@ -191,6 +191,11 @@ export component LineEdit inherits Rectangle {
     callback edited <=> field.edited;
     callback accepted <=> field.accepted;
 
+    // Selects the whole text: what is typed next replaces it.
+    public function select-all() {
+        field.select-all();
+    }
+
     accessible-role: text-input;
     accessible-enabled: root.enabled;
     accessible-value: root.text;
