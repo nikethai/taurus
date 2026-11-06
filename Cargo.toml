@@ -78,6 +78,11 @@ minisign-verify = "0.3"
 minisign = "0.10"
 semver = "1"
 
+# Release tooling (xtask): icon files.
+png = "0.18"
+ico = "0.6"
+icns = "0.5"
+
 # Tests only
 axum = "0.8"
 base64 = "0.23"
