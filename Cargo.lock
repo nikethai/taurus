@@ -7362,6 +7362,7 @@ dependencies = [
  "slint-build",
  "tar",
  "taurus-core",
+ "taurus-icon",
  "taurus-testkit",
  "tempfile",
  "tokio",
@@ -7369,6 +7370,10 @@ dependencies = [
  "url",
  "zbus",
 ]
+
+[[package]]
+name = "taurus-icon"
+version = "0.1.0"
 
 [[package]]
 name = "taurus-testkit"
@@ -9020,6 +9025,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "hex",
  "icns",
  "ico",
@@ -9029,7 +9035,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "taurus-core",
- "taurus-desktop",
+ "taurus-icon",
  "tempfile",
 ]
 

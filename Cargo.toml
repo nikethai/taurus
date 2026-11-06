@@ -13,6 +13,7 @@ repository = "https://github.com/nikethai/taurus"
 # Internal crates
 taurus-core = { path = "crates/taurus-core" }
 taurus-testkit = { path = "crates/taurus-testkit" }
+taurus-icon = { path = "crates/taurus-icon" }
 
 # Desktop app (apps/taurus-desktop; needs Rust 1.92, see its Cargo.toml)
 slint = "1.18"

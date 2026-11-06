@@ -11,7 +11,7 @@ publish = false
 
 [dependencies]
 taurus-core = { workspace = true }
-taurus-desktop = { path = "../apps/taurus-desktop" }
+taurus-icon = { workspace = true }
 png = { workspace = true }
 ico = { workspace = true }
 icns = { workspace = true }
@@ -20,6 +20,7 @@ rpassword = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 serde_json = { workspace = true }
+dunce = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

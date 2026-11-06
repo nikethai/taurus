@@ -50,15 +50,14 @@ fn write_png(path: &Path, size: u32) -> Result<(), String> {
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().map_err(|e| io_err(path, e))?;
     writer
-        .write_image_data(&taurus_desktop::icon::app_icon_rgba(size))
+        .write_image_data(&taurus_icon::app_icon_rgba(size))
         .map_err(|e| io_err(path, e))
 }
 
 fn write_ico(path: &Path) -> Result<(), String> {
     let mut dir = IconDir::new(ResourceType::Icon);
     for size in ICO_SIZES {
-        let image =
-            IconImage::from_rgba_data(size, size, taurus_desktop::icon::app_icon_rgba(size));
+        let image = IconImage::from_rgba_data(size, size, taurus_icon::app_icon_rgba(size));
         let entry = IconDirEntry::encode(&image).map_err(|e| io_err(path, e))?;
         dir.add_entry(entry);
     }
@@ -73,7 +72,7 @@ fn write_icns(path: &Path) -> Result<(), String> {
             PixelFormat::RGBA,
             size,
             size,
-            taurus_desktop::icon::app_icon_rgba(size),
+            taurus_icon::app_icon_rgba(size),
         )
         .map_err(|e| io_err(path, e))?;
         family

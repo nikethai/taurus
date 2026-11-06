@@ -89,22 +89,58 @@ fn expand_home(p: &Path) -> PathBuf {
 }
 
 /// Creates `dir` and returns its real path; refuses anything inside the
-/// repository (a secret key must never end up in a commit).
+/// repository (a secret key must never end up in a commit). Checked before
+/// anything is created, on the real path of the nearest existing ancestor
+/// (so `.`, relative paths and symlinks count), and not by lexical prefix.
 fn checked_out_dir(dir: &Path) -> Result<PathBuf, String> {
-    let root = crate::repo_root();
-    let root = root.canonicalize().unwrap_or(root);
-    let inside = |p: &Path| p.starts_with(&root);
-    let abs = std::path::absolute(dir).map_err(|e| e.to_string())?;
-    let refuse = || "refusing to write the secret key inside the repository".to_string();
-    if inside(&abs) {
-        return Err(refuse());
+    let root = dunce::canonicalize(crate::repo_root()).map_err(|e| e.to_string())?;
+    let resolved = resolve_lenient(dir)?;
+    if is_inside(&resolved, &root) {
+        return Err("refusing to write the secret key inside the repository".into());
     }
-    fs::create_dir_all(&abs).map_err(|e| format!("{}: {e}", abs.display()))?;
-    let real = abs.canonicalize().map_err(|e| e.to_string())?;
-    if inside(&real) {
-        return Err(refuse());
+    fs::create_dir_all(&resolved).map_err(|e| format!("{}: {e}", resolved.display()))?;
+    dunce::canonicalize(&resolved).map_err(|e| e.to_string())
+}
+
+/// The real path `dir` would have: its nearest existing ancestor,
+/// canonicalized, plus the components that do not exist yet.
+fn resolve_lenient(dir: &Path) -> Result<PathBuf, String> {
+    let abs = std::path::absolute(dir).map_err(|e| e.to_string())?;
+    let mut existing = abs.as_path();
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    while !existing.exists() {
+        match (existing.file_name(), existing.parent()) {
+            (Some(name), Some(parent)) => {
+                missing.push(name);
+                existing = parent;
+            }
+            // `..` as a last component has no file name.
+            _ => return Err(format!("{}: cannot resolve the path", dir.display())),
+        }
+    }
+    let mut real = dunce::canonicalize(existing).map_err(|e| e.to_string())?;
+    // A missing part never contains `..` here (it would have a file name
+    // of `..` only if absolute() kept it); refuse it rather than guess.
+    for name in missing.into_iter().rev() {
+        if name == ".." {
+            return Err(format!("{}: `..` after a missing folder", dir.display()));
+        }
+        real.push(name);
     }
     Ok(real)
+}
+
+/// Whether `path` is `root` or below it; case-insensitive on Windows.
+fn is_inside(path: &Path, root: &Path) -> bool {
+    let fold = |p: &Path| -> Vec<String> {
+        p.components()
+            .map(|c| {
+                let s = c.as_os_str().to_string_lossy().into_owned();
+                if cfg!(windows) { s.to_lowercase() } else { s }
+            })
+            .collect()
+    };
+    fold(path).starts_with(&fold(root))
 }
 
 /// Generates a key pair; `password` `None` makes an unencrypted key.
@@ -125,7 +161,12 @@ pub fn write_keys(
         .map_err(|_| "key encoding failed".to_string())?
         .into_string();
     let key_file = dir.join("hyades-update.key");
-    write_secret_file(&key_file, secret.as_bytes())?;
+    if key_file.exists() {
+        return Err(format!(
+            "{} exists (it is never overwritten)",
+            key_file.display()
+        ));
+    }
     let public_text = pair
         .pk
         .to_box()
@@ -133,8 +174,26 @@ pub fn write_keys(
         .into_string();
     // Minisign writes its own untrusted comment; replace it.
     let base64 = public_text.lines().nth(1).unwrap_or_default();
-    fs::write(public, format!("untrusted comment: {comment}\n{base64}\n"))
-        .map_err(|e| format!("{}: {e}", public.display()))
+    // Both files go to temporary names first and are renamed at the end, so
+    // a failure never leaves a secret key without its public file.
+    let secret_tmp = dir.join(".hyades-update.key.tmp");
+    let public_tmp = public.with_extension("pub.tmp");
+    let _ = fs::remove_file(&secret_tmp);
+    let result = (|| {
+        fs::write(
+            &public_tmp,
+            format!("untrusted comment: {comment}\n{base64}\n"),
+        )
+        .map_err(|e| format!("{}: {e}", public_tmp.display()))?;
+        write_secret_file(&secret_tmp, secret.as_bytes())?;
+        fs::rename(&public_tmp, public).map_err(|e| format!("{}: {e}", public.display()))?;
+        fs::rename(&secret_tmp, &key_file).map_err(|e| format!("{}: {e}", key_file.display()))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&secret_tmp);
+        let _ = fs::remove_file(&public_tmp);
+    }
+    result
 }
 
 fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -207,8 +266,30 @@ mod tests {
 
     #[test]
     fn keygen_refuses_the_repository_tree() {
-        let inside = crate::repo_root().join("packaging/never-created");
+        let root = crate::repo_root();
+        let inside = root.join("packaging/never-created");
         assert!(checked_out_dir(&inside).is_err());
         assert!(!inside.exists());
+        // Relative, `.`-style and `..`-style spellings of the same place.
+        for spelled in [
+            root.join("packaging/../packaging/never-created"),
+            root.join("./never-created/deeper"),
+            root.clone(),
+        ] {
+            assert!(checked_out_dir(&spelled).is_err(), "{}", spelled.display());
+        }
+        assert!(!root.join("never-created").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keygen_refuses_a_symlink_into_the_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(crate::repo_root(), &link).unwrap();
+        assert!(checked_out_dir(&link.join("keys")).is_err());
+        assert!(!crate::repo_root().join("keys").exists());
+        // A folder elsewhere is fine.
+        assert!(checked_out_dir(&tmp.path().join("ok/deeper")).is_ok());
     }
 }
