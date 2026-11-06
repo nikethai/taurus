@@ -262,7 +262,7 @@ fn printable(s: &str) -> String {
 }
 
 /// Said once when a run ends with torrents still Seeding: `run` exits once
-/// nothing downloads, and sharing goes on only while Taurus runs. `None`
+/// nothing downloads, and sharing goes on only while Hyades runs. `None`
 /// when nothing seeds (ratio 0).
 pub fn sharing_note(settings: &TorrentSettings) -> Option<String> {
     let limit = match (settings.stop_ratio, settings.stop_after_secs) {
@@ -278,7 +278,7 @@ pub fn sharing_note(settings: &TorrentSettings) -> Option<String> {
         (None, None) => "with no limit".to_string(),
     };
     Some(format!(
-        "Sharing pauses when Taurus exits; it continues the next time Taurus runs ({limit})."
+        "Sharing pauses when Hyades exits; it continues the next time Hyades runs ({limit})."
     ))
 }
 
@@ -619,7 +619,7 @@ mod tests {
             ..TorrentSettings::default()
         };
         let note = |s: &TorrentSettings| sharing_note(s).unwrap();
-        let pauses = "Sharing pauses when Taurus exits; it continues the next time Taurus runs";
+        let pauses = "Sharing pauses when Hyades exits; it continues the next time Hyades runs";
         assert_eq!(
             note(&TorrentSettings::default()),
             format!("{pauses} (up to ratio 1.0).")

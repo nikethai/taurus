@@ -44,7 +44,7 @@ pub fn needs_restart(key: &str, before: &Settings, after: &Settings) -> bool {
 }
 
 /// Printed after one of those is set.
-pub const RESTART_NOTE: &str = "applies next time Taurus starts";
+pub const RESTART_NOTE: &str = "applies next time Hyades starts";
 
 const SPEED_VALUES: &str = "fastest, balanced, gentle, <N>KB/s or <N>MB/s";
 const WHEN_DONE_VALUES: &str = "nothing, notify, sleep, shutdown or quit";

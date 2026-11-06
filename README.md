@@ -87,7 +87,7 @@ hyades-cli login 3 --user alice
 
 `add` also takes magnet links, `.torrent` links and `.torrent` files, mixed freely with web links; `list` shows each download's kind (`http` or `torrent`), and a torrent row shows `peers N` while it downloads and `sharing · ratio 0.42` while it shares. A torrent is saved in a folder of its own name inside `--dir`; a second torrent with the same name gets `Name (1)`. A magnet link whose peers cannot be found within two minutes waits (state Waiting) and is retried. At most `torrent.max_active` torrents download at once, and sharing ones do not count.
 
-When a torrent finishes it keeps sharing (uploading to other peers) until its ratio, uploaded over downloaded size, reaches `torrent.ratio` (default 1.0), or for `torrent.seed_time` if set. Taurus shares only while it is running downloads; the CLI exits when downloads finish (`add` and `run` return once nothing is downloading, queued or waiting, even if torrents are still sharing) and says so with `Sharing pauses when Taurus exits; it continues the next time Taurus runs (up to ratio 1.0).` A torrent that has not reached its limit shares again whenever Taurus next runs downloads. Ctrl-C stops sharing too.
+When a torrent finishes it keeps sharing (uploading to other peers) until its ratio, uploaded over downloaded size, reaches `torrent.ratio` (default 1.0), or for `torrent.seed_time` if set. Hyades shares only while it is running downloads; the CLI exits when downloads finish (`add` and `run` return once nothing is downloading, queued or waiting, even if torrents are still sharing) and says so with `Sharing pauses when Hyades exits; it continues the next time Hyades runs (up to ratio 1.0).` A torrent that has not reached its limit shares again whenever Hyades next runs downloads. Ctrl-C stops sharing too.
 
 ```sh
 # A magnet link, a .torrent file and a .torrent link
@@ -132,7 +132,7 @@ The torrent settings are changed like the others: `hyades-cli config set torrent
 | `torrent.upnp` | `on` or `off`: ask the router to open the port | `on` |
 | `torrent.dht` | `on` or `off`: find peers through the distributed hash table | `on` |
 
-`torrent.peers`, `torrent.port`, `torrent.upnp` and `torrent.dht` apply the next time Taurus starts. The others take effect at once, also for torrents that are running. The overall `speed` is shared evenly between web downloads and torrents while both run. A torrent's pieces are always downloaded in order.
+`torrent.peers`, `torrent.port`, `torrent.upnp` and `torrent.dht` apply the next time Hyades starts. The others take effect at once, also for torrents that are running. The overall `speed` is shared evenly between web downloads and torrents while both run. A torrent's pieces are always downloaded in order.
 
 `--name`, `--mirror` (repeatable) and `--checksum` apply to a single web download, so they need exactly one URL; `--files` needs exactly one torrent; `--dir`, `--connections` and `--referer` apply to every URL of the `add`.
 
@@ -241,7 +241,7 @@ hyades-cli config set network.proxy socks5h://127.0.0.1:9050
 hyades-cli config set network.proxy none
 ```
 
-The proxy is used by downloads, yt-dlp and tool downloads from the next request on, and by torrents (a SOCKS proxy only) the next time Taurus starts; setting or leaving a SOCKS proxy prints `applies next time Taurus starts`. A proxy URL with a user name or password is refused (they would be stored in the settings), as is anything that is not one of the schemes above; `config set` then exits 1 and shows the reason.
+The proxy is used by downloads, yt-dlp and tool downloads from the next request on, and by torrents (a SOCKS proxy only) the next time Hyades starts; setting or leaving a SOCKS proxy prints `applies next time Hyades starts`. A proxy URL with a user name or password is refused (they would be stored in the settings), as is anything that is not one of the schemes above; `config set` then exits 1 and shows the reason.
 
 Global options go before the command:
 

@@ -34,7 +34,7 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 #[derive(Parser)]
 #[command(name = "hyades-cli", version)]
 struct Cli {
-    /// Where the job database lives [default: $TAURUS_DATA_DIR, else the OS data dir]
+    /// Where the job database lives [default: $HYADES_DATA_DIR (the older TAURUS_DATA_DIR is still read), else the OS data dir]
     #[arg(long, value_name = "PATH")]
     data_dir: Option<PathBuf>,
     /// Print every event as one JSON line; `list` and `config get` print JSON
@@ -583,6 +583,8 @@ fn print_list(views: &[JobView], json: bool) -> Result<()> {
     Ok(())
 }
 
+const NO_DATA_DIR: &str = "no data directory found; pass --data-dir or set HYADES_DATA_DIR";
+
 /// `--data-dir`, else `HYADES_DATA_DIR` (or the older `TAURUS_DATA_DIR`),
 /// else the OS data dir.
 fn data_dir(flag: Option<PathBuf>) -> Result<PathBuf> {
@@ -593,7 +595,7 @@ fn data_dir(flag: Option<PathBuf>) -> Result<PathBuf> {
         std::env::var_os("HYADES_DATA_DIR"),
         std::env::var_os("TAURUS_DATA_DIR"),
     )
-    .map_err(|e| format!("{e} or pass --data-dir").into())
+    .map_err(|_| NO_DATA_DIR.into())
 }
 
 pub(crate) fn default_dest_dir() -> Result<PathBuf> {

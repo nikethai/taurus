@@ -567,7 +567,7 @@ async fn add_torrent_file_with_files_and_seeding_note() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains(
-            "Sharing pauses when Taurus exits; it continues the next time Taurus runs \
+            "Sharing pauses when Hyades exits; it continues the next time Hyades runs \
              (up to ratio 1.0)."
         ),
         "stdout: {stdout}"
@@ -653,14 +653,14 @@ async fn config_torrent_roundtrip() {
     let port = fx.run(&["config", "set", "torrent.port", "51413"]).await;
     assert_exit(&port, 0);
     assert!(
-        String::from_utf8_lossy(&port.stdout).contains("applies next time Taurus starts"),
+        String::from_utf8_lossy(&port.stdout).contains("applies next time Hyades starts"),
         "stdout: {}",
         String::from_utf8_lossy(&port.stdout)
     );
 
     let peers = fx.run(&["config", "set", "torrent.peers", "80"]).await;
     assert_exit(&peers, 0);
-    assert!(String::from_utf8_lossy(&peers.stdout).contains("applies next time Taurus starts"));
+    assert!(String::from_utf8_lossy(&peers.stdout).contains("applies next time Hyades starts"));
 
     let output = fx.run(&["--json", "config", "get"]).await;
     assert_exit(&output, 0);
@@ -2106,10 +2106,10 @@ async fn proxy_config_roundtrip_and_rejects_bad() {
         .run(&["config", "set", "network.proxy", "socks5h://127.0.0.1:9050"])
         .await;
     assert_exit(&output, 0);
-    // Torrents pick up a SOCKS proxy when Taurus next starts.
+    // Torrents pick up a SOCKS proxy when Hyades next starts.
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "network.proxy = socks5h://127.0.0.1:9050\napplies next time Taurus starts\n"
+        "network.proxy = socks5h://127.0.0.1:9050\napplies next time Hyades starts\n"
     );
     assert_eq!(
         proxy_line(&fx).await,
@@ -2131,7 +2131,7 @@ async fn proxy_config_roundtrip_and_rejects_bad() {
     assert_exit(&output, 0);
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "network.proxy = none\napplies next time Taurus starts\n"
+        "network.proxy = none\napplies next time Hyades starts\n"
     );
     assert_eq!(proxy_line(&fx).await, "network.proxy = none\n");
     assert_exit(

@@ -70,7 +70,7 @@ fn find(engine: &Engine, id: JobId) -> Result<JobView> {
 
 /// Fails, before anyone types a password, unless `id` is a stored web
 /// download. Reads the database without opening the engine, unless it was
-/// written by an older taurus: then the engine is opened (nothing starts),
+/// written by an older build: then the engine is opened (nothing starts),
 /// which upgrades it, and closed again.
 pub async fn check_login_target(config: EngineConfig, id: JobId) -> Result<()> {
     let views = match Engine::read_snapshot(&config) {
