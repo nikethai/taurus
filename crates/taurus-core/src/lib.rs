@@ -19,6 +19,7 @@ pub mod system;
 pub mod timing;
 pub mod tools;
 pub mod torrent;
+pub mod update;
 mod when_done;
 
 pub use convert::ConvertSource;

@@ -72,6 +72,12 @@ zip = { version = "9.2", default-features = false, features = ["deflate"] }
 tar = "0.4"
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 
+# Update manifest signatures (M7): checking in core; signing in the testkit
+# and xtask only, never in the engine.
+minisign-verify = "0.3"
+minisign = "0.10"
+semver = "1"
+
 # Tests only
 axum = "0.8"
 base64 = "0.23"

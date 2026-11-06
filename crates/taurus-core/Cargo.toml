@@ -32,6 +32,8 @@ librqbit = { workspace = true }
 zip = { workspace = true }
 tar = { workspace = true }
 lzma-rust2 = { workspace = true }
+minisign-verify = { workspace = true }
+semver = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
