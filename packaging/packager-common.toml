@@ -1,0 +1,25 @@
+# Values every packager-<os>.toml repeats at its top: cargo-packager 0.11.8
+# reads one file per `--config` and has no include, so each OS file starts
+# with these lines verbatim (apps/taurus-desktop/tests/packaging.rs checks
+# that, and that `version` matches apps/taurus-desktop/Cargo.toml).
+#
+# cargo-packager resolves relative paths from this file's folder
+# (packaging/), and 0.11.8 ignores the `--binaries-dir` flag, hence
+# `binaries-dir` here. See packaging/README.md.
+name = "hyades"
+version = "1.0.0-rc.1"
+product-name = "Hyades"
+identifier = "dev.nikethai.hyades"
+publisher = "nikethai"
+authors = ["nikethai"]
+description = "Download files, videos and torrents."
+long-description = "Hyades downloads files, videos and torrents. It splits big downloads into parts, resumes after a crash, and keeps going in the background."
+homepage = "https://github.com/nikethai/taurus"
+license-file = "../LICENSE"
+# hyades.icns is listed because the macOS packager copies a listed .icns
+# as is; from PNGs alone it fails on 1024.png and 64.png ("No matching
+# IconType"). deb and AppImage skip it; Windows takes hyades.ico.
+icons = ["icons/*.png", "icons/hyades.icns"]
+category = "Utility"
+binaries-dir = "../target/release"
+binaries = [{ path = "hyades", main = true }]

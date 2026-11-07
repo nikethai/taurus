@@ -57,6 +57,7 @@ pub fn settings_vm(s: &Settings) -> SettingsVm {
             _ => Default::default(),
         },
         advanced: s.ui.mode == UiMode::Advanced,
+        check_updates: s.ui.check_updates,
     }
 }
 
@@ -93,6 +94,10 @@ pub fn apply_change(s: &mut Settings, key: &str, value: &str) -> bool {
         },
         "open-at-login" => match flag() {
             Some(b) => s.ui.open_at_login = b,
+            None => return false,
+        },
+        "check-updates" => match flag() {
+            Some(b) => s.ui.check_updates = b,
             None => return false,
         },
         "advanced" => match flag() {
@@ -265,7 +270,7 @@ impl App {
     /// `next` (changed at `key`) becomes the UI's settings and is saved.
     pub(crate) fn change_settings(&self, key: &str, next: Settings) {
         if key == "open-at-login"
-            && self.os_shell.get()
+            && self.os_shell.get().is_some()
             && let Err(e) = login::set_open_at_login(next.ui.open_at_login)
         {
             eprintln!("hyades: open at login: {e}");
@@ -313,6 +318,7 @@ mod tests {
             ("sort-by-type", "false"),
             ("offer-copied-links", "false"),
             ("open-at-login", "true"),
+            ("check-updates", "false"),
             ("folder", "/tmp/dl"),
         ] {
             assert!(apply_change(&mut s, key, value), "{key}");
@@ -332,6 +338,7 @@ mod tests {
             ("dark", "jade", "sleep")
         );
         assert!(!vm.sort_by_type && !vm.offer_copied_links && vm.open_at_login);
+        assert!(!vm.check_updates && !s.ui.check_updates);
 
         // Case does not matter; unknown keys and values change nothing.
         assert!(apply_change(&mut s, "accent", "ROSE"));
@@ -353,8 +360,10 @@ mod tests {
     /// engine's settings, a failed save's too.
     #[test]
     fn the_engines_current_settings_are_shown() {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+        // One thread, driven only inside `block_on`: the writer task (and
+        // the engine's actor) run only while `ended` or a `block_on`
+        // waits, so a save made here is still on its way until then.
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
@@ -366,13 +375,20 @@ mod tests {
         let writer = SettingsWriter::spawn(&engine, rt.handle(), app);
         // The end of the last save made (an earlier one's end may come
         // first, or not at all when the writer skipped it).
-        let ended = |what: &str| loop {
-            let msg = ends
-                .recv_timeout(std::time::Duration::from_secs(30))
-                .unwrap_or_else(|e| panic!("{what}: {e}"));
-            if writer.idle() {
-                break msg;
-            }
+        let ended = |what: &str| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            rt.block_on(async {
+                loop {
+                    match ends.try_recv() {
+                        Ok(msg) if writer.idle() => break msg,
+                        Ok(_) => {}
+                        Err(e) => {
+                            assert!(std::time::Instant::now() < deadline, "{what}: {e}");
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                        }
+                    }
+                }
+            })
         };
 
         let a = engine.settings();

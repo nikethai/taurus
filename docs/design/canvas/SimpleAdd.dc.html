@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Taurus — New download</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.tl{--bg:#FBFBFC;--panel:#FFFFFF;--line:#E5E5EA;--field:#C9C9D1;--text:#1B1B1F;--muted:#5F5F69;--chip:#EFEFF2;--hover:rgba(0,0,0,.04);--input:#FFFFFF}
+.td{--bg:#1C1C1F;--panel:#26262A;--line:#34343A;--field:#4A4A53;--text:#ECECF0;--muted:#A2A2AD;--chip:#303036;--hover:rgba(255,255,255,.05);--input:#1F1F23}
+.tl .k-media{--kbg:#EEE6FF;--kfg:#6B3FD4}
+.tl .k-music{--kbg:#FFE4EF;--kfg:#C0266D}
+.td .k-media{--kbg:rgba(155,120,255,.2);--kfg:#BBA4FF}
+.td .k-music{--kbg:rgba(255,100,160,.18);--kfg:#FF8DBB}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer}
+button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.i{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.hv:hover{background:var(--hover)}
+.num{font-variant-numeric:tabular-nums}
+a{color:var(--accent-text)}a:hover{color:var(--text)}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="--accent: {{acc.base}}; --accent-strong: {{acc.strong}}; --accent-text: {{acc.text}}; --sel: {{acc.sel}}; width: 420px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.45;">
+
+<header style="flex: none; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px;">
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #28C840;"></span>
+<span style="flex: 1;"></span>
+<a href="SimpleMain.dc.html" aria-label="Cancel" title="Cancel" class="hv" style="width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--muted);"><svg class="i" width="17" height="17" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></a>
+</header>
+
+<main class="{{kc}}" style="flex: 1; min-height: 0; padding: 4px 20px 0; display: flex; flex-direction: column; gap: 18px;">
+<div role="img" aria-label="Video thumbnail placeholder" style="height: 200px; border-radius: 16px; background: var(--kbg); color: var(--kfg); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 12px;">
+<svg class="i" width="34" height="34" viewBox="0 0 24 24" aria-hidden="true"><path d="{{bigIcon}}"></path></svg>
+Thumbnail
+</div>
+
+<div>
+<h1 style="margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.3;">Sprite Fright — Blender Open Movie</h1>
+<p style="margin: 4px 0 0; color: var(--muted);">Blender Studio · 10 min · from youtube.com</p>
+</div>
+
+<div role="group" aria-label="What to save" style="padding: 3px; border-radius: 12px; background: var(--chip); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px;">
+<sc-for list="{{kinds}}" as="k" hint-placeholder-count="2">
+<button onClick="{{k.pick}}" aria-pressed="{{k.pressed}}" style="height: 38px; border-radius: 10px; font-weight: 600; background: {{k.bg}}; color: {{k.color}}; box-shadow: {{k.shadow}};">{{k.label}}</button>
+</sc-for>
+</div>
+
+<div style="display: flex; flex-direction: column; border-radius: 14px; background: var(--panel); border: 1px solid var(--line);">
+<button class="hv" style="display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 14px; border-radius: 14px 14px 0 0; text-align: left;">
+<span style="flex: 1;">Save to</span>
+<span style="color: var(--muted);">{{folder}}</span>
+<svg class="i" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--muted);"><path d="M9 6l6 6-6 6"></path></svg>
+</button>
+<button onClick="{{cycleQuality}}" class="hv" style="display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 14px; border-top: 1px solid var(--line); border-radius: 0 0 14px 14px; text-align: left;">
+<span style="flex: 1;">Quality</span>
+<span style="color: var(--muted);">{{quality}}</span>
+<svg class="i" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--muted);"><path d="M8 10l4-4 4 4M8 14l4 4 4-4"></path></svg>
+</button>
+</div>
+</main>
+
+<footer style="flex: none; padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 8px;">
+<a href="SimpleMain.dc.html" style="height: 48px; border-radius: 24px; background: var(--accent-strong); color: #FFFFFF; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 15px; font-weight: 600; text-decoration: none;"><svg class="i" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"></path></svg>Download</a>
+<p class="num" style="margin: 0; text-align: center; font-size: 12.5px; color: var(--muted);">{{size}} · plenty of space left</p>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false,"section":"Theme"},"accent":{"editor":"enum","options":["Aldebaran","Cobalt","Jade","Grape","Rose","Sky"],"default":"Aldebaran","section":"Theme"},"$preview":{"width":420,"height":640}}'>
+var ACC = {
+  Aldebaran: { l: { base: '#E8590C', strong: '#C2410C', text: '#B3410A', sel: 'rgba(232,89,12,.09)' }, d: { base: '#FF7A2E', strong: '#C2410C', text: '#FF9A5C', sel: 'rgba(255,122,46,.15)' } },
+  Cobalt: { l: { base: '#2F6FDE', strong: '#2457B8', text: '#2457B8', sel: 'rgba(47,111,222,.09)' }, d: { base: '#5B8FF0', strong: '#2F62C8', text: '#8DB2FF', sel: 'rgba(91,143,240,.15)' } },
+  Jade: { l: { base: '#0F9D76', strong: '#0B7258', text: '#0B7258', sel: 'rgba(15,157,118,.09)' }, d: { base: '#2CC799', strong: '#0B7258', text: '#5ADBB3', sel: 'rgba(44,199,153,.15)' } },
+  Grape: { l: { base: '#7C3AED', strong: '#6D28D9', text: '#6D28D9', sel: 'rgba(124,58,237,.09)' }, d: { base: '#A78BFA', strong: '#6D28D9', text: '#C4B5FD', sel: 'rgba(167,139,250,.15)' } },
+  Rose: { l: { base: '#E11D48', strong: '#BE123C', text: '#BE123C', sel: 'rgba(225,29,72,.08)' }, d: { base: '#FB7185', strong: '#BE123C', text: '#FDA4AF', sel: 'rgba(251,113,133,.15)' } },
+  Sky: { l: { base: '#0284C7', strong: '#0369A1', text: '#0369A1', sel: 'rgba(2,132,199,.09)' }, d: { base: '#38BDF8', strong: '#0369A1', text: '#7DD3FC', sel: 'rgba(56,189,248,.15)' } }
+};
+var VIDEO_Q = [['Best available', '2 GB'], ['1080p', '642 MB'], ['720p', '318 MB']];
+var AUDIO_Q = [['Best available', '18 MB'], ['Smaller file', '9 MB']];
+
+class Component extends DCLogic {
+  state = { kind: 'video', q: 0 };
+
+  renderVals() {
+    var self = this;
+    var st = this.state;
+    var dark = this.props.dark ?? false;
+    var acc = (ACC[this.props.accent ?? 'Aldebaran'] || ACC.Aldebaran)[dark ? 'd' : 'l'];
+    var audio = st.kind === 'audio';
+    var qs = audio ? AUDIO_Q : VIDEO_Q;
+    var q = qs[st.q % qs.length];
+    return {
+      acc: acc,
+      themeClass: dark ? 'td' : 'tl',
+      kc: audio ? 'k-music' : 'k-media',
+      bigIcon: audio ? 'M9 17.5V6l10-2v11.5M9 17.5a2 2 0 1 1-4 0a2 2 0 1 1 4 0M19 15.5a2 2 0 1 1-4 0a2 2 0 1 1 4 0' : 'M5 5h14a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM10 9v6l5-3z',
+      kinds: [['video', 'Video'], ['audio', 'Audio only']].map(function (k) {
+        var on = st.kind === k[0];
+        return {
+          label: k[1], pressed: on ? 'true' : 'false',
+          bg: on ? 'var(--panel)' : 'transparent',
+          color: on ? 'var(--text)' : 'var(--muted)',
+          shadow: on ? '0 1px 3px rgba(0,0,0,.14)' : 'none',
+          pick: function () { self.setState({ kind: k[0], q: 0 }); }
+        };
+      }),
+      folder: audio ? 'Music' : 'Videos',
+      quality: q[0],
+      cycleQuality: function () { self.setState({ q: self.state.q + 1 }); },
+      size: q[1]
+    };
+  }
+}
+</script>
+</body>
+</html>

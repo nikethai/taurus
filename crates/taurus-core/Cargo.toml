@@ -1,6 +1,6 @@
 [package]
 name = "taurus-core"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -24,6 +24,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 fs4 = { workspace = true }
 dunce = { workspace = true }
+directories = { workspace = true }
 keepawake = { workspace = true }
 keyring = { workspace = true }
 getrandom = { workspace = true }
@@ -31,6 +32,8 @@ librqbit = { workspace = true }
 zip = { workspace = true }
 tar = { workspace = true }
 lzma-rust2 = { workspace = true }
+minisign-verify = { workspace = true }
+semver = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

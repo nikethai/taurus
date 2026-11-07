@@ -1,5 +1,5 @@
 // Plain-language (Simple mode) sentences for engine error kinds and the
-// retry wait. The Rust text used for OS notifications must mirror `simple`.
+// retry wait. OS notifications read `simple` too (ShellStrings::simple).
 export global Messages {
     // `kind` is ErrorKind::as_str(), e.g. "link_expired".
     public pure function simple(kind: string) -> string {
@@ -39,6 +39,8 @@ export global Messages {
             return @tr("This needs your confirmation.");
         } else if (kind == "file_changed_on_server") {
             return @tr("The file changed on the server, so the download started over.");
+        } else if (kind == "connection_lost") {
+            return @tr("Hyades couldn't connect. Check your internet connection, then try again.");
         }
         return @tr("Something went wrong. Try again.");
     }

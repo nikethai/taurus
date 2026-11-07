@@ -40,6 +40,8 @@ export struct ToolRowVm {
     state: string,
     // Installing: done from 0 to 1, -1 while the size is unknown.
     progress: float,
+    // Failed: why, as ErrorKind::as_str() (shown with Messages.simple).
+    error-kind: string,
 }
 
 export global SettingsUi {

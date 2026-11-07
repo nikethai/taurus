@@ -18,6 +18,7 @@ pub mod detail;
 pub mod filters;
 pub mod format;
 pub mod grab_flow;
+pub mod i18n;
 pub mod icon;
 pub mod instance;
 pub mod links;
@@ -31,6 +32,8 @@ pub mod settings_flow;
 pub mod shell_text;
 mod torrent_pick;
 pub mod tray;
+pub mod update_apply;
+pub mod update_flow;
 mod whendone_flow;
 
 #[cfg(test)]

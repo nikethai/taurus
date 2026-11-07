@@ -155,6 +155,8 @@ pub struct UiSettings {
     /// Where downloads go; `None` is the OS Downloads folder, which the UI
     /// resolves.
     pub folder: Option<std::path::PathBuf>,
+    /// Look for a new Hyades version at launch and once a day.
+    pub check_updates: bool,
 }
 
 impl Default for UiSettings {
@@ -169,6 +171,7 @@ impl Default for UiSettings {
             sort_by_type: true,
             language: None,
             folder: None,
+            check_updates: true,
         }
     }
 }
@@ -232,6 +235,7 @@ mod tests {
         assert_eq!(d.accent, "Aldebaran");
         assert!(d.progress_by_type && d.offer_copied_links && d.sort_by_type);
         assert!(!d.open_at_login);
+        assert!(d.check_updates);
         assert_eq!((d.language, d.folder), (None, None));
         assert_eq!(Settings::default().ui, UiSettings::default());
 

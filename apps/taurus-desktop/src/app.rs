@@ -13,7 +13,7 @@
 //! the Settings screen in `settings_flow.rs` (Advanced Settings in
 //! `adv_settings.rs`), applying engine state to the window in `pump.rs`.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -39,7 +39,11 @@ use crate::detail::warn;
 use crate::grab_flow::GrabState;
 use crate::links::ClipboardFilter;
 use crate::pump::ViewState;
+use crate::rows;
 use crate::settings_flow::SettingsWriter;
+use crate::shell_text::ShellStrings;
+use crate::update_apply::Restart;
+use crate::update_flow::{UpdateMsg, Updates};
 use crate::{AppWindow, icon};
 
 /// How often engine state reaches the window, at most.
@@ -110,6 +114,8 @@ pub(crate) enum UiMsg {
     },
     /// A tool action or forgetting passwords answered (Advanced Settings).
     Settings(SettingsMsg),
+    /// An update check or download moved on (`update_flow.rs`).
+    Update(UpdateMsg),
 }
 
 /// Hands links and clipboard text to the app from any thread.
@@ -147,8 +153,9 @@ pub struct App {
     pub(crate) tx: AppSender,
     rx: mpsc::Receiver<UiMsg>,
     has_tray: bool,
-    /// Desktop notifications and the login item are used (off in tests).
-    pub(crate) os_shell: Cell<bool>,
+    /// Set when desktop notifications and the login item are used (never
+    /// in tests): the notification titles, read once at start.
+    pub(crate) os_shell: OnceCell<ShellStrings>,
     quitting: Cell<bool>,
     pub(crate) filter: RefCell<ClipboardFilter>,
     /// The link the clipboard banner offers.
@@ -179,6 +186,10 @@ pub struct App {
     pub(crate) offer_links: Arc<AtomicBool>,
     bridge: RefCell<Option<tokio::task::JoinHandle<()>>>,
     timer: Timer,
+    /// Hyades' own updates (`update_flow.rs`).
+    pub(crate) updates: Updates,
+    /// What `main` starts once the app has quit to update.
+    pending_restart: RefCell<Option<Restart>>,
 }
 
 /// Connects a window callback to an `App` method without keeping the app
@@ -217,7 +228,7 @@ impl App {
             tx,
             rx,
             has_tray,
-            os_shell: Cell::new(false),
+            os_shell: OnceCell::new(),
             quitting: Cell::new(false),
             filter: RefCell::new(ClipboardFilter::new()),
             banner_link: RefCell::new(None),
@@ -237,6 +248,8 @@ impl App {
             offer_links,
             bridge: RefCell::new(None),
             timer: Timer::default(),
+            updates: Updates::default(),
+            pending_restart: RefCell::new(None),
         });
 
         let size = 64;
@@ -368,6 +381,7 @@ impl App {
             .rollback_tool(&kind));
         on!(settings, self, on_forget_passwords, |a| a
             .forget_passwords());
+        self.connect_updates(ui);
 
         let weak = Rc::downgrade(self);
         ui.window().on_close_requested(move || {
@@ -380,10 +394,10 @@ impl App {
         });
     }
 
-    /// Turns on desktop notifications and the login item. Off by default so
-    /// tests never touch the OS.
-    pub fn use_os_shell(&self) {
-        self.os_shell.set(true);
+    /// Turns on desktop notifications (titled from `text`) and the login
+    /// item. Off by default so tests never touch the OS.
+    pub fn use_os_shell(&self, text: ShellStrings) {
+        let _ = self.os_shell.set(text);
     }
 
     /// For other threads: forwarded links and clipboard text.
@@ -423,6 +437,18 @@ impl App {
         let _ = slint::quit_event_loop();
     }
 
+    /// Quits so that `restart` runs after the engine has stopped (`main`
+    /// takes it with `pending_restart`).
+    pub fn restart_to_update(&self, restart: Restart) {
+        *self.pending_restart.borrow_mut() = Some(restart);
+        self.quit();
+    }
+
+    /// What to start after quitting, if the app quit to update.
+    pub fn pending_restart(&self) -> Option<Restart> {
+        self.pending_restart.borrow().clone()
+    }
+
     /// Shows the window again (from the tray) and unminimizes it; it is not
     /// raised above other windows.
     pub fn show_window(&self) {
@@ -434,17 +460,14 @@ impl App {
         }
     }
 
-    /// Every unfinished job is paused.
+    /// Something is paused and nothing "Pause all" pauses is running
+    /// (`rows::offers_resume_all`).
     pub fn all_paused(&self) -> bool {
         self.view.borrow().all_paused()
     }
 
     pub fn pause_all(&self) {
-        for id in
-            self.view
-                .borrow()
-                .ids_in(&[JobState::Downloading, JobState::Queued, JobState::Waiting])
-        {
+        for id in self.view.borrow().ids_in(&rows::PAUSABLE) {
             self.spawn_job(id, Job::Pause);
         }
     }
@@ -537,6 +560,7 @@ impl App {
             UiMsg::AdvAdded { seq, result } => self.adv_added(seq, result),
             UiMsg::Grabbed { run, result } => self.grabbed(run, *result),
             UiMsg::Settings(msg) => self.settings_msg(msg),
+            UiMsg::Update(msg) => self.update_msg(msg),
         }
     }
 

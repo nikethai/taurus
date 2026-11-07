@@ -3,11 +3,13 @@
 //! internet" mark once it is done; and what runs once the queue is done.
 
 pub mod awake;
+pub mod data_dir;
 pub mod marks;
 pub mod power;
 pub mod space;
 
 pub use awake::AwakeGuard;
+pub use data_dir::{data_dir, default_data_dir};
 pub use marks::mark_downloaded;
 pub use power::command_for;
 pub(crate) use space::same_volume;

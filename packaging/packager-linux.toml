@@ -1,0 +1,29 @@
+# Linux: deb and AppImage. `cargo packager -c packaging/packager-linux.toml`
+# from the repo root; see packaging/README.md. The first block repeats
+# packager-common.toml.
+name = "hyades"
+version = "1.0.0-rc.1"
+product-name = "Hyades"
+identifier = "dev.nikethai.hyades"
+publisher = "nikethai"
+authors = ["nikethai"]
+description = "Download files, videos and torrents."
+long-description = "Hyades downloads files, videos and torrents. It splits big downloads into parts, resumes after a crash, and keeps going in the background."
+homepage = "https://github.com/nikethai/taurus"
+license-file = "../LICENSE"
+icons = ["icons/*.png", "icons/hyades.icns"]
+category = "Utility"
+binaries-dir = "../target/release"
+binaries = [{ path = "hyades", main = true }]
+formats = ["deb", "appimage"]
+deep-link-protocols = [{ schemes = ["magnet"] }]
+file-associations = [{ extensions = ["torrent"], mime-type = "application/x-bittorrent" }]
+
+[deb]
+depends = ["libfontconfig1", "libxkbcommon0", "libxkbcommon-x11-0"]
+# The AppStream metainfo goes where AppStream reads it (a `resources` entry
+# would land in usr/lib/hyades/).
+files = { "linux/dev.nikethai.hyades.metainfo.xml" = "/usr/share/metainfo/dev.nikethai.hyades.metainfo.xml" }
+
+[appimage]
+files = { "linux/dev.nikethai.hyades.metainfo.xml" = "/usr/share/metainfo/dev.nikethai.hyades.metainfo.xml" }

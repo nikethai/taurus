@@ -14,7 +14,7 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::icon::app_icon_rgba;
-use crate::shell_text::{APP_NAME, TRAY_OPEN, TRAY_PAUSE_ALL, TRAY_QUIT, TRAY_RESUME_ALL};
+use crate::shell_text::{APP_NAME, ShellStrings};
 
 const POLL: Duration = Duration::from_millis(100);
 const ICON_SIZE: u32 = 32;
@@ -36,17 +36,18 @@ pub struct Tray {
     _timer: Timer,
 }
 
-/// Shows the tray icon. `None` when the desktop has no tray (no
-/// StatusNotifier host on Linux) or it could not be created; the reason is
-/// logged.
-pub fn build(on: TrayActions) -> Option<Tray> {
+/// Shows the tray icon, its menu worded by `text` (the language is fixed
+/// for the life of the process, so the menu is never rebuilt). `None` when
+/// the desktop has no tray (no StatusNotifier host on Linux) or it could
+/// not be created; the reason is logged.
+pub fn build(on: TrayActions, text: &ShellStrings) -> Option<Tray> {
     if !host_available() {
         eprintln!("hyades: no tray on this desktop (no StatusNotifier host)");
         return None;
     }
-    let open = MenuItem::new(TRAY_OPEN, true, None);
-    let toggle = MenuItem::new(TRAY_PAUSE_ALL, true, None);
-    let quit = MenuItem::new(TRAY_QUIT, true, None);
+    let open = MenuItem::new(&text.tray_open, true, None);
+    let toggle = MenuItem::new(&text.tray_pause_all, true, None);
+    let quit = MenuItem::new(&text.tray_quit, true, None);
     let menu = Menu::new();
     let appended = menu.append_items(&[&open, &PredefinedMenuItem::separator(), &toggle, &quit]);
     let icon = Icon::from_rgba(app_icon_rgba(ICON_SIZE), ICON_SIZE, ICON_SIZE);
@@ -71,6 +72,7 @@ pub fn build(on: TrayActions) -> Option<Tray> {
     };
 
     let (open_id, toggle_id, quit_id) = (open.id().clone(), toggle.id().clone(), quit.id().clone());
+    let (pause_all, resume_all) = (text.tray_pause_all.clone(), text.tray_resume_all.clone());
     let mut shows_resume = false;
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, POLL, move || {
@@ -104,11 +106,7 @@ pub fn build(on: TrayActions) -> Option<Tray> {
         let paused = (on.all_paused)();
         if paused != shows_resume {
             shows_resume = paused;
-            toggle.set_text(if paused {
-                TRAY_RESUME_ALL
-            } else {
-                TRAY_PAUSE_ALL
-            });
+            toggle.set_text(if paused { &resume_all } else { &pause_all });
         }
     });
     Some(Tray {

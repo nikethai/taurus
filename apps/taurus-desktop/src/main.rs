@@ -16,7 +16,10 @@ use slint::ComponentHandle;
 use taurus_core::{Engine, EngineConfig};
 use taurus_desktop::app::App;
 use taurus_desktop::instance::{self, Instance};
-use taurus_desktop::{AppWindow, clipboard, links, shell_text, tray};
+use taurus_desktop::shell_text::{self, ShellStrings};
+use taurus_desktop::update_apply::{self, InstallKind};
+use taurus_desktop::update_flow::{self, UpdateFlow};
+use taurus_desktop::{AppWindow, clipboard, i18n, links, tray};
 
 const CLIPBOARD_POLL: Duration = Duration::from_secs(1);
 
@@ -50,6 +53,13 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         let _guard = rt.enter();
         listener.into_stream()
     };
+    // The window (not shown yet) comes first: the start-up message box
+    // reads its words from it. Until the engine is open only
+    // `HYADES_LANG` (or the OS locale) can pick the language.
+    let ui = AppWindow::new()?;
+    let lang = std::env::var("HYADES_LANG").ok();
+    let early = i18n::choose(lang.as_deref(), None);
+    i18n::apply(early.as_deref());
     let engine = match rt.block_on(Engine::open(EngineConfig::new(&data_dir))) {
         Ok(engine) => engine,
         Err(e) => {
@@ -58,19 +68,26 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Error)
                 .set_title(shell_text::APP_NAME)
-                .set_description(shell_text::open_failed(&e))
+                .set_description(ShellStrings::from_ui(&ui).open_error(&e))
                 .set_buttons(rfd::MessageButtons::Ok)
                 .show();
             return Ok(ExitCode::FAILURE);
         }
     };
+    // Now the saved language too; it stays for the life of the process, so
+    // the tray and notification words are read once, here.
+    let chosen = i18n::choose(lang.as_deref(), engine.settings().ui.language.as_deref());
+    if chosen != early {
+        i18n::apply(chosen.as_deref());
+    }
+    let text = ShellStrings::from_ui(&ui);
 
-    let ui = AppWindow::new()?;
     let app_cell: Rc<OnceCell<Weak<App>>> = Rc::new(OnceCell::new());
-    let tray = tray::build(tray_actions(&app_cell));
+    let tray = tray::build(tray_actions(&app_cell), &text);
     let app = App::start(&ui, engine, rt.handle().clone(), tray.is_some());
     let _ = app_cell.set(Rc::downgrade(&app));
-    app.use_os_shell();
+    app.use_os_shell(text);
+    app.use_updates(update_flow(&data_dir));
 
     let sender = app.sender();
     rt.spawn(async move {
@@ -92,18 +109,41 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     // Quit already stopped the engine; this covers any other way out.
     app.quit();
     drop(tray);
+    let restart = app.pending_restart();
+    // Gone with the runtime: the single-instance listener, so the updated
+    // copy started next becomes the primary instance.
     rt.shutdown_timeout(Duration::from_secs(2));
+    if let Some(restart) = restart
+        && let Err(e) = update_apply::spawn(restart)
+    {
+        eprintln!("hyades: cannot start the update: {e}");
+    }
     Ok(ExitCode::SUCCESS)
 }
 
-/// The same folder as the CLI: `TAURUS_DATA_DIR`, else the OS data dir.
+/// Updates for this copy: how it was installed, the manifest
+/// (`HYADES_UPDATE_MANIFEST` may move it) and `<data_dir>/updates/`.
+fn update_flow(data_dir: &std::path::Path) -> UpdateFlow {
+    let kind = match std::env::current_exe() {
+        Ok(exe) => update_apply::detect(
+            &exe,
+            std::env::var_os("APPIMAGE").as_deref(),
+            std::env::consts::OS,
+        ),
+        Err(_) => InstallKind::NotifyOnly,
+    };
+    let manifest = std::env::var("HYADES_UPDATE_MANIFEST").ok();
+    let cfg = update_flow::config_for(&kind, manifest.as_deref());
+    UpdateFlow::new(cfg, kind, data_dir.join("updates"))
+}
+
+/// The same folder as the CLI: `HYADES_DATA_DIR` (or the older
+/// `TAURUS_DATA_DIR`), else the OS data dir.
 fn data_dir() -> Result<PathBuf, String> {
-    if let Some(dir) = std::env::var_os("TAURUS_DATA_DIR").filter(|d| !d.is_empty()) {
-        return Ok(dir.into());
-    }
-    directories::ProjectDirs::from("dev", "nikethai", "taurus")
-        .map(|dirs| dirs.data_dir().to_path_buf())
-        .ok_or_else(|| "no data directory found; set TAURUS_DATA_DIR".to_string())
+    taurus_core::system::data_dir(
+        std::env::var_os("HYADES_DATA_DIR"),
+        std::env::var_os("TAURUS_DATA_DIR"),
+    )
 }
 
 /// Tray actions that reach the app once it exists (the tray is made first

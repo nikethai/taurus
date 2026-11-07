@@ -2,7 +2,8 @@
 // button: what Hyades does when every download is finished, and the speed
 // limit. A global holds what it shows and what it asks of the app (the app
 // sets it with `ui.global::<WhenDoneUi>()`), so the window passes nothing
-// along. Escape or a click outside closes it.
+// along. Escape, a click outside, or picking a choice or a preset speed
+// closes it; Custom keeps it open with its field focused.
 import { Theme } from "../theme.slint";
 import { Icon } from "../icons.slint";
 import { Pressable, Segmented, Segment, LineEdit } from "../widgets.slint";
@@ -52,15 +53,36 @@ export global WhenDoneUi {
 component Radio inherits Pressable {
     in property <string> text;
     in property <bool> selected;
+    // The icon at the end of the row.
+    in property <string> icon;
 
-    height: 36px;
+    height: 32px;
+    border-radius: 7px;
+    background: self.pressed ? Theme.track : self.hovered ? Theme.hover : transparent;
     accessible-role: radio-button;
     accessible-label: text;
     accessible-checkable: true;
     accessible-checked: selected;
 
     HorizontalLayout {
-        spacing: 8px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 15px;
+                height: 15px;
+                border-radius: 7.5px;
+                border-width: root.selected ? 0 : 1.5px;
+                border-color: Theme.switch-off;
+                background: root.selected ? Theme.accent-strong : transparent;
+                if root.selected: Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: #FFFFFF;
+                }
+            }
+        }
         Text {
             text: root.text;
             vertical-alignment: center;
@@ -69,22 +91,29 @@ component Radio inherits Pressable {
             color: Theme.text;
             accessible-role: none;
         }
-        if root.selected: VerticalLayout {
+        VerticalLayout {
             alignment: center;
-            Icon {
-                name: "check";
-                width: 16px;
-                height: 16px;
-                stroke: Theme.accent-strong;
-                stroke-width: 2.25px;
+            Path {
+                width: 15px;
+                height: 15px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: root.icon;
+                fill: transparent;
+                stroke: Theme.muted;
+                stroke-width: 1.8px;
+                stroke-line-cap: round;
+                stroke-line-join: round;
             }
         }
     }
 }
 
 component Heading inherits Text {
+    height: 24px;
+    vertical-alignment: top;
     font-size: 12px;
-    font-weight: 700;
+    font-weight: 600;
     color: Theme.muted;
     accessible-role: text;
     accessible-label: self.text;
@@ -94,16 +123,42 @@ component Heading inherits Text {
 export component WhenDonePopover inherits Rectangle {
     // Typing the custom speed, or already on a custom speed.
     property <bool> custom-mode: WhenDoneUi.speed == "custom";
-    property <[{value: string, label: string}]> choices: [
-        { value: "nothing", label: @tr("Do nothing") },
-        { value: "notify", label: @tr("Just notify me") },
-        { value: "sleep", label: @tr("Put the computer to sleep") },
-        { value: "shutdown", label: @tr("Shut down") },
-        { value: "quit", label: @tr("Quit Hyades") },
+    property <[{value: string, label: string, icon: string}]> choices: [
+        { value: "nothing", label: @tr("Do nothing"), icon: "M6 12h12" },
+        { value: "notify", label: @tr("Just notify me"), icon: "M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5h4" },
+        { value: "sleep", label: @tr("Put the computer to sleep"), icon: "M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z" },
+        { value: "shutdown", label: @tr("Shut down"), icon: "M12 4v7M7.5 7a7 7 0 1 0 9 0" },
+        { value: "quit", label: @tr("Quit Hyades"), icon: "M14 4h5v16h-5M10 8l-4 4 4 4M6 12h9" },
     ];
 
     // The field's text changed since it was last applied.
     property <bool> dirty: false;
+    // Bumped by each pick of Custom: the field takes the focus.
+    property <int> focus-custom: 0;
+
+    // A when-done choice: a custom speed typed and not applied yet is
+    // applied first (as leaving the field would), then the popover
+    // closes, unless the field shows refused text: it stays open, showing
+    // why.
+    // (Escape and a click outside close it without applying the text.)
+    function pick-when-done(value: string) {
+        if (root.dirty) {
+            root.dirty = false;
+            WhenDoneUi.custom-commit(WhenDoneUi.custom-text);
+        }
+        WhenDoneUi.pick-when-done(value);
+        if (!(root.custom-mode && WhenDoneUi.custom-invalid)) {
+            WhenDoneUi.open = false;
+        }
+    }
+
+    // A preset speed replaces whatever was typed; the popover closes.
+    function pick-speed(value: string) {
+        root.dirty = false;
+        root.custom-mode = false;
+        WhenDoneUi.pick-speed(value);
+        WhenDoneUi.open = false;
+    }
 
     background: transparent;
     init => {
@@ -130,12 +185,12 @@ export component WhenDonePopover inherits Rectangle {
     }
 
     Rectangle {
-        width: min(root.width - 32px, 320px);
+        width: min(root.width - 20px, 292px);
         height: card.preferred-height;
-        x: root.width - self.width - 16px;
-        y: root.height - self.height - 44px;
+        x: root.width - self.width - 10px;
+        y: root.height - self.height - 50px;
         background: Theme.panel;
-        border-radius: 14px;
+        border-radius: 12px;
         border-width: 1px;
         border-color: Theme.line;
         drop-shadow-blur: 24px;
@@ -145,16 +200,17 @@ export component WhenDonePopover inherits Rectangle {
         // Clicks on the card stay on it.
         TouchArea { }
         card := VerticalLayout {
-            padding: 16px;
-            spacing: 6px;
+            padding: 14px;
+            spacing: 2px;
             Heading {
                 text: @tr("When downloads finish");
             }
             for c in root.choices: Radio {
                 text: c.label;
+                icon: c.icon;
                 selected: WhenDoneUi.when-done == c.value;
                 clicked => {
-                    WhenDoneUi.pick-when-done(c.value);
+                    root.pick-when-done(c.value);
                 }
             }
             if WhenDoneUi.when-done == "sleep" || WhenDoneUi.when-done == "shutdown": Text {
@@ -165,33 +221,37 @@ export component WhenDonePopover inherits Rectangle {
                 accessible-role: text;
                 accessible-label: self.text;
             }
+            Rectangle {
+                height: 21px;
+                Rectangle {
+                    height: 1px;
+                    background: Theme.line;
+                }
+            }
             Heading {
                 text: @tr("Speed");
             }
             Segmented {
-                height: 38px;
+                height: 34px;
                 Segment {
                     text: @tr("Gentle");
                     selected: !root.custom-mode && WhenDoneUi.speed == "gentle";
                     clicked => {
-                        root.custom-mode = false;
-                        WhenDoneUi.pick-speed("gentle");
+                        root.pick-speed("gentle");
                     }
                 }
                 Segment {
                     text: @tr("Balanced");
                     selected: !root.custom-mode && WhenDoneUi.speed == "balanced";
                     clicked => {
-                        root.custom-mode = false;
-                        WhenDoneUi.pick-speed("balanced");
+                        root.pick-speed("balanced");
                     }
                 }
                 Segment {
                     text: @tr("Fastest");
                     selected: !root.custom-mode && WhenDoneUi.speed == "fastest";
                     clicked => {
-                        root.custom-mode = false;
-                        WhenDoneUi.pick-speed("fastest");
+                        root.pick-speed("fastest");
                     }
                 }
                 Segment {
@@ -200,6 +260,7 @@ export component WhenDonePopover inherits Rectangle {
                     clicked => {
                         root.custom-mode = true;
                         WhenDoneUi.custom-chosen();
+                        root.focus-custom += 1;
                     }
                 }
             }
@@ -210,8 +271,17 @@ export component WhenDonePopover inherits Rectangle {
                     text <=> WhenDoneUi.custom-text;
                     placeholder-text: @tr("0.1 to 10000");
                     accessible-label: @tr("Custom speed in MB/s");
+                    // Focused with its text selected, so that typing
+                    // replaces the limit it was filled with. Also when
+                    // Custom is picked again while the field is shown.
+                    property <int> asked: root.focus-custom;
+                    changed asked => {
+                        self.focus();
+                        self.select-all();
+                    }
                     init => {
                         self.focus();
+                        self.select-all();
                     }
                     edited(t) => {
                         root.dirty = true;

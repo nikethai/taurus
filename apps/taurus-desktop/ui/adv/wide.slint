@@ -3,10 +3,12 @@
 // the window (`DetailPane`, shared with the compact layout).
 import { Theme } from "../theme.slint";
 import { AdvRowVm, FilterCountVm } from "../types.slint";
-import { IconButton, TextButton, LineEdit } from "../widgets.slint";
+import { Pressable, TextButton, LineEdit } from "../widgets.slint";
+import { Icon } from "../icons.slint";
 import { LinkField } from "../welcome.slint";
 import { AdvList, SpeedFooter } from "main.slint";
 import { Sidebar } from "sidebar.slint";
+import { UpdateUi, UpdateBanner } from "../update.slint";
 
 export component AdvWide inherits Rectangle {
     in property <[AdvRowVm]> rows;
@@ -32,15 +34,25 @@ export component AdvWide inherits Rectangle {
     // The footer's when-done button.
     callback open-whendone();
 
+    in property <bool> all-paused;
+    // The window is 1100 px or wider.
+    in property <bool> roomy: true;
+    callback pause-all();
+    callback resume-all();
+
     property <bool> pasting: false;
 
     HorizontalLayout {
         Sidebar {
-            width: 200px;
+            // Narrower while the window leaves the list little room.
+            width: root.roomy ? 220px : 180px;
             counts: root.counts;
             filter <=> root.filter;
             filter-changed(key) => {
                 root.filter-changed(key);
+            }
+            open-settings => {
+                root.open-settings();
             }
         }
         Rectangle {
@@ -49,33 +61,74 @@ export component AdvWide inherits Rectangle {
         }
         VerticalLayout {
             horizontal-stretch: 1;
-            padding-top: 12px;
-            spacing: 10px;
+            spacing: 8px;
             HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 8px;
-                spacing: 6px;
-                LineEdit {
+                height: 56px;
+                padding-left: 20px;
+                padding-right: 16px;
+                spacing: 8px;
+                Text {
+                    text: @tr("Downloads");
+                    vertical-alignment: center;
+                    // The search field gives way first.
+                    horizontal-stretch: 0;
+                    min-width: 60px;
+                    overflow: elide;
+                    font-size: 18px;
+                    font-weight: 700;
+                    color: Theme.text;
+                }
+                VerticalLayout {
+                    alignment: center;
                     horizontal-stretch: 1;
-                    text <=> root.search-text;
-                    placeholder-text: @tr("Search downloads");
-                    accessible-label: @tr("Search downloads");
-                    edited(text) => {
-                        root.search-changed(text);
+                    min-width: 120px;
+                    max-width: 240px;
+                    LineEdit {
+                        min-width: 120px;
+                        preferred-width: 240px;
+                        text <=> root.search-text;
+                        placeholder-text: @tr("Search downloads");
+                        accessible-label: @tr("Search downloads");
+                        edited(text) => {
+                            root.search-changed(text);
+                        }
                     }
                 }
-                add-button := IconButton {
-                    icon: root.pasting ? "close" : "plus";
-                    label: root.pasting ? @tr("Close the link field") : @tr("Add a download");
-                    clicked => {
-                        root.pasting = !root.pasting;
-                    }
-                }
-                IconButton {
-                    icon: "settings";
-                    label: @tr("Settings");
-                    clicked => {
-                        root.open-settings();
+                VerticalLayout {
+                    alignment: center;
+                    add-button := Pressable {
+                        height: 32px;
+                        width: add-row.preferred-width + 24px;
+                        border-radius: 8px;
+                        background: root.pasting ? (self.hovered ? Theme.track : Theme.chip)
+                            : self.pressed ? Theme.accent-strong.darker(0.15) : Theme.accent-strong;
+                        accessible-label: @tr("New download");
+                        accessible-expandable: true;
+                        accessible-expanded: root.pasting;
+                        clicked => {
+                            root.pasting = !root.pasting;
+                        }
+                        add-row := HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            VerticalLayout {
+                                alignment: center;
+                                Icon {
+                                    name: root.pasting ? "close" : "plus";
+                                    width: 14px;
+                                    height: 14px;
+                                    stroke: root.pasting ? Theme.text : Theme.accent-text;
+                                }
+                            }
+                            Text {
+                                text: @tr("New download");
+                                vertical-alignment: center;
+                                font-size: 13px;
+                                font-weight: 600;
+                                color: root.pasting ? Theme.text : Theme.accent-text;
+                                accessible-role: none;
+                            }
+                        }
                     }
                 }
             }
@@ -91,11 +144,13 @@ export component AdvWide inherits Rectangle {
                     return reject;
                 }
                 VerticalLayout {
-                    padding-left: 16px;
+                    padding-left: 20px;
                     padding-right: 16px;
                     spacing: 6px;
                     LinkField {
-                        field-height: 44px;
+                        field-height: 36px;
+                        pill: false;
+                        show-icon: true;
                         init => {
                             self.focus-input();
                         }
@@ -128,6 +183,11 @@ export component AdvWide inherits Rectangle {
                     }
                 }
             }
+            if UpdateUi.banner: HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                UpdateBanner { }
+            }
             AdvList {
                 vertical-stretch: 1;
                 rows: root.rows;
@@ -154,7 +214,10 @@ export component AdvWide inherits Rectangle {
             SpeedFooter {
                 down: root.speed-down;
                 up: root.speed-up;
+                all-paused: root.all-paused;
                 open-whendone => { root.open-whendone(); }
+                pause-all => { root.pause-all(); }
+                resume-all => { root.resume-all(); }
             }
         }
     }

@@ -1,6 +1,6 @@
 [package]
 name = "taurus-desktop"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 # Own MSRV: slint 1.18 needs Rust 1.92 and tray-icon 0.26 needs 1.90, above the
 # workspace's 1.89. CI checks this crate with 1.92 and the rest with 1.89.
@@ -9,8 +9,39 @@ license.workspace = true
 repository.workspace = true
 build = "build.rs"
 
+# `cargo generate-rpm -p apps/taurus-desktop [--target T] -o dist/linux/`
+# from the repo root, after `cargo build --release -p taurus-desktop`
+# (see packaging/README.md). Sources are relative to the repo root; the tool
+# rewrites target/release/ for --target and CARGO_TARGET_DIR.
+[package.metadata.generate-rpm]
+name = "hyades"
+summary = "Download files, videos and torrents."
+url = "https://github.com/nikethai/taurus"
+assets = [
+    { source = "target/release/hyades", dest = "/usr/bin/hyades", mode = "755" },
+    { source = "packaging/linux/dev.nikethai.hyades.desktop", dest = "/usr/share/applications/hyades.desktop", mode = "644" },
+    { source = "packaging/linux/dev.nikethai.hyades.metainfo.xml", dest = "/usr/share/metainfo/dev.nikethai.hyades.metainfo.xml", mode = "644" },
+    { source = "packaging/icons/32.png", dest = "/usr/share/icons/hicolor/32x32/apps/dev.nikethai.hyades.png", mode = "644" },
+    { source = "packaging/icons/64.png", dest = "/usr/share/icons/hicolor/64x64/apps/dev.nikethai.hyades.png", mode = "644" },
+    { source = "packaging/icons/128.png", dest = "/usr/share/icons/hicolor/128x128/apps/dev.nikethai.hyades.png", mode = "644" },
+    { source = "packaging/icons/256.png", dest = "/usr/share/icons/hicolor/256x256/apps/dev.nikethai.hyades.png", mode = "644" },
+    { source = "packaging/icons/512.png", dest = "/usr/share/icons/hicolor/512x512/apps/dev.nikethai.hyades.png", mode = "644" },
+    { source = "packaging/icons/1024.png", dest = "/usr/share/icons/hicolor/1024x1024/apps/dev.nikethai.hyades.png", mode = "644" },
+]
+
+# The deb's libraries (packager-linux.toml), by their rpm package names.
+[package.metadata.generate-rpm.requires]
+fontconfig = "*"
+libxkbcommon = "*"
+libxkbcommon-x11 = "*"
+
+[[bin]]
+name = "hyades"
+path = "src/main.rs"
+
 [dependencies]
 taurus-core = { workspace = true }
+taurus-icon = { workspace = true }
 slint = { workspace = true }
 interprocess = { workspace = true }
 tokio = { workspace = true }
@@ -26,6 +57,10 @@ auto-launch = { workspace = true }
 opener = { workspace = true }
 rfd = { workspace = true }
 chrono = { workspace = true }
+# In-app updates: the running version, and unpacking the macOS bundle.
+semver = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
 # Linux uses the D-Bus StatusNotifier backend (no GTK); the feature does
 # nothing on Windows and macOS.
 tray-icon = { workspace = true, features = ["ksni"] }
@@ -35,6 +70,11 @@ zbus = { workspace = true }
 
 [build-dependencies]
 slint-build = { workspace = true }
+
+# Windows: the exe's icon and version info (build.rs). The build script runs
+# on the host, and CI builds Windows on Windows.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [dev-dependencies]
 i-slint-backend-testing = { workspace = true }

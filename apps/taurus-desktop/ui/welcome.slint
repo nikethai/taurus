@@ -5,11 +5,19 @@ import { Icon } from "icons.slint";
 import { IconButton } from "widgets.slint";
 
 // Text field plus an add button. Return or the button sends the link.
+// `inline-button: false` leaves the button out (the caller puts its
+// own next to the field and calls `send()`).
 export component LinkField inherits Rectangle {
-    in property <length> field-height: 52px;
+    in property <length> field-height: 44px;
+    // Rounded ends (Simple) or the 9 px corners of the Advanced fields.
+    in property <bool> pill: true;
+    // A link icon before the text.
+    in property <bool> show-icon: false;
+    in property <bool> inline-button: true;
+    out property <bool> has-text: input.text != "";
     callback entered(string);
 
-    function send() {
+    public function send() {
         if (input.text != "") {
             root.entered(input.text);
             input.text = "";
@@ -21,22 +29,31 @@ export component LinkField inherits Rectangle {
     }
 
     height: field-height;
-    border-radius: 12px;
-    background: Theme.panel;
+    border-radius: pill ? self.height / 2 : 9px;
+    background: Theme.input;
     border-width: input.has-focus ? 2px : 1px;
-    border-color: input.has-focus ? Theme.accent-base : Theme.line;
+    border-color: input.has-focus ? Theme.accent-base : Theme.field;
 
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 8px;
+        padding-left: root.pill ? 16px : 10px;
+        padding-right: root.inline-button ? 4px : 10px;
         spacing: 8px;
+        if root.show-icon: VerticalLayout {
+            alignment: center;
+            Icon {
+                name: "link";
+                width: 15px;
+                height: 15px;
+                stroke: Theme.muted;
+            }
+        }
         Rectangle {
             horizontal-stretch: 1;
             input := TextInput {
                 y: (parent.height - self.height) / 2;
                 height: self.preferred-height;
                 width: parent.width;
-                font-size: 15px;
+                font-size: root.pill ? 14px : 13px;
                 color: Theme.text;
                 selection-background-color: Theme.sel;
                 selection-foreground-color: Theme.text;
@@ -51,17 +68,18 @@ export component LinkField inherits Rectangle {
                 text: @tr("Paste a link");
                 x: 0;
                 y: (parent.height - self.height) / 2;
-                font-size: 15px;
+                font-size: input.font-size;
                 color: Theme.muted;
                 accessible-role: none;
             }
         }
-        VerticalLayout {
+        if root.inline-button: VerticalLayout {
             alignment: center;
             IconButton {
                 icon: "down";
                 label: @tr("Download this link");
                 filled: true;
+                size: root.height - 8px;
                 enabled: input.text != "";
                 clicked => {
                     root.send();
@@ -121,21 +139,27 @@ export component Welcome inherits Rectangle {
                 HorizontalLayout {
                     alignment: center;
                     Rectangle {
-                        width: 64px;
-                        height: 64px;
-                        border-radius: 16px;
-                        background: Theme.accent-base;
-                        Icon {
-                            name: "down";
-                            width: 32px;
-                            height: 32px;
-                            stroke: Theme.accent-text;
-                            stroke-width: 2.5px;
+                        width: 112px;
+                        height: 112px;
+                        border-radius: 28px;
+                        background: Theme.sel;
+                        Rectangle {
+                            width: 68px;
+                            height: 68px;
+                            border-radius: 18px;
+                            background: Theme.accent-strong;
+                            Icon {
+                                name: "down";
+                                width: 32px;
+                                height: 32px;
+                                stroke: Theme.accent-text;
+                                stroke-width: 2.25px;
+                            }
                         }
                     }
                 }
                 Text {
-                    text: @tr("Hyades");
+                    text: "Hyades";
                     horizontal-alignment: center;
                     font-size: 26px;
                     font-weight: 700;
@@ -149,7 +173,7 @@ export component Welcome inherits Rectangle {
                 }
             }
             LinkField {
-                field-height: 56px;
+                field-height: 46px;
                 entered(link) => {
                     root.link-entered(link);
                 }

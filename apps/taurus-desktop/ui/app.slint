@@ -1,5 +1,12 @@
+// Inter (SIL OFL 1.1, fonts/OFL.txt), compiled in: the same type on
+// every system.
+import "fonts/Inter-Regular.ttf";
+import "fonts/Inter-Medium.ttf";
+import "fonts/Inter-SemiBold.ttf";
+import "fonts/Inter-Bold.ttf";
 import { Theme } from "theme.slint";
 import { Messages } from "messages.slint";
+import { ShellText } from "shell_text.slint";
 import {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
     AdvRowVm, FilterCountVm, TabCountsVm,
@@ -18,15 +25,17 @@ import { FilesDialog } from "adv/torrent.slint";
 import { AdvCompact } from "adv/main.slint";
 import { AdvWide } from "adv/wide.slint";
 import { DetailPane } from "adv/detail.slint";
-import { RemoveDialog, PasswordDialog } from "adv/dialogs.slint";
+import { RemoveDialog } from "adv/dialogs.slint";
+import { PasswordDialog } from "dialogs.slint";
 import { Welcome } from "welcome.slint";
 import { Downloads } from "downloads.slint";
 import { Add } from "add.slint";
 import { Settings } from "settings.slint";
 import { Banner } from "banner.slint";
 import { Countdown } from "countdown.slint";
+import { UpdateUi } from "update.slint";
 
-export { Theme, Messages, LinksUi, WhenDoneUi, SettingsUi, AdvSettingsVm, ToolRowVm }
+export { Theme, Messages, ShellText, LinksUi, WhenDoneUi, SettingsUi, AdvSettingsVm, ToolRowVm, UpdateUi }
 export {
     RowVm, SummaryVm, Screen, AddVm, SettingsVm, CountdownVm, BannerVm,
     AdvRowVm, FilterCountVm, TabCountsVm,
@@ -40,7 +49,7 @@ export {
 // `link-entered` / `link-dropped` / `banner-download` and to Downloads
 // after `add-confirmed`.
 export component AppWindow inherits Window {
-    in property <string> window-title: @tr("Hyades");
+    in property <string> window-title: "Hyades";
 
     in-out property <Screen> screen: Screen.welcome;
     in property <[RowVm]> downloading-rows;
@@ -56,6 +65,8 @@ export component AppWindow inherits Window {
     // Video tools: "" | "installing" | "failed"; percent -1 = unknown.
     in property <string> tools-banner;
     in property <int> tools-percent: -1;
+    // Why the last fetch failed (ErrorKind::as_str()), "" when unknown.
+    in property <string> tools-error;
     in property <bool> has-tray;
     // Window (and taskbar) icon, drawn by the app.
     in property <image> app-icon;
@@ -135,7 +146,8 @@ export component AppWindow inherits Window {
     callback confirm-remove(int, bool);
     // "chrome" | "firefox" | "safari" | "edge" | "brave"
     callback retry-with-browser(int, string);
-    // "Enter password…": opens the sign-in dialog.
+    // "Enter password…" (Advanced detail) or a Simple row's "Sign in":
+    // opens the sign-in dialog.
     callback ask-password(int);
     // id, user name, password
     callback submit-password(int, string, string);
@@ -194,12 +206,20 @@ export component AppWindow inherits Window {
         root.width-changed();
     }
 
-    // A typed password never outlives the Advanced add screen or the
-    // sign-in dialog, whatever closes them (Back, Escape, a mode switch).
+    // A typed password never outlives the Advanced add screen, Several
+    // links or the sign-in dialog, whatever closes them (Back, Escape, a
+    // mode switch).
     property <bool> adv-add-open: root.screen == Screen.add && root.layout != "simple";
     changed adv-add-open => {
         if (!self.adv-add-open) {
             root.adv-password = "";
+        }
+    }
+    property <bool> batch-open: root.screen == Screen.batch;
+    changed batch-open => {
+        if (!self.batch-open) {
+            LinksUi.batch-user = "";
+            LinksUi.batch-password = "";
         }
     }
     property <bool> password-open: root.password-dialog.visible;
@@ -220,6 +240,7 @@ export component AppWindow inherits Window {
     min-width: 360px;
     min-height: 480px;
     background: Theme.bg;
+    default-font-family: "Inter";
     default-font-size: 14px;
 
     // Simple screen: one centered column, at most 640px wide. The
@@ -237,12 +258,8 @@ export component AppWindow inherits Window {
                 padding-top: 12px;
                 Banner {
                     banner: root.banner;
-                    download => {
-                        root.banner-download();
-                    }
-                    dismiss => {
-                        root.banner-dismiss();
-                    }
+                    download => { root.banner-download(); }
+                    dismiss => { root.banner-dismiss(); }
                 }
             }
 
@@ -259,15 +276,17 @@ export component AppWindow inherits Window {
                         tab <=> root.adv-tab;
                         speed-down: root.speed-down-text;
                         speed-up: root.speed-up-text;
+                        all-paused: root.summary.all-paused;
+                        narrow: root.width < 400px;
+                        pause-all => { root.pause-all(); }
+                        resume-all => { root.resume-all(); }
                         tab-changed(i) => { root.tab-changed(i); }
                         select(id) => { root.select(id); }
                         link-entered(link) => { root.link-entered(link); }
                         open-whendone => { root.open-whendone(); }
                         open-batch => { root.open-batch(); }
                         open-grab => { root.open-grab(""); }
-                        open-settings => {
-                            root.screen = Screen.settings;
-                        }
+                        open-settings => { root.screen = Screen.settings; }
                         pause(id) => { root.pause(id); }
                         resume(id) => { root.resume(id); }
                         retry(id) => { root.retry(id); }
@@ -284,6 +303,10 @@ export component AppWindow inherits Window {
                             speed-down: root.speed-down-text;
                             speed-up: root.speed-up-text;
                             search-text <=> root.search-text;
+                            all-paused: root.summary.all-paused;
+                            roomy: root.width >= 1100px;
+                            pause-all => { root.pause-all(); }
+                            resume-all => { root.resume-all(); }
                             filter-changed(key) => { root.filter-changed(key); }
                             search-changed(text) => { root.search-changed(text); }
                             select(id) => { root.select(id); }
@@ -291,9 +314,7 @@ export component AppWindow inherits Window {
                             open-whendone => { root.open-whendone(); }
                             open-batch => { root.open-batch(); }
                             open-grab => { root.open-grab(""); }
-                            open-settings => {
-                                root.screen = Screen.settings;
-                            }
+                            open-settings => { root.screen = Screen.settings; }
                             pause(id) => { root.pause(id); }
                             resume(id) => { root.resume(id); }
                             retry(id) => { root.retry(id); }
@@ -307,8 +328,9 @@ export component AppWindow inherits Window {
                         }
 
                         if root.layout == "wide" || root.detail.visible: DetailPane {
-                            // Wide: a 300 px pane; compact: the whole window.
-                            min-width: root.layout == "wide" ? 300px : 0px;
+                            // Wide: a 260 to 300 px pane; compact: the whole window.
+                            min-width: root.layout == "wide" ? 260px : 0px;
+                            preferred-width: root.layout == "wide" ? 300px : 0px;
                             max-width: root.layout == "wide" ? 300px : 100000px;
                             horizontal-stretch: root.layout == "wide" ? 0 : 1;
                             detail: root.detail;
@@ -319,54 +341,26 @@ export component AppWindow inherits Window {
                             back => {
                                 root.select(-1);
                             }
-                            pause(id) => {
-                                root.pause(id);
-                            }
-                            resume(id) => {
-                                root.resume(id);
-                            }
-                            retry(id) => {
-                                root.retry(id);
-                            }
-                            open-file(id) => {
-                                root.open-file(id);
-                            }
-                            reveal(id) => {
-                                root.reveal(id);
-                            }
-                            stop-recording(id) => {
-                                root.stop-recording(id);
-                            }
-                            copy-link(id) => {
-                                root.copy-link(id);
-                            }
-                            convert(id, preset) => {
-                                root.convert(id, preset);
-                            }
-                            ask-remove(id) => {
-                                root.ask-remove(id);
-                            }
-                            retry-with-browser(id, browser) => {
-                                root.retry-with-browser(id, browser);
-                            }
-                            ask-password(id) => {
-                                root.ask-password(id);
-                            }
-                            choose-files(id) => {
-                                root.choose-files(id);
-                            }
-                            set-override(id, field, value) => {
-                                root.set-override(id, field, value);
-                            }
+                            pause(id) => { root.pause(id); }
+                            resume(id) => { root.resume(id); }
+                            retry(id) => { root.retry(id); }
+                            open-file(id) => { root.open-file(id); }
+                            reveal(id) => { root.reveal(id); }
+                            stop-recording(id) => { root.stop-recording(id); }
+                            copy-link(id) => { root.copy-link(id); }
+                            convert(id, preset) => { root.convert(id, preset); }
+                            ask-remove(id) => { root.ask-remove(id); }
+                            retry-with-browser(id, browser) => { root.retry-with-browser(id, browser); }
+                            ask-password(id) => { root.ask-password(id); }
+                            choose-files(id) => { root.choose-files(id); }
+                            set-override(id, field, value) => { root.set-override(id, field, value); }
                         }
                     }
                 }
 
                 if !root.advanced-list && root.screen == Screen.welcome: Welcome {
                     offer-copied-links: root.settings.offer-copied-links;
-                    link-entered(link) => {
-                        root.link-entered(link);
-                    }
+                    link-entered(link) => { root.link-entered(link); }
                     open-settings => {
                         root.screen = Screen.settings;
                     }
@@ -379,46 +373,26 @@ export component AppWindow inherits Window {
                     tab <=> root.tab;
                     tools-banner: root.tools-banner;
                     tools-percent: root.tools-percent;
-                    link-entered(link) => {
-                        root.link-entered(link);
-                    }
+                    tools-error: root.tools-error;
+                    link-entered(link) => { root.link-entered(link); }
                     open-settings => {
                         root.screen = Screen.settings;
                     }
-                    pause(id) => {
-                        root.pause(id);
-                    }
-                    resume(id) => {
-                        root.resume(id);
-                    }
-                    retry(id) => {
-                        root.retry(id);
-                    }
-                    stop-recording(id) => {
-                        root.stop-recording(id);
-                    }
-                    open-file(id) => {
-                        root.open-file(id);
-                    }
-                    reveal(id) => {
-                        root.reveal(id);
-                    }
-                    remove(id) => {
-                        root.remove(id);
-                    }
-                    pause-all => {
-                        root.pause-all();
-                    }
-                    resume-all => {
-                        root.resume-all();
-                    }
+                    pause(id) => { root.pause(id); }
+                    resume(id) => { root.resume(id); }
+                    retry(id) => { root.retry(id); }
+                    sign-in(id) => { root.ask-password(id); }
+                    stop-recording(id) => { root.stop-recording(id); }
+                    open-file(id) => { root.open-file(id); }
+                    reveal(id) => { root.reveal(id); }
+                    remove(id) => { root.remove(id); }
+                    pause-all => { root.pause-all(); }
+                    resume-all => { root.resume-all(); }
                 }
 
                 if root.screen == Screen.add && root.layout == "simple": Add {
                     add: root.add;
-                    confirmed => {
-                        root.add-confirmed();
-                    }
+                    confirmed => { root.add-confirmed(); }
                     cancelled => {
                         root.add-cancelled();
                         root.home();
@@ -427,18 +401,10 @@ export component AppWindow inherits Window {
                         root.add-cancelled();
                         root.screen = Screen.downloads;
                     }
-                    choose-folder => {
-                        root.choose-folder();
-                    }
-                    media-mode-changed(mode) => {
-                        root.media-mode-changed(mode);
-                    }
-                    quality-cycled => {
-                        root.quality-cycled();
-                    }
-                    playlist-confirmed => {
-                        root.playlist-confirmed();
-                    }
+                    choose-folder => { root.choose-folder(); }
+                    media-mode-changed(mode) => { root.media-mode-changed(mode); }
+                    quality-cycled => { root.quality-cycled(); }
+                    playlist-confirmed => { root.playlist-confirmed(); }
                 }
 
                 if root.screen == Screen.add && root.layout != "simple": AdvAdd {
@@ -451,18 +417,10 @@ export component AppWindow inherits Window {
                     is-macos: root.is-macos;
                     tools-banner: root.tools-banner;
                     password <=> root.adv-password;
-                    field-changed(field, value) => {
-                        root.adv-field-changed(field, value);
-                    }
-                    toggle-file(i) => {
-                        root.adv-toggle-file(i);
-                    }
-                    toggle-all(on) => {
-                        root.adv-toggle-all(on);
-                    }
-                    toggle-group(path) => {
-                        root.adv-toggle-group(path);
-                    }
+                    field-changed(field, value) => { root.adv-field-changed(field, value); }
+                    toggle-file(i) => { root.adv-toggle-file(i); }
+                    toggle-all(on) => { root.adv-toggle-all(on); }
+                    toggle-group(path) => { root.adv-toggle-group(path); }
                     confirmed(start-now) => {
                         root.adv-add-confirmed(start-now);
                     }
@@ -474,9 +432,7 @@ export component AppWindow inherits Window {
                         root.add-cancelled();
                         root.screen = Screen.downloads;
                     }
-                    choose-folder => {
-                        root.choose-folder();
-                    }
+                    choose-folder => { root.choose-folder(); }
                 }
 
                 if root.screen == Screen.grab: AdvGrab {
@@ -487,12 +443,8 @@ export component AppWindow inherits Window {
                 }
 
                 if root.screen == Screen.batch: AdvBatch {
-                    find-files(url) => {
-                        root.open-grab(url);
-                    }
-                    back => {
-                        root.home();
-                    }
+                    find-files(url) => { root.open-grab(url); }
+                    back => { root.home(); }
                 }
 
                 if root.screen == Screen.settings && root.layout != "simple": AdvSettings {
@@ -502,15 +454,9 @@ export component AppWindow inherits Window {
 
                 if root.screen == Screen.settings && root.layout == "simple": Settings {
                     settings: root.settings;
-                    changed(key, value) => {
-                        root.setting-changed(key, value);
-                    }
-                    choose-folder => {
-                        root.choose-folder();
-                    }
-                    back => {
-                        root.home();
-                    }
+                    changed(key, value) => { root.setting-changed(key, value); }
+                    choose-folder => { root.choose-folder(); }
+                    back => { root.home(); }
                 }
             }
 
@@ -519,9 +465,7 @@ export component AppWindow inherits Window {
                 padding-top: 0;
                 Countdown {
                     countdown: root.countdown;
-                    cancel => {
-                        root.cancel-countdown();
-                    }
+                    cancel => { root.cancel-countdown(); }
                 }
             }
         }
@@ -547,15 +491,9 @@ export component AppWindow inherits Window {
         width: root.width;
         height: root.height;
         dialog: root.files-dialog;
-        toggle-file(i) => {
-            root.adv-toggle-file(i);
-        }
-        toggle-all(on) => {
-            root.adv-toggle-all(on);
-        }
-        toggle-group(path) => {
-            root.adv-toggle-group(path);
-        }
+        toggle-file(i) => { root.adv-toggle-file(i); }
+        toggle-all(on) => { root.adv-toggle-all(on); }
+        toggle-group(path) => { root.adv-toggle-group(path); }
         confirm(id, chosen) => {
             root.files-chosen(id, chosen);
             root.files-dialog.visible = false;
@@ -573,9 +511,7 @@ export component AppWindow inherits Window {
         dialog: root.password-dialog;
         user <=> root.password-user;
         password <=> root.password-text;
-        submit(id, user, password) => {
-            root.submit-password(id, user, password);
-        }
+        submit(id, user, password) => { root.submit-password(id, user, password); }
         cancel => {
             root.password-dialog.visible = false;
             root.password-user = "";

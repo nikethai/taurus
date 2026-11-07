@@ -61,13 +61,13 @@ component Mark inherits Rectangle {
     height: 18px;
     border-radius: root.round ? 9px : 4px;
     border-width: root.on && !root.round ? 0 : 1.5px;
-    border-color: root.on ? Theme.accent-base : Theme.muted;
-    background: root.on && !root.round ? Theme.accent-base : transparent;
+    border-color: root.on ? Theme.accent-strong : Theme.muted;
+    background: root.on && !root.round ? Theme.accent-strong : transparent;
     if root.on && root.round: Rectangle {
         width: 8px;
         height: 8px;
         border-radius: 4px;
-        background: Theme.accent-base;
+        background: Theme.accent-strong;
     }
     if root.on && !root.round: Path {
         width: 12px;

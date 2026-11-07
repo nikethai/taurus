@@ -1,6 +1,7 @@
 // Offer to download a link the user copied.
 import { Theme } from "theme.slint";
 import { BannerVm } from "types.slint";
+import { Messages } from "messages.slint";
 import { IconButton, TextButton, KindBadge } from "widgets.slint";
 
 export component Banner inherits Rectangle {
@@ -16,6 +17,10 @@ export component Banner inherits Rectangle {
     drop-shadow-offset-y: 2px;
     drop-shadow-color: Theme.shadow;
     accessible-role: AccessibleRole.banner;
+    // Tall enough for the question at the width it really gets: the
+    // layout alone left a wrapped question a line short (seen with
+    // Slint 1.18).
+    min-height: question.preferred-height + 24px;
 
     HorizontalLayout {
         padding: 12px;
@@ -27,7 +32,7 @@ export component Banner inherits Rectangle {
                 size: 36px;
             }
         }
-        Text {
+        question := Text {
             // A magnet link has no host to name.
             text: root.banner.host != "" ? @tr("Download the link you copied from {0}?", root.banner.host)
                 : root.banner.kind == "magnet" ? @tr("Download the torrent link you copied?")
@@ -71,16 +76,19 @@ export component ToolsBanner inherits Rectangle {
     in property <string> state;
     // 0-100, -1 = unknown
     in property <int> percent: -1;
+    // Why it failed: ErrorKind::as_str(), "" when unknown.
+    in property <string> error-kind;
 
-    background: state == "failed" ? Theme.kind-bg("live") : Theme.accent-soft;
+    background: state == "failed" ? Theme.kind-bg("live") : Theme.sel;
     border-radius: 10px;
     accessible-role: AccessibleRole.banner;
 
-    HorizontalLayout {
+    VerticalLayout {
         padding-left: 12px;
         padding-right: 12px;
         padding-top: 8px;
         padding-bottom: 8px;
+        spacing: 2px;
         Text {
             text: root.state == "failed" ? @tr("Couldn't get the video tools. Hyades will try again.")
                 : root.percent >= 0 ? @tr("Getting video tools… {0}%", root.percent)
@@ -90,6 +98,14 @@ export component ToolsBanner inherits Rectangle {
             wrap: word-wrap;
             font-size: 12px;
             color: root.state == "failed" ? Theme.err : Theme.text;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+        if root.state == "failed" && root.error-kind != "": Text {
+            text: Messages.simple(root.error-kind);
+            wrap: word-wrap;
+            font-size: 12px;
+            color: Theme.text;
             accessible-role: text;
             accessible-label: self.text;
         }

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Taurus — Settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.tl{--bg:#FBFBFC;--side:#F1F1F3;--panel:#FFFFFF;--line:#E3E3E8;--field:#C9C9D1;--text:#1B1B1F;--muted:#5F5F69;--chip:#ECECF0;--off:#8E8E99;--ok:#1F7A5C;--hover:rgba(0,0,0,.045);--input:#FFFFFF}
+.td{--bg:#1B1B1E;--side:#222226;--panel:#202024;--line:#313137;--field:#4A4A53;--text:#ECECF0;--muted:#A2A2AD;--chip:#2C2C32;--off:#6E6E79;--ok:#4CC79A;--hover:rgba(255,255,255,.055);--input:#26262B}
+.tl .k-disc{--kbg:#E3EDFF;--kfg:#2563C9}
+.tl .k-media{--kbg:#EEE6FF;--kfg:#6B3FD4}
+.tl .k-magnet{--kbg:#DDF4EF;--kfg:#0B7160}
+.tl .k-music{--kbg:#FFE4EF;--kfg:#C0266D}
+.td .k-disc{--kbg:rgba(91,143,240,.18);--kfg:#8DB2FF}
+.td .k-media{--kbg:rgba(155,120,255,.2);--kfg:#BBA4FF}
+.td .k-magnet{--kbg:rgba(44,199,170,.18);--kfg:#5AD8C2}
+.td .k-music{--kbg:rgba(255,100,160,.18);--kfg:#FF8DBB}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;text-align:left}
+input,select{font:inherit;color:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.i{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.hv:hover{background:var(--hover)}
+.num{font-variant-numeric:tabular-nums}
+.sw{appearance:none;-webkit-appearance:none;width:36px;height:22px;border-radius:11px;background:var(--off);position:relative;cursor:pointer;margin:0;flex:none;transition:background .15s}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#FFFFFF;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+.sw:checked{background:var(--accent-strong)}
+.sw:checked::after{transform:translateX(14px)}
+a{color:var(--accent-text)}a:hover{color:var(--text)}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="--accent: {{acc.base}}; --accent-strong: {{acc.strong}}; --accent-text: {{acc.text}}; --sel: {{acc.sel}}; min-height: 100vh; display: flex; flex-wrap: wrap; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.4;">
+
+<nav aria-label="Settings sections" style="flex: 1 1 220px; box-sizing: border-box; background: var(--side); border-right: 1px solid var(--line); padding: 14px 12px; display: flex; flex-direction: column; gap: 16px;">
+<div style="display: flex; align-items: center; gap: 8px; padding: 2px 6px 0; height: 24px;">
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #28C840;"></span>
+</div>
+<a href="Main.dc.html" class="hv" style="display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 10px; border-radius: 7px; color: var(--muted); text-decoration: none;">
+<svg class="i" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"></path></svg>
+Back to downloads
+</a>
+<div style="display: flex; flex-direction: column; gap: 2px;">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<button onClick="{{n.pick}}" aria-current="{{n.current}}" class="hv" style="display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 0 10px; box-sizing: border-box; border-radius: 7px; background: {{n.bg}}; color: {{n.color}}; font-weight: {{n.weight}};">
+<svg class="i" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+{{n.label}}
+</button>
+</sc-for>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 28px 32px 40px;">
+<div style="max-width: 720px; display: flex; flex-direction: column; gap: 24px;">
+
+<sc-if value="{{isEngines}}" hint-placeholder-val="{{true}}">
+<div style="display: flex; flex-direction: column; gap: 24px;">
+<header>
+<h1 style="margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em;">Engines</h1>
+<p style="margin: 6px 0 0; color: var(--muted); max-width: 560px;">Taurus hands each link to the right tool. aria2 ships with the app. The media tools are fetched the first time you need them, so they can keep themselves up to date.</p>
+</header>
+<ul style="margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 12px; background: var(--panel);">
+<sc-for list="{{engines}}" as="e" hint-placeholder-count="4">
+<li style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 16px 18px; border-top: {{e.divider}};">
+<span class="{{e.kc}}" style="width: 40px; height: 40px; border-radius: 10px; background: var(--kbg); color: var(--kfg); display: flex; align-items: center; justify-content: center; flex: none; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; font-weight: 500;">{{e.mono}}</span>
+<div style="flex: 1 1 240px; min-width: 0;">
+<p style="margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;"><span style="font-weight: 600; font-size: 14px;">{{e.name}}</span><span style="padding: 1px 7px; border-radius: 4px; background: var(--chip); color: var(--muted); font-size: 11px; font-weight: 500;">{{e.badge}}</span></p>
+<p style="margin: 2px 0 0; color: var(--muted);">{{e.desc}}</p>
+<p class="num" style="margin: 6px 0 0; display: flex; align-items: center; gap: 6px; font-size: 12px; color: {{e.statusColor}}; font-weight: 500;"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: {{e.dot}};"></span>{{e.status}}</p>
+</div>
+<button onClick="{{e.act}}" class="hv" style="height: 34px; padding: 0 14px; border-radius: 8px; border: 1px solid {{e.btnBorder}}; background: {{e.btnBg}}; color: {{e.btnColor}}; font-weight: 600; white-space: nowrap;">{{e.btn}}</button>
+</li>
+</sc-for>
+</ul>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 4px 2px;">
+<label for="s-auto" style="display: flex; flex-direction: column; gap: 2px;"><span style="font-weight: 500;">Update media tools automatically</span><span style="color: var(--muted); font-size: 12px;">Sites change often; yt-dlp breaks without updates.</span></label>
+<input id="s-auto" class="sw" type="checkbox" role="switch" checked="{{autoUpdate}}" onChange="{{tAuto}}">
+</div>
+<p style="margin: 0; color: var(--muted); font-size: 12px;">Engine files live in <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text);">~/Library/Application Support/Taurus/engines</span></p>
+</div>
+</sc-if>
+
+<sc-if value="{{isDownloads}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; flex-direction: column; gap: 24px;">
+<header>
+<h1 style="margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em;">Downloads</h1>
+<p style="margin: 6px 0 0; color: var(--muted);">Where files go and how hard Taurus pushes the connection.</p>
+</header>
+<div style="border: 1px solid var(--line); border-radius: 12px; background: var(--panel);">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 18px;">
+<div style="flex: 1 1 240px;"><p style="margin: 0; font-weight: 500;">Default folder</p><p style="margin: 2px 0 0; color: var(--muted); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px;">~/Downloads</p></div>
+<button class="hv" style="height: 34px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line); font-weight: 500;">Change…</button>
+</div>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-top: 1px solid var(--line);">
+<label for="s-sort" style="flex: 1;"><span style="display: block; font-weight: 500;">Sort into folders by type</span><span style="display: block; margin-top: 2px; color: var(--muted); font-size: 12px;">Videos to ~/Movies, music to ~/Music, and so on.</span></label>
+<input id="s-sort" class="sw" type="checkbox" role="switch" checked="{{sortByType}}" onChange="{{tSort}}">
+</div>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-top: 1px solid var(--line);">
+<label for="s-ask" style="flex: 1; font-weight: 500;">Ask where to save each download</label>
+<input id="s-ask" class="sw" type="checkbox" role="switch" checked="{{askEach}}" onChange="{{tAsk}}">
+</div>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-top: 1px solid var(--line);">
+<label for="s-resume" style="flex: 1; font-weight: 500;">Resume unfinished downloads on launch</label>
+<input id="s-resume" class="sw" type="checkbox" role="switch" checked="{{resumeOnLaunch}}" onChange="{{tResume}}">
+</div>
+</div>
+<div style="border: 1px solid var(--line); border-radius: 12px; background: var(--panel);">
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px;">
+<label for="s-active" style="flex: 1; font-weight: 500;">Active downloads at once</label>
+<select id="s-active" value="{{maxActive}}" onChange="{{onMaxActive}}" style="height: 32px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--field); background: var(--input);"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="10">10</option></select>
+</div>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-top: 1px solid var(--line);">
+<label for="s-conn" style="flex: 1;"><span style="display: block; font-weight: 500;">Connections per server</span><span style="display: block; margin-top: 2px; color: var(--muted); font-size: 12px;">More connections split a file into more parallel segments.</span></label>
+<select id="s-conn" value="{{conns}}" onChange="{{onConns}}" style="height: 32px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--field); background: var(--input);"><option value="1">1</option><option value="4">4</option><option value="8">8</option><option value="16">16</option></select>
+</div>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-top: 1px solid var(--line);">
+<label for="s-limit" style="flex: 1; font-weight: 500;">Speed limit</label>
+<select id="s-limit" value="{{limit}}" onChange="{{onLimit}}" style="height: 32px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--field); background: var(--input);"><option value="off">Off</option><option value="1">1 MB/s</option><option value="5">5 MB/s</option><option value="10">10 MB/s</option></select>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{isBrowser}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; flex-direction: column; gap: 24px;">
+<header>
+<h1 style="margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em;">Browser</h1>
+<p style="margin: 6px 0 0; color: var(--muted);">Send links to Taurus without copying and pasting.</p>
+</header>
+<div style="border: 1px solid var(--line); border-radius: 12px; background: var(--panel);">
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px;">
+<label for="s-clip" style="flex: 1;"><span style="display: block; font-weight: 500;">Watch the clipboard for links</span><span style="display: block; margin-top: 2px; color: var(--muted); font-size: 12px;">Copy a link anywhere and Taurus offers to download it.</span></label>
+<input id="s-clip" class="sw" type="checkbox" role="switch" checked="{{clipboard}}" onChange="{{tClip}}">
+</div>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-top: 1px solid var(--line);">
+<label for="s-catch" style="flex: 1;"><span style="display: block; font-weight: 500;">Take over browser downloads larger than</span><span style="display: block; margin-top: 2px; color: var(--muted); font-size: 12px;">Needs the browser extension.</span></label>
+<select id="s-catch" value="{{catchSize}}" onChange="{{onCatch}}" style="height: 32px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--field); background: var(--input);"><option value="any">Any size</option><option value="10">10 MB</option><option value="100">100 MB</option><option value="never">Never</option></select>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 18px; border-top: 1px solid var(--line);">
+<div style="flex: 1 1 240px;"><p style="margin: 0; font-weight: 500;">Chromium browsers</p><p style="margin: 2px 0 0; color: var(--muted); font-size: 12px;">Chrome, Edge, Brave, Arc</p></div>
+<button class="hv" style="height: 34px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line); font-weight: 500;">Get extension</button>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 18px; border-top: 1px solid var(--line);">
+<div style="flex: 1 1 240px;"><p style="margin: 0; font-weight: 500;">Firefox</p></div>
+<button class="hv" style="height: 34px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--line); font-weight: 500;">Get extension</button>
+</div>
+</div>
+</div>
+</sc-if>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false,"section":"Theme"},"accent":{"editor":"enum","options":["Aldebaran","Cobalt","Jade","Grape","Rose","Sky"],"default":"Aldebaran","section":"Theme"},"$preview":{"width":1280,"height":800}}'>
+var ACC = {
+  Grape: { l: { base: '#7C3AED', strong: '#6D28D9', text: '#6D28D9', sel: 'rgba(124,58,237,.08)' }, d: { base: '#A78BFA', strong: '#6D28D9', text: '#C4B5FD', sel: 'rgba(167,139,250,.15)' } },
+  Rose: { l: { base: '#E11D48', strong: '#BE123C', text: '#BE123C', sel: 'rgba(225,29,72,.07)' }, d: { base: '#FB7185', strong: '#BE123C', text: '#FDA4AF', sel: 'rgba(251,113,133,.14)' } },
+  Sky: { l: { base: '#0284C7', strong: '#0369A1', text: '#0369A1', sel: 'rgba(2,132,199,.08)' }, d: { base: '#38BDF8', strong: '#0369A1', text: '#7DD3FC', sel: 'rgba(56,189,248,.14)' } },
+  Aldebaran: {
+    l: { base: '#E8590C', strong: '#C2410C', text: '#B3410A', sel: 'rgba(232,89,12,.09)' },
+    d: { base: '#FF7A2E', strong: '#C2410C', text: '#FF9A5C', sel: 'rgba(255,122,46,.14)' }
+  },
+  Cobalt: {
+    l: { base: '#2F6FDE', strong: '#2457B8', text: '#2457B8', sel: 'rgba(47,111,222,.09)' },
+    d: { base: '#5B8FF0', strong: '#2F62C8', text: '#8DB2FF', sel: 'rgba(91,143,240,.15)' }
+  },
+  Jade: {
+    l: { base: '#0F9D76', strong: '#0B7258', text: '#0B7258', sel: 'rgba(15,157,118,.09)' },
+    d: { base: '#2CC799', strong: '#0B7258', text: '#5ADBB3', sel: 'rgba(44,199,153,.14)' }
+  }
+};
+
+var SECTIONS = [
+  { id: 'engines', label: 'Engines', icon: 'M5 7h14v10H5zM9 7V4M15 7V4M9 20v-3M15 20v-3M2 10h3M2 14h3M19 10h3M19 14h3' },
+  { id: 'downloads', label: 'Downloads', icon: 'M12 4v11M7 10.5l5 5 5-5M5 20h14' },
+  { id: 'browser', label: 'Browser', icon: 'M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M4 12h16M12 4c2.5 2.2 3.5 5 3.5 8s-1 5.8-3.5 8M12 4c-2.5 2.2-3.5 5-3.5 8s1 5.8 3.5 8' }
+];
+
+class Component extends DCLogic {
+  state = { section: 'engines', deno: 'missing', autoUpdate: true, sortByType: true, askEach: false, resumeOnLaunch: true, clipboard: true, maxActive: '3', conns: '16', limit: 'off', catchSize: '10' };
+
+  renderVals() {
+    var self = this;
+    var st = this.state;
+    var dark = this.props.dark ?? false;
+    var acc = (ACC[this.props.accent ?? 'Aldebaran'] || ACC.Aldebaran)[dark ? 'd' : 'l'];
+    var flip = function (key) { return function () { var o = {}; o[key] = !self.state[key]; self.setState(o); }; };
+    var pick = function (key) { return function (e) { var o = {}; o[key] = e.target.value; self.setState(o); }; };
+    var plain = { btnBorder: 'var(--line)', btnBg: 'transparent', btnColor: 'var(--text)' };
+    var ok = { statusColor: 'var(--ok)', dot: 'var(--ok)' };
+
+    var deno;
+    if (st.deno === 'missing') {
+      deno = { badge: 'Not installed', status: 'Needed for YouTube downloads', statusColor: 'var(--accent-text)', dot: 'var(--accent)', btn: 'Install', btnBorder: 'var(--accent-strong)', btnBg: 'var(--accent-strong)', btnColor: '#FFFFFF', act: function () { self.setState({ deno: 'installing' }); setTimeout(function () { self.setState({ deno: 'ready' }); }, 1400); } };
+    } else if (st.deno === 'installing') {
+      deno = Object.assign({ badge: 'Downloading', status: 'Installing…', statusColor: 'var(--muted)', dot: 'var(--muted)', btn: 'Cancel', act: function () { self.setState({ deno: 'missing' }); } }, plain);
+    } else {
+      deno = Object.assign({ badge: 'Downloaded', status: 'Ready', btn: 'Update', act: function () {} }, plain, ok);
+    }
+
+    var engines = [
+      Object.assign({ kc: 'k-disc', mono: 'a2', name: 'aria2', badge: 'Bundled · 1.37.0', desc: 'Direct links, torrents and magnet links', status: 'Running on 127.0.0.1:6800', btn: 'Restart', act: function () {} }, plain, ok),
+      Object.assign({ kc: 'k-media', mono: 'yt', name: 'yt-dlp', badge: 'Downloaded', desc: 'Video and audio from YouTube and many other sites', status: 'Up to date · checked today', btn: 'Check now', act: function () {} }, plain, ok),
+      Object.assign({ kc: 'k-music', mono: 'ff', name: 'ffmpeg', badge: 'Downloaded', desc: 'Merges video and audio, converts formats', status: 'Ready', btn: 'Update', act: function () {} }, plain, ok),
+      Object.assign({ kc: 'k-magnet', mono: 'dn', name: 'Deno', desc: 'JavaScript runtime yt-dlp needs for YouTube' }, deno)
+    ].map(function (e, i) { e.divider = i === 0 ? '0' : '1px solid var(--line)'; return e; });
+
+    return {
+      acc: acc,
+      themeClass: dark ? 'td' : 'tl',
+      nav: SECTIONS.map(function (s) {
+        var on = st.section === s.id;
+        return { label: s.label, icon: s.icon, pick: function () { self.setState({ section: s.id }); }, current: on ? 'page' : 'false', bg: on ? 'var(--sel)' : 'transparent', color: on ? 'var(--accent-text)' : 'var(--text)', weight: on ? '600' : '400' };
+      }),
+      isEngines: st.section === 'engines',
+      isDownloads: st.section === 'downloads',
+      isBrowser: st.section === 'browser',
+      engines: engines,
+      autoUpdate: st.autoUpdate, tAuto: flip('autoUpdate'),
+      sortByType: st.sortByType, tSort: flip('sortByType'),
+      askEach: st.askEach, tAsk: flip('askEach'),
+      resumeOnLaunch: st.resumeOnLaunch, tResume: flip('resumeOnLaunch'),
+      clipboard: st.clipboard, tClip: flip('clipboard'),
+      maxActive: st.maxActive, onMaxActive: pick('maxActive'),
+      conns: st.conns, onConns: pick('conns'),
+      limit: st.limit, onLimit: pick('limit'),
+      catchSize: st.catchSize, onCatch: pick('catchSize')
+    };
+  }
+}
+</script>
+</body>
+</html>

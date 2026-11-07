@@ -1,4 +1,4 @@
-//! `taurus tools`: the yt-dlp, ffmpeg and Deno that video downloads use.
+//! `hyades-cli tools`: the yt-dlp, ffmpeg and Deno that video downloads use.
 
 use std::future::Future;
 use std::process::ExitCode;

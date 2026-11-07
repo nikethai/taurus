@@ -1,0 +1,115 @@
+// Hyades' own updates: the state the app shows (a global, set with
+// `ui.global::<UpdateUi>()`) and the banner offering a new version.
+import { Theme } from "theme.slint";
+import { TextButton } from "widgets.slint";
+
+export global UpdateUi {
+    // "" | "checking" | "up-to-date" | "available" | "downloading" |
+    // "ready" | "check-failed" | "install-failed"
+    in property <string> state;
+    // The new version (available, downloading, ready).
+    in property <string> version;
+    // Downloading: 0-100.
+    in property <int> percent;
+    // The running version.
+    in property <string> current;
+    // The last "Check now" failed while an offer stayed shown.
+    in property <bool> check-failed;
+    // The banner is shown (available, ready or install-failed, and not
+    // dismissed since launch).
+    in property <bool> banner;
+
+    callback check-now();
+    // Install the ready update and start it.
+    callback restart();
+    // Open the new version's page.
+    callback get-it();
+    // "Later" / "Not now": no banner until the next launch.
+    callback dismiss();
+
+    // The line under the version in Advanced Settings; "" when none.
+    public pure function status() -> string {
+        if (self.state == "checking") {
+            return @tr("Checking…");
+        }
+        if (self.state == "up-to-date") {
+            return @tr("You're up to date");
+        }
+        if (self.state == "check-failed" || self.check-failed) {
+            return @tr("Couldn't check for updates. Try again later.");
+        }
+        if (self.state == "downloading") {
+            return @tr("Downloading the update… {0}%", self.percent);
+        }
+        if (self.state == "ready") {
+            return @tr("Hyades {0} is ready. Restart to update.", self.version);
+        }
+        if (self.state == "available") {
+            return @tr("Hyades {0} is out.", self.version);
+        }
+        return "";
+    }
+}
+
+// The offer of a new version, in the same slot style as the clipboard
+// banner: ready to install (Later / Restart), or to get from the website
+// (Not now / Get it).
+export component UpdateBanner inherits Rectangle {
+    property <bool> ready: UpdateUi.state == "ready";
+
+    background: Theme.panel;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: Theme.line;
+    drop-shadow-blur: 12px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-color: Theme.shadow;
+    accessible-role: AccessibleRole.banner;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        Text {
+            text: root.ready ? @tr("Hyades {0} is ready", UpdateUi.version)
+                : UpdateUi.state == "install-failed" ? @tr("Hyades couldn't update itself here")
+                : @tr("Hyades {0} is out", UpdateUi.version);
+            wrap: word-wrap;
+            font-size: 13px;
+            font-weight: 600;
+            color: Theme.text;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+        Text {
+            text: root.ready ? @tr("Restart to update. Downloads continue afterwards.")
+                : @tr("Get the new version from the website.");
+            wrap: word-wrap;
+            font-size: 12px;
+            color: Theme.muted;
+            accessible-role: text;
+            accessible-label: self.text;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: end;
+            TextButton {
+                text: root.ready ? @tr("Later") : @tr("Not now");
+                kind: "quiet";
+                clicked => {
+                    UpdateUi.dismiss();
+                }
+            }
+            TextButton {
+                text: root.ready ? @tr("Restart") : @tr("Get it");
+                kind: "primary";
+                clicked => {
+                    if (root.ready) {
+                        UpdateUi.restart();
+                    } else {
+                        UpdateUi.get-it();
+                    }
+                }
+            }
+        }
+    }
+}

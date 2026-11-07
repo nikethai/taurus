@@ -12,7 +12,7 @@ use taurus_core::{ErrorKind, JobId, JobState, JobView, WhenDone};
 
 use crate::app::App;
 use crate::bridge::{Flush, ToolsBanner, WhenDoneUi};
-use crate::shell_text::simple_message;
+use crate::shell_text::ShellStrings;
 use crate::{AppWindow, CountdownVm, RowVm, notify, rows};
 
 /// Rows also refresh this often without events: retry countdowns and
@@ -161,11 +161,13 @@ impl App {
         };
         {
             let mut view = self.view.borrow_mut();
-            if view.primed && self.os_shell.get() {
+            if let Some(text) = self.os_shell.get().filter(|_| view.primed) {
                 for notice in notices(&view.states, &flush.views) {
                     match notice {
-                        Notice::Finished(name) => notify::finished(&name),
-                        Notice::Failed(name, kind) => notify::failed(&name, simple_message(kind)),
+                        Notice::Finished(name) => notify::finished(text, &name),
+                        Notice::Failed(name, kind) => {
+                            notify::failed(text, &name, &ShellStrings::simple(&ui, kind))
+                        }
                     }
                 }
             }
@@ -181,15 +183,16 @@ impl App {
             self.engine_settings();
         }
         if let Some(tools) = flush.tools {
-            let (state, percent) = match tools {
-                ToolsBanner::Hidden => ("", -1),
+            let (state, percent, error) = match tools {
+                ToolsBanner::Hidden => ("", -1, ""),
                 ToolsBanner::Installing { percent } => {
-                    ("installing", percent.map_or(-1, i32::from))
+                    ("installing", percent.map_or(-1, i32::from), "")
                 }
-                ToolsBanner::Failed => ("failed", -1),
+                ToolsBanner::Failed { kind } => ("failed", -1, kind.as_str()),
             };
             ui.set_tools_banner(state.into());
             ui.set_tools_percent(percent);
+            ui.set_tools_error(error.into());
             self.refresh_tools(&ui);
         }
         if let Some(when_done) = flush.when_done {
@@ -228,7 +231,11 @@ impl App {
             WhenDoneUi::Fired { action } => {
                 self.hide_countdown();
                 match action {
-                    WhenDone::Notify if self.os_shell.get() => notify::all_done(),
+                    WhenDone::Notify => {
+                        if let Some(text) = self.os_shell.get() {
+                            notify::all_done(text);
+                        }
+                    }
                     WhenDone::Quit => self.quit(),
                     // The engine resets these to "nothing" once run.
                     WhenDone::Sleep | WhenDone::Shutdown => self.when_done_fired(),

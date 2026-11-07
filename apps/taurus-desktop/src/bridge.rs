@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use taurus_core::tools::{ToolKind, ToolState, ToolStatus};
-use taurus_core::{Engine, Event, JobId, JobKind, JobState, JobView, Settings, WhenDone};
+use taurus_core::{
+    Engine, ErrorKind, Event, JobId, JobKind, JobState, JobView, Settings, WhenDone,
+};
 use tokio::sync::broadcast::error::RecvError;
 
 /// Feeds the engine's events into `coalescer` on the runtime until the
@@ -83,17 +85,20 @@ pub enum ToolsBanner {
     Installing {
         percent: Option<u8>,
     },
-    /// The last attempt for a tool failed and none is being fetched. Shown
-    /// until a fetch starts, or until no media job waits for the tools any
-    /// more (the one that failed was removed, or it moved on): nothing
-    /// would try again then.
-    Failed,
+    /// The last attempt for a tool failed and none is being fetched, for
+    /// the reason `kind` (the first failed tool's, in `ToolKind::ALL`
+    /// order). Shown until a fetch starts, or until no media job waits for
+    /// the tools any more (the one that failed was removed, or it moved
+    /// on): nothing would try again then.
+    Failed {
+        kind: ErrorKind,
+    },
 }
 
 /// The banner for the tools' latest states.
 pub fn tools_banner<'a>(states: impl IntoIterator<Item = &'a ToolState>) -> ToolsBanner {
     let mut installing = false;
-    let mut failed = false;
+    let mut failed = None;
     let (mut done, mut total, mut sized) = (0u64, 0u64, true);
     for state in states {
         match state {
@@ -108,7 +113,9 @@ pub fn tools_banner<'a>(states: impl IntoIterator<Item = &'a ToolState>) -> Tool
                     None => sized = false,
                 }
             }
-            ToolState::Failed(_) => failed = true,
+            ToolState::Failed(kind) => {
+                failed.get_or_insert(*kind);
+            }
             ToolState::Missing | ToolState::Ready => {}
         }
     }
@@ -116,8 +123,8 @@ pub fn tools_banner<'a>(states: impl IntoIterator<Item = &'a ToolState>) -> Tool
         let percent = (sized && total > 0)
             .then(|| (done.min(total) as f64 * 100.0 / total as f64).floor() as u8);
         ToolsBanner::Installing { percent }
-    } else if failed {
-        ToolsBanner::Failed
+    } else if let Some(kind) = failed {
+        ToolsBanner::Failed { kind }
     } else {
         ToolsBanner::Hidden
     }
@@ -185,8 +192,9 @@ impl Coalescer {
     }
 
     fn update_banner(&mut self) {
-        let banner = match tools_banner(self.tools.values()) {
-            ToolsBanner::Failed if self.failure_dismissed => ToolsBanner::Hidden,
+        let states = ToolKind::ALL.iter().filter_map(|k| self.tools.get(k));
+        let banner = match tools_banner(states) {
+            ToolsBanner::Failed { .. } if self.failure_dismissed => ToolsBanner::Hidden,
             banner => banner,
         };
         if banner != self.banner {
@@ -500,7 +508,20 @@ mod tests {
         );
         assert_eq!(
             tools_banner(&[failed, ToolState::Ready]),
-            ToolsBanner::Failed
+            ToolsBanner::Failed {
+                kind: ErrorKind::ConnectionLost
+            }
+        );
+        // The first failure's reason, in the order given.
+        assert_eq!(
+            tools_banner(&[
+                ToolState::Ready,
+                ToolState::Failed(ErrorKind::ChecksumMismatch),
+                ToolState::Failed(ErrorKind::ConnectionLost),
+            ]),
+            ToolsBanner::Failed {
+                kind: ErrorKind::ChecksumMismatch
+            }
         );
 
         let t0 = Instant::now();
@@ -521,7 +542,12 @@ mod tests {
         assert_eq!(f.tools, Some(ToolsBanner::Installing { percent: Some(50) }));
         c.push(tool(ToolKind::Deno, ToolState::Ready));
         let f = c.take_if_due(t0 + Duration::from_secs(3)).unwrap();
-        assert_eq!(f.tools, Some(ToolsBanner::Failed));
+        assert_eq!(
+            f.tools,
+            Some(ToolsBanner::Failed {
+                kind: ErrorKind::ConnectionLost
+            })
+        );
         c.push(tool(ToolKind::YtDlp, ToolState::Ready));
         let f = c.take_if_due(t0 + Duration::from_secs(4)).unwrap();
         assert_eq!(f.tools, Some(ToolsBanner::Hidden));
@@ -584,7 +610,12 @@ mod tests {
         };
         // A failure seen on the Add screen, no job yet: shown.
         c.push(failed());
-        assert_eq!(c.take_if_due(t0).unwrap().tools, Some(ToolsBanner::Failed));
+        assert_eq!(
+            c.take_if_due(t0).unwrap().tools,
+            Some(ToolsBanner::Failed {
+                kind: ErrorKind::ConnectionLost
+            })
+        );
         // A media job waits on the tools; the failure stays shown while an
         // unrelated job comes and goes.
         c.push(Event::JobAdded(media(1, JobState::Waiting)));
@@ -599,7 +630,12 @@ mod tests {
         // was paused) hides it too.
         c.push(Event::JobAdded(media(3, JobState::Waiting)));
         c.push(failed());
-        assert_eq!(c.take_if_due(t0).unwrap().tools, Some(ToolsBanner::Failed));
+        assert_eq!(
+            c.take_if_due(t0).unwrap().tools,
+            Some(ToolsBanner::Failed {
+                kind: ErrorKind::ConnectionLost
+            })
+        );
         c.push(Event::JobUpdated(media(3, JobState::Paused)));
         assert_eq!(c.take_if_due(t0).unwrap().tools, Some(ToolsBanner::Hidden));
         // A fetch starting shows progress whatever was dismissed.

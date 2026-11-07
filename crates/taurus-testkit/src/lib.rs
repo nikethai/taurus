@@ -1,10 +1,12 @@
 //! Test support for Taurus: a local HTTP server with scriptable behavior.
 
 mod proxy;
+mod release;
 mod spec;
 mod tools;
 mod torrent;
 
+pub use release::FakeRelease;
 pub use spec::{FailAfter, FileSpec, content, sha256_hex};
 pub use tools::{
     ArgsLogEntry, FakeToolHost, ToolRelease, fake_tool_bytes, fake_tool_release, hang_pid_file,

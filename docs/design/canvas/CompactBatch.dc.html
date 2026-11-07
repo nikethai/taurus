@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Taurus — Add several links</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.tl{--bg:#FBFBFC;--bar:#F3F3F5;--panel:#FFFFFF;--line:#E3E3E8;--field:#C9C9D1;--text:#1B1B1F;--muted:#5F5F69;--chip:#ECECF0;--track:#E2E2E7;--off:#8E8E99;--ok:#1F7A5C;--err:#BE3328;--errbg:#FDE8E6;--hover:rgba(0,0,0,.045);--input:#FFFFFF}
+.td{--bg:#1C1C1F;--bar:#232327;--panel:#26262A;--line:#34343A;--field:#4A4A53;--text:#ECECF0;--muted:#A2A2AD;--chip:#303036;--track:#38383F;--off:#6E6E79;--ok:#4CC79A;--err:#FF6B5E;--errbg:rgba(255,107,94,.16);--hover:rgba(255,255,255,.055);--input:#1F1F23}
+.tl .k-disc{--kbg:#E3EDFF;--kfg:#2563C9}
+.tl .k-media{--kbg:#EEE6FF;--kfg:#6B3FD4}
+.tl .k-magnet{--kbg:#DDF4EF;--kfg:#0B7160}
+.tl .k-page{--kbg:#FFF1D6;--kfg:#92580A}
+.td .k-disc{--kbg:rgba(91,143,240,.18);--kfg:#8DB2FF}
+.td .k-media{--kbg:rgba(155,120,255,.2);--kfg:#BBA4FF}
+.td .k-magnet{--kbg:rgba(44,199,170,.18);--kfg:#5AD8C2}
+.td .k-page{--kbg:rgba(245,180,60,.18);--kfg:#F5C25C}
+.k-bad{--kbg:var(--errbg);--kfg:var(--err)}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;text-align:left}
+input,textarea{font:inherit;color:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input[type=checkbox]{accent-color:var(--accent-strong);width:15px;height:15px;margin:0;flex:none}
+input.sw{appearance:none;-webkit-appearance:none;width:32px;height:20px;border-radius:10px;background:var(--off);position:relative;cursor:pointer;margin:0;flex:none;transition:background .15s}
+input.sw::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#FFFFFF;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+input.sw:checked{background:var(--accent-strong)}
+input.sw:checked::after{transform:translateX(12px)}
+.i{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.hv:hover{background:var(--hover)}
+.num{font-variant-numeric:tabular-nums}
+a{color:var(--accent-text)}a:hover{color:var(--text)}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="--accent: {{acc.base}}; --accent-strong: {{acc.strong}}; --accent-text: {{acc.text}}; --sel: {{acc.sel}}; width: 420px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.4;">
+
+<header style="flex: none; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px; background: var(--bar); border-bottom: 1px solid var(--line);">
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #28C840;"></span>
+<h1 style="flex: 1; margin: 0; text-align: center; font-size: 13px; font-weight: 600;">Add several links</h1>
+<a href="CompactMain.dc.html" aria-label="Close" title="Close" class="hv" style="width: 32px; height: 32px; border-radius: 7px; display: flex; align-items: center; justify-content: center; color: var(--muted);"><svg class="i" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></a>
+</header>
+
+<div style="flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px;">
+<div style="display: flex; flex-direction: column; gap: 6px;">
+<label for="cb-links" style="font-weight: 600;">One link per line</label>
+<textarea id="cb-links" rows="7" readonly value="{{text}}" style="box-sizing: border-box; width: 100%; resize: none; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--field); background: var(--input); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; line-height: 1.6; white-space: pre; overflow-x: auto;"></textarea>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px;">
+<p style="margin: 0; padding: 0 4px; font-size: 12px; font-weight: 600; color: var(--muted);">What Taurus found</p>
+<ol style="margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 11px; background: var(--panel);">
+<sc-for list="{{rows}}" as="r" hint-placeholder-count="7">
+<li class="{{r.kc}}" style="display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 10px; border-top: {{r.divider}}; opacity: {{r.opacity}};">
+<span class="num" style="width: 14px; font-size: 11px; color: var(--muted); text-align: right; flex: none;">{{r.n}}</span>
+<span style="flex: none; min-width: 46px; box-sizing: border-box; text-align: center; padding: 0 5px; border-radius: 4px; background: var(--kbg); color: var(--kfg); font-size: 10.5px; font-weight: 600;">{{r.chip}}</span>
+<span style="flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{r.text}}</span>
+<sc-if value="{{r.hasNote}}" hint-placeholder-val="{{false}}">
+<span style="flex: none; font-size: 11px; color: var(--muted);">{{r.note}}</span>
+</sc-if>
+<sc-if value="{{r.isPage}}" hint-placeholder-val="{{false}}">
+<a href="CompactGrab.dc.html" style="flex: none; font-size: 12px; font-weight: 600; text-decoration: none; color: var(--accent-text);">Find files →</a>
+</sc-if>
+</li>
+</sc-for>
+</ol>
+</div>
+
+<div style="border: 1px solid var(--line); border-radius: 11px; background: var(--panel);">
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px;">
+<label for="cb-mirror" style="flex: 1;"><span style="display: block; font-weight: 500;">Treat copies as mirrors</span><span style="display: block; font-size: 11.5px; color: var(--muted);">Same file on two servers? Pull from both at once.</span></label>
+<input id="cb-mirror" class="sw" type="checkbox" role="switch" checked="{{mirrors}}" onChange="{{tMirrors}}">
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line);">
+<div style="flex: 1; min-width: 0;"><p style="margin: 0; font-weight: 500;">Save to</p><p style="margin: 1px 0 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: var(--muted);">~/Downloads, sorted by type</p></div>
+<button class="hv" style="height: 28px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--line); font-size: 12px; font-weight: 500;">Change…</button>
+</div>
+</div>
+</div>
+
+<footer style="flex: none; display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--bar);">
+<label style="margin-right: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);"><input type="checkbox" checked="{{start}}" onChange="{{tStart}}">Start now</label>
+<a href="CompactMain.dc.html" class="hv" style="height: 32px; padding: 0 12px; border-radius: 8px; display: flex; align-items: center; color: var(--text); text-decoration: none; font-weight: 500;">Cancel</a>
+<a href="CompactMain.dc.html" style="height: 32px; padding: 0 14px; border-radius: 8px; background: var(--accent-strong); display: flex; align-items: center; color: #FFFFFF; text-decoration: none; font-weight: 600;">Add {{count}} downloads</a>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false,"section":"Theme"},"accent":{"editor":"enum","options":["Aldebaran","Cobalt","Jade","Grape","Rose","Sky"],"default":"Aldebaran","section":"Theme"},"$preview":{"width":420,"height":640}}'>
+var ACC = {
+  Aldebaran: { l: { base: '#E8590C', strong: '#C2410C', text: '#B3410A', sel: 'rgba(232,89,12,.08)' }, d: { base: '#FF7A2E', strong: '#C2410C', text: '#FF9A5C', sel: 'rgba(255,122,46,.14)' } },
+  Cobalt: { l: { base: '#2F6FDE', strong: '#2457B8', text: '#2457B8', sel: 'rgba(47,111,222,.08)' }, d: { base: '#5B8FF0', strong: '#2F62C8', text: '#8DB2FF', sel: 'rgba(91,143,240,.15)' } },
+  Jade: { l: { base: '#0F9D76', strong: '#0B7258', text: '#0B7258', sel: 'rgba(15,157,118,.08)' }, d: { base: '#2CC799', strong: '#0B7258', text: '#5ADBB3', sel: 'rgba(44,199,153,.14)' } },
+  Grape: { l: { base: '#7C3AED', strong: '#6D28D9', text: '#6D28D9', sel: 'rgba(124,58,237,.08)' }, d: { base: '#A78BFA', strong: '#6D28D9', text: '#C4B5FD', sel: 'rgba(167,139,250,.15)' } },
+  Rose: { l: { base: '#E11D48', strong: '#BE123C', text: '#BE123C', sel: 'rgba(225,29,72,.07)' }, d: { base: '#FB7185', strong: '#BE123C', text: '#FDA4AF', sel: 'rgba(251,113,133,.14)' } },
+  Sky: { l: { base: '#0284C7', strong: '#0369A1', text: '#0369A1', sel: 'rgba(2,132,199,.08)' }, d: { base: '#38BDF8', strong: '#0369A1', text: '#7DD3FC', sel: 'rgba(56,189,248,.14)' } }
+};
+
+var LINES = [
+  { url: 'https://releases.ubuntu.com/24.04.3/ubuntu-24.04.3-live-server-amd64.iso', chip: 'HTTP', kc: 'k-disc', text: 'ubuntu-24.04.3-live-server-amd64.iso' },
+  { url: 'https://mirror.example.net/ubuntu-releases/24.04.3/ubuntu-24.04.3-live-server-amd64.iso', chip: 'HTTP', kc: 'k-disc', text: 'ubuntu-24.04.3-live-server-amd64.iso', mirror: true },
+  { url: 'magnet:?xt=urn:btih:…&dn=Sintel', chip: 'Torrent', kc: 'k-magnet', text: 'Sintel' },
+  { url: 'https://www.youtube.com/playlist?list=…', chip: 'yt-dlp', kc: 'k-media', text: 'YouTube playlist', note: '12 videos' },
+  { url: 'https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz', chip: 'HTTP', kc: 'k-disc', text: 'cifar-10-python.tar.gz' },
+  { url: 'https://files.example.org/conf-2026/', chip: 'Page', kc: 'k-page', text: 'files.example.org/conf-2026/', page: true },
+  { url: 'see notes from the meetup', chip: 'Skip', kc: 'k-bad', text: 'Not a link', bad: true }
+];
+
+class Component extends DCLogic {
+  state = { mirrors: true, start: true };
+
+  renderVals() {
+    var self = this;
+    var st = this.state;
+    var dark = this.props.dark ?? false;
+    var acc = (ACC[this.props.accent ?? 'Aldebaran'] || ACC.Aldebaran)[dark ? 'd' : 'l'];
+    var count = 0;
+    var rows = LINES.map(function (l, i) {
+      var note = l.note || '';
+      var dimmed = false;
+      if (l.mirror && st.mirrors) { note = 'Mirror of 1'; dimmed = true; }
+      if (l.bad) note = 'Ignored';
+      if (!l.bad && !l.page && !(l.mirror && st.mirrors)) count++;
+      return {
+        n: i + 1, chip: l.chip, kc: l.kc, text: l.text,
+        note: note, hasNote: !!note && !l.page,
+        isPage: !!l.page,
+        opacity: dimmed || l.bad ? '0.7' : '1',
+        divider: i === 0 ? '0' : '1px solid var(--line)'
+      };
+    });
+    return {
+      acc: acc,
+      themeClass: dark ? 'td' : 'tl',
+      text: LINES.map(function (l) { return l.url; }).join('\n'),
+      rows: rows,
+      count: count,
+      mirrors: st.mirrors, tMirrors: function () { self.setState({ mirrors: !self.state.mirrors }); },
+      start: st.start, tStart: function () { self.setState({ start: !self.state.start }); }
+    };
+  }
+}
+</script>
+</body>
+</html>

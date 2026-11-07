@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hyades
+Comment=Download files, videos and torrents.
+Exec=hyades %U
+Icon=dev.nikethai.hyades
+Terminal=false
+Categories=Utility;
+MimeType=x-scheme-handler/magnet;application/x-bittorrent;

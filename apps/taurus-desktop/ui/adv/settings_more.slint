@@ -4,6 +4,7 @@ import { Messages } from "../messages.slint";
 import { TextButton, Toggle, Segment, Segmented, ProgressBar } from "../widgets.slint";
 import { Swatch } from "../settings.slint";
 import { SettingsUi, ToolRowVm } from "settings_ui.slint";
+import { UpdateUi } from "../update.slint";
 import { SectionHeading, FieldLabel, Hint, FieldError, Divider } from "settings_parts.slint";
 
 // One video tool: its name, version or state, and Roll back.
@@ -46,6 +47,10 @@ component ToolRow inherits VerticalLayout {
     }
     if root.tool.state == "installing": ProgressBar {
         progress: root.tool.progress;
+    }
+    // Why the last install failed.
+    if root.tool.state == "failed" && root.tool.error-kind != "": FieldError {
+        text: Messages.simple(root.tool.error-kind);
     }
 }
 
@@ -194,6 +199,49 @@ export component GeneralSection inherits VerticalLayout {
         checked: SettingsUi.settings.advanced;
         clicked => {
             SettingsUi.changed("advanced", SettingsUi.settings.advanced ? "false" : "true");
+        }
+    }
+    Toggle {
+        label: @tr("Check for updates automatically");
+        checked: SettingsUi.settings.check-updates;
+        clicked => {
+            SettingsUi.changed("check-updates", SettingsUi.settings.check-updates ? "false" : "true");
+        }
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            FieldLabel {
+                text: @tr("Hyades {0}", UpdateUi.current);
+                accessible-role: text;
+                accessible-label: self.text;
+            }
+            if UpdateUi.status() != "": Hint {
+                text: UpdateUi.status();
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            // Restart while an update is ready (the banner may have been
+            // dismissed), else Check now.
+            TextButton {
+                property <bool> ready: UpdateUi.state == "ready";
+                text: self.ready ? @tr("Restart to update to {0}", UpdateUi.version) : @tr("Check now");
+                // Engines has a "Check now" too.
+                accessible-label: self.ready ? self.text : @tr("Check for updates");
+                kind: self.ready ? "primary" : "secondary";
+                enabled: UpdateUi.state != "checking" && UpdateUi.state != "downloading";
+                clicked => {
+                    if (self.ready) {
+                        UpdateUi.restart();
+                    } else {
+                        UpdateUi.check-now();
+                    }
+                }
+            }
         }
     }
 }

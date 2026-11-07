@@ -1,4 +1,4 @@
-//! `taurus grab`: the files a web page (or folder listing) links to, listed
+//! `hyades-cli grab`: the files a web page (or folder listing) links to, listed
 //! at once; with `--sizes` their sizes as they arrive, and with `--add`
 //! queued as downloads (never waiting on a size).
 
@@ -23,7 +23,7 @@ pub struct GrabArgs {
     /// List only files with these extensions, e.g. pdf,zip
     #[arg(long, value_name = "EXT", value_delimiter = ',')]
     pub ext: Vec<String>,
-    /// Download every listed file (each into its own subfolder of --dir, as listed), then run the queue until it is idle; Ctrl-C stops (taurus run continues)
+    /// Download every listed file (each into its own subfolder of --dir, as listed), then run the queue until it is idle; Ctrl-C stops (hyades-cli run continues)
     #[arg(long)]
     pub add: bool,
     /// With --add: the destination folder [default: the Downloads folder, else the current dir]

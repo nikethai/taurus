@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Taurus — Settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.tl{--bg:#F5F5F7;--panel:#FFFFFF;--line:#E5E5EA;--field:#C9C9D1;--text:#1B1B1F;--muted:#5F5F69;--chip:#E9E9ED;--off:#8E8E99;--hover:rgba(0,0,0,.04);--input:#FFFFFF}
+.td{--bg:#1C1C1F;--panel:#26262A;--line:#34343A;--field:#4A4A53;--text:#ECECF0;--muted:#A2A2AD;--chip:#303036;--off:#6E6E79;--hover:rgba(255,255,255,.05);--input:#1F1F23}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;text-align:left}
+input,select{font:inherit;color:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input.sw{appearance:none;-webkit-appearance:none;width:40px;height:24px;border-radius:12px;background:var(--off);position:relative;cursor:pointer;margin:0;flex:none;transition:background .15s}
+input.sw::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#FFFFFF;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+input.sw:checked{background:var(--accent-strong)}
+input.sw:checked::after{transform:translateX(16px)}
+.i{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.hv:hover{background:var(--hover)}
+a{color:var(--accent-text)}a:hover{color:var(--text)}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="--accent: {{acc.base}}; --accent-strong: {{acc.strong}}; --accent-text: {{acc.text}}; width: 420px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.45;">
+
+<header style="flex: none; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 14px;">
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #28C840;"></span>
+<a href="SimpleMain.dc.html" class="hv" style="margin-left: 6px; height: 30px; padding: 0 8px 0 4px; border-radius: 8px; display: flex; align-items: center; gap: 2px; color: var(--accent-text); text-decoration: none; font-weight: 500;"><svg class="i" width="17" height="17" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"></path></svg>Done</a>
+</header>
+
+<div style="flex: 1; min-height: 0; overflow-y: auto; padding: 4px 16px 20px; display: flex; flex-direction: column; gap: 22px;">
+<h1 style="margin: 0 4px; font-size: 24px; font-weight: 700; letter-spacing: -0.02em;">Settings</h1>
+
+<div style="border-radius: 14px; background: var(--panel); border: 1px solid var(--line);">
+<button class="hv" style="width: 100%; display: flex; align-items: center; gap: 10px; min-height: 50px; padding: 0 14px; border-radius: 14px 14px 0 0;">
+<span style="flex: 1;">Save downloads to</span>
+<span style="color: var(--muted);">Downloads</span>
+<svg class="i" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--muted);"><path d="M9 6l6 6-6 6"></path></svg>
+</button>
+<div style="display: flex; align-items: center; gap: 12px; min-height: 50px; padding: 0 14px; border-top: 1px solid var(--line);">
+<label for="ss-sort" style="flex: 1;">Sort into Videos, Music and Documents</label>
+<input id="ss-sort" class="sw" type="checkbox" role="switch" checked="{{sort}}" onChange="{{tSort}}">
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 8px;">
+<p id="ss-speed" style="margin: 0 4px; font-size: 13px; font-weight: 600; color: var(--muted);">Download speed</p>
+<div role="group" aria-labelledby="ss-speed" style="padding: 3px; border-radius: 12px; background: var(--chip); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px;">
+<sc-for list="{{speeds}}" as="s" hint-placeholder-count="3">
+<button onClick="{{s.pick}}" aria-pressed="{{s.pressed}}" style="height: 36px; border-radius: 10px; text-align: center; font-weight: 600; background: {{s.bg}}; color: {{s.color}}; box-shadow: {{s.shadow}};">{{s.label}}</button>
+</sc-for>
+</div>
+<p style="margin: 0 4px; font-size: 12.5px; color: var(--muted);">{{speedNote}}</p>
+</div>
+
+<div style="border-radius: 14px; background: var(--panel); border: 1px solid var(--line);">
+<div style="display: flex; align-items: center; gap: 12px; min-height: 50px; padding: 0 14px;">
+<label for="ss-done" style="flex: 1;">When downloads finish</label>
+<select id="ss-done" value="{{done}}" onChange="{{onDone}}" style="height: 32px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--field); background: var(--input);"><option value="nothing">Do nothing</option><option value="notify">Notify me</option><option value="sleep">Sleep</option><option value="shutdown">Shut down</option></select>
+</div>
+<div style="display: flex; align-items: center; gap: 12px; min-height: 50px; padding: 0 14px; border-top: 1px solid var(--line);">
+<label for="ss-clip" style="flex: 1;">Offer to download links I copy</label>
+<input id="ss-clip" class="sw" type="checkbox" role="switch" checked="{{clip}}" onChange="{{tClip}}">
+</div>
+<div style="display: flex; align-items: center; gap: 12px; min-height: 50px; padding: 0 14px; border-top: 1px solid var(--line);">
+<label for="ss-login" style="flex: 1;">Open Taurus when I log in</label>
+<input id="ss-login" class="sw" type="checkbox" role="switch" checked="{{login}}" onChange="{{tLogin}}">
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 8px;">
+<div style="border-radius: 14px; background: var(--panel); border: 1px solid var(--line);">
+<div style="display: flex; align-items: center; gap: 12px; min-height: 50px; padding: 0 14px;">
+<label for="ss-adv" style="flex: 1;">Show advanced options</label>
+<input id="ss-adv" class="sw" type="checkbox" role="switch" checked="{{adv}}" onChange="{{tAdv}}">
+</div>
+<sc-if value="{{adv}}" hint-placeholder-val="{{false}}">
+<a href="CompactSettings.dc.html" class="hv" style="display: flex; align-items: center; gap: 10px; min-height: 50px; padding: 0 14px; border-top: 1px solid var(--line); border-radius: 0 0 14px 14px; color: var(--accent-text); text-decoration: none; font-weight: 500;"><span style="flex: 1;">Open advanced settings</span><svg class="i" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg></a>
+</sc-if>
+</div>
+<p style="margin: 0 4px; font-size: 12.5px; color: var(--muted);">Adds connection, torrent and video-tool controls, and shows more detail in the download list.</p>
+</div>
+
+<p style="margin: 0; text-align: center; font-size: 12px; color: var(--muted);">Taurus 1.0 · Free and open source</p>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false,"section":"Theme"},"accent":{"editor":"enum","options":["Aldebaran","Cobalt","Jade","Grape","Rose","Sky"],"default":"Aldebaran","section":"Theme"},"$preview":{"width":420,"height":640}}'>
+var ACC = {
+  Aldebaran: { l: { base: '#E8590C', strong: '#C2410C', text: '#B3410A' }, d: { base: '#FF7A2E', strong: '#C2410C', text: '#FF9A5C' } },
+  Cobalt: { l: { base: '#2F6FDE', strong: '#2457B8', text: '#2457B8' }, d: { base: '#5B8FF0', strong: '#2F62C8', text: '#8DB2FF' } },
+  Jade: { l: { base: '#0F9D76', strong: '#0B7258', text: '#0B7258' }, d: { base: '#2CC799', strong: '#0B7258', text: '#5ADBB3' } },
+  Grape: { l: { base: '#7C3AED', strong: '#6D28D9', text: '#6D28D9' }, d: { base: '#A78BFA', strong: '#6D28D9', text: '#C4B5FD' } },
+  Rose: { l: { base: '#E11D48', strong: '#BE123C', text: '#BE123C' }, d: { base: '#FB7185', strong: '#BE123C', text: '#FDA4AF' } },
+  Sky: { l: { base: '#0284C7', strong: '#0369A1', text: '#0369A1' }, d: { base: '#38BDF8', strong: '#0369A1', text: '#7DD3FC' } }
+};
+var SPEEDS = [
+  ['gentle', 'Gentle', 'Leaves room for video calls and browsing.'],
+  ['balanced', 'Balanced', 'Fast, but backs off a little when you need the internet.'],
+  ['fastest', 'Fastest', 'Uses everything your connection has.']
+];
+
+class Component extends DCLogic {
+  state = { sort: true, speed: 'fastest', done: 'notify', clip: true, login: false, adv: false };
+
+  renderVals() {
+    var self = this;
+    var st = this.state;
+    var dark = this.props.dark ?? false;
+    var flip = function (k) { return function () { var o = {}; o[k] = !self.state[k]; self.setState(o); }; };
+    var sp = SPEEDS.find(function (s) { return s[0] === st.speed; });
+    return {
+      acc: (ACC[this.props.accent ?? 'Aldebaran'] || ACC.Aldebaran)[dark ? 'd' : 'l'],
+      themeClass: dark ? 'td' : 'tl',
+      sort: st.sort, tSort: flip('sort'),
+      clip: st.clip, tClip: flip('clip'),
+      login: st.login, tLogin: flip('login'),
+      adv: st.adv, tAdv: flip('adv'),
+      done: st.done, onDone: function (e) { self.setState({ done: e.target.value }); },
+      speeds: SPEEDS.map(function (s) {
+        var on = s[0] === st.speed;
+        return {
+          label: s[1], pressed: on ? 'true' : 'false',
+          bg: on ? 'var(--panel)' : 'transparent',
+          color: on ? 'var(--text)' : 'var(--muted)',
+          shadow: on ? '0 1px 3px rgba(0,0,0,.14)' : 'none',
+          pick: function () { self.setState({ speed: s[0] }); }
+        };
+      }),
+      speedNote: sp[2]
+    };
+  }
+}
+</script>
+</body>
+</html>

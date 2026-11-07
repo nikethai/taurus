@@ -13,17 +13,21 @@ use serde_json::{Value, json};
 use slint::platform::WindowEvent;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use taurus_core::secrets::MemoryStore;
-use taurus_core::tools::ToolSources;
+use taurus_core::tools::{ToolSources, ToolState};
 use taurus_core::torrent::hub::TorrentTestNet;
 use taurus_core::{
     AddRequest, Engine, EngineConfig, ErrorKind, Event, JobId, JobState, PowerMode, ProxySetting,
     Settings, SpeedLimit, ThemeChoice, Timing, UiMode, WhenDone,
 };
 use taurus_desktop::app::App;
-use taurus_desktop::shell_text::simple_message;
+use taurus_desktop::i18n;
+use taurus_desktop::rows;
+use taurus_desktop::shell_text::ShellStrings;
+use taurus_desktop::update_apply::Restart;
 use taurus_desktop::{
-    AdvRowVm, AppWindow, BannerVm, DetailVm, FilesDialogVm, LinksUi, Messages, PasswordDialogVm,
-    RemoveDialogVm, RowVm, Screen, SettingsUi, SettingsVm, Theme, TorrentFileVm, WhenDoneUi,
+    AdvAddVm, AdvRowVm, AppWindow, BannerVm, CountdownVm, DetailVm, FilesDialogVm, GrabVm, LinksUi,
+    PasswordDialogVm, RemoveDialogVm, RowVm, Screen, SettingsUi, SettingsVm, Theme, TorrentFileVm,
+    WhenDoneUi,
 };
 use taurus_testkit::{
     FailAfter, FakeToolHost, FileSpec, TestServer, ToolRelease, TorrentSeeder, process_args_log,
@@ -39,13 +43,19 @@ fn ui_smoke() {
     theme_defaults(&ui);
     system_theme_follows_os();
     welcome_has_paste_field(&ui);
+    bundled_pseudo_locale_applies(&ui);
+    shell_text_follows_language(&ui);
     downloads_rows_show_status_and_retry(&ui);
     rows_banner_and_tips_wording(&ui);
-    shell_text_mirrors_messages(&ui);
+    shell_simple_message_matches_window(&ui);
     media_rows_and_tools_banner_wording(&ui);
     keyboard_tab_enter_escape();
     wide_detail_holds_long_names();
+    wide_fits_at_900();
+    compact_footer_fits_at_360();
+    pseudo_fits_at_420();
     torrent_add_scrolls_only_its_list();
+    refused_add_leaves_no_band(&ui);
     let ctx = Ctx::start(&ui);
     add_flow_shows_file_and_finishes(&ui, &ctx);
     settings_change_is_saved_and_shown(&ui, &ctx);
@@ -53,11 +63,14 @@ fn ui_smoke() {
     close_hides_to_tray_and_keeps_downloading(&ctx);
     failed_row_explains_and_retries(&ui, &ctx);
     duplicate_link_is_flagged(&ui, &ctx);
+    simple_row_offers_sign_in(&ui, &ctx);
     waiting_row_counts_down();
     torrent_row_shows_sharing();
+    pause_all_follows_the_list();
     countdown_cancel();
     let media = MediaCtx::start();
     tools_offline_shows_failed_banner(&media);
+    tool_failure_shows_reason(&media);
     media_add_picks_quality_and_finishes(&media);
     live_recording_shows_and_stops(&media);
     large_playlist_asks_first(&media);
@@ -80,10 +93,16 @@ fn ui_smoke() {
     batch_copies_become_mirrors(&ui, &ctx);
     add_page_offers_find_files(&ui, &ctx);
     whendone_menu_sets_when_done_and_speed(&ui, &ctx);
+    whendone_pick_closes_menu(&ui, &ctx);
     adv_settings_sections_and_values(&ui, &ctx);
+    check_updates_toggle_saves(&ui, &ctx);
+    interactive_widgets_are_accessible(&ui, &ctx);
     torrent_detail_files_and_overrides();
     adv_add_torrent_picker();
+    batch_password_applies_to_web_links();
     quit_shuts_down_engine_cleanly(&ui, &ctx);
+    restart_records_and_quits();
+    advanced_restart_after_later();
 }
 
 fn window_title(ui: &AppWindow) {
@@ -101,6 +120,9 @@ fn theme_defaults(ui: &AppWindow) {
     assert_eq!(theme.get_bg().color(), color(0xFB, 0xFB, 0xFC));
     pick("dark");
     assert_eq!(theme.get_bg().color(), color(0x1C, 0x1C, 0x1F));
+    assert_eq!(theme.get_accent_base().color(), color(0xFF, 0x7A, 0x2E));
+    assert_eq!(theme.get_accent_strong().color(), color(0xC2, 0x41, 0x0C));
+    pick("light");
     assert_eq!(theme.get_accent_base().color(), color(0xE8, 0x59, 0x0C));
     pick("system");
 }
@@ -170,6 +192,70 @@ fn welcome_has_paste_field(ui: &AppWindow) {
             .iter()
             .any(|e| e.accessible_role() == Some(AccessibleRole::TextInput)),
         "welcome_has_paste_field: no text input labelled \"Paste a link\""
+    );
+}
+
+/// The bundled pseudo-locale reaches the window, and selecting `en` brings
+/// back the source text. The product name is never translated.
+fn bundled_pseudo_locale_applies(ui: &AppWindow) {
+    const WHAT: &str = "bundled_pseudo_locale_applies";
+    ui.set_screen(Screen::Welcome);
+    i18n::apply(Some("en_XA"));
+    let tagline = texts_containing(ui, "Dówñlóáds mádé símplé.");
+    assert!(!tagline.is_empty(), "{WHAT}: no pseudo tagline");
+    assert!(
+        tagline.iter().all(|t| t.starts_with('⟦')),
+        "{WHAT}: {tagline:?}"
+    );
+    assert_eq!(ui.get_window_title(), "Hyades", "{WHAT}: title translated");
+    // Plurals and placeholders take another path at run time: the number
+    // and the argument are filled in, and the catalog's plural rule picks
+    // the form.
+    let countdown = |seconds| {
+        ui.set_countdown(CountdownVm {
+            visible: true,
+            action: "sleep".into(),
+            seconds,
+        });
+        refresh_tree(ui);
+        texts_containing(ui, "Sléépíñg íñ")
+    };
+    let one = countdown(1);
+    assert!(
+        !one.is_empty() && one.iter().all(|t| t.starts_with("⟦Sléépíñg íñ 1 séçóñd·")),
+        "{WHAT}: singular {one:?}"
+    );
+    let five = countdown(5);
+    assert!(
+        !five.is_empty()
+            && five
+                .iter()
+                .all(|t| t.starts_with("⟦Sléépíñg íñ 5 séçóñds·")),
+        "{WHAT}: plural {five:?}"
+    );
+    ui.set_countdown(CountdownVm::default());
+    ui.set_remove_dialog(RemoveDialogVm {
+        visible: true,
+        id: 7,
+        name: "a.bin".into(),
+    });
+    refresh_tree(ui);
+    let remove = texts_containing(ui, "Rémóvé a.bin");
+    assert!(
+        !remove.is_empty()
+            && remove
+                .iter()
+                .all(|t| t.starts_with("⟦Rémóvé a.bin fróm thé líst?·")),
+        "{WHAT}: placeholder {remove:?}"
+    );
+    ui.set_remove_dialog(RemoveDialogVm::default());
+    refresh_tree(ui);
+    i18n::apply(Some("en"));
+    let tagline = texts_containing(ui, "Downloads made simple");
+    assert!(!tagline.is_empty(), "{WHAT}: no English tagline");
+    assert!(
+        tagline.iter().all(|t| t == "Downloads made simple."),
+        "{WHAT}: {tagline:?}"
     );
 }
 
@@ -321,16 +407,84 @@ fn rows_banner_and_tips_wording(ui: &AppWindow) {
     ui.set_tab(0);
 }
 
-/// The OS notification text (Rust) says exactly what the screens say.
-fn shell_text_mirrors_messages(ui: &AppWindow) {
-    let messages = ui.global::<Messages>();
+/// The text the OS shows outside the window (tray menu, notification
+/// titles, start-up message box) comes from the catalog and follows the
+/// selected language like the window does.
+fn shell_text_follows_language(ui: &AppWindow) {
+    const WHAT: &str = "shell_text_follows_language";
+    i18n::apply(Some("en_XA"));
+    let pseudo = ShellStrings::from_ui(ui);
+    for (name, text) in [
+        ("tray_open", &pseudo.tray_open),
+        ("tray_pause_all", &pseudo.tray_pause_all),
+        ("tray_resume_all", &pseudo.tray_resume_all),
+        ("tray_quit", &pseudo.tray_quit),
+        ("finished_title", &pseudo.finished_title),
+        ("failed_title", &pseudo.failed_title),
+        ("all_done_title", &pseudo.all_done_title),
+        ("open_in_use", &pseudo.open_in_use),
+        ("open_failed", &pseudo.open_failed),
+    ] {
+        assert!(text.starts_with('⟦'), "{WHAT}: {name} {text:?}");
+    }
+    i18n::apply(Some("en"));
+    let en = ShellStrings::from_ui(ui);
+    assert_eq!(en.tray_quit, "Quit", "{WHAT}");
+    assert_eq!(en.tray_open, "Open Hyades", "{WHAT}");
+    assert_eq!(en.tray_pause_all, "Pause all", "{WHAT}");
+    assert_eq!(en.tray_resume_all, "Resume all", "{WHAT}");
+    assert_eq!(en.finished_title, "Download finished", "{WHAT}");
+    assert_eq!(en.failed_title, "Download stopped", "{WHAT}");
+    assert_eq!(en.all_done_title, "All downloads finished", "{WHAT}");
+    assert_eq!(
+        en.open_in_use,
+        "Hyades is already running in another program (hyades-cli). Close it, then open Hyades again.",
+        "{WHAT}"
+    );
+    assert_eq!(
+        en.open_failed,
+        "Hyades couldn't open its data folder. Check that the drive is there and that you can write to it, then open Hyades again.",
+        "{WHAT}"
+    );
+}
+
+/// The failed-download notification says, for every error kind, what the
+/// Simple row of that failed download says.
+fn shell_simple_message_matches_window(ui: &AppWindow) {
+    const WHAT: &str = "shell_simple_message_matches_window";
+    ui.set_tab(0);
+    ui.set_screen(Screen::Downloads);
     for kind in ErrorKind::ALL {
-        assert_eq!(
-            simple_message(kind),
-            messages.invoke_simple(kind.as_str().into()).as_str(),
-            "shell_text_mirrors_messages: {kind:?}"
+        let view = taurus_core::JobView {
+            id: JobId(1),
+            url: "https://example.org/a.bin".into(),
+            source_url: "https://example.org/a.bin".into(),
+            file_name: "a.bin".into(),
+            dest_dir: PathBuf::from("/tmp"),
+            state: JobState::Failed,
+            total: Some(1000),
+            downloaded: 0,
+            speed_bps: 0,
+            resumable: true,
+            error: Some((kind, String::new())),
+            kind: taurus_core::JobKind::Http,
+            torrent: None,
+            retry_at: None,
+            finished_at: None,
+            info_hash: None,
+            media: None,
+            progress_unit: Default::default(),
+        };
+        let row = rows::row_of(&view, 0);
+        ui.set_downloading_rows(ModelRc::new(VecModel::from(vec![row])));
+        refresh_tree(ui);
+        let text = ShellStrings::simple(ui, kind);
+        assert!(
+            labelled(ui, &text).iter().any(|e| e.size().width > 0.0),
+            "{WHAT}: {kind:?}: the row does not show {text:?}"
         );
     }
+    ui.set_downloading_rows(ModelRc::default());
 }
 
 /// A real engine in a temp dir, a local web server and the app on top.
@@ -1791,15 +1945,21 @@ fn http_detail_shows_cells(ui: &AppWindow, ctx: &Ctx, id: JobId) {
     // The detail is fetched again only while the window is shown.
     ui.show().unwrap();
     ui.window().set_size(TALL);
-    // The list's own state (here its open link field; also its scroll
-    // position) outlives the detail laid over it.
-    only_button(ui, "Add a download", WHAT).invoke_accessible_default_action();
-    let link_field = || {
+    // The list's own state (here what is typed in its link field; also
+    // its scroll position) outlives the detail laid over it.
+    let link_text = || {
         labelled(ui, "Paste a link")
-            .iter()
-            .any(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+            .into_iter()
+            .find(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+            .map(|e| e.accessible_value().unwrap_or_default().to_string())
     };
-    assert!(link_field(), "{WHAT}: no link field");
+    let link_field = || link_text().is_some();
+    labelled(ui, "Paste a link")
+        .into_iter()
+        .find(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+        .expect("the link field")
+        .set_accessible_value("half-typed");
+    assert_eq!(link_text().as_deref(), Some("half-typed"), "{WHAT}: typed");
     open_detail(ui, "Waiting", "adv.bin", WHAT);
     assert!(!link_field(), "{WHAT}: the list shows under the detail");
     assert_eq!(ui.get_selected_id(), id.0 as i32, "{WHAT}: selected");
@@ -1849,11 +2009,16 @@ fn http_detail_shows_cells(ui: &AppWindow, ctx: &Ctx, id: JobId) {
     ui.invoke_banner_dismiss();
 
     close_detail(ui, WHAT);
-    assert!(
-        link_field(),
+    assert_eq!(
+        link_text().as_deref(),
+        Some("half-typed"),
         "{WHAT}: the list was rebuilt under the detail"
     );
-    only_button(ui, "Close the link field", WHAT).invoke_accessible_default_action();
+    labelled(ui, "Paste a link")
+        .into_iter()
+        .find(|e| e.accessible_role() == Some(AccessibleRole::TextInput))
+        .expect("the link field")
+        .set_accessible_value("");
     ui.window().set_size(COMPACT);
 }
 
@@ -2870,14 +3035,13 @@ fn advanced_tall(ui: &AppWindow, what: &str) {
     assert_eq!(ui.get_layout().as_str(), "compact", "{what}: Advanced");
 }
 
-/// Grab links opened from the "+" panel: a folder listing's links are
+/// Grab links opened from the link row: a folder listing's links are
 /// counted by type chip, the Subfolders switch reads it again with its
 /// subfolder, and a chip and an extension filter narrow the list.
 fn grab_listing_chip_counts(ui: &AppWindow, ctx: &Ctx) {
     const WHAT: &str = "grab_listing_chip_counts";
     let url = serve_listing(ctx);
     advanced_tall(ui, WHAT);
-    only_button(ui, "Add a download", WHAT).invoke_accessible_default_action();
     only_button(ui, "Grab links from a page…", WHAT).invoke_accessible_default_action();
     assert_eq!(ui.get_screen(), Screen::Grab, "{WHAT}: not on Grab");
     assert_eq!(
@@ -3004,12 +3168,39 @@ fn grab_download_adds_three(ui: &AppWindow, ctx: &Ctx) {
     ui.window().set_size(COMPACT);
 }
 
+/// `calls` (each one's duration) summed up: count, median, 95th
+/// percentile, the longest, and every call over 20 ms by its index.
+fn call_times(calls: &[Duration]) -> String {
+    if calls.is_empty() {
+        return "none".to_string();
+    }
+    let mut sorted = calls.to_vec();
+    sorted.sort();
+    let at = |percent: usize| sorted[(sorted.len() - 1) * percent / 100];
+    let slow: Vec<String> = calls
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| **d > Duration::from_millis(20))
+        .map(|(i, d)| format!("#{i} {} ms", d.as_millis()))
+        .collect();
+    format!(
+        "{} calls, median {:?}, 95th percentile {:?}, longest {:?}, over 20 ms [{}]",
+        calls.len(),
+        at(50),
+        at(95),
+        sorted[sorted.len() - 1],
+        slow.join(", ")
+    )
+}
+
 /// Review Focus 4 (ruling R8): a page of 500 links lists all 500 rows
 /// before any size is known; the sizes (each probe answered slowly) then
-/// fill in over many later ticks, row by row, and no call to
-/// `update_timers_and_animations` takes more than 200 ms (50 ms is the
-/// aim; the longest is logged). Another page read while sizes are still
-/// coming gets none of the old page's sizes.
+/// fill in over many later ticks, row by row, and the window stays
+/// responsive: 95% of the calls to `update_timers_and_animations` take at
+/// most 50 ms, and at most one takes more than 200 ms (a shared CI runner
+/// can stall the thread once; a slow list stalls every batch). Every
+/// call's time is logged per phase. Another page read while sizes are
+/// still coming gets none of the old page's sizes.
 fn grab_500_links_streams_sizes(ui: &AppWindow, ctx: &Ctx) {
     const WHAT: &str = "grab_500_links_streams_sizes";
     const N: usize = 500;
@@ -3029,11 +3220,11 @@ fn grab_500_links_streams_sizes(ui: &AppWindow, ctx: &Ctx) {
     advanced_tall(ui, WHAT);
     ui.invoke_open_grab(url.as_str().into());
 
-    let longest = std::cell::Cell::new(Duration::ZERO);
+    let calls = std::cell::RefCell::new(Vec::<Duration>::new());
     let tick = || {
         let start = Instant::now();
         slint::platform::update_timers_and_animations();
-        longest.set(longest.get().max(start.elapsed()));
+        calls.borrow_mut().push(start.elapsed());
         std::thread::sleep(Duration::from_millis(10));
     };
     let probed = |ui: &AppWindow| {
@@ -3048,6 +3239,7 @@ fn grab_500_links_streams_sizes(ui: &AppWindow, ctx: &Ctx) {
         assert!(Instant::now() < deadline, "{WHAT}: rows never listed");
         tick();
     }
+    let listing = calls.borrow().len();
     let rows = links(ui).get_grab_rows();
     assert_eq!(rows.row_count(), N, "{WHAT}: rows");
     assert!(
@@ -3092,16 +3284,29 @@ fn grab_500_links_streams_sizes(ui: &AppWindow, ctx: &Ctx) {
         }
     }
     assert!(said_at_least, "{WHAT}: no partial footer seen");
+    let calls = calls.borrow().clone();
+    let timing = format!(
+        "listing the rows: {}; sizes: {}",
+        call_times(&calls[..listing]),
+        call_times(&calls[listing..])
+    );
     eprintln!(
-        "{WHAT}: sizes arrived in {} steps; longest update_timers_and_animations call {:?} (aim 50 ms)",
-        seen.len() - 1,
-        longest.get()
+        "{WHAT}: sizes arrived in {} steps; update_timers_and_animations calls, {timing}",
+        seen.len() - 1
     );
     assert!(seen.len() > 4, "{WHAT}: sizes arrived in {seen:?}");
+    let mut sorted = calls.clone();
+    sorted.sort();
+    let p95 = sorted[(sorted.len() - 1) * 95 / 100];
+    let over_200 = calls
+        .iter()
+        .filter(|d| **d > Duration::from_millis(200))
+        .count();
+    // One stall on a busy runner is allowed; a freeze is not.
+    let longest = *sorted.last().unwrap();
     assert!(
-        longest.get() <= Duration::from_millis(200),
-        "{WHAT}: a timer call took {:?}",
-        longest.get()
+        p95 <= Duration::from_millis(50) && over_200 <= 1 && longest <= Duration::from_secs(1),
+        "{WHAT}: the window was held up (95th percentile {p95:?}, {over_200} calls over 200 ms, longest {longest:?}); {timing}"
     );
     let rows = links(ui).get_grab_rows();
     assert_eq!(rows.row_count(), N, "{WHAT}: rows rebuilt");
@@ -3172,7 +3377,7 @@ fn grab_500_links_streams_sizes(ui: &AppWindow, ctx: &Ctx) {
     ui.window().set_size(COMPACT);
 }
 
-/// Add several links, opened from the "+" panel: the same file on two
+/// Add several links, opened from the link row: the same file on two
 /// servers, with "Treat copies as mirrors" on, is one download with one
 /// mirror; a web page line offers "Find files →", which opens Grab links.
 fn batch_copies_become_mirrors(ui: &AppWindow, ctx: &Ctx) {
@@ -3183,7 +3388,6 @@ fn batch_copies_become_mirrors(ui: &AppWindow, ctx: &Ctx) {
     let second = mirror.serve("elsewhere/TWIN.bin", spec);
     let page = format!("{}/listing/", ctx.server.base_url());
     advanced_tall(ui, WHAT);
-    only_button(ui, "Add a download", WHAT).invoke_accessible_default_action();
     only_button(ui, "Several links…", WHAT).invoke_accessible_default_action();
     assert_eq!(
         ui.get_screen(),
@@ -3443,7 +3647,12 @@ fn refresh_tree(ui: &AppWindow) {
     let _ = ElementQuery::from_root(ui).match_descendants().find_all();
 }
 
+/// The popover's radio button `label`; opens the popover first (as its
+/// footer button does) when a pick closed it.
 fn whendone_choice(ui: &AppWindow, label: &str, what: &str) -> ElementHandle {
+    if !ui.global::<WhenDoneUi>().get_open() {
+        ui.invoke_open_whendone();
+    }
     refresh_tree(ui);
     only_with_role(ui, AccessibleRole::RadioButton, label, what)
 }
@@ -3503,29 +3712,34 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     }
     assert!(texts_containing(ui, NOTE).is_empty(), "{WHAT}: early note");
 
-    // Then sleep: saved, the footer says so, the note shows.
+    // Then sleep: saved, the popover closes, the footer says so (its
+    // button opens the popover again), the note shows.
     whendone_choice(ui, "Put the computer to sleep", WHAT).invoke_accessible_default_action();
+    assert!(!state.get_open(), "{WHAT}: open after a pick");
     wait_until(&format!("{WHAT}: sleep saved"), || {
         ctx.engine.settings().when_done == WhenDone::Sleep
     });
     whendone_shown(ui, "sleep", WHAT);
-    assert!(!texts_containing(ui, NOTE).is_empty(), "{WHAT}: sleep note");
-    only_button(ui, "Then sleep", WHAT);
     assert!(labelled(ui, "When done").is_empty(), "{WHAT}: old label");
+    only_button(ui, "Then sleep", WHAT).invoke_accessible_default_action();
+    refresh_tree(ui);
+    assert!(!texts_containing(ui, NOTE).is_empty(), "{WHAT}: sleep note");
     whendone_choice(ui, "Shut down", WHAT).invoke_accessible_default_action();
     whendone_shown(ui, "shutdown", WHAT);
+    only_button(ui, "Then shut down", WHAT).invoke_accessible_default_action();
+    refresh_tree(ui);
     assert!(
         !texts_containing(ui, NOTE).is_empty(),
         "{WHAT}: shutdown note"
     );
-    only_button(ui, "Then shut down", WHAT);
     whendone_choice(ui, "Quit Hyades", WHAT).invoke_accessible_default_action();
     wait_until(&format!("{WHAT}: quit saved"), || {
         ctx.engine.settings().when_done == WhenDone::Quit
     });
     whendone_shown(ui, "quit", WHAT);
+    only_button(ui, "Then quit", WHAT).invoke_accessible_default_action();
+    refresh_tree(ui);
     assert!(texts_containing(ui, NOTE).is_empty(), "{WHAT}: quit note");
-    only_button(ui, "Then quit", WHAT);
     whendone_choice(ui, "Just notify me", WHAT).invoke_accessible_default_action();
     whendone_shown(ui, "notify", WHAT);
     only_button(ui, "Notify", WHAT);
@@ -3534,7 +3748,8 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
         ctx.engine.settings().when_done == WhenDone::Nothing
     });
     whendone_shown(ui, "nothing", WHAT);
-    only_button(ui, "When done", WHAT);
+    only_button(ui, "When done", WHAT).invoke_accessible_default_action();
+    refresh_tree(ui);
 
     // Presets, then Custom.
     only_with_role(ui, AccessibleRole::RadioButton, "Gentle", WHAT)
@@ -3542,8 +3757,7 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     wait_until(&format!("{WHAT}: gentle saved"), || {
         ctx.engine.settings().speed == SpeedLimit::Gentle
     });
-    only_with_role(ui, AccessibleRole::RadioButton, "Custom", WHAT)
-        .invoke_accessible_default_action();
+    whendone_choice(ui, "Custom", WHAT).invoke_accessible_default_action();
     refresh_tree(ui);
     let field = only_with_role(ui, AccessibleRole::TextInput, "Custom speed in MB/s", WHAT);
     assert_eq!(
@@ -3636,7 +3850,12 @@ fn whendone_menu_sets_when_done_and_speed(ui: &AppWindow, ctx: &Ctx) {
     // A radio pick leaves the error: the field still holds bad text.
     whendone_choice(ui, "Shut down", WHAT).invoke_accessible_default_action();
     assert!(state.get_custom_invalid(), "{WHAT}: pick cleared the error");
+    assert!(state.get_open(), "{WHAT}: closed with the refusal shown");
     whendone_choice(ui, "Do nothing", WHAT).invoke_accessible_default_action();
+    // Opened afresh, as the footer button does: the saved speed, focused.
+    ui.invoke_open_whendone();
+    refresh_tree(ui);
+    let field = only_with_role(ui, AccessibleRole::TextInput, "Custom speed in MB/s", WHAT);
     field.set_accessible_value("0.1");
     refresh_tree(ui);
     assert!(!state.get_custom_invalid(), "{WHAT}: 0.1 flagged");
@@ -3835,6 +4054,28 @@ fn adv_settings_sections_and_values(ui: &AppWindow, ctx: &Ctx) {
         ctx.engine.settings().speed
             == SpeedLimit::Custom {
                 bytes_per_sec: 1_500_000,
+            }
+    });
+    // Picking Custom selects the limit it fills in: typing replaces it.
+    radio("Balanced").invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: balanced saved"), || {
+        ctx.engine.settings().speed == SpeedLimit::Balanced
+    });
+    radio("Custom").invoke_accessible_default_action();
+    refresh_tree(ui);
+    assert!(
+        !ui.global::<SettingsUi>().get_custom_text().is_empty(),
+        "{WHAT}: Custom not prefilled"
+    );
+    ui.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: "5".into() });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: "5".into() });
+    enter();
+    wait_until(&format!("{WHAT}: 5 MB/s saved"), || {
+        ctx.engine.settings().speed
+            == SpeedLimit::Custom {
+                bytes_per_sec: 5_000_000,
             }
     });
     radio("Fastest").invoke_accessible_default_action();
@@ -4061,6 +4302,160 @@ fn adv_settings_sections_and_values(ui: &AppWindow, ctx: &Ctx) {
     ui.window().set_size(COMPACT);
 }
 
+/// Advanced Settings' General section: the running version with its own
+/// "Check now", and the automatic check switched off through the engine.
+fn check_updates_toggle_saves(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "check_updates_toggle_saves";
+    ui.window().set_size(SETTINGS_TALL);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    ui.set_screen(Screen::Settings);
+    refresh_tree(ui);
+    assert!(
+        ctx.engine.settings().ui.check_updates,
+        "{WHAT}: on by default"
+    );
+    let version = format!("Hyades {}", env!("CARGO_PKG_VERSION"));
+    assert!(shows_text(ui, &version), "{WHAT}: no {version:?} row");
+    only_with_role(ui, AccessibleRole::Button, "Check for updates", WHAT);
+    let toggle = only_with_role(
+        ui,
+        AccessibleRole::Switch,
+        "Check for updates automatically",
+        WHAT,
+    );
+    assert_eq!(toggle.accessible_checked(), Some(true), "{WHAT}: shown on");
+    toggle.invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: saved off"), || {
+        !ctx.engine.settings().ui.check_updates && toggle.accessible_checked() == Some(false)
+    });
+    ui.set_screen(Screen::Downloads);
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// Review Focus 4: a ready update's banner; "Later" hides it, and
+/// "Restart" records what to start and quits the normal way (window
+/// hidden, engine stopped). Simple Settings offers the restart too.
+fn restart_records_and_quits() {
+    const WHAT: &str = "restart_records_and_quits";
+    let ui = AppWindow::new().unwrap();
+    let ctx = Ctx::start(&ui);
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    ui.show().unwrap();
+    let title = "Hyades 1.1.0 is ready";
+    let shown = |label: &str| {
+        refresh_tree(&ui);
+        shows_text(&ui, label)
+    };
+    assert!(!shown(title), "{WHAT}: banner before any update");
+    let restart = Restart::Relaunch("/x".into());
+    ctx.app.show_update_ready("1.1.0", Some(restart.clone()));
+    wait_until(&format!("{WHAT}: banner"), || shown(title));
+    assert!(
+        shows_text(&ui, "Restart to update. Downloads continue afterwards."),
+        "{WHAT}: body"
+    );
+    only_button(&ui, "Later", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: Later hides it"), || !shown(title));
+
+    ui.set_screen(Screen::Settings);
+    refresh_tree(&ui);
+    let version = format!(
+        "Hyades {} · Free and open source",
+        env!("CARGO_PKG_VERSION")
+    );
+    assert!(shows_text(&ui, &version), "{WHAT}: no {version:?} footer");
+    only_button(&ui, "Restart to update to 1.1.0", WHAT);
+    ui.set_screen(Screen::Downloads);
+
+    // Review Focus 3: Restart where the update cannot be put in place
+    // (this copy cannot update itself) offers the website instead.
+    ctx.app.show_update_ready("1.1.0", None);
+    wait_until(&format!("{WHAT}: banner for the failing install"), || {
+        shown(title)
+    });
+    only_button(&ui, "Restart", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: install failed"), || {
+        shown("Hyades couldn't update itself here")
+    });
+    assert!(
+        shows_text(&ui, "Get the new version from the website."),
+        "{WHAT}: fallback body"
+    );
+    only_button(&ui, "Get it", WHAT);
+    only_button(&ui, "Not now", WHAT);
+    assert_eq!(
+        ctx.app.pending_restart(),
+        None,
+        "{WHAT}: failed restart recorded"
+    );
+    assert!(
+        ui.window().is_visible(),
+        "{WHAT}: quit after a failed install"
+    );
+
+    ctx.app.show_update_ready("1.1.0", Some(restart.clone()));
+    wait_until(&format!("{WHAT}: banner again"), || shown(title));
+    assert_eq!(ctx.app.pending_restart(), None, "{WHAT}: recorded early");
+    only_button(&ui, "Restart", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        ctx.app.pending_restart(),
+        Some(restart),
+        "{WHAT}: not recorded"
+    );
+    assert!(!ui.window().is_visible(), "{WHAT}: window still shown");
+    ctx.rt.block_on(async {
+        let engine = Engine::open(EngineConfig::new(ctx.data_dir()))
+            .await
+            .unwrap_or_else(|e| panic!("{WHAT}: engine still running: {e}"));
+        engine.shutdown().await.unwrap();
+    });
+}
+
+/// Re-review: in Advanced mode, with a ready update's banner dismissed,
+/// Advanced Settings' update button reads "Restart to update to …" (not
+/// "Check now") and restarts the same way as the banner.
+fn advanced_restart_after_later() {
+    const WHAT: &str = "advanced_restart_after_later";
+    let ui = AppWindow::new().unwrap();
+    let ctx = Ctx::start(&ui);
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    assert_eq!(ui.get_layout().as_str(), "compact", "{WHAT}: Advanced");
+    ui.show().unwrap();
+    let title = "Hyades 1.1.0 is ready";
+    let shown = |label: &str| {
+        refresh_tree(&ui);
+        shows_text(&ui, label)
+    };
+    let restart = Restart::Relaunch("/y".into());
+    ctx.app.show_update_ready("1.1.0", Some(restart.clone()));
+    wait_until(&format!("{WHAT}: banner above the list"), || shown(title));
+    only_button(&ui, "Later", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: Later hides it"), || !shown(title));
+
+    ui.window().set_size(SETTINGS_TALL);
+    ui.set_screen(Screen::Settings);
+    refresh_tree(&ui);
+    assert!(
+        shows_text(&ui, "Hyades 1.1.0 is ready. Restart to update."),
+        "{WHAT}: status line"
+    );
+    assert!(
+        labelled(&ui, "Check for updates").is_empty(),
+        "{WHAT}: Check now offered while ready"
+    );
+    only_button(&ui, "Restart to update to 1.1.0", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        ctx.app.pending_restart(),
+        Some(restart),
+        "{WHAT}: not recorded"
+    );
+    assert!(!ui.window().is_visible(), "{WHAT}: window still shown");
+}
+
 /// The yt-dlp row's version on the Engines section.
 fn ytdlp_row_version(ui: &AppWindow) -> String {
     ui.global::<taurus_desktop::SettingsUi>()
@@ -4162,9 +4557,8 @@ fn press_shift_tab(ui: &AppWindow) {
 }
 
 /// Keyboard use of Advanced mode, on a window of its own (no engine: the
-/// callbacks are recorded). Tab goes through the header, the tabs, each
-/// row then its action, and the footer; Escape closes the "+" panel and
-/// gives the focus back to "+". Each dialog takes the keys when it opens:
+/// callbacks are recorded). Tab goes through the header, the link row,
+/// the tabs, each row then its action, and the footer. Each dialog takes the keys when it opens:
 /// Escape cancels it, Enter confirms it, Tab goes round its controls
 /// without leaving it. Escape goes back from the compact detail (after a
 /// dialog over it closed, too), Grab links, Several links, Advanced add
@@ -4209,24 +4603,11 @@ fn keyboard_tab_enter_escape() {
     };
     refresh_tree(&ui);
 
-    // The first Tab reaches "+": it opens the link field, Escape closes
-    // it and "+" has the focus again.
-    press(&ui, Key::Tab);
-    press(&ui, " ");
-    assert!(
-        shows("Paste a link"),
-        "{WHAT}: \"+\" did not open the field"
-    );
-    press(&ui, Key::Escape);
-    assert!(!shows("Paste a link"), "{WHAT}: Escape left the field open");
-    press(&ui, " ");
-    assert!(shows("Paste a link"), "{WHAT}: \"+\" lost the focus");
-    press(&ui, Key::Escape);
-    assert!(!shows("Paste a link"), "{WHAT}: field open again");
-
-    // Then Settings, the three tabs, and each row followed by its action.
-    // Space presses what has the focus.
-    for _ in 0..5 {
+    // Settings, the link field, Several links, Grab links (Add is off
+    // while the field is empty), the three tabs, then each row followed by
+    // its action. Space presses what has the focus.
+    assert!(shows("Paste a link"), "{WHAT}: the link field is shown");
+    for _ in 0..8 {
         press(&ui, Key::Tab);
     }
     for _ in 0..4 {
@@ -4249,6 +4630,547 @@ fn keyboard_tab_enter_escape() {
     keyboard_password_dialog(&ui, &calls);
     keyboard_files_dialog(&ui, &calls);
     keyboard_screens(&ui, &calls);
+}
+
+/// Where an element's right edge lies, in window coordinates.
+fn right_edge(e: &ElementHandle) -> f32 {
+    e.absolute_position().x + e.size().width
+}
+
+/// Every button shown in `ui` ends inside `width`.
+fn buttons_fit(ui: &AppWindow, width: f32, what: &str) {
+    refresh_tree(ui);
+    let buttons: Vec<ElementHandle> = ElementQuery::from_root(ui)
+        .match_descendants()
+        .match_accessible_role(AccessibleRole::Button)
+        .find_all();
+    assert!(!buttons.is_empty(), "{what}: no buttons");
+    for b in buttons.iter().filter(|b| b.size().width > 0.0) {
+        assert!(
+            right_edge(b) <= width + 0.5,
+            "{what}: {:?} ends at {} in a {width} px window",
+            b.accessible_label(),
+            right_edge(b)
+        );
+    }
+}
+
+/// At the 900 px threshold the wide layout fits: the sidebar, the list's
+/// top bar (its search field gives way) and the whole detail pane. Its
+/// "New download" link field closes on Escape and gives the focus back.
+fn wide_fits_at_900() {
+    use slint::platform::Key;
+    const WHAT: &str = "wide_fits_at_900";
+    let ui = AppWindow::new().unwrap();
+    ui.show().unwrap();
+    ui.window().set_size(slint::LogicalSize::new(900.0, 640.0));
+    ui.set_layout("wide".into());
+    ui.set_screen(Screen::Downloads);
+    let rows: Vec<AdvRowVm> = [row(1, "downloading"), row(2, "paused")]
+        .into_iter()
+        .map(|row| AdvRowVm {
+            row,
+            source: "HTTP".into(),
+            ..Default::default()
+        })
+        .collect();
+    ui.set_adv_rows(ModelRc::new(VecModel::from(rows)));
+    ui.set_detail(DetailVm {
+        visible: true,
+        row: row(1, "downloading"),
+        name: "file-1.zip".into(),
+        kind: "archive".into(),
+        source: "HTTP".into(),
+        big: "42%".into(),
+        folder: "/tmp/out".into(),
+        url: "https://example.org/file-1.zip".into(),
+        ..Default::default()
+    });
+    refresh_tree(&ui);
+    let pane = ElementHandle::find_by_element_type_name(&ui, "DetailPane")
+        .next()
+        .expect("the detail pane");
+    assert!(
+        right_edge(&pane) <= 900.5,
+        "{WHAT}: the pane ends at {}",
+        right_edge(&pane)
+    );
+    buttons_fit(&ui, 900.0, WHAT);
+
+    let shows = |label: &str| {
+        refresh_tree(&ui);
+        !labelled(&ui, label).is_empty()
+    };
+    only_button(&ui, "New download", WHAT).invoke_accessible_default_action();
+    assert!(shows("Paste a link"), "{WHAT}: the link field did not open");
+    press(&ui, Key::Escape);
+    assert!(!shows("Paste a link"), "{WHAT}: Escape left the field open");
+    press(&ui, " ");
+    assert!(shows("Paste a link"), "{WHAT}: New download lost the focus");
+    press(&ui, Key::Escape);
+    assert!(!shows("Paste a link"), "{WHAT}: field open again");
+}
+
+/// The compact footer keeps every action inside a 360 px window with the
+/// longest labels it shows (a when-done choice and Resume all).
+fn compact_footer_fits_at_360() {
+    const WHAT: &str = "compact_footer_fits_at_360";
+    let ui = AppWindow::new().unwrap();
+    ui.show().unwrap();
+    ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+    ui.set_layout("compact".into());
+    ui.set_screen(Screen::Downloads);
+    ui.set_speed_down_text("123.4 MB/s".into());
+    ui.set_speed_up_text("56.7 MB/s".into());
+    ui.set_summary(taurus_desktop::SummaryVm {
+        all_paused: true,
+        ..Default::default()
+    });
+    ui.global::<WhenDoneUi>().set_when_done("shutdown".into());
+    refresh_tree(&ui);
+    only_button(&ui, "Resume all", WHAT);
+    only_button(&ui, "Then shut down", WHAT);
+    buttons_fit(&ui, 360.0, WHAT);
+    ui.global::<WhenDoneUi>().set_when_done("nothing".into());
+}
+
+/// `inner` lies inside `outer` (half a pixel of rounding allowed).
+fn inside(inner: &ElementHandle, outer: &ElementHandle) -> bool {
+    let (i, o) = (inner.absolute_position(), outer.absolute_position());
+    let (is, os) = (inner.size(), outer.size());
+    i.x >= o.x - 0.5
+        && i.y >= o.y - 0.5
+        && i.x + is.width <= o.x + os.width + 0.5
+        && i.y + is.height <= o.y + os.height + 0.5
+}
+
+// Measures a label's natural (unsqueezed) width in the app's font.
+// `default-font-family: "Inter"` measures in Inter only once an `AppWindow`
+// exists (its font import registers Inter): create one before the probe.
+slint::slint! {
+    export component TextProbe inherits Window {
+        in property <string> text;
+        in property <length> size: 13px;
+        in property <int> weight: 500;
+        // Wrapped at `wrap-width`: the height it needs.
+        in property <length> wrap-width: 100px;
+        out property <length> natural: label.preferred-width;
+        out property <length> wrapped-height: wrapped.preferred-height;
+        default-font-family: "Inter";
+        label := Text {
+            text: root.text;
+            font-size: root.size;
+            font-weight: root.weight;
+        }
+        wrapped := Text {
+            y: 50px;
+            width: root.wrap-width;
+            text: root.text;
+            font-size: root.size;
+            font-weight: root.weight;
+            wrap: word-wrap;
+        }
+    }
+}
+
+fn natural_width(probe: &TextProbe, text: &str, size: f32, weight: i32) -> f32 {
+    probe.set_text(text.into());
+    probe.set_size(size);
+    probe.set_weight(weight);
+    probe.get_natural()
+}
+
+/// The height `text` needs, wrapped at `width`.
+fn wrapped_height(probe: &TextProbe, text: &str, size: f32, weight: i32, width: f32) -> f32 {
+    probe.set_text(text.into());
+    probe.set_size(size);
+    probe.set_weight(weight);
+    probe.set_wrap_width(width);
+    probe.get_wrapped_height()
+}
+
+/// An element, told apart by what it shows and where.
+fn element_key(e: &ElementHandle) -> (String, [u32; 4]) {
+    let (p, s) = (e.absolute_position(), e.size());
+    (
+        e.accessible_label().unwrap_or_default().to_string(),
+        [p.x, p.y, s.width, s.height].map(f32::to_bits),
+    )
+}
+
+/// The elements inside a scroller (any Flickable: ScrollView, ListView…).
+fn scrolled(ui: &AppWindow) -> std::collections::HashSet<(String, [u32; 4])> {
+    ElementQuery::from_root(ui)
+        .match_descendants()
+        .match_predicate(|e| {
+            e.type_name().is_some_and(|t| t == "Flickable")
+                || e.bases().is_some_and(|mut b| b.any(|t| t == "Flickable"))
+        })
+        .find_all()
+        .iter()
+        .flat_map(|f| f.query_descendants().find_all())
+        .map(|e| element_key(&e))
+        .collect()
+}
+
+/// Every control shown (button, radio button, tab, check box, switch)
+/// lies inside the `width` × `height` window: all four edges, except
+/// that a control in a scroller may sit below the fold. Grab chips scroll
+/// sideways and are checked on their own.
+fn controls_fit(ui: &AppWindow, width: f32, height: f32, what: &str) {
+    refresh_tree(ui);
+    let scrolled = scrolled(ui);
+    let roles = [
+        AccessibleRole::Button,
+        AccessibleRole::RadioButton,
+        AccessibleRole::Tab,
+        AccessibleRole::Checkbox,
+        AccessibleRole::Switch,
+    ];
+    let mut seen = 0;
+    for role in roles {
+        let found = ElementQuery::from_root(ui)
+            .match_descendants()
+            .match_accessible_role(role)
+            .find_all();
+        for e in found.iter().filter(|e| e.size().width > 0.0) {
+            if e.type_name().is_some_and(|t| t == "Chip") {
+                continue;
+            }
+            seen += 1;
+            let (p, s) = (e.absolute_position(), e.size());
+            let label = e.accessible_label();
+            assert!(
+                p.x >= -0.5 && p.x + s.width <= width + 0.5,
+                "{what}: {role:?} {label:?} spans x {}..{} in a {width} px window",
+                p.x,
+                p.x + s.width
+            );
+            if !scrolled.contains(&element_key(e)) {
+                assert!(
+                    p.y >= -0.5 && p.y + s.height <= height + 0.5,
+                    "{what}: {role:?} {label:?} spans y {}..{} in a {height} px window",
+                    p.y,
+                    p.y + s.height
+                );
+            }
+        }
+    }
+    assert!(seen > 0, "{what}: no controls");
+}
+
+/// Every segment's label shows whole: its text box is at least the
+/// label's natural width.
+fn segments_whole(ui: &AppWindow, probe: &TextProbe, what: &str) {
+    refresh_tree(ui);
+    let segments = ElementHandle::find_by_element_type_name(ui, "Segment").collect::<Vec<_>>();
+    assert!(segments.len() >= 4, "{what}: {} segments", segments.len());
+    for seg in &segments {
+        let label = seg.accessible_label().unwrap_or_default();
+        let weight = if seg.accessible_checked() == Some(true) {
+            600
+        } else {
+            500
+        };
+        let need = natural_width(probe, &label, 13.0, weight);
+        for text in seg.query_descendants().match_type_name("Text").find_all() {
+            assert!(
+                text.size().width + 0.5 >= need,
+                "{what}: segment {label:?} shows {} px of its {need} px label",
+                text.size().width
+            );
+        }
+    }
+}
+
+/// Every line of every `Card` shown lies inside its card.
+fn cards_hold_text(ui: &AppWindow, what: &str) {
+    refresh_tree(ui);
+    let cards = ElementHandle::find_by_element_type_name(ui, "Card").collect::<Vec<_>>();
+    assert!(!cards.is_empty(), "{what}: no cards");
+    for card in &cards {
+        for text in card.query_descendants().match_type_name("Text").find_all() {
+            assert!(
+                inside(&text, card),
+                "{what}: a line of a card ends at {} below a card ending at {}",
+                text.absolute_position().y + text.size().height,
+                card.absolute_position().y + card.size().height
+            );
+        }
+    }
+}
+
+/// Long labels hold. In English at the 360 px minimum every segment label
+/// shows whole (compact Settings and the when-done card). Under the
+/// pseudo-locale (every string at least 1.4x longer) at 420 px every
+/// control stays in the window, segment labels stay in their segments,
+/// the grab chips keep their natural width in a row that scrolls (a
+/// focused chip is scrolled into view), and every card holds its text
+/// (compact Settings, the Advanced and Simple Add screens).
+fn pseudo_fits_at_420() {
+    use slint::platform::Key;
+    const WHAT: &str = "pseudo_fits_at_420";
+    let probe = TextProbe::new().unwrap();
+    let ui = AppWindow::new().unwrap();
+    ui.show().unwrap();
+    ui.set_layout("compact".into());
+
+    // English at 360 px.
+    i18n::apply(Some("en"));
+    ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+    ui.set_screen(Screen::Settings);
+    segments_whole(&ui, &probe, &format!("{WHAT} (en, Settings)"));
+    ui.set_screen(Screen::Downloads);
+    ui.global::<WhenDoneUi>().set_open(true);
+    segments_whole(&ui, &probe, &format!("{WHAT} (en, when done)"));
+    ui.global::<WhenDoneUi>().set_open(false);
+
+    // The clipboard offer holds its wrapped question, in English and in
+    // the pseudo-locale.
+    let offer_holds = |what: &str| {
+        ui.set_banner(BannerVm {
+            visible: true,
+            host: "downloads.example-mirror.org".into(),
+            kind: "link".into(),
+        });
+        refresh_tree(&ui);
+        let banner = ElementHandle::find_by_element_type_name(&ui, "Banner")
+            .next()
+            .expect("the clipboard offer");
+        let question = banner
+            .query_descendants()
+            .match_accessible_role(AccessibleRole::Text)
+            .find_first()
+            .expect("the offer's question");
+        let label = question.accessible_label().unwrap_or_default();
+        let need = wrapped_height(&probe, &label, 13.0, 400, question.size().width);
+        assert!(
+            question.size().height + 0.5 >= need,
+            "{what}: the offer's question gets {} px of the {need} px it needs",
+            question.size().height
+        );
+        for text in banner
+            .query_descendants()
+            .match_type_name("Text")
+            .find_all()
+        {
+            assert!(
+                inside(&text, &banner),
+                "{what}: the offer's text spans y {}..{} in a banner ending at {}",
+                text.absolute_position().y,
+                text.absolute_position().y + text.size().height,
+                banner.absolute_position().y + banner.size().height
+            );
+        }
+        controls_fit(&ui, 420.0, 640.0, what);
+        ui.set_banner(BannerVm::default());
+    };
+    ui.window().set_size(slint::LogicalSize::new(420.0, 640.0));
+    offer_holds(&format!("{WHAT} (en, clipboard offer)"));
+
+    // The pseudo-locale at 420 px.
+    i18n::apply(Some("en_XA"));
+    ui.window().set_size(slint::LogicalSize::new(420.0, 640.0));
+    ui.global::<WhenDoneUi>().set_open(true);
+    refresh_tree(&ui);
+    for seg in ElementHandle::find_by_element_type_name(&ui, "Segment") {
+        for text in seg.query_descendants().match_type_name("Text").find_all() {
+            assert!(
+                inside(&text, &seg),
+                "{WHAT}: {:?}'s label runs out of its segment",
+                seg.accessible_label()
+            );
+        }
+    }
+    controls_fit(&ui, 420.0, 640.0, &format!("{WHAT} (when done)"));
+    ui.global::<WhenDoneUi>().set_open(false);
+    offer_holds(&format!("{WHAT} (clipboard offer)"));
+
+    ui.set_screen(Screen::Settings);
+    cards_hold_text(&ui, &format!("{WHAT} (Settings)"));
+    controls_fit(&ui, 420.0, 640.0, &format!("{WHAT} (Settings)"));
+
+    // Grab links: chips at their natural width; Tab scrolls the last one
+    // into view.
+    let links = ui.global::<LinksUi>();
+    links.set_grab(GrabVm {
+        page_url: "https://example.org/files/".into(),
+        chip: "all".into(),
+        count_all: 9,
+        count_video: 1,
+        count_docs: 2,
+        count_archives: 4,
+        count_images: 2,
+        shown_count: 9,
+        ..Default::default()
+    });
+    ui.set_screen(Screen::Grab);
+    refresh_tree(&ui);
+    let chips = || ElementHandle::find_by_element_type_name(&ui, "Chip").collect::<Vec<_>>();
+    assert_eq!(chips().len(), 5, "{WHAT}: chips");
+    for chip in chips() {
+        let label = chip.accessible_label().unwrap_or_default();
+        let weight = if chip.accessible_item_selected() == Some(true) {
+            600
+        } else {
+            400
+        };
+        let need = natural_width(&probe, &label, 12.0, weight);
+        let text = chip
+            .query_descendants()
+            .match_type_name("Text")
+            .find_first()
+            .expect("the chip's label");
+        assert!(
+            text.size().width + 0.5 >= need,
+            "{WHAT}: chip {label:?} shows {} px of its {need} px label",
+            text.size().width
+        );
+    }
+    let last = |chips: Vec<ElementHandle>| chips.last().map(right_edge).unwrap_or(0.0);
+    assert!(
+        last(chips()) > 420.5,
+        "{WHAT}: the chips no longer overflow, so the scroll is untested"
+    );
+    let mut presses = 0;
+    while last(chips()) > 420.5 {
+        assert!(
+            presses < 40,
+            "{WHAT}: Tab never brought the last chip into view"
+        );
+        press(&ui, Key::Tab);
+        refresh_tree(&ui);
+        presses += 1;
+    }
+    controls_fit(&ui, 420.0, 640.0, &format!("{WHAT} (grab)"));
+    links.set_grab(GrabVm::default());
+
+    // The Advanced Add screen's video card.
+    ui.set_adv_add(AdvAddVm {
+        kind: "media".into(),
+        badge: "media".into(),
+        title: "Sprite Fright — Blender Open Movie".into(),
+        uploader: "Blender Studio".into(),
+        duration_text: "10:24".into(),
+        size_text: "2.0 GB".into(),
+        checksum_ok: true,
+        ..Default::default()
+    });
+    ui.set_screen(Screen::Add);
+    cards_hold_text(&ui, &format!("{WHAT} (Advanced Add)"));
+    controls_fit(&ui, 420.0, 640.0, &format!("{WHAT} (Advanced Add)"));
+    ui.set_screen(Screen::Downloads);
+    ui.set_adv_add(AdvAddVm::default());
+
+    // The Simple Add screen.
+    ui.set_layout("simple".into());
+    ui.set_add(taurus_desktop::AddVm {
+        kind: "media".into(),
+        name: "Sprite Fright — Blender Open Movie".into(),
+        size_text: "2.0 GB".into(),
+        folder: "/home/someone/Downloads".into(),
+        is_media: true,
+        media_mode: "video".into(),
+        quality_id: "best".into(),
+        quality_label: "Best available".into(),
+        duration_text: "10:24".into(),
+        uploader: "Blender Studio".into(),
+        ..Default::default()
+    });
+    ui.set_screen(Screen::Add);
+    cards_hold_text(&ui, &format!("{WHAT} (Simple Add)"));
+    controls_fit(&ui, 420.0, 640.0, &format!("{WHAT} (Simple Add)"));
+
+    ui.set_screen(Screen::Downloads);
+    ui.set_add(Default::default());
+    i18n::apply(Some("en"));
+}
+
+/// Pause all / Resume all in Advanced follows what can be paused: with a
+/// failed download and a sharing torrent in the list, Pause all turns
+/// into Resume all, which resumes the paused download.
+fn pause_all_follows_the_list() {
+    const WHAT: &str = "pause_all_follows_the_list";
+    let rt = runtime();
+    let seeder = rt.block_on(TorrentSeeder::start(
+        "pause-share.bin",
+        &[(
+            "pause-share.bin",
+            taurus_testkit::content(&FileSpec::new(64 * 1024)),
+        )],
+        None,
+    ));
+    let peer = seeder.addr;
+    let ui = AppWindow::new().unwrap();
+    let ctx = Ctx::start_with(&ui, rt, |config, settings| {
+        config.torrent_test = Some(TorrentTestNet {
+            initial_peers: vec![peer],
+            restore_in_place: false,
+        });
+        config.timing = Timing::fast_for_tests();
+        settings.torrent.stop_ratio = None;
+        settings.ui.mode = UiMode::Advanced;
+    });
+    ui.show().unwrap();
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    wait_until(&format!("{WHAT}: compact"), || ui.get_layout() == "compact");
+    let add = |url: String| {
+        let request = AddRequest {
+            url,
+            dest_dir: ctx.out(),
+            ..Default::default()
+        };
+        ctx.rt.block_on(ctx.engine.add(request)).unwrap()
+    };
+    let shared = add(seeder.magnet.clone());
+    let mut refused = FileSpec::new(256 * 1024);
+    refused.fail_after = Some(FailAfter {
+        after_requests: 1,
+        status: 403,
+        headers: Vec::new(),
+    });
+    let failed = add(ctx.server.serve("pause-refused.bin", refused));
+    let mut slow = FileSpec::new(20 * 1024 * 1024);
+    slow.bytes_per_sec = Some(256 * 1024);
+    let running = add(ctx.server.serve("pause-slow.bin", slow));
+    let state = |id: JobId| {
+        ctx.engine
+            .snapshot()
+            .into_iter()
+            .find(|v| v.id == id)
+            .map(|v| v.state)
+    };
+    wait_for(
+        Duration::from_secs(60),
+        &format!("{WHAT}: sharing, failed and downloading"),
+        || {
+            state(shared) == Some(JobState::Seeding)
+                && state(failed) == Some(JobState::Failed)
+                && state(running) == Some(JobState::Downloading)
+        },
+    );
+    let shows = |label: &str| {
+        refresh_tree(&ui);
+        labelled(&ui, label)
+            .iter()
+            .any(|e| e.accessible_role() == Some(AccessibleRole::Button))
+    };
+    wait_until(&format!("{WHAT}: Pause all"), || shows("Pause all"));
+    only_button(&ui, "Pause all", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: Resume all"), || {
+        state(running) == Some(JobState::Paused) && shows("Resume all")
+    });
+    only_button(&ui, "Resume all", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: resumed"), || {
+        matches!(
+            state(running),
+            Some(JobState::Downloading | JobState::Queued)
+        ) && shows("Pause all")
+    });
+    assert_eq!(state(shared), Some(JobState::Seeding), "{WHAT}: sharing");
+    ctx.shutdown(WHAT);
+    drop(seeder);
 }
 
 /// The wide layout's detail pane holds a 200-character name, a long
@@ -4678,4 +5600,449 @@ fn keyboard_screens(ui: &AppWindow, calls: &Calls) {
     assert_eq!(taken(), Vec::<String>::new(), "{WHAT}: detail with dialog");
     press(ui, Key::Escape);
     assert_eq!(taken(), ["select -1"], "{WHAT}: detail after the dialog");
+}
+
+/// The Advanced add's refusal line: shown with the engine's reason, and
+/// once the reason is cleared (a field edited, or an add that went
+/// through) it takes no room at all.
+fn refused_add_leaves_no_band(ui: &AppWindow) {
+    const WHAT: &str = "refused_add_leaves_no_band";
+    let vm = AdvAddVm {
+        kind: "file".into(),
+        name: "refused.bin".into(),
+        checksum_ok: true,
+        ..Default::default()
+    };
+    ui.window().set_size(TALL);
+    ui.set_layout("compact".into());
+    ui.set_adv_add(AdvAddVm {
+        refused: "disk_full".into(),
+        ..vm.clone()
+    });
+    ui.set_screen(Screen::Add);
+    refresh_tree(ui);
+    let band = || {
+        ElementHandle::find_by_element_id(ui, "AdvAdd::refusal")
+            .next()
+            .unwrap_or_else(|| panic!("{WHAT}: no refusal line"))
+    };
+    assert!(band().size().height > 0.0, "{WHAT}: refusal not shown");
+    let reason = ui
+        .global::<taurus_desktop::Messages>()
+        .invoke_simple("disk_full".into());
+    assert!(
+        labelled(ui, &reason).iter().any(|e| e.size().width > 0.0),
+        "{WHAT}: the reason is not said"
+    );
+    ui.set_adv_add(vm);
+    refresh_tree(ui);
+    assert_eq!(band().size().height, 0.0, "{WHAT}: a blank band stays");
+    ui.set_screen(Screen::Welcome);
+    ui.set_adv_add(AdvAddVm::default());
+    ui.set_layout("simple".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// A Simple row that failed for want of a password offers "Sign in" in
+/// place of "Try again": it opens the sign-in dialog, whose user name and
+/// password reach the engine and are emptied at once; the download then
+/// finishes.
+fn simple_row_offers_sign_in(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "simple_row_offers_sign_in";
+    const NAME: &str = "simple-locked.bin";
+    const SIZE: usize = 256 * 1024;
+    // The probe when adding succeeds; the download is then refused (401).
+    let mut spec = FileSpec::new(SIZE);
+    spec.fail_after = Some(FailAfter {
+        after_requests: 1,
+        status: 401,
+        headers: vec![("WWW-Authenticate".into(), "Basic realm=\"test\"".into())],
+    });
+    let url = ctx.server.serve(NAME, spec);
+    let request = AddRequest {
+        url,
+        dest_dir: ctx.out(),
+        ..Default::default()
+    };
+    ctx.rt.block_on(ctx.engine.add(request)).unwrap();
+    ui.set_tab(0);
+    ui.set_screen(Screen::Downloads);
+    wait_until(&format!("{WHAT}: the row needs a sign-in"), || {
+        ui.get_downloading_rows()
+            .iter()
+            .any(|r| r.name == NAME && r.state == "failed" && r.error_kind == "needs_sign_in")
+    });
+    let mut protected = FileSpec::new(SIZE);
+    protected.basic_auth = Some(("u".into(), "p".into()));
+    ctx.server.replace(NAME, protected);
+    refresh_tree(ui);
+    assert!(
+        labelled(ui, "Try again")
+            .iter()
+            .all(|e| e.accessible_role() != Some(AccessibleRole::Button)),
+        "{WHAT}: still offers Try again"
+    );
+    only_button(ui, "Sign in", WHAT).invoke_accessible_default_action();
+    let dialog = ui.get_password_dialog();
+    assert!(dialog.visible, "{WHAT}: no dialog");
+    assert_eq!(dialog.name.as_str(), NAME, "{WHAT}: {dialog:?}");
+    refresh_tree(ui);
+    only_with_role(ui, AccessibleRole::TextInput, "User name", WHAT).set_accessible_value("u");
+    only_with_role(ui, AccessibleRole::TextInput, "Password", WHAT).set_accessible_value("p");
+    assert_eq!(ui.get_password_text().as_str(), "p", "{WHAT}: typed");
+    // The row's button and the dialog's: the dialog is drawn last.
+    let mut buttons: Vec<ElementHandle> = labelled(ui, "Sign in")
+        .into_iter()
+        .filter(|e| e.accessible_role() == Some(AccessibleRole::Button))
+        .collect();
+    assert_eq!(buttons.len(), 2, "{WHAT}: the row's and the dialog's");
+    buttons.pop().unwrap().invoke_accessible_default_action();
+    assert_eq!(ui.get_password_text().as_str(), "", "{WHAT}: password kept");
+    assert_eq!(ui.get_password_user().as_str(), "", "{WHAT}: user kept");
+    wait_until(&format!("{WHAT}: dialog closed"), || {
+        !ui.get_password_dialog().visible
+    });
+    wait_until(&format!("{WHAT}: {NAME} finished"), || {
+        job_named(ctx, NAME).is_some_and(|v| v.state == JobState::Completed)
+    });
+    assert_eq!(
+        std::fs::metadata(ctx.out().join(NAME))
+            .map(|m| m.len())
+            .ok(),
+        Some(SIZE as u64),
+        "{WHAT}: not saved in full"
+    );
+}
+
+/// While the tools' publisher stays unreachable (left offline by
+/// `tools_offline_shows_failed_banner`), the Downloads banner and the
+/// Engines section say why the tools could not be fetched.
+fn tool_failure_shows_reason(m: &MediaCtx) {
+    const WHAT: &str = "tool_failure_shows_reason";
+    let ui = &m.ui;
+    let failed = ToolState::Failed(ErrorKind::ConnectionLost);
+    assert!(
+        m.ctx
+            .engine
+            .tools_status()
+            .iter()
+            .any(|s| s.state == failed),
+        "{WHAT}: no tool failed"
+    );
+    let reason = ShellStrings::simple(ui, ErrorKind::ConnectionLost);
+    let shown = |where_: &str| {
+        refresh_tree(ui);
+        assert!(
+            labelled(ui, &reason).iter().any(|e| e.size().width > 0.0),
+            "{WHAT}: {where_} does not say {reason:?}"
+        );
+    };
+    ui.set_screen(Screen::Downloads);
+    wait_until(&format!("{WHAT}: banner says failed"), || {
+        ui.get_tools_banner() == "failed"
+    });
+    shown("the Downloads banner");
+
+    ui.window().set_size(SETTINGS_TALL);
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    ui.set_screen(Screen::Settings);
+    refresh_tree(ui);
+    wait_until(&format!("{WHAT}: Engines lists the failure"), || {
+        ui.global::<SettingsUi>()
+            .get_tools()
+            .iter()
+            .any(|t| t.state == "failed")
+    });
+    shown("the Engines section");
+    ui.set_screen(Screen::Downloads);
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+    m.host.go_online();
+}
+
+/// Picking a when-done choice or a speed preset closes the popover;
+/// Custom keeps it open, with its field taking what is typed.
+fn whendone_pick_closes_menu(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "whendone_pick_closes_menu";
+    let state = ui.global::<WhenDoneUi>();
+    advanced_tall(ui, WHAT);
+    ui.invoke_open_whendone();
+    whendone_choice(ui, "Just notify me", WHAT).invoke_accessible_default_action();
+    assert!(!state.get_open(), "{WHAT}: open after Just notify me");
+    wait_until(&format!("{WHAT}: notify saved"), || {
+        ctx.engine.settings().when_done == WhenDone::Notify
+    });
+    ui.invoke_open_whendone();
+    refresh_tree(ui);
+    only_with_role(ui, AccessibleRole::RadioButton, "Gentle", WHAT)
+        .invoke_accessible_default_action();
+    assert!(!state.get_open(), "{WHAT}: open after Gentle");
+    wait_until(&format!("{WHAT}: gentle saved"), || {
+        ctx.engine.settings().speed == SpeedLimit::Gentle
+    });
+    ui.invoke_open_whendone();
+    refresh_tree(ui);
+    only_with_role(ui, AccessibleRole::RadioButton, "Custom", WHAT)
+        .invoke_accessible_default_action();
+    assert!(state.get_open(), "{WHAT}: Custom closed it");
+    refresh_tree(ui);
+    // The field has the focus with the limit it was filled with (Gentle's)
+    // selected: a typed "5" replaces it, and Enter applies 5 MB/s.
+    assert!(
+        !state.get_custom_text().is_empty(),
+        "{WHAT}: Custom not prefilled"
+    );
+    ui.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: "5".into() });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text: "5".into() });
+    assert_eq!(
+        state.get_custom_text().as_str(),
+        "5",
+        "{WHAT}: typing did not replace the limit"
+    );
+    let enter = || {
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: slint::platform::Key::Return.into(),
+        });
+    };
+    enter();
+    let custom = |mb: u64| SpeedLimit::Custom {
+        bytes_per_sec: mb * 1_000_000,
+    };
+    wait_until(&format!("{WHAT}: 5 MB/s saved"), || {
+        ctx.engine.settings().speed == custom(5)
+    });
+    // Typed and not applied yet: a when-done pick applies it, then closes.
+    let field = || only_with_role(ui, AccessibleRole::TextInput, "Custom speed in MB/s", WHAT);
+    field().set_accessible_value("3");
+    whendone_choice(ui, "Do nothing", WHAT).invoke_accessible_default_action();
+    assert!(
+        !state.get_open(),
+        "{WHAT}: open after a pick with a speed typed"
+    );
+    wait_until(&format!("{WHAT}: 3 MB/s and nothing saved"), || {
+        let s = ctx.engine.settings();
+        s.speed == custom(3) && s.when_done == WhenDone::Nothing
+    });
+    // Refused text: the pick keeps the popover open, saying why.
+    ui.invoke_open_whendone();
+    refresh_tree(ui);
+    field().set_accessible_value("2,5");
+    whendone_choice(ui, "Just notify me", WHAT).invoke_accessible_default_action();
+    assert!(state.get_open(), "{WHAT}: closed on refused text");
+    refresh_tree(ui);
+    assert!(
+        !texts_containing(ui, "Use a dot for decimals").is_empty(),
+        "{WHAT}: the refusal is not shown"
+    );
+    assert_eq!(ctx.engine.settings().speed, custom(3), "{WHAT}: 2,5 saved");
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: slint::platform::Key::Escape.into(),
+    });
+    assert!(!state.get_open(), "{WHAT}: Escape");
+    let mut back = ctx.engine.settings();
+    back.when_done = WhenDone::Nothing;
+    back.speed = SpeedLimit::Fastest;
+    let engine = ctx.engine.clone();
+    ctx.rt.block_on(engine.set_settings(back)).unwrap();
+    wait_until(&format!("{WHAT}: back to the defaults"), || {
+        let s = ui.get_settings();
+        s.speed == "fastest" && s.when_done == "nothing"
+    });
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// Every button, check box, radio button and switch (and every tab, list
+/// item and text field) on the main, Add and Settings screens of both
+/// modes has a name for screen readers; the ones that are ticked or not
+/// say which.
+fn interactive_widgets_are_accessible(ui: &AppWindow, ctx: &Ctx) {
+    const WHAT: &str = "interactive_widgets_are_accessible";
+    let check = |screen: &str| {
+        refresh_tree(ui);
+        let mut bad = Vec::new();
+        let mut seen = 0;
+        for e in ElementQuery::from_root(ui).match_descendants().find_all() {
+            let Some(role) = e.accessible_role() else {
+                continue;
+            };
+            let checkable = matches!(
+                role,
+                AccessibleRole::Checkbox | AccessibleRole::RadioButton | AccessibleRole::Switch
+            );
+            // Also the other controls that take the focus or a click.
+            let named = matches!(
+                role,
+                AccessibleRole::Button
+                    | AccessibleRole::Tab
+                    | AccessibleRole::ListItem
+                    | AccessibleRole::TextInput
+            );
+            if !named && !checkable {
+                continue;
+            }
+            seen += 1;
+            let label = e.accessible_label().unwrap_or_default();
+            let name = format!("{role:?} {label:?} {:?}", e.id().or_else(|| e.type_name()));
+            if label.trim().is_empty() {
+                bad.push(format!("{name}: no label"));
+            }
+            if checkable && e.accessible_checked().is_none() {
+                bad.push(format!("{name}: no checked state"));
+            }
+        }
+        assert!(seen > 0, "{WHAT}: {screen}: nothing interactive found");
+        assert!(bad.is_empty(), "{WHAT}: {screen}: {bad:#?}");
+    };
+    let url = ctx.server.serve("a11y.bin", FileSpec::new(64 * 1024));
+    let add = |screen: &str| {
+        ui.invoke_link_entered(url.as_str().into());
+        wait_until(&format!("{WHAT}: {screen} loaded"), || {
+            !ui.get_add().loading && !ui.get_adv_add().loading
+        });
+        check(screen);
+        ui.invoke_add_cancelled();
+        ui.set_screen(Screen::Downloads);
+    };
+
+    ui.window().set_size(SETTINGS_TALL);
+    ui.set_screen(Screen::Downloads);
+    check("Simple main");
+    ui.set_screen(Screen::Settings);
+    check("Simple Settings");
+    add("Simple Add");
+
+    ui.invoke_setting_changed("advanced".into(), "true".into());
+    assert_eq!(ui.get_layout().as_str(), "compact", "{WHAT}: Advanced");
+    ui.set_screen(Screen::Downloads);
+    check("Advanced main");
+    ui.set_screen(Screen::Settings);
+    check("Advanced Settings");
+    ui.set_screen(Screen::Downloads);
+    add("Advanced Add");
+    ui.invoke_setting_changed("advanced".into(), "false".into());
+    ui.window().set_size(COMPACT);
+}
+
+/// Several links with sign-in details: the user name and password go with
+/// the web link only (the engine refuses them on a torrent), and the
+/// password leaves the window as the batch is handed over.
+fn batch_password_applies_to_web_links() {
+    const WHAT: &str = "batch_password_applies_to_web_links";
+    let rt = runtime();
+    let seeder = rt.block_on(TorrentSeeder::start(
+        "batch-share.bin",
+        &[(
+            "batch-share.bin",
+            taurus_testkit::content(&FileSpec::new(32 * 1024)),
+        )],
+        None,
+    ));
+    let peer = seeder.addr;
+    let ui = AppWindow::new().unwrap();
+    let ctx = Ctx::start_with(&ui, rt, |config, settings| {
+        config.torrent_test = Some(TorrentTestNet {
+            initial_peers: vec![peer],
+            restore_in_place: false,
+        });
+        settings.ui.mode = UiMode::Advanced;
+    });
+    let mut spec = FileSpec::new(128 * 1024);
+    spec.basic_auth = Some(("u".into(), "p".into()));
+    let web = ctx.server.serve("batch-locked.zip", spec);
+    ui.show().unwrap();
+    ui.window().set_size(TALL);
+    ui.set_screen(Screen::Downloads);
+    wait_until(&format!("{WHAT}: compact"), || ui.get_layout() == "compact");
+    ui.invoke_open_batch();
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Batch,
+        "{WHAT}: not on Several links"
+    );
+    links(&ui).invoke_batch_edited(format!("{web}\n{}\n", seeder.magnet).into());
+    assert_eq!(links(&ui).get_batch().add_count, 2, "{WHAT}: two downloads");
+    refresh_tree(&ui);
+    only_button(&ui, "Sign-in details", WHAT).invoke_accessible_default_action();
+    refresh_tree(&ui);
+    only_with_role(&ui, AccessibleRole::TextInput, "User name", WHAT).set_accessible_value("u");
+    only_with_role(&ui, AccessibleRole::TextInput, "Password", WHAT).set_accessible_value("p");
+    assert_eq!(
+        links(&ui).get_batch_password().as_str(),
+        "p",
+        "{WHAT}: typed"
+    );
+    only_button(&ui, "Add 2 downloads", WHAT).invoke_accessible_default_action();
+    assert_eq!(
+        links(&ui).get_batch_password().as_str(),
+        "",
+        "{WHAT}: password kept"
+    );
+    assert_eq!(
+        ui.get_screen(),
+        Screen::Downloads,
+        "{WHAT}: not on the list"
+    );
+    wait_until(&format!("{WHAT}: the web file finished"), || {
+        job_named(&ctx, "batch-locked.zip").is_some_and(|v| v.state == JobState::Completed)
+    });
+    let torrent = || {
+        ctx.engine
+            .snapshot()
+            .into_iter()
+            .find(|v| v.kind == taurus_core::JobKind::Torrent)
+    };
+    wait_for(
+        Duration::from_secs(60),
+        &format!("{WHAT}: torrent added"),
+        || torrent().is_some(),
+    );
+    settle(Duration::from_millis(200));
+    assert_eq!(ui.get_screen(), Screen::Downloads, "{WHAT}: an add refused");
+    let has_password = |id| {
+        let _rt = ctx.rt.enter();
+        ctx.engine.job_detail(id).unwrap().has_password
+    };
+    let web_id = job_named(&ctx, "batch-locked.zip").unwrap().id;
+    assert!(has_password(web_id), "{WHAT}: the web link has no password");
+    assert!(
+        !has_password(torrent().unwrap().id),
+        "{WHAT}: the torrent got the password"
+    );
+
+    // Collapsed, the details are emptied and nothing is applied.
+    let plain = ctx
+        .server
+        .serve("batch-plain.zip", FileSpec::new(64 * 1024));
+    // The list's screen is drawn first, so Several links opens anew.
+    refresh_tree(&ui);
+    ui.invoke_open_batch();
+    links(&ui).invoke_batch_edited(format!("{plain}\n").into());
+    refresh_tree(&ui);
+    only_button(&ui, "Sign-in details", WHAT).invoke_accessible_default_action();
+    refresh_tree(&ui);
+    only_with_role(&ui, AccessibleRole::TextInput, "User name", WHAT).set_accessible_value("u");
+    only_with_role(&ui, AccessibleRole::TextInput, "Password", WHAT).set_accessible_value("p");
+    let details = only_button(&ui, "Sign-in details", WHAT);
+    assert_eq!(details.accessible_expanded(), Some(true), "{WHAT}");
+    details.invoke_accessible_default_action();
+    assert_eq!(details.accessible_expanded(), Some(false), "{WHAT}");
+    assert_eq!(
+        (
+            links(&ui).get_batch_user().as_str(),
+            links(&ui).get_batch_password().as_str()
+        ),
+        ("", ""),
+        "{WHAT}: kept after collapsing"
+    );
+    only_button(&ui, "Add 1 download", WHAT).invoke_accessible_default_action();
+    wait_until(&format!("{WHAT}: the plain file finished"), || {
+        job_named(&ctx, "batch-plain.zip").is_some_and(|v| v.state == JobState::Completed)
+    });
+    let plain_id = job_named(&ctx, "batch-plain.zip").unwrap().id;
+    assert!(!has_password(plain_id), "{WHAT}: collapsed details applied");
+    ctx.shutdown(WHAT);
+    drop(seeder);
 }

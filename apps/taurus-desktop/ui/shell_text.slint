@@ -1,0 +1,20 @@
+// Text the OS shows outside the window: the tray menu, desktop
+// notification titles and the message box shown when Hyades cannot start.
+// Rust reads it through `ShellStrings` (src/shell_text.rs) once the
+// language is applied; the product name itself is never translated.
+export global ShellText {
+    out property <string> tray-open: @tr("Open Hyades");
+    out property <string> tray-pause-all: @tr("Pause all");
+    out property <string> tray-resume-all: @tr("Resume all");
+    out property <string> tray-quit: @tr("Quit");
+    // Notification for a finished download; its body is the file name.
+    out property <string> finished-title: @tr("Download finished");
+    // Notification for a failed download; its body is the file name and why.
+    out property <string> failed-title: @tr("Download stopped");
+    // The when-done "Notify me" notification.
+    out property <string> all-done-title: @tr("All downloads finished");
+    // Start-up message box: the command-line program holds the data folder.
+    out property <string> open-in-use: @tr("Hyades is already running in another program (hyades-cli). Close it, then open Hyades again.");
+    // Start-up message box: the data folder could not be opened otherwise.
+    out property <string> open-failed: @tr("Hyades couldn't open its data folder. Check that the drive is there and that you can write to it, then open Hyades again.");
+}

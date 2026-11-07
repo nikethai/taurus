@@ -30,6 +30,10 @@ export global LinksUi {
     in property <[BatchLineVm]> batch-lines;
     // The whole text after each edit.
     callback batch-edited(string);
+    // "Sign-in details", for every web link of the batch: what is typed.
+    // The app empties both as it hands the batch to the engine.
+    in-out property <string> batch-user;
+    in-out property <string> batch-password;
     callback batch-mirrors(bool);
     // "Add N downloads".
     callback batch-add();

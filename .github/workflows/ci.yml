@@ -32,7 +32,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # `+1.89` so rust-toolchain.toml (stable) does not override the MSRV.
       # taurus-desktop has its own, higher MSRV (see msrv-desktop).
-      - run: cargo +1.89 check --workspace --exclude taurus-desktop --all-targets --locked
+      # xtask (stable-only tooling) has its own rust-version too.
+      - run: cargo +1.89 check --workspace --exclude taurus-desktop --exclude xtask --all-targets --locked
 
   # slint 1.18 needs Rust 1.92 and tray-icon 0.26 needs 1.90, so the desktop
   # app is checked separately with 1.92.
@@ -45,3 +46,69 @@ jobs:
       - name: Install Linux build dependencies
         run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev
       - run: cargo +1.92 check -p taurus-desktop --all-targets --locked
+
+  # The translation template and the generated catalogs match the .slint
+  # files (see TRANSLATING.md).
+  i18n:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: slint-tr-extractor@1.18.1
+      - run: cargo xtask i18n check
+
+  # Pull requests that touch the packaging build the Linux packages and run
+  # packaging/check-linux.sh on them (the release workflow does the same).
+  packaging-changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        name: Did packaging/, the desktop Cargo.toml or a workflow change?
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --name-only "$BASE" HEAD |
+            grep -Eq '^(packaging/|apps/taurus-desktop/Cargo\.toml$|\.github/workflows/)'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  package-linux:
+    needs: packaging-changes
+    if: needs.packaging-changes.outputs.changed == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev rpm
+      - name: Install the packaging tools
+        run: cargo install --locked cargo-packager@0.11.8 cargo-generate-rpm@0.21.1
+      # No --target: the app lands in target/release/, where the packager
+      # configs read it (packaging/README.md).
+      - run: cargo build --release --locked -p taurus-desktop
+      # As in release.yml: dpkg reads 1.0.0-rc.1 as 1.0.0 revision rc.1,
+      # which sorts above 1.0.0, and rpm versions cannot hold "-" at all,
+      # so both packages get 1.0.0~rc.1. A relative --out-dir resolves
+      # from packaging/: pass an absolute one.
+      - name: Package
+        run: |
+          VERSION=$(cargo metadata --format-version 1 --no-deps |
+            jq -r '.packages[] | select(.name == "taurus-desktop") | .version')
+          deb_version=$(printf '%s' "$VERSION" | tr '-' '~')
+          sed -i "s/^version = \"$VERSION\"\$/version = \"$deb_version\"/" packaging/packager-linux.toml
+          cargo packager -c packaging/packager-linux.toml --out-dir "$GITHUB_WORKSPACE/pkg"
+          rpm_version=$(printf '%s' "$VERSION" | tr '-' '~')
+          cargo generate-rpm -p apps/taurus-desktop -s "version = \"$rpm_version\"" -o pkg/
+      - run: packaging/check-linux.sh pkg

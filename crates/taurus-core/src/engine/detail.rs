@@ -79,6 +79,17 @@ pub struct TorrentFileProgress {
 /// A torrent's info-hash and its parsed metadata.
 type ParsedTorrent = (String, Arc<TorrentInfo>);
 
+/// Each torrent's parsed metadata, by job and info-hash. `job_detail` runs
+/// beside the actor: a lookup that read a job before it was removed (or
+/// before its id went to a newer job) must not put its result back after.
+/// So every removal starts a new generation, and a lookup keeps what it
+/// parsed only if no generation started since it read the job.
+#[derive(Default)]
+struct TorrentCache {
+    parsed: HashMap<JobId, ParsedTorrent>,
+    generation: u64,
+}
+
 /// What `job_detail` reads beside the views. Cheap to clone; clones share
 /// everything.
 #[derive(Clone)]
@@ -86,8 +97,7 @@ pub(super) struct Details {
     store: Store,
     /// The live table of each web download running now.
     live: Arc<Mutex<HashMap<JobId, LiveTable>>>,
-    /// Each torrent's parsed metadata, by job and info-hash.
-    torrents: Arc<Mutex<HashMap<JobId, ParsedTorrent>>>,
+    torrents: Arc<Mutex<TorrentCache>>,
 }
 
 impl Details {
@@ -109,12 +119,19 @@ impl Details {
     /// Forgets everything kept for a removed job.
     pub(super) fn forget(&self, id: JobId) {
         lock(&self.live).remove(&id);
-        lock(&self.torrents).remove(&id);
+        let mut torrents = lock(&self.torrents);
+        torrents.parsed.remove(&id);
+        torrents.generation += 1;
     }
 
     /// How many torrents' parsed metadata is kept.
     fn torrents_kept(&self) -> usize {
-        lock(&self.torrents).len()
+        lock(&self.torrents).parsed.len()
+    }
+
+    /// Taken before a lookup reads the job; see [`TorrentCache`].
+    fn generation(&self) -> u64 {
+        lock(&self.torrents).generation
     }
 
     /// Forgets the live table of a run that ended (unless a newer run of
@@ -127,13 +144,14 @@ impl Details {
     }
 
     fn detail(&self, view: &JobView, hub: &TorrentHub, secrets: &Secrets) -> Option<JobDetail> {
+        let generation = self.generation();
         let job = self.store.get_job(view.id).ok()??;
         let (segments, connections) = match job.kind {
             JobKind::Http => self.segments(job.id),
             _ => (Vec::new(), 0),
         };
         let files = match job.kind {
-            JobKind::Torrent => self.torrent_files(&job, hub),
+            JobKind::Torrent => self.torrent_files(&job, generation, hub),
             _ => Vec::new(),
         };
         let password_store = job.auth_user.as_ref().and_then(|_| secrets.kept_in(job.id));
@@ -180,8 +198,13 @@ impl Details {
     /// session's count (not running, not checked yet), a torrent that
     /// finished downloading has all of each selected file, any other
     /// nothing known.
-    fn torrent_files(&self, job: &JobRecord, hub: &TorrentHub) -> Vec<TorrentFileProgress> {
-        let Some(info) = self.torrent_info(job) else {
+    fn torrent_files(
+        &self,
+        job: &JobRecord,
+        generation: u64,
+        hub: &TorrentHub,
+    ) -> Vec<TorrentFileProgress> {
+        let Some(info) = self.torrent_info(job, generation) else {
             return Vec::new();
         };
         let only = job.only_files.as_deref();
@@ -209,15 +232,22 @@ impl Details {
             .collect()
     }
 
-    fn torrent_info(&self, job: &JobRecord) -> Option<Arc<TorrentInfo>> {
+    /// The job's parsed metadata, kept unless a job was removed since
+    /// `generation` was taken (before `job` was read).
+    fn torrent_info(&self, job: &JobRecord, generation: u64) -> Option<Arc<TorrentInfo>> {
         let hash = job.info_hash.as_deref()?;
-        if let Some((known, info)) = lock(&self.torrents).get(&job.id)
+        if let Some((known, info)) = lock(&self.torrents).parsed.get(&job.id)
             && known == hash
         {
             return Some(info.clone());
         }
         let info = Arc::new(info_from_bytes(job.torrent_meta.as_deref()?).ok()?);
-        lock(&self.torrents).insert(job.id, (hash.to_owned(), info.clone()));
+        let mut torrents = lock(&self.torrents);
+        if torrents.generation == generation {
+            torrents
+                .parsed
+                .insert(job.id, (hash.to_owned(), info.clone()));
+        }
         Some(info)
     }
 }
@@ -256,4 +286,68 @@ impl Engine {
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     // Nothing panics while holding the lock, so the map is still whole.
     mutex.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::NewJob;
+    use taurus_testkit::make_torrent_bytes;
+
+    fn torrent_job(store: &Store, name: &str) -> JobRecord {
+        let meta = make_torrent_bytes(name, &[("a.bin", b"abc")], 16_384);
+        let info = info_from_bytes(&meta).unwrap();
+        let id = store
+            .insert_job(&NewJob {
+                url: format!("magnet:?xt=urn:btih:{}", info.info_hash),
+                source_url: String::new(),
+                dest_dir: PathBuf::from("/d"),
+                file_name: name.into(),
+                connections: 1,
+                mirrors: Vec::new(),
+                checksum: None,
+                referer: None,
+                queue_pos: 0,
+                kind: JobKind::Torrent,
+                info_hash: Some(info.info_hash),
+                torrent_meta: Some(meta),
+                only_files: None,
+            })
+            .unwrap();
+        store.get_job(id).unwrap().unwrap()
+    }
+
+    /// A slow lookup of a job that is removed meanwhile, its id going to a
+    /// newer torrent, does not put the old torrent back over the new one's.
+    #[test]
+    fn cache_keeps_newest_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("taurus.db")).unwrap();
+        let details = Details::new(store.clone());
+        let old = torrent_job(&store, "old");
+        // The first lookup reads the job, then is delayed.
+        let first = details.generation();
+        // The job is removed; the next one added takes its id.
+        store.delete_job(old.id).unwrap();
+        details.forget(old.id);
+        let new = torrent_job(&store, "new");
+        assert_eq!(new.id, old.id);
+        let second = details.generation();
+        assert_eq!(details.torrent_info(&new, second).unwrap().name, "new");
+        // The delayed lookup ends now.
+        assert_eq!(details.torrent_info(&old, first).unwrap().name, "old");
+        let kept = lock(&details.torrents).parsed.get(&new.id).cloned();
+        assert_eq!(
+            kept.map(|(_, info)| info.name.clone()).as_deref(),
+            Some("new")
+        );
+        assert_eq!(details.torrents_kept(), 1);
+
+        // Removed while a lookup was under way: nothing is put back.
+        let late = details.generation();
+        store.delete_job(new.id).unwrap();
+        details.forget(new.id);
+        assert!(details.torrent_info(&new, late).is_some());
+        assert_eq!(details.torrents_kept(), 0);
+    }
 }

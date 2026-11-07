@@ -2074,10 +2074,13 @@ async fn remove_with_files_deletes_empty_placeholders() {
     drop(engine);
     let folder = rs.dest.join("pair");
     assert_eq!(fs::read(folder.join("a.bin")).unwrap(), a);
-    assert_eq!(fs::metadata(folder.join("b.bin")).unwrap().len(), 0);
+    // The empty file librqbit made for it is deleted once it is done.
+    assert!(!folder.join("b.bin").exists(), "{:?}", sizes(&rs.dest));
+    // An empty one left behind (as after a crash) goes with the others.
+    fs::write(folder.join("b.bin"), b"").unwrap();
 
     // Removed while the session is not running: the files are ours to
-    // delete, the empty one librqbit made too.
+    // delete, the empty one too.
     let engine = rs.open(false, policy(Some(0.0), None)).await;
     engine.remove(id, true).await.unwrap();
     assert!(!folder.exists(), "left: {:?}", sizes(&rs.dest));

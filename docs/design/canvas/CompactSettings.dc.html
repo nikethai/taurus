@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Taurus — Settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+.tl{--bg:#FBFBFC;--bar:#F3F3F5;--panel:#FFFFFF;--line:#E3E3E8;--field:#C9C9D1;--text:#1B1B1F;--muted:#5F5F69;--chip:#ECECF0;--off:#8E8E99;--ok:#1F7A5C;--hover:rgba(0,0,0,.045);--input:#FFFFFF}
+.td{--bg:#1C1C1F;--bar:#232327;--panel:#26262A;--line:#34343A;--field:#4A4A53;--text:#ECECF0;--muted:#A2A2AD;--chip:#303036;--off:#6E6E79;--ok:#4CC79A;--hover:rgba(255,255,255,.055);--input:#1F1F23}
+.tl .k-disc{--kbg:#E3EDFF;--kfg:#2563C9}
+.tl .k-media{--kbg:#EEE6FF;--kfg:#6B3FD4}
+.tl .k-magnet{--kbg:#DDF4EF;--kfg:#0B7160}
+.tl .k-music{--kbg:#FFE4EF;--kfg:#C0266D}
+.td .k-disc{--kbg:rgba(91,143,240,.18);--kfg:#8DB2FF}
+.td .k-media{--kbg:rgba(155,120,255,.2);--kfg:#BBA4FF}
+.td .k-magnet{--kbg:rgba(44,199,170,.18);--kfg:#5AD8C2}
+.td .k-music{--kbg:rgba(255,100,160,.18);--kfg:#FF8DBB}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer;text-align:left}
+input,select{font:inherit;color:inherit}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.i{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.hv:hover{background:var(--hover)}
+.num{font-variant-numeric:tabular-nums}
+.sw{appearance:none;-webkit-appearance:none;width:32px;height:20px;border-radius:10px;background:var(--off);position:relative;cursor:pointer;margin:0;flex:none;transition:background .15s}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#FFFFFF;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .15s}
+.sw:checked{background:var(--accent-strong)}
+.sw:checked::after{transform:translateX(12px)}
+a{color:var(--accent-text)}a:hover{color:var(--text)}
+</style>
+</helmet>
+<div class="{{themeClass}}" style="--accent: {{acc.base}}; --accent-strong: {{acc.strong}}; --accent-text: {{acc.text}}; width: 420px; height: 640px; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.4;">
+
+<header style="flex: none; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 14px; background: var(--bar); border-bottom: 1px solid var(--line);">
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FF5F57;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #FEBC2E;"></span>
+<span aria-hidden="true" style="width: 12px; height: 12px; border-radius: 50%; background: #28C840;"></span>
+<a href="CompactMain.dc.html" class="hv" style="margin-left: 6px; height: 30px; padding: 0 8px 0 4px; border-radius: 7px; display: flex; align-items: center; gap: 2px; color: var(--muted); text-decoration: none; font-weight: 500;"><svg class="i" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"></path></svg>Back</a>
+<h1 style="flex: 1; margin: 0 0 0 -52px; text-align: center; font-size: 13px; font-weight: 600; pointer-events: none;">Settings</h1>
+</header>
+
+<div style="flex: 1; min-height: 0; overflow-y: auto; padding: 14px 12px 20px; display: flex; flex-direction: column; gap: 18px;">
+
+<section aria-labelledby="cs-eng">
+<h2 id="cs-eng" style="margin: 0 0 6px 4px; font-size: 11.5px; font-weight: 600; color: var(--muted);">Engines</h2>
+<ul style="margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 11px; background: var(--panel);">
+<sc-for list="{{engines}}" as="e" hint-placeholder-count="4">
+<li style="display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 12px; border-top: {{e.divider}};">
+<span class="{{e.kc}}" style="width: 30px; height: 30px; border-radius: 8px; background: var(--kbg); color: var(--kfg); display: flex; align-items: center; justify-content: center; flex: none; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; font-weight: 500;">{{e.mono}}</span>
+<div style="flex: 1; min-width: 0;">
+<p style="margin: 0; font-weight: 600;">{{e.name}} <span style="font-weight: 400; color: var(--muted); font-size: 12px;">· {{e.role}}</span></p>
+<p class="num" style="margin: 1px 0 0; display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: {{e.statusColor}};"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: {{e.dot}};"></span>{{e.status}}</p>
+</div>
+<button onClick="{{e.act}}" class="hv" style="height: 28px; padding: 0 10px; border-radius: 7px; border: 1px solid {{e.btnBorder}}; background: {{e.btnBg}}; color: {{e.btnColor}}; font-size: 12px; font-weight: 600; white-space: nowrap;">{{e.btn}}</button>
+</li>
+</sc-for>
+</ul>
+</section>
+
+<section aria-labelledby="cs-dl">
+<h2 id="cs-dl" style="margin: 0 0 6px 4px; font-size: 11.5px; font-weight: 600; color: var(--muted);">Downloads</h2>
+<div style="border: 1px solid var(--line); border-radius: 11px; background: var(--panel);">
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 12px;">
+<div style="flex: 1; min-width: 0;"><p style="margin: 0; font-weight: 500;">Save to</p><p style="margin: 1px 0 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: var(--muted);">~/Downloads</p></div>
+<button class="hv" style="height: 28px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--line); font-size: 12px; font-weight: 500;">Change…</button>
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 12px; border-top: 1px solid var(--line);">
+<label for="cs-active" style="flex: 1; font-weight: 500;">Active at once</label>
+<select id="cs-active" value="{{maxActive}}" onChange="{{onMaxActive}}" style="height: 28px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--field); background: var(--input); font-size: 12.5px;"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option></select>
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 12px; border-top: 1px solid var(--line);">
+<label for="cs-conn" style="flex: 1; font-weight: 500;">Connections per file</label>
+<select id="cs-conn" value="{{conns}}" onChange="{{onConns}}" style="height: 28px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--field); background: var(--input); font-size: 12.5px;"><option value="1">1</option><option value="4">4</option><option value="8">8</option><option value="16">16</option></select>
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 12px; border-top: 1px solid var(--line);">
+<label for="cs-limit" style="flex: 1; font-weight: 500;">Speed limit</label>
+<select id="cs-limit" value="{{limit}}" onChange="{{onLimit}}" style="height: 28px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--field); background: var(--input); font-size: 12.5px;"><option value="off">Off</option><option value="1">1 MB/s</option><option value="5">5 MB/s</option><option value="10">10 MB/s</option></select>
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line);">
+<label for="cs-sort" style="flex: 1; font-weight: 500;">Sort into folders by type</label>
+<input id="cs-sort" class="sw" type="checkbox" role="switch" checked="{{sortByType}}" onChange="{{tSort}}">
+</div>
+</div>
+</section>
+
+<section aria-labelledby="cs-gen">
+<h2 id="cs-gen" style="margin: 0 0 6px 4px; font-size: 11.5px; font-weight: 600; color: var(--muted);">General</h2>
+<div style="border: 1px solid var(--line); border-radius: 11px; background: var(--panel);">
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px;">
+<label for="cs-clip" style="flex: 1;"><span style="display: block; font-weight: 500;">Watch clipboard for links</span><span style="display: block; font-size: 11.5px; color: var(--muted);">Copy a link anywhere, Taurus offers to grab it.</span></label>
+<input id="cs-clip" class="sw" type="checkbox" role="switch" checked="{{clipboard}}" onChange="{{tClip}}">
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line);">
+<label for="cs-resume" style="flex: 1; font-weight: 500;">Resume unfinished on launch</label>
+<input id="cs-resume" class="sw" type="checkbox" role="switch" checked="{{resumeOnLaunch}}" onChange="{{tResume}}">
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line);">
+<label for="cs-auto" style="flex: 1;"><span style="display: block; font-weight: 500;">Keep media tools updated</span><span style="display: block; font-size: 11.5px; color: var(--muted);">yt-dlp breaks when sites change.</span></label>
+<input id="cs-auto" class="sw" type="checkbox" role="switch" checked="{{autoUpdate}}" onChange="{{tAuto}}">
+</div>
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--line);">
+<label for="cs-login" style="flex: 1; font-weight: 500;">Open at login</label>
+<input id="cs-login" class="sw" type="checkbox" role="switch" checked="{{atLogin}}" onChange="{{tLogin}}">
+</div>
+</div>
+</section>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false,"section":"Theme"},"accent":{"editor":"enum","options":["Aldebaran","Cobalt","Jade","Grape","Rose","Sky"],"default":"Aldebaran","section":"Theme"},"$preview":{"width":420,"height":640}}'>
+var ACC = {
+  Grape: { l: { base: '#7C3AED', strong: '#6D28D9', text: '#6D28D9' }, d: { base: '#A78BFA', strong: '#6D28D9', text: '#C4B5FD' } },
+  Rose: { l: { base: '#E11D48', strong: '#BE123C', text: '#BE123C' }, d: { base: '#FB7185', strong: '#BE123C', text: '#FDA4AF' } },
+  Sky: { l: { base: '#0284C7', strong: '#0369A1', text: '#0369A1' }, d: { base: '#38BDF8', strong: '#0369A1', text: '#7DD3FC' } },
+  Aldebaran: { l: { base: '#E8590C', strong: '#C2410C', text: '#B3410A' }, d: { base: '#FF7A2E', strong: '#C2410C', text: '#FF9A5C' } },
+  Cobalt: { l: { base: '#2F6FDE', strong: '#2457B8', text: '#2457B8' }, d: { base: '#5B8FF0', strong: '#2F62C8', text: '#8DB2FF' } },
+  Jade: { l: { base: '#0F9D76', strong: '#0B7258', text: '#0B7258' }, d: { base: '#2CC799', strong: '#0B7258', text: '#5ADBB3' } }
+};
+
+class Component extends DCLogic {
+  state = { deno: 'missing', maxActive: '3', conns: '16', limit: 'off', sortByType: true, clipboard: true, resumeOnLaunch: true, autoUpdate: true, atLogin: false };
+
+  renderVals() {
+    var self = this;
+    var st = this.state;
+    var dark = this.props.dark ?? false;
+    var acc = (ACC[this.props.accent ?? 'Aldebaran'] || ACC.Aldebaran)[dark ? 'd' : 'l'];
+    var flip = function (key) { return function () { var o = {}; o[key] = !self.state[key]; self.setState(o); }; };
+    var pick = function (key) { return function (e) { var o = {}; o[key] = e.target.value; self.setState(o); }; };
+    var plain = { btnBorder: 'var(--line)', btnBg: 'transparent', btnColor: 'var(--text)' };
+    var ok = { statusColor: 'var(--ok)', dot: 'var(--ok)' };
+    var deno;
+    if (st.deno === 'missing') {
+      deno = { status: 'Needed for YouTube', statusColor: 'var(--accent-text)', dot: 'var(--accent)', btn: 'Install', btnBorder: 'var(--accent-strong)', btnBg: 'var(--accent-strong)', btnColor: '#FFFFFF', act: function () { self.setState({ deno: 'installing' }); setTimeout(function () { self.setState({ deno: 'ready' }); }, 1400); } };
+    } else if (st.deno === 'installing') {
+      deno = Object.assign({ status: 'Installing…', statusColor: 'var(--muted)', dot: 'var(--muted)', btn: 'Cancel', act: function () { self.setState({ deno: 'missing' }); } }, plain);
+    } else {
+      deno = Object.assign({ status: 'Ready', btn: 'Update', act: function () {} }, plain, ok);
+    }
+    var engines = [
+      Object.assign({ kc: 'k-disc', mono: 'a2', name: 'aria2', role: 'files & torrents', status: 'Bundled 1.37.0 · running', btn: 'Restart', act: function () {} }, plain, ok),
+      Object.assign({ kc: 'k-media', mono: 'yt', name: 'yt-dlp', role: 'video sites', status: 'Up to date', btn: 'Check', act: function () {} }, plain, ok),
+      Object.assign({ kc: 'k-music', mono: 'ff', name: 'ffmpeg', role: 'merge & convert', status: 'Ready', btn: 'Update', act: function () {} }, plain, ok),
+      Object.assign({ kc: 'k-magnet', mono: 'dn', name: 'Deno', role: 'for yt-dlp' }, deno)
+    ].map(function (e, i) { e.divider = i === 0 ? '0' : '1px solid var(--line)'; return e; });
+    return {
+      acc: acc,
+      themeClass: dark ? 'td' : 'tl',
+      engines: engines,
+      maxActive: st.maxActive, onMaxActive: pick('maxActive'),
+      conns: st.conns, onConns: pick('conns'),
+      limit: st.limit, onLimit: pick('limit'),
+      sortByType: st.sortByType, tSort: flip('sortByType'),
+      clipboard: st.clipboard, tClip: flip('clipboard'),
+      resumeOnLaunch: st.resumeOnLaunch, tResume: flip('resumeOnLaunch'),
+      autoUpdate: st.autoUpdate, tAuto: flip('autoUpdate'),
+      atLogin: st.atLogin, tLogin: flip('atLogin')
+    };
+  }
+}
+</script>
+</body>
+</html>

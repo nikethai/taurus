@@ -66,14 +66,14 @@ pub fn outcome_line(view: &JobView) -> String {
             "Seeding, sharing with peers: {}",
             view.dest_dir.join(&view.file_name).display()
         ),
-        JobState::Paused => format!("Paused (continue with: taurus resume {})", view.id.0),
+        JobState::Paused => format!("Paused (continue with: hyades-cli resume {})", view.id.0),
         JobState::Failed => match &view.error {
             Some((kind, detail)) => format!("Failed: {kind:?}: {detail}"),
             None => "Failed".to_string(),
         },
         // Left so by Ctrl-C: the next queue run starts it.
         JobState::Queued | JobState::Waiting => {
-            format!("{:?} (continue with: taurus run)", view.state)
+            format!("{:?} (continue with: hyades-cli run)", view.state)
         }
         JobState::Downloading | JobState::Recording => format!("{:?}", view.state),
     }
@@ -127,7 +127,7 @@ pub fn fired_line(action: WhenDone, command: Option<&str>, dry_run: bool) -> Opt
 /// Printed when the queue is done and when-done is Notify.
 pub const ALL_FINISHED: &str = "All downloads finished.";
 /// Printed after Ctrl-C when some download of the run is not done.
-pub const STOPPED: &str = "Stopped. Unfinished downloads continue with: taurus run";
+pub const STOPPED: &str = "Stopped. Unfinished downloads continue with: hyades-cli run";
 
 fn when_done_name(action: WhenDone) -> &'static str {
     match action {
@@ -262,7 +262,7 @@ fn printable(s: &str) -> String {
 }
 
 /// Said once when a run ends with torrents still Seeding: `run` exits once
-/// nothing downloads, and sharing goes on only while Taurus runs. `None`
+/// nothing downloads, and sharing goes on only while Hyades runs. `None`
 /// when nothing seeds (ratio 0).
 pub fn sharing_note(settings: &TorrentSettings) -> Option<String> {
     let limit = match (settings.stop_ratio, settings.stop_after_secs) {
@@ -278,7 +278,7 @@ pub fn sharing_note(settings: &TorrentSettings) -> Option<String> {
         (None, None) => "with no limit".to_string(),
     };
     Some(format!(
-        "Sharing pauses when Taurus exits; it continues the next time Taurus runs ({limit})."
+        "Sharing pauses when Hyades exits; it continues the next time Hyades runs ({limit})."
     ))
 }
 
@@ -382,7 +382,7 @@ mod tests {
         );
         assert_eq!(
             outcome_line(&view(JobState::Paused)),
-            "Paused (continue with: taurus resume 7)"
+            "Paused (continue with: hyades-cli resume 7)"
         );
         let mut failed = view(JobState::Failed);
         failed.error = Some((ErrorKind::LinkExpired, "HTTP 404".to_string()));
@@ -393,7 +393,7 @@ mod tests {
         );
         assert_eq!(
             outcome_line(&view(JobState::Queued)),
-            "Queued (continue with: taurus run)"
+            "Queued (continue with: hyades-cli run)"
         );
     }
 
@@ -619,7 +619,7 @@ mod tests {
             ..TorrentSettings::default()
         };
         let note = |s: &TorrentSettings| sharing_note(s).unwrap();
-        let pauses = "Sharing pauses when Taurus exits; it continues the next time Taurus runs";
+        let pauses = "Sharing pauses when Hyades exits; it continues the next time Hyades runs";
         assert_eq!(
             note(&TorrentSettings::default()),
             format!("{pauses} (up to ratio 1.0).")

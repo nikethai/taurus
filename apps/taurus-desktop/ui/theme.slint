@@ -1,12 +1,8 @@
 import { Palette } from "std-widgets.slint";
 
-// Design tokens. The fixed values from the spec are the light/dark ground
-// (#FBFBFC / #1C1C1F), the Aldebaran accent (#E8590C / #C2410C) and the
-// file-type colors. Everything else (the Cobalt, Jade, Grape, Rose and Sky
-// accents, the panel/line/text/muted/chip/track/ok/err tokens, the kind
-// light backgrounds at ~12% tint over the light ground, and the dark-mode
-// kind variants) is DERIVED, pending the design canvas, and may be retuned
-// when it becomes available.
+// Design tokens, from the design canvas (docs/design/canvas/*.dc.html):
+// the light/dark grounds and neutrals, the six accents (base, strong,
+// ink, sel per scheme) and the file-type colors (light and dark).
 export global Theme {
     // system (default, follows the OS) | light | dark
     in-out property <string> scheme: "system";
@@ -31,50 +27,74 @@ export global Theme {
     in-out property <string> accent: "aldebaran";
 
     out property <brush> bg: dark ? #1C1C1F : #FBFBFC;
-    out property <brush> panel: dark ? #26262B : #FFFFFF;
-    out property <brush> line: dark ? #34343B : #E6E6EA;
-    out property <brush> text: dark ? #F2F2F4 : #1B1B1F;
-    out property <brush> muted: dark ? #9A9AA6 : #6B6B76;
-    out property <brush> chip: dark ? #2E2E34 : #F0F0F3;
-    out property <brush> track: dark ? #3A3A41 : #E8E8EC;
-    out property <brush> ok: dark ? #4CC38A : #1E8E5A;
-    out property <brush> err: dark ? #F2705F : #C02B1E;
+    // Header bars and footers.
+    out property <brush> toolbar: dark ? #232327 : #F3F3F5;
+    out property <brush> panel: dark ? #26262A : #FFFFFF;
+    out property <brush> line: dark ? #323238 : #E3E3E8;
+    // Text field borders, and their fill.
+    out property <brush> field: dark ? #4A4A53 : #C9C9D1;
+    out property <brush> input: dark ? #26262B : #FFFFFF;
+    out property <brush> text: dark ? #ECECF0 : #1B1B1F;
+    out property <brush> muted: dark ? #A2A2AD : #5F5F69;
+    out property <brush> chip: dark ? #2E2E34 : #ECECF0;
+    out property <brush> track: dark ? #38383F : #E2E2E7;
+    out property <brush> ok: dark ? #4CC79A : #1F7A5C;
+    out property <brush> err: dark ? #FF6B5E : #BE3328;
+    // A switch's track when off (its knob is always white).
+    out property <brush> switch-off: dark ? #737380 : #8E8E99;
+    // Hover tint over any ground.
+    out property <brush> hover: dark ? #FFFFFF0E : #0000000B;
     // Soft shadow under floating cards (banner, countdown).
     out property <color> shadow: dark ? #00000066 : #0000001F;
     // Dims the window behind a dialog.
     out property <color> scrim: dark ? #000000A0 : #00000059;
 
-    // Swatch color of an accent by name; unknown names are Aldebaran.
+    // Swatch color of an accent by name (its light base); unknown names
+    // are Aldebaran.
     public pure function accent-of(name: string) -> color {
         if (name == "cobalt") {
-            return #2F6FE4;
+            return #2F6FDE;
         } else if (name == "jade") {
-            return #0E9F6E;
+            return #0F9D76;
         } else if (name == "grape") {
-            return #8B5CF6;
+            return #7C3AED;
         } else if (name == "rose") {
-            return #E11D74;
+            return #E11D48;
         } else if (name == "sky") {
-            return #0EA5E9;
+            return #0284C7;
         }
         return #E8590C;
     }
 
-    property <color> accent-raw: accent-of(accent);
-    property <color> accent-strong-raw: accent == "cobalt" ? #1D4FB8
-        : accent == "jade" ? #047857
+    property <color> base-raw: !dark ? accent-of(accent)
+        : accent == "cobalt" ? #5B8FF0
+        : accent == "jade" ? #2CC799
+        : accent == "grape" ? #A78BFA
+        : accent == "rose" ? #FB7185
+        : accent == "sky" ? #38BDF8
+        : #FF7A2E;
+
+    // Bars, focus rings, switches, check boxes.
+    out property <brush> accent-base: base-raw;
+    // Fill of primary buttons (white text on it meets AA in both schemes).
+    out property <brush> accent-strong: accent == "cobalt" ? (dark ? #2F62C8 : #2457B8)
+        : accent == "jade" ? #0B7258
         : accent == "grape" ? #6D28D9
-        : accent == "rose" ? #BE185D
+        : accent == "rose" ? #BE123C
         : accent == "sky" ? #0369A1
         : #C2410C;
-
-    out property <brush> accent-base: accent-raw;
-    // Strong tone for hover/pressed and accent-colored text; lighter on dark.
-    out property <brush> accent-strong: dark ? accent-raw.brighter(0.3) : accent-strong-raw;
+    // Accent-colored text and icons on the ground.
+    out property <brush> accent-ink: !dark ? (accent == "aldebaran" || accent == "" ? #B3410A : accent-strong)
+        : accent == "cobalt" ? #8DB2FF
+        : accent == "jade" ? #5ADBB3
+        : accent == "grape" ? #C4B5FD
+        : accent == "rose" ? #FDA4AF
+        : accent == "sky" ? #7DD3FC
+        : #FF9A5C;
     // Text/icon color placed on an accent fill.
     out property <brush> accent-text: #FFFFFF;
-    out property <brush> accent-soft: accent-raw.with-alpha(dark ? 0.2 : 0.12);
-    out property <brush> sel: accent-raw.with-alpha(dark ? 0.28 : 0.16);
+    // Selected rows and chosen tiles.
+    out property <brush> sel: base-raw.with-alpha(dark ? 0.13 : 0.08);
     // Progress bars take their file kind's color (ui.progress_by_type),
     // else the accent.
     in-out property <bool> by-type: true;
@@ -87,39 +107,39 @@ export global Theme {
     // anything else is "file".
     public pure function kind-bg(kind: string) -> brush {
         if (kind == "disc") {
-            return dark ? #1E2C44 : #E1E9F6;
+            return dark ? #5B8FF02E : #E3EDFF;
         } else if (kind == "media") {
-            return dark ? #2D2447 : #EAE4F7;
+            return dark ? #9B78FF33 : #EEE6FF;
         } else if (kind == "torrent" || kind == "magnet") {
-            return dark ? #182F2D : #DEEAE9;
+            return dark ? #2CC7AA2E : #DDF4EF;
         } else if (kind == "archive") {
-            return dark ? #36291A : #EEE7DF;
+            return dark ? #F5B43C2E : #FFF1D6;
         } else if (kind == "music") {
-            return dark ? #401E30 : #F4E1EB;
+            return dark ? #FF64A02E : #FFE4EF;
         } else if (kind == "image") {
-            return dark ? #232E1C : #E4EAE0;
+            return dark ? #78C8502E : #E4F4DA;
         } else if (kind == "live") {
-            return dark ? #401F1F : #F4E2E1;
+            return dark ? #FF6B5E2E : #FFE5E2;
         }
-        return dark ? #262831 : #E6E7EB;
+        return dark ? #A0AAD229 : #E8EAF2;
     }
 
     public pure function kind-fg(kind: string) -> brush {
         if (kind == "disc") {
-            return dark ? #87A9E1 : #2563C9;
+            return dark ? #8DB2FF : #2563C9;
         } else if (kind == "media") {
-            return dark ? #AE95E7 : #6B3FD4;
+            return dark ? #BBA4FF : #6B3FD4;
         } else if (kind == "torrent" || kind == "magnet") {
-            return dark ? #79B1A8 : #0B7160;
+            return dark ? #5AD8C2 : #0B7160;
         } else if (kind == "archive") {
-            return dark ? #C3A378 : #92580A;
+            return dark ? #F5C25C : #92580A;
         } else if (kind == "music") {
-            return dark ? #DC88AF : #C0266D;
+            return dark ? #FF8DBB : #C0266D;
         } else if (kind == "image") {
-            return dark ? #93AF7C : #3B6D11;
+            return dark ? #93D96B : #3B6D11;
         } else if (kind == "live") {
-            return dark ? #DC8A83 : #C02B1E;
+            return dark ? #FF8A7F : #C02B1E;
         }
-        return dark ? #9BA0B1 : #4A5372;
+        return dark ? #B4BCDB : #4A5372;
     }
 }

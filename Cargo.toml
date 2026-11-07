@@ -1,9 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/*"]
+members = ["crates/*", "apps/*", "xtask"]
 exclude = ["third_party"]
 
 [workspace.package]
+version = "1.0.0-rc.1"
 edition = "2024"
 rust-version = "1.89"
 license = "GPL-3.0-or-later"
@@ -13,6 +14,7 @@ repository = "https://github.com/nikethai/taurus"
 # Internal crates
 taurus-core = { path = "crates/taurus-core" }
 taurus-testkit = { path = "crates/taurus-testkit" }
+taurus-icon = { path = "crates/taurus-icon" }
 
 # Desktop app (apps/taurus-desktop; needs Rust 1.92, see its Cargo.toml)
 slint = "1.18"
@@ -70,7 +72,21 @@ librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls
 # Tool archives (M5): reading in core, writing in the testkit's fake host.
 zip = { version = "9.2", default-features = false, features = ["deflate"] }
 tar = "0.4"
+# The macOS update bundle (.app.tar.gz) in the desktop app; pure-Rust
+# deflate (miniz_oxide), no zlib.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+
+# Update manifest signatures (M7): checking in core; signing in the testkit
+# and xtask only, never in the engine.
+minisign-verify = "0.3"
+minisign = "0.10"
+semver = "1"
+
+# Release tooling (xtask): icon files.
+png = "0.18"
+ico = "0.6"
+icns = "0.5"
 
 # Tests only
 axum = "0.8"
