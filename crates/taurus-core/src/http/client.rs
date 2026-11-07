@@ -1,7 +1,7 @@
 use crate::errors::{CoreError, ErrorKind, classify_reqwest, classify_status};
 
 pub(crate) const USER_AGENT: &str = concat!(
-    "Taurus/",
+    "Hyades/",
     env!("CARGO_PKG_VERSION"),
     " (+https://github.com/nikethai/taurus)"
 );
@@ -45,7 +45,7 @@ mod tests {
         assert_eq!(
             USER_AGENT,
             format!(
-                "Taurus/{} (+https://github.com/nikethai/taurus)",
+                "Hyades/{} (+https://github.com/nikethai/taurus)",
                 env!("CARGO_PKG_VERSION")
             )
         );

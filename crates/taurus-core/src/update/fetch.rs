@@ -62,10 +62,24 @@ pub(super) async fn download(
     Ok(path)
 }
 
+/// Whether an asset may be fetched from `url`: `https`, or `http` to a
+/// loopback host (the tests' servers).
+fn trusted_url(url: &Url) -> bool {
+    let loopback = match url.host() {
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    url.scheme() == "https" || (url.scheme() == "http" && loopback)
+}
+
 /// The asset's file name, if its URL, size and hash are ones to download:
-/// `https` (or `http` to a loopback host), at most [`ASSET_CAP`] bytes, a
-/// 64-digit hex SHA-256, and a last path segment usable as a file name.
+/// a [`trusted_url`], at most [`ASSET_CAP`] bytes, a 64-digit hex SHA-256,
+/// and a last path segment usable as a file name.
 fn check_asset(asset: &Asset) -> Result<&str, UpdateError> {
+    // The URL may carry user info; the only place this text is shown,
+    // `detail::warn`, scrubs links (R13).
     let bad = |why: &str| {
         Err(UpdateError::BadManifest(format!(
             "asset {}: {why}",
@@ -73,13 +87,7 @@ fn check_asset(asset: &Asset) -> Result<&str, UpdateError> {
         )))
     };
     let url = &asset.url;
-    let loopback = match url.host() {
-        Some(Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(Host::Ipv6(ip)) => ip.is_loopback(),
-        Some(Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
-        None => false,
-    };
-    if !(url.scheme() == "https" || (url.scheme() == "http" && loopback)) {
+    if !trusted_url(url) {
         return bad("only https (or http to this computer) is downloaded");
     }
     if asset.size > ASSET_CAP {
@@ -110,6 +118,14 @@ async fn fetch_into(
     progress: impl Fn(u64, u64) + Send,
 ) -> Result<(), UpdateError> {
     let mut response = send(client, &asset.url).await?;
+    // Redirects are followed: the URL that answered must pass the same
+    // rule, before any byte is written.
+    if !trusted_url(response.url()) {
+        return Err(UpdateError::BadManifest(format!(
+            "asset redirected to {}",
+            response.url()
+        )));
+    }
     if response.content_length().is_some_and(|n| n > asset.size) {
         return Err(UpdateError::Mismatch);
     }
@@ -159,4 +175,25 @@ fn offline(e: reqwest::Error) -> UpdateError {
 
 fn disk(e: std::io::Error) -> UpdateError {
     UpdateError::Disk(e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trusted_url;
+    use url::Url;
+
+    // A redirect to a plain-http host cannot be tested end to end: the
+    // testkit only serves loopback, which `trusted_url` accepts. These
+    // cases cover the rule `fetch_into` applies to the final URL.
+    #[test]
+    fn trusted_url_is_https_or_loopback_http() {
+        let trusted = |s: &str| trusted_url(&Url::parse(s).unwrap());
+        assert!(trusted("https://example.com/a.tar.gz"));
+        assert!(trusted("http://127.0.0.1:8080/a"));
+        assert!(trusted("http://[::1]/a"));
+        assert!(trusted("http://localhost/a"));
+        assert!(!trusted("http://example.com/a"));
+        assert!(!trusted("http://[::ffff:127.0.0.1]/a"));
+        assert!(!trusted("ftp://127.0.0.1/a"));
+    }
 }

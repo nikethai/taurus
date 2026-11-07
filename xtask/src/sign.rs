@@ -161,12 +161,6 @@ pub fn write_keys(
         .map_err(|_| "key encoding failed".to_string())?
         .into_string();
     let key_file = dir.join("hyades-update.key");
-    if key_file.exists() {
-        return Err(format!(
-            "{} exists (it is never overwritten)",
-            key_file.display()
-        ));
-    }
     let public_text = pair
         .pk
         .to_box()
@@ -174,26 +168,27 @@ pub fn write_keys(
         .into_string();
     // Minisign writes its own untrusted comment; replace it.
     let base64 = public_text.lines().nth(1).unwrap_or_default();
-    // Both files go to temporary names first and are renamed at the end, so
-    // a failure never leaves a secret key without its public file.
-    let secret_tmp = dir.join(".hyades-update.key.tmp");
+    // The public file goes to a temporary name first. The secret is
+    // created in place with `create_new`, which atomically refuses an
+    // existing key. The public file is renamed last, so a failure never
+    // leaves a public key without its secret; if that rename fails, the
+    // new secret (which nothing has used yet) is removed again.
     let public_tmp = public.with_extension("pub.tmp");
-    let _ = fs::remove_file(&secret_tmp);
-    let result = (|| {
-        fs::write(
-            &public_tmp,
-            format!("untrusted comment: {comment}\n{base64}\n"),
-        )
-        .map_err(|e| format!("{}: {e}", public_tmp.display()))?;
-        write_secret_file(&secret_tmp, secret.as_bytes())?;
-        fs::rename(&public_tmp, public).map_err(|e| format!("{}: {e}", public.display()))?;
-        fs::rename(&secret_tmp, &key_file).map_err(|e| format!("{}: {e}", key_file.display()))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&secret_tmp);
+    fs::write(
+        &public_tmp,
+        format!("untrusted comment: {comment}\n{base64}\n"),
+    )
+    .map_err(|e| format!("{}: {e}", public_tmp.display()))?;
+    if let Err(e) = write_secret_file(&key_file, secret.as_bytes()) {
         let _ = fs::remove_file(&public_tmp);
+        return Err(e);
     }
-    result
+    if let Err(e) = fs::rename(&public_tmp, public) {
+        let _ = fs::remove_file(&key_file);
+        let _ = fs::remove_file(&public_tmp);
+        return Err(format!("{}: {e}", public.display()));
+    }
+    Ok(())
 }
 
 fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -208,8 +203,11 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut file = options
         .open(path)
         .map_err(|e| format!("{}: {e} (it is never overwritten)", path.display()))?;
-    file.write_all(bytes)
-        .map_err(|e| format!("{}: {e}", path.display()))
+    file.write_all(bytes).map_err(|e| {
+        // Created just now: a partial key is no key.
+        let _ = fs::remove_file(path);
+        format!("{}: {e}", path.display())
+    })
 }
 
 #[cfg(test)]
@@ -260,8 +258,25 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
-        // Never overwritten.
-        assert!(write_keys(tmp.path(), &public, Some("pw".into()), "c").is_err());
+        // Never overwritten, and the public file still matches the key.
+        let err = write_keys(tmp.path(), &public, Some("pw".into()), "c").unwrap_err();
+        assert!(err.contains("never overwritten"), "{err}");
+        assert_eq!(fs::read_to_string(&public).unwrap(), text);
+        assert!(!tmp.path().join("update-key.pub.tmp").exists());
+        let again = fs::read_to_string(tmp.path().join("hyades-update.key")).unwrap();
+        assert_eq!(again, secret);
+    }
+
+    #[test]
+    fn keygen_leaves_no_secret_when_the_public_file_cannot_be_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A folder in the public file's place makes the final rename fail.
+        let public = tmp.path().join("update-key.pub");
+        fs::create_dir(&public).unwrap();
+        fs::write(public.join("keep"), "x").unwrap();
+        assert!(write_keys(tmp.path(), &public, None, "c").is_err());
+        assert!(!tmp.path().join("hyades-update.key").exists());
+        assert!(!tmp.path().join("update-key.pub.tmp").exists());
     }
 
     #[test]
