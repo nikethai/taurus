@@ -3302,9 +3302,11 @@ fn grab_500_links_streams_sizes(ui: &AppWindow, ctx: &Ctx) {
         .iter()
         .filter(|d| **d > Duration::from_millis(200))
         .count();
+    // One stall on a busy runner is allowed; a freeze is not.
+    let longest = *sorted.last().unwrap();
     assert!(
-        p95 <= Duration::from_millis(50) && over_200 <= 1,
-        "{WHAT}: the window was held up (95th percentile {p95:?}, {over_200} calls over 200 ms); {timing}"
+        p95 <= Duration::from_millis(50) && over_200 <= 1 && longest <= Duration::from_secs(1),
+        "{WHAT}: the window was held up (95th percentile {p95:?}, {over_200} calls over 200 ms, longest {longest:?}); {timing}"
     );
     let rows = links(ui).get_grab_rows();
     assert_eq!(rows.row_count(), N, "{WHAT}: rows rebuilt");
