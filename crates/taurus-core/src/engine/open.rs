@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -87,6 +87,8 @@ pub(super) async fn assemble(
     {
         tracing::warn!("could not start the torrent session: {e}");
     }
+    let mut jobs_at_open: Vec<JobView> = views.values().cloned().collect();
+    jobs_at_open.sort_by_key(|v| v.id);
     let views = Arc::new(RwLock::new(views));
     let shared_settings = Arc::new(RwLock::new(settings.clone()));
     let keeping_awake = Arc::new(AtomicBool::new(false));
@@ -167,6 +169,8 @@ pub(super) async fn assemble(
         secrets: secrets.clone(),
         details: details.clone(),
     };
+    // Subscribed before the actor exists, so before any job starts.
+    let first_events = Arc::new(Mutex::new(Some(events.subscribe())));
     let engine = Engine {
         commands,
         events,
@@ -184,6 +188,8 @@ pub(super) async fn assemble(
         data_dir: config.data_dir,
         secrets,
         details,
+        jobs_at_open: Arc::new(jobs_at_open),
+        first_events,
     };
     Ok((engine, actor, commands_rx))
 }

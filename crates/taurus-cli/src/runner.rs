@@ -52,10 +52,15 @@ pub struct Runner<'a> {
 }
 
 impl<'a> Runner<'a> {
+    /// Starts from the jobs as the engine opened them and every event
+    /// since (`Engine::subscribe_from_open`), so a job that started and
+    /// failed before the runner began is still followed and reported.
     /// Subscribes before anything is enqueued, so no event is missed.
     pub fn new(engine: &'a Engine, options: Options) -> Runner<'a> {
-        let events = engine.subscribe();
-        let views = engine.snapshot();
+        let (events, views) = match engine.subscribe_from_open() {
+            Some(events) => (events, engine.jobs_at_open()),
+            None => (engine.subscribe(), engine.snapshot()),
+        };
         let states: HashMap<JobId, JobState> = views.iter().map(|v| (v.id, v.state)).collect();
         let touched: BTreeSet<JobId> = views
             .iter()
@@ -597,5 +602,70 @@ mod tests {
         assert_eq!(code(false, false, &[Paused, Failed]), ExitCode::FAILURE);
         assert_eq!(code(true, false, &[Completed]), ExitCode::from(2));
         assert_eq!(code(true, true, &[Failed]), ExitCode::from(2));
+    }
+
+    /// `run` right after a crash: the stored job starts as the engine
+    /// opens and fails on its first request (401: its password lived in
+    /// the dead process). A runner made after that failure still has the
+    /// job to follow, and reports it with exit code 1, not "Nothing to
+    /// do.".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_job_that_failed_before_the_runner_began_is_followed() {
+        use std::sync::Arc;
+        use taurus_core::{AddRequest, EngineConfig, PowerMode};
+        use taurus_testkit::{FileSpec, TestServer};
+
+        let server = TestServer::start().await;
+        let url = server.serve("/f.bin", FileSpec::new(64 * 1024));
+        let tmp = tempfile::tempdir().unwrap();
+        let config = |autostart: bool| {
+            let mut config = EngineConfig::new(tmp.path().join("data"));
+            config.autostart = autostart;
+            config.power = PowerMode::DryRun;
+            config.secrets = Arc::new(taurus_core::secrets::MemoryStore::new());
+            config
+        };
+        // Stored as Queued by an engine that never starts it.
+        let engine = Engine::open(config(false)).await.unwrap();
+        engine
+            .add(AddRequest {
+                url,
+                dest_dir: tmp.path().to_path_buf(),
+                ..AddRequest::default()
+            })
+            .await
+            .unwrap();
+        engine.shutdown().await.unwrap();
+        drop(engine);
+        let mut spec = FileSpec::new(64 * 1024);
+        spec.basic_auth = Some(("bob".into(), "pw".into()));
+        server.replace("/f.bin", spec);
+
+        let engine = Engine::open(config(true)).await.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !engine
+            .snapshot()
+            .iter()
+            .any(|v| v.state == JobState::Failed)
+        {
+            assert!(Instant::now() < deadline, "the job never failed");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let options = Options {
+            json: true,
+            dry_run: true,
+            timing: Timing::default(),
+        };
+        let runner = Runner::new(&engine, options);
+        assert!(runner.has_work(), "the failed job is not followed");
+        let code = tokio::time::timeout(
+            Duration::from_secs(30),
+            runner.run(async { Enqueued::default() }),
+        )
+        .await
+        .expect("the runner never ended")
+        .unwrap();
+        assert_eq!(code, ExitCode::FAILURE);
+        engine.shutdown().await.unwrap();
     }
 }

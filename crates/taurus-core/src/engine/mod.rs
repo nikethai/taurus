@@ -33,7 +33,7 @@ mod types;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -109,6 +109,10 @@ pub struct Engine {
     secrets: Secrets,
     /// What `job_detail` reads beside the views, shared with the actor.
     details: Details,
+    /// The views as `open` restored them, before the queue started.
+    jobs_at_open: Arc<Vec<JobView>>,
+    /// Subscribed before the queue started; `subscribe_from_open` takes it.
+    first_events: Arc<Mutex<Option<broadcast::Receiver<Event>>>>,
 }
 
 impl Engine {
@@ -383,6 +387,24 @@ impl Engine {
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
+    }
+
+    /// The jobs as `open` restored them (interrupted ones already Queued),
+    /// ordered by id: what the engine held before its queue started.
+    pub fn jobs_at_open(&self) -> Vec<JobView> {
+        self.jobs_at_open.as_ref().clone()
+    }
+
+    /// A receiver subscribed before the queue started, so with
+    /// `jobs_at_open` a front end sees every job from that moment, even
+    /// one that started and failed before the front end looked (until
+    /// `EVENT_CAPACITY` events pass; then it reports `Lagged`). Handed out
+    /// once: `None` to every later caller.
+    pub fn subscribe_from_open(&self) -> Option<broadcast::Receiver<Event>> {
+        self.first_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     /// The current settings.
