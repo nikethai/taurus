@@ -98,7 +98,17 @@ jobs:
       # No --target: the app lands in target/release/, where the packager
       # configs read it (packaging/README.md).
       - run: cargo build --release --locked -p taurus-desktop
-      # A relative --out-dir resolves from packaging/: pass an absolute one.
-      - run: cargo packager -c packaging/packager-linux.toml --out-dir "$GITHUB_WORKSPACE/pkg"
-      - run: cargo generate-rpm -p apps/taurus-desktop -o pkg/
+      # As in release.yml: dpkg reads 1.0.0-rc.1 as 1.0.0 revision rc.1,
+      # which sorts above 1.0.0, and rpm versions cannot hold "-" at all,
+      # so both packages get 1.0.0~rc.1. A relative --out-dir resolves
+      # from packaging/: pass an absolute one.
+      - name: Package
+        run: |
+          VERSION=$(cargo metadata --format-version 1 --no-deps |
+            jq -r '.packages[] | select(.name == "taurus-desktop") | .version')
+          deb_version=$(printf '%s' "$VERSION" | tr '-' '~')
+          sed -i "s/^version = \"$VERSION\"\$/version = \"$deb_version\"/" packaging/packager-linux.toml
+          cargo packager -c packaging/packager-linux.toml --out-dir "$GITHUB_WORKSPACE/pkg"
+          rpm_version=$(printf '%s' "$VERSION" | tr '-' '~')
+          cargo generate-rpm -p apps/taurus-desktop -s "version = \"$rpm_version\"" -o pkg/
       - run: packaging/check-linux.sh pkg

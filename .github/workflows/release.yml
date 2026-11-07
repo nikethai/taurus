@@ -4,8 +4,9 @@ name: Release
 # A dry run builds, packages and checks everything and keeps the packages
 # as workflow artifacts, without a release: every pull request that touches
 # the packaging (R12), or a manual run with `dry_run` (the default). Only a
-# tag push, or a manual run with `dry_run` false, publishes. Pull request
-# dry runs never use the SignPath or Apple secrets (macOS signs ad hoc).
+# tag push, or a manual run on a tag with `dry_run` false, publishes. Pull
+# request dry runs never use the SignPath or Apple secrets (macOS signs ad
+# hoc).
 #
 # Signing is optional per platform (D6): each signing step runs only when
 # its secret is set. Only the update manifest is always signed (minisign,
@@ -173,8 +174,12 @@ jobs:
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
+          # dpkg reads 1.0.0-rc.1 as 1.0.0 revision rc.1, which sorts above
+          # 1.0.0; 1.0.0~rc.1 sorts below it. rpm versions cannot hold "-"
+          # at all. Both packages use the "~" form.
+          deb_version=$(printf '%s' "$VERSION" | tr '-' '~')
+          sed -i "s/^version = \"$VERSION\"\$/version = \"$deb_version\"/" packaging/packager-linux.toml
           cargo packager -c packaging/packager-linux.toml --target "$TARGET" --out-dir "$GITHUB_WORKSPACE/pkg"
-          # rpm versions cannot hold "-": 1.0.0-rc.1 becomes 1.0.0~rc.1.
           rpm_version=$(printf '%s' "$VERSION" | tr '-' '~')
           cargo generate-rpm -p apps/taurus-desktop --target "$TARGET" \
             -s "version = \"$rpm_version\"" -o pkg/
@@ -303,11 +308,13 @@ jobs:
   publish:
     name: Publish the draft release
     needs: [version, build]
-    # Fails closed: only a v* tag push, or a manual run whose dry_run is
-    # exactly false (event inputs are strings), publishes.
+    # Fails closed: only a v* tag push, or a manual run on a tag whose
+    # dry_run is exactly false (event inputs are strings), publishes. A
+    # manual run on a branch never publishes, since the release would tag
+    # that branch's commit.
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')
+      (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && github.event.inputs.dry_run == 'false')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -332,7 +339,7 @@ jobs:
           for v in "$VERSION" "${VERSION%%-*}"; do
             awk -v v="$v" '
               /^## \[/ { if (on) exit; on = ($2 == "[" v "]"); next }
-              on && /^\[.*\]:/ { exit }
+              on && /^\[[^]]+\]: / { exit }
               on { print }
             ' CHANGELOG.md > "$NOTES"
             if [ -s "$NOTES" ]; then break; fi

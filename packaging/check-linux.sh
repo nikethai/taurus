@@ -72,6 +72,10 @@ debs=("$dist"/*.deb)
 [ ${#debs[@]} -gt 0 ] || fail "no .deb found in $dist"
 for deb in "${debs[@]}"; do
   name=$(basename "$deb")
+  version=$(dpkg-deb -f "$deb" Version) || fail "$name: dpkg-deb -f failed"
+  case "$version" in
+    *-*) fail "$name: Version $version holds a '-' (a prerelease must use '~' so it sorts below the release)" ;;
+  esac
   contents=$(dpkg-deb -c "$deb") || fail "$name: dpkg-deb -c failed"
   # Paths with or without a leading "./", depending on the tool.
   list=$(awk '{ print $NF }' <<<"$contents" | sed 's|^\./||')

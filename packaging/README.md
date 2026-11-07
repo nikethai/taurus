@@ -43,6 +43,10 @@ copyright and licence travel inside the font data; the licence text is
   `version` is not the version in `apps/taurus-desktop/Cargo.toml` (with
   `--config`, cargo-packager does not read `Cargo.toml`, so a version bump
   updates the configs too, and the metainfo's `<release>`).
+- `icons` lists `icons/hyades.icns` beside the PNGs: the macOS packager
+  copies a listed `.icns` as is, and from PNGs alone it fails on `1024.png`
+  and `64.png` ("No matching IconType"). The deb and the AppImage skip it;
+  the Windows installer takes `hyades.ico`.
 - It resolves relative paths from the config file's folder, `packaging/`:
   `icons/*.png` is `packaging/icons/*.png`, and `../LICENSE` is the repo's
   `LICENSE`.
@@ -85,6 +89,12 @@ cargo packager -c packaging/packager-windows.toml --out-dir "$PWD/dist/windows"
 cargo packager -c packaging/packager-macos.toml --out-dir "$PWD/dist/macos"
 ```
 
+The deb's version must use `~` for a prerelease (`1.0.0~rc.1`, not
+`1.0.0-rc.1`): dpkg reads `-rc.1` as a revision, which sorts above `1.0.0`.
+The workflows rewrite `version` in `packager-linux.toml` that way before
+packaging; do the same for a local prerelease deb (`check-linux.sh` refuses a
+deb whose version holds a `-`).
+
 `dist/` is ignored by git. cargo-generate-rpm finds the binary under
 `target/<T>/release/` by itself (with `--target`) and needs no copy.
 
@@ -102,6 +112,7 @@ packaging/check-linux.sh dist/linux
 It needs `dpkg-deb` and `rpm` (`sudo apt-get install rpm`) and prints `ok`,
 or what is wrong and exits 1. It checks that:
 
+- the deb's version holds no `-` (see above);
 - the deb holds `usr/bin/hyades`, `usr/share/applications/hyades.desktop`
   and a 256x256 icon;
 - the deb's desktop entry has `Name=Hyades`, `Exec=hyades %u` (or `%U`) and
@@ -145,3 +156,7 @@ workflow artifact `dist-<platform>`.
   `apps/taurus-desktop/Cargo.toml`) builds, signs `latest.json` and
   `SHA256SUMS` with the minisign key, checks `latest.json` against
   `update-key.pub`, and creates a draft release.
+- **Prereleases and the updater:** installed copies fetch
+  `releases/latest/download/latest.json`, and GitHub's `latest` never names a
+  prerelease, so a prerelease's manifest is never offered: a `1.0.0-rc.1`
+  copy is offered `1.0.0` but never `1.0.0-rc.2`.

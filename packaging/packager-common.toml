@@ -16,7 +16,10 @@ description = "Download files, videos and torrents."
 long-description = "Hyades downloads files, videos and torrents. It splits big downloads into parts, resumes after a crash, and keeps going in the background."
 homepage = "https://github.com/nikethai/taurus"
 license-file = "../LICENSE"
-icons = ["icons/*.png"]
+# hyades.icns is listed because the macOS packager copies a listed .icns
+# as is; from PNGs alone it fails on 1024.png and 64.png ("No matching
+# IconType"). deb and AppImage skip it; Windows takes hyades.ico.
+icons = ["icons/*.png", "icons/hyades.icns"]
 category = "Utility"
 binaries-dir = "../target/release"
 binaries = [{ path = "hyades", main = true }]
