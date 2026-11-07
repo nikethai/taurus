@@ -7,7 +7,7 @@
 # (packaging/), and 0.11.8 ignores the `--binaries-dir` flag, hence
 # `binaries-dir` here. See packaging/README.md.
 name = "hyades"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 product-name = "Hyades"
 identifier = "dev.nikethai.hyades"
 publisher = "nikethai"

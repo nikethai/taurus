@@ -4,6 +4,7 @@ members = ["crates/*", "apps/*", "xtask"]
 exclude = ["third_party"]
 
 [workspace.package]
+version = "1.0.0-rc.1"
 edition = "2024"
 rust-version = "1.89"
 license = "GPL-3.0-or-later"

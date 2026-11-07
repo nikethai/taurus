@@ -2,7 +2,7 @@
 # from the repo root; see packaging/README.md. The first block repeats
 # packager-common.toml. No deep links or file associations (D4).
 name = "hyades"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 product-name = "Hyades"
 identifier = "dev.nikethai.hyades"
 publisher = "nikethai"

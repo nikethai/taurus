@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 # Run with the stable toolchain only (`cargo xtask ...`); not part of the
 # workspace's 1.89 MSRV check.

@@ -1,6 +1,48 @@
 # Hyades (codename Taurus)
 
-Hyades (codename Taurus) is an open-source, cross-platform desktop download manager written in Rust, with a segmented HTTP engine, resumable downloads, torrents, a command-line client and a native desktop app (alpha). Status: v2 rewrite in progress; see the [design spec](docs/superpowers/specs/2026-10-27-taurus-v2-design.md).
+Hyades (codename Taurus) is an open-source, cross-platform desktop download manager written in Rust, with a segmented HTTP engine, resumable downloads, torrents, video sites, a command-line client and a native desktop app. Status: 1.0 release candidate. What changed is in the [changelog](CHANGELOG.md), what is planned for later in [docs/LATER.md](docs/LATER.md), and the design in the [design spec](docs/superpowers/specs/2026-10-27-taurus-v2-design.md).
+
+## Install
+
+Download the file for your system from the [releases page](https://github.com/nikethai/taurus/releases). `<version>` is the release's version, such as `1.0.0`.
+
+| System | File |
+| --- | --- |
+| Windows, x64 | `Hyades_<version>_x64-setup.exe` |
+| Windows, arm64 | `Hyades_<version>_arm64-setup.exe` |
+| macOS 11 or newer, Apple silicon and Intel | `Hyades_<version>_universal.dmg` |
+| Linux, x64 | `Hyades_<version>_x86_64.AppImage`, `hyades_<version>_amd64.deb` or `hyades-<version>-1.x86_64.rpm` |
+| Linux, arm64 | `Hyades_<version>_aarch64.AppImage`, `hyades_<version>_arm64.deb` or `hyades-<version>-1.aarch64.rpm` |
+| Command-line client only | `hyades-cli-<version>-<target>.tar.gz` (`.zip` on Windows), for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` or `universal-apple-darwin` |
+
+The installers hold the desktop app only; the command-line client is a separate archive with the `hyades-cli` program inside. Each release also has `SHA256SUMS`, the SHA-256 of every file, signed in `SHA256SUMS.minisig` with the key in [`packaging/update-key.pub`](packaging/update-key.pub).
+
+**Windows.** Run the setup file. It installs Hyades for your user only, with no administrator rights needed, and adds it to the Start menu. Uninstalling it from Settings → Apps keeps your downloads and the downloads list. If the installer is not signed, Windows SmartScreen says it "protected your PC": click **More info**, then **Run anyway**.
+
+**macOS.** Open the DMG and drag Hyades to Applications. If the build is not signed with an Apple Developer ID, macOS refuses to open it the first time. Either right-click (or Control-click) Hyades in Applications and choose **Open**, then **Open** again; or try to open it once, then go to System Settings → Privacy & Security and click **Open Anyway** next to the message about Hyades. macOS remembers the choice.
+
+**Linux.** The packages need glibc 2.35 or newer, so they run on Debian 12, Ubuntu 22.04, Fedora 36 and later releases.
+
+- AppImage: make it executable and run it (`chmod +x Hyades_*.AppImage`, then `./Hyades_<version>_x86_64.AppImage`). It needs nothing installed and can update itself.
+- deb (Debian, Ubuntu): `sudo apt install ./hyades_<version>_amd64.deb`.
+- rpm (Fedora): `sudo dnf install ./hyades-<version>-1.x86_64.rpm`.
+
+Each one adds Hyades to the applications menu and offers it as a handler for magnet links and `.torrent` files, without taking over an app you already chose for them. Windows and macOS have no link or file associations yet (see [docs/LATER.md](docs/LATER.md)); paste a link, or let Hyades offer the link you copied.
+
+## Updates
+
+The desktop app checks for a new version 30 seconds after it starts, then every 24 hours while it runs. A check is one request to GitHub for the latest release's `latest.json`; nothing about you or your downloads is sent. That file is signed, and Hyades ignores it unless the signature matches the key built into the app. A release candidate (such as `1.0.0-rc.1`) is offered only to people who already run one.
+
+- **Windows installer, macOS and AppImage.** The new version downloads in the background and is checked against the signed file. Hyades then says "Hyades `<version>` is ready": click **Restart** to install it. Nothing installs until you click, and downloads continue after the restart. If Hyades cannot replace itself where it is installed (for example a folder you cannot write to), it says so and links to the website.
+- **deb and rpm.** Hyades cannot update a system package itself. It shows "Hyades `<version>` is out"; **Get it** opens the release page, where you download the new package and install it as above.
+
+To turn the automatic checks off, open Settings, turn on **Show advanced options**, then in Advanced settings, General, turn off **Check for updates automatically**. **Check now** beside it checks once, whenever you want. The command-line client never checks for updates.
+
+For testing, `HYADES_UPDATE_MANIFEST=<URL>` makes the app read another `latest.json` instead of the latest release's. It must still be signed with the release key.
+
+## Translations
+
+The desktop app's text is ready to be translated; so far it ships in English. [TRANSLATING.md](TRANSLATING.md) explains how to add a language. The app uses the language saved in its settings, else the system's; `HYADES_LANG` overrides both: a language code such as `vi` or `pt_BR` (a language without a translation stays English). `HYADES_LANG=en_XA` shows a pseudo-locale (accented, longer text in `⟦…⟧`) that makes untranslated or cut-off text easy to spot.
 
 ## Usage
 
@@ -249,15 +291,15 @@ Global options go before the command:
 - `--data-dir <PATH>` sets where the job database lives. Without it, `HYADES_DATA_DIR` is used, else the OS data directory. `TAURUS_DATA_DIR` from earlier builds is still read.
 - `--dry-run-power` prints the sleep or shutdown command of `when_done` (`would run: ...`) instead of running it.
 
-## Desktop app (alpha)
+## Desktop app
 
-Hyades also has a desktop app with a simple window: paste a link, see what it is, download it. It handles web downloads, torrents (magnet and `.torrent` links), and videos, audio and live streams from video sites, on Windows, macOS and Linux.
+The desktop app, `hyades`, has a simple window: paste a link, see what it is, download it. It handles web downloads, torrents (magnet and `.torrent` links), and videos, audio and live streams from video sites, on Windows, macOS and Linux. Install it as described in [Install](#install), or build and run it from source:
 
 ```sh
 cargo run -p taurus-desktop --bin hyades
 ```
 
-- **Data.** The app keeps its downloads list and settings in the same folder as the command-line client: `HYADES_DATA_DIR` if set, else `~/.local/share/taurus` on Linux (`$XDG_DATA_HOME/taurus` when that is set), `~/Library/Application Support/dev.nikethai.taurus` on macOS and `%APPDATA%\nikethai\taurus\data` on Windows. Only one of them can use the folder at a time; opening the app while the command-line client runs shows a message and exits.
+- **Data.** The app keeps its downloads list and settings in the same folder as the command-line client: `HYADES_DATA_DIR` if set (`TAURUS_DATA_DIR` from earlier builds is still read), else `~/.local/share/taurus` on Linux (`$XDG_DATA_HOME/taurus` when that is set), `~/Library/Application Support/dev.nikethai.taurus` on macOS and `%APPDATA%\nikethai\taurus\data` on Windows. Only one of them can use the folder at a time; opening the app while the command-line client runs shows a message and exits.
 - **Tray.** Closing the window hides it to the tray and downloads go on; choose Quit in the tray menu to stop. On Linux the tray needs a StatusNotifier host (KDE Plasma has one; GNOME needs the AppIndicator extension). Without a tray, closing the window quits.
 - **One window.** Launching the app again (for example `hyades <link>`, or with a `.torrent` file) shows the open window, from the tray or minimized, and hands it the links; other arguments are ignored.
 
@@ -280,6 +322,6 @@ Turn on **Show advanced options** in Settings (turn it off again in Advanced set
 
 Keyboard: Tab moves through the controls in order (in the list: the header, the tabs or filters, each row then its action button, the footer), Space or Enter presses the focused one. In a dialog, Enter confirms, Escape cancels and Tab stays inside it. Escape also closes the when-done menu and the wide layout's "New download" link field, and goes back from the details (compact), Advanced add, Grab links, Several links and Settings.
 
-Known alpha limitations: dragging links or files in from other apps does not work yet (the UI toolkit does not support it).
+Known limitations: dragging links or files in from other apps does not work yet (the UI toolkit does not support it).
 
 License of the bundled font: the app's typeface is [Inter](https://github.com/rsms/inter) 4.1, compiled into the app, under the SIL Open Font License 1.1 (`apps/taurus-desktop/ui/fonts/OFL.txt`).

@@ -7287,7 +7287,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-cli"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "clap",
  "directories",
@@ -7302,7 +7302,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-core"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "base64",
  "bytes",
@@ -7341,7 +7341,7 @@ dependencies = [
 
 [[package]]
 name = "taurus-desktop"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "arboard",
  "auto-launch",
@@ -7374,11 +7374,11 @@ dependencies = [
 
 [[package]]
 name = "taurus-icon"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "taurus-testkit"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "axum",
  "base64",
@@ -9034,7 +9034,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "dunce",
  "hex",

@@ -1,6 +1,6 @@
 [package]
 name = "taurus-desktop"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 # Own MSRV: slint 1.18 needs Rust 1.92 and tray-icon 0.26 needs 1.90, above the
 # workspace's 1.89. CI checks this crate with 1.92 and the rest with 1.89.
