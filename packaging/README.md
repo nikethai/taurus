@@ -70,18 +70,19 @@ cp target/<T>/release/hyades target/release/        # hyades.exe on Windows
 # macOS universal: lipo -create … -output target/release/hyades
 ```
 
-Then, per OS:
+Then, per OS. cargo-packager resolves a relative `--out-dir` from the
+config's folder (`packaging/`), so pass an absolute path:
 
 ```sh
 # Linux: deb and AppImage, then the rpm
-cargo packager -c packaging/packager-linux.toml --out-dir dist/linux
+cargo packager -c packaging/packager-linux.toml --out-dir "$PWD/dist/linux"
 cargo generate-rpm -p apps/taurus-desktop [--target <T>] -o dist/linux/
 
 # Windows: NSIS installer
-cargo packager -c packaging/packager-windows.toml --out-dir dist/windows
+cargo packager -c packaging/packager-windows.toml --out-dir "$PWD/dist/windows"
 
 # macOS: Hyades.app
-cargo packager -c packaging/packager-macos.toml --out-dir dist/macos
+cargo packager -c packaging/packager-macos.toml --out-dir "$PWD/dist/macos"
 ```
 
 `dist/` is ignored by git. cargo-generate-rpm finds the binary under

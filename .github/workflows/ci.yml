@@ -98,6 +98,7 @@ jobs:
       # No --target: the app lands in target/release/, where the packager
       # configs read it (packaging/README.md).
       - run: cargo build --release --locked -p taurus-desktop
-      - run: cargo packager -c packaging/packager-linux.toml --out-dir pkg
+      # A relative --out-dir resolves from packaging/: pass an absolute one.
+      - run: cargo packager -c packaging/packager-linux.toml --out-dir "$GITHUB_WORKSPACE/pkg"
       - run: cargo generate-rpm -p apps/taurus-desktop -o pkg/
       - run: packaging/check-linux.sh pkg

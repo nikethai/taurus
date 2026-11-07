@@ -168,10 +168,12 @@ jobs:
           wait-for-completion: true
           output-artifact-directory: target/release
 
+      # cargo-packager resolves a relative --out-dir from the config's
+      # folder (packaging/), so every step passes an absolute path.
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
-          cargo packager -c packaging/packager-linux.toml --target "$TARGET" --out-dir pkg
+          cargo packager -c packaging/packager-linux.toml --target "$TARGET" --out-dir "$GITHUB_WORKSPACE/pkg"
           # rpm versions cannot hold "-": 1.0.0-rc.1 becomes 1.0.0~rc.1.
           rpm_version=$(printf '%s' "$VERSION" | tr '-' '~')
           cargo generate-rpm -p apps/taurus-desktop --target "$TARGET" \
@@ -181,10 +183,10 @@ jobs:
         run: packaging/check-linux.sh pkg
       - name: Package (Windows)
         if: runner.os == 'Windows'
-        run: cargo packager -c packaging/packager-windows.toml --target "$TARGET" --out-dir pkg
+        run: cargo packager -c packaging/packager-windows.toml --target "$TARGET" --out-dir "$GITHUB_WORKSPACE/pkg"
       - name: Package (macOS)
         if: runner.os == 'macOS'
-        run: cargo packager -c packaging/packager-macos.toml --out-dir pkg
+        run: cargo packager -c packaging/packager-macos.toml --out-dir "$GITHUB_WORKSPACE/pkg"
 
       - name: Upload the installer for signing
         id: unsigned-setup
