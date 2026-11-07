@@ -17,6 +17,10 @@ export component Banner inherits Rectangle {
     drop-shadow-offset-y: 2px;
     drop-shadow-color: Theme.shadow;
     accessible-role: AccessibleRole.banner;
+    // Tall enough for the question at the width it really gets: the
+    // layout alone left a wrapped question a line short (seen with
+    // Slint 1.18).
+    min-height: question.preferred-height + 24px;
 
     HorizontalLayout {
         padding: 12px;
@@ -28,7 +32,7 @@ export component Banner inherits Rectangle {
                 size: 36px;
             }
         }
-        Text {
+        question := Text {
             // A magnet link has no host to name.
             text: root.banner.host != "" ? @tr("Download the link you copied from {0}?", root.banner.host)
                 : root.banner.kind == "magnet" ? @tr("Download the torrent link you copied?")

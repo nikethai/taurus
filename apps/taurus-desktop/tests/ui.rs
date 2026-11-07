@@ -4703,37 +4703,252 @@ fn inside(inner: &ElementHandle, outer: &ElementHandle) -> bool {
         && i.y + is.height <= o.y + os.height + 0.5
 }
 
-/// Under the pseudo-locale (every string at least 1.4x longer) a 420 px
-/// compact window keeps its text inside its controls and every action
-/// inside the window: the speed segments, the grab links chips and
-/// buttons, and the Add screen's video card.
-fn pseudo_fits_at_420() {
-    const WHAT: &str = "pseudo_fits_at_420";
-    let ui = AppWindow::new().unwrap();
-    ui.show().unwrap();
-    i18n::apply(Some("en_XA"));
-    ui.window().set_size(slint::LogicalSize::new(420.0, 640.0));
-    ui.set_layout("compact".into());
-    ui.set_screen(Screen::Downloads);
+// Measures a label's natural (unsqueezed) width in the app's font.
+slint::slint! {
+    export component TextProbe inherits Window {
+        in property <string> text;
+        in property <length> size: 13px;
+        in property <int> weight: 500;
+        // Wrapped at `wrap-width`: the height it needs.
+        in property <length> wrap-width: 100px;
+        out property <length> natural: label.preferred-width;
+        out property <length> wrapped-height: wrapped.preferred-height;
+        default-font-family: "Inter";
+        label := Text {
+            text: root.text;
+            font-size: root.size;
+            font-weight: root.weight;
+        }
+        wrapped := Text {
+            y: 50px;
+            width: root.wrap-width;
+            text: root.text;
+            font-size: root.size;
+            font-weight: root.weight;
+            wrap: word-wrap;
+        }
+    }
+}
 
-    // The when-done card's speeds: each label stays in its segment.
-    ui.global::<WhenDoneUi>().set_open(true);
-    refresh_tree(&ui);
-    let segments = ElementHandle::find_by_element_type_name(&ui, "Segment").collect::<Vec<_>>();
-    assert!(segments.len() >= 4, "{WHAT}: {} segments", segments.len());
+fn natural_width(probe: &TextProbe, text: &str, size: f32, weight: i32) -> f32 {
+    probe.set_text(text.into());
+    probe.set_size(size);
+    probe.set_weight(weight);
+    probe.get_natural()
+}
+
+/// The height `text` needs, wrapped at `width`.
+fn wrapped_height(probe: &TextProbe, text: &str, size: f32, weight: i32, width: f32) -> f32 {
+    probe.set_text(text.into());
+    probe.set_size(size);
+    probe.set_weight(weight);
+    probe.set_wrap_width(width);
+    probe.get_wrapped_height()
+}
+
+/// An element, told apart by what it shows and where.
+fn element_key(e: &ElementHandle) -> (String, [u32; 4]) {
+    let (p, s) = (e.absolute_position(), e.size());
+    (
+        e.accessible_label().unwrap_or_default().to_string(),
+        [p.x, p.y, s.width, s.height].map(f32::to_bits),
+    )
+}
+
+/// The elements inside a scroller (any Flickable: ScrollView, ListView…).
+fn scrolled(ui: &AppWindow) -> std::collections::HashSet<(String, [u32; 4])> {
+    ElementQuery::from_root(ui)
+        .match_descendants()
+        .match_predicate(|e| {
+            e.type_name().is_some_and(|t| t == "Flickable")
+                || e.bases().is_some_and(|mut b| b.any(|t| t == "Flickable"))
+        })
+        .find_all()
+        .iter()
+        .flat_map(|f| f.query_descendants().find_all())
+        .map(|e| element_key(&e))
+        .collect()
+}
+
+/// Every control shown (button, radio button, tab, check box, switch)
+/// lies inside the `width` × `height` window: all four edges, except
+/// that a control in a scroller may sit below the fold. Grab chips scroll
+/// sideways and are checked on their own.
+fn controls_fit(ui: &AppWindow, width: f32, height: f32, what: &str) {
+    refresh_tree(ui);
+    let scrolled = scrolled(ui);
+    let roles = [
+        AccessibleRole::Button,
+        AccessibleRole::RadioButton,
+        AccessibleRole::Tab,
+        AccessibleRole::Checkbox,
+        AccessibleRole::Switch,
+    ];
+    let mut seen = 0;
+    for role in roles {
+        let found = ElementQuery::from_root(ui)
+            .match_descendants()
+            .match_accessible_role(role)
+            .find_all();
+        for e in found.iter().filter(|e| e.size().width > 0.0) {
+            if e.type_name().is_some_and(|t| t == "Chip") {
+                continue;
+            }
+            seen += 1;
+            let (p, s) = (e.absolute_position(), e.size());
+            let label = e.accessible_label();
+            assert!(
+                p.x >= -0.5 && p.x + s.width <= width + 0.5,
+                "{what}: {role:?} {label:?} spans x {}..{} in a {width} px window",
+                p.x,
+                p.x + s.width
+            );
+            if !scrolled.contains(&element_key(e)) {
+                assert!(
+                    p.y >= -0.5 && p.y + s.height <= height + 0.5,
+                    "{what}: {role:?} {label:?} spans y {}..{} in a {height} px window",
+                    p.y,
+                    p.y + s.height
+                );
+            }
+        }
+    }
+    assert!(seen > 0, "{what}: no controls");
+}
+
+/// Every segment's label shows whole: its text box is at least the
+/// label's natural width.
+fn segments_whole(ui: &AppWindow, probe: &TextProbe, what: &str) {
+    refresh_tree(ui);
+    let segments = ElementHandle::find_by_element_type_name(ui, "Segment").collect::<Vec<_>>();
+    assert!(segments.len() >= 4, "{what}: {} segments", segments.len());
     for seg in &segments {
+        let label = seg.accessible_label().unwrap_or_default();
+        let weight = if seg.accessible_checked() == Some(true) {
+            600
+        } else {
+            500
+        };
+        let need = natural_width(probe, &label, 13.0, weight);
         for text in seg.query_descendants().match_type_name("Text").find_all() {
             assert!(
-                inside(&text, seg),
+                text.size().width + 0.5 >= need,
+                "{what}: segment {label:?} shows {} px of its {need} px label",
+                text.size().width
+            );
+        }
+    }
+}
+
+/// Every line of every `Card` shown lies inside its card.
+fn cards_hold_text(ui: &AppWindow, what: &str) {
+    refresh_tree(ui);
+    let cards = ElementHandle::find_by_element_type_name(ui, "Card").collect::<Vec<_>>();
+    assert!(!cards.is_empty(), "{what}: no cards");
+    for card in &cards {
+        for text in card.query_descendants().match_type_name("Text").find_all() {
+            assert!(
+                inside(&text, card),
+                "{what}: a line of a card ends at {} below a card ending at {}",
+                text.absolute_position().y + text.size().height,
+                card.absolute_position().y + card.size().height
+            );
+        }
+    }
+}
+
+/// Long labels hold. In English at the 360 px minimum every segment label
+/// shows whole (compact Settings and the when-done card). Under the
+/// pseudo-locale (every string at least 1.4x longer) at 420 px every
+/// control stays in the window, segment labels stay in their segments,
+/// the grab chips keep their natural width in a row that scrolls (a
+/// focused chip is scrolled into view), and every card holds its text
+/// (compact Settings, the Advanced and Simple Add screens).
+fn pseudo_fits_at_420() {
+    use slint::platform::Key;
+    const WHAT: &str = "pseudo_fits_at_420";
+    let probe = TextProbe::new().unwrap();
+    let ui = AppWindow::new().unwrap();
+    ui.show().unwrap();
+    ui.set_layout("compact".into());
+
+    // English at 360 px.
+    i18n::apply(Some("en"));
+    ui.window().set_size(slint::LogicalSize::new(360.0, 640.0));
+    ui.set_screen(Screen::Settings);
+    segments_whole(&ui, &probe, &format!("{WHAT} (en, Settings)"));
+    ui.set_screen(Screen::Downloads);
+    ui.global::<WhenDoneUi>().set_open(true);
+    segments_whole(&ui, &probe, &format!("{WHAT} (en, when done)"));
+    ui.global::<WhenDoneUi>().set_open(false);
+
+    // The clipboard offer holds its wrapped question, in English and in
+    // the pseudo-locale.
+    let offer_holds = |what: &str| {
+        ui.set_banner(BannerVm {
+            visible: true,
+            host: "downloads.example-mirror.org".into(),
+            kind: "link".into(),
+        });
+        refresh_tree(&ui);
+        let banner = ElementHandle::find_by_element_type_name(&ui, "Banner")
+            .next()
+            .expect("the clipboard offer");
+        let question = banner
+            .query_descendants()
+            .match_accessible_role(AccessibleRole::Text)
+            .find_first()
+            .expect("the offer's question");
+        let label = question.accessible_label().unwrap_or_default();
+        let need = wrapped_height(&probe, &label, 13.0, 400, question.size().width);
+        assert!(
+            question.size().height + 0.5 >= need,
+            "{what}: the offer's question gets {} px of the {need} px it needs",
+            question.size().height
+        );
+        for text in banner
+            .query_descendants()
+            .match_type_name("Text")
+            .find_all()
+        {
+            assert!(
+                inside(&text, &banner),
+                "{what}: the offer's text spans y {}..{} in a banner ending at {}",
+                text.absolute_position().y,
+                text.absolute_position().y + text.size().height,
+                banner.absolute_position().y + banner.size().height
+            );
+        }
+        controls_fit(&ui, 420.0, 640.0, what);
+        ui.set_banner(BannerVm::default());
+    };
+    ui.window().set_size(slint::LogicalSize::new(420.0, 640.0));
+    offer_holds(&format!("{WHAT} (en, clipboard offer)"));
+
+    // The pseudo-locale at 420 px.
+    i18n::apply(Some("en_XA"));
+    ui.window().set_size(slint::LogicalSize::new(420.0, 640.0));
+    ui.global::<WhenDoneUi>().set_open(true);
+    refresh_tree(&ui);
+    for seg in ElementHandle::find_by_element_type_name(&ui, "Segment") {
+        for text in seg.query_descendants().match_type_name("Text").find_all() {
+            assert!(
+                inside(&text, &seg),
                 "{WHAT}: {:?}'s label runs out of its segment",
                 seg.accessible_label()
             );
         }
     }
-    buttons_fit(&ui, 420.0, WHAT);
+    controls_fit(&ui, 420.0, 640.0, &format!("{WHAT} (when done)"));
     ui.global::<WhenDoneUi>().set_open(false);
+    offer_holds(&format!("{WHAT} (clipboard offer)"));
 
-    // Grab links: the type chips and the buttons stay in the window.
+    ui.set_screen(Screen::Settings);
+    cards_hold_text(&ui, &format!("{WHAT} (Settings)"));
+    controls_fit(&ui, 420.0, 640.0, &format!("{WHAT} (Settings)"));
+
+    // Grab links: chips at their natural width; Tab scrolls the last one
+    // into view.
     let links = ui.global::<LinksUi>();
     links.set_grab(GrabVm {
         page_url: "https://example.org/files/".into(),
@@ -4748,20 +4963,46 @@ fn pseudo_fits_at_420() {
     });
     ui.set_screen(Screen::Grab);
     refresh_tree(&ui);
-    let chips = ElementHandle::find_by_element_type_name(&ui, "Chip").collect::<Vec<_>>();
-    assert_eq!(chips.len(), 5, "{WHAT}: chips");
-    for chip in &chips {
+    let chips = || ElementHandle::find_by_element_type_name(&ui, "Chip").collect::<Vec<_>>();
+    assert_eq!(chips().len(), 5, "{WHAT}: chips");
+    for chip in chips() {
+        let label = chip.accessible_label().unwrap_or_default();
+        let weight = if chip.accessible_item_selected() == Some(true) {
+            600
+        } else {
+            400
+        };
+        let need = natural_width(&probe, &label, 12.0, weight);
+        let text = chip
+            .query_descendants()
+            .match_type_name("Text")
+            .find_first()
+            .expect("the chip's label");
         assert!(
-            right_edge(chip) <= 420.5,
-            "{WHAT}: chip {:?} ends at {}",
-            chip.accessible_label(),
-            right_edge(chip)
+            text.size().width + 0.5 >= need,
+            "{WHAT}: chip {label:?} shows {} px of its {need} px label",
+            text.size().width
         );
     }
-    buttons_fit(&ui, 420.0, WHAT);
+    let last = |chips: Vec<ElementHandle>| chips.last().map(right_edge).unwrap_or(0.0);
+    assert!(
+        last(chips()) > 420.5,
+        "{WHAT}: the chips no longer overflow, so the scroll is untested"
+    );
+    let mut presses = 0;
+    while last(chips()) > 420.5 {
+        assert!(
+            presses < 40,
+            "{WHAT}: Tab never brought the last chip into view"
+        );
+        press(&ui, Key::Tab);
+        refresh_tree(&ui);
+        presses += 1;
+    }
+    controls_fit(&ui, 420.0, 640.0, &format!("{WHAT} (grab)"));
     links.set_grab(GrabVm::default());
 
-    // The Add screen's card holds its wrapped title and every line under it.
+    // The Advanced Add screen's video card.
     ui.set_adv_add(AdvAddVm {
         kind: "media".into(),
         badge: "media".into(),
@@ -4773,31 +5014,32 @@ fn pseudo_fits_at_420() {
         ..Default::default()
     });
     ui.set_screen(Screen::Add);
-    refresh_tree(&ui);
-    let card = ElementHandle::find_by_element_type_name(&ui, "Card")
-        .find(|card| {
-            card.query_descendants()
-                .match_accessible_role(AccessibleRole::Text)
-                .find_all()
-                .iter()
-                .any(|t| {
-                    t.accessible_label()
-                        .is_some_and(|l| l.starts_with("Sprite"))
-                })
-        })
-        .expect("the video card");
-    for text in card.query_descendants().match_type_name("Text").find_all() {
-        assert!(
-            inside(&text, &card),
-            "{WHAT}: a line of the video card ends at {} below a card ending at {}",
-            text.absolute_position().y + text.size().height,
-            card.absolute_position().y + card.size().height
-        );
-    }
-    buttons_fit(&ui, 420.0, WHAT);
-
+    cards_hold_text(&ui, &format!("{WHAT} (Advanced Add)"));
+    controls_fit(&ui, 420.0, 640.0, &format!("{WHAT} (Advanced Add)"));
     ui.set_screen(Screen::Downloads);
     ui.set_adv_add(AdvAddVm::default());
+
+    // The Simple Add screen.
+    ui.set_layout("simple".into());
+    ui.set_add(taurus_desktop::AddVm {
+        kind: "media".into(),
+        name: "Sprite Fright — Blender Open Movie".into(),
+        size_text: "2.0 GB".into(),
+        folder: "/home/someone/Downloads".into(),
+        is_media: true,
+        media_mode: "video".into(),
+        quality_id: "best".into(),
+        quality_label: "Best available".into(),
+        duration_text: "10:24".into(),
+        uploader: "Blender Studio".into(),
+        ..Default::default()
+    });
+    ui.set_screen(Screen::Add);
+    cards_hold_text(&ui, &format!("{WHAT} (Simple Add)"));
+    controls_fit(&ui, 420.0, 640.0, &format!("{WHAT} (Simple Add)"));
+
+    ui.set_screen(Screen::Downloads);
+    ui.set_add(Default::default());
     i18n::apply(Some("en"));
 }
 

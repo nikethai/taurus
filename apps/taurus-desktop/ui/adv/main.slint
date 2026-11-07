@@ -41,6 +41,7 @@ component AdvTab inherits Pressable {
             font-size: 13px;
             font-weight: root.selected ? 600 : 500;
             color: root.selected ? Theme.text : Theme.muted;
+            overflow: elide;
             accessible-role: none;
         }
         Text {

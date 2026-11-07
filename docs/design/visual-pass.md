@@ -153,38 +153,65 @@ purpose, with the reason.
 ## Pseudo-locale (M7 Task 12)
 
 The app was run under Xvfb with `HYADES_LANG=en_XA` (every string padded
-to at least 1.4× and wrapped in ⟦…⟧) at 420×640, with the same seeded
-downloads, through every board above that fits that width (Simple
-welcome, downloads, add and settings; compact downloads, add, torrent,
-grab links, several links, when done and settings; the compact details
-of a failed, a torrent, a video and a live download) and every dialog:
-sign-in (with "wrong password"), remove, choose files, the update banner
-ready / available / couldn't update, the tools banner fetching and failed,
-the clipboard offer, the when-done countdown, and the footer with Resume
-all and "Then shut down". Long pages (settings, add) were also shot in a
-taller window so nothing below the fold was missed. English was shot
-again afterwards to check nothing changed there.
+to at least 1.4× and wrapped in ⟦…⟧) with the same seeded downloads.
+
+First pass, under `en_XA` at 420 px wide, before any fix:
+- Simple: welcome, downloads, add, settings.
+- Compact: downloads, add, torrent, grab links, several links, when done,
+  settings.
+- The compact details of a failed, a torrent, a video and a live download.
+- Dialogs and banners: sign-in (with "wrong password"), remove, the update
+  banner (ready, available, couldn't update), the tools banner (fetching,
+  failed), the clipboard offer and the when-done countdown, in Simple and
+  in Advanced.
+- Settings, add and a torrent's details again in taller windows (420×1400
+  to 420×3000), so nothing below the fold was missed.
+
+Re-shot after the fixes:
+- English and `en_XA`, 360 and 420 px: compact when done, grab links,
+  Settings (tall).
+- English and `en_XA`, 420 px: Simple welcome, Simple settings (tall),
+  Simple downloads and its clipboard offer; compact add and a torrent's
+  details (tall); the update banner (ready, available, couldn't update),
+  the countdown and the clipboard offer in Advanced.
+- `en_XA` only, 420 px: compact downloads, add, torrent, several links, the four
+  details, choose files, sign-in, remove, and the footer with Resume all
+  and "Then shut down".
 
 Rules: buttons and tabs elide; sentences wrap; a row with an action keeps
 the action at its natural width and its text takes the rest; no fixed
 widths for English.
 
-- [x] Speed and ratio segments (when-done card, Settings → Downloads and
-  Torrents): labels ran over the next segment; now each label is bounded
-  by its segment and elides.
-- [x] Grab links type chips: the row ran past the right edge; chip labels
-  now elide (counts stay), and "All" keeps its natural width.
+- [x] Segmented controls (speeds, the torrent ratio, theme): labels ran
+  over the next segment. A segment now takes its label's width plus
+  padding (minimum 0, stretch kept), so long labels borrow room from
+  short ones ("Don't share" and "Never stop" whole in English at 360 px);
+  a label elides only when the whole group is too narrow (`en_XA` at 360).
+- [x] Grab links type chips: the row ran past the right edge. The chips
+  keep their natural width (counts included) in a row that scrolls
+  sideways; Tab reaches every chip and Slint scrolls the focused one into
+  view.
 - [x] Advanced Add card (video, file or torrent): with a title on two
-  lines, the last line ran below the card. The card's side padding now
-  sits on its row: wrapped text inside a `Card` is measured without the
-  card's own side padding, so it came out a line short.
+  lines, the last line ran below the card (in English too). With the side
+  padding on the card's row instead of the card, the card holds it.
+- [x] Clipboard offer: in English at 420 px the wrapped question got
+  48 of the 63 px it needs and was cut at top and bottom. The banner is
+  now at least as tall as the question needs at its real width.
 - [x] Text buttons elide when squeezed, so a long label never clips or
-  pushes another button out of the window (actions beside text keep their
-  width: the text gives way first).
+  pushes another button out of the window (an action beside text keeps
+  its width: the text gives way first).
+- [x] Tabs (compact Active / Waiting / Done, Simple Downloading /
+  Finished) elide their label instead of running over the count.
 - [x] Detail labels (Saved to, Until ratio, …) wrap instead of being cut
   at their 96 px column.
-- Checked and fine as they were: compact list rows, tabs, link row and
-  footer; Simple rows, tabs and footer; header titles; every dialog and
-  banner above (their sentences already wrap and their buttons fit).
-- `pseudo_fits_at_420` (tests/ui.rs) checks, under `en_XA` at 420 px,
-  the segment labels, the grab chips and buttons, and the Add card.
+- Checked and fine as they were: compact list rows, link row and footer;
+  Simple rows and footer; header titles; the dialogs and the other
+  banners above (their sentences already wrap and their buttons fit).
+- `pseudo_fits_at_420` (tests/ui.rs) checks: in English at 360 px, every
+  segment label whole (compact Settings, when done); the clipboard offer
+  holds its question in English and `en_XA`; under `en_XA` at 420 px,
+  every button, radio button, tab, check box and switch inside the window
+  (all four edges; the bottom only outside a scroller), segment labels in
+  their segments, grab chips at their natural width and reachable with
+  Tab, and every card's text inside its card (compact Settings, Advanced
+  and Simple Add).

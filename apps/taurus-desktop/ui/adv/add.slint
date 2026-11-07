@@ -309,9 +309,10 @@ export component AdvAdd inherits FocusScope {
                     }
                 }
 
-                // The side padding is on the row, not the card: the
-                // title's wrapped height is measured without the card's
-                // own padding, so it came out a line short.
+                // The side padding is on the row, not the card. With it
+                // on the card, a title wrapped onto two lines left the
+                // card a line short (seen with Slint 1.18; the cause was
+                // not pinned down).
                 if root.shown: Card {
                     padding-x: 0;
                     HorizontalLayout {

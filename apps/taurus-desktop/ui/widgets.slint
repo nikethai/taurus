@@ -383,6 +383,9 @@ export component Segment inherits Pressable {
     in property <bool> selected;
 
     height: 28px;
+    // Sized by the label: a long label takes room from short ones, and
+    // elides only when the whole group is too narrow.
+    min-width: 0;
     horizontal-stretch: 1;
     border-radius: 7px;
     background: selected ? Theme.panel : root.hovered ? Theme.hover : transparent;
@@ -394,18 +397,21 @@ export component Segment inherits Pressable {
     accessible-checkable: true;
     accessible-checked: selected;
 
-    // Bounded by the segment, so a long label elides inside it.
-    Text {
-        x: 2px;
-        width: parent.width - 4px;
-        text: root.text;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        font-size: 13px;
-        font-weight: root.selected ? 600 : 500;
-        color: root.selected ? Theme.text : Theme.muted;
-        overflow: elide;
-        accessible-role: none;
+    // The label in a padded row: the segment's preferred width is the
+    // label's plus the padding, and a squeezed label elides inside it.
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        Text {
+            text: root.text;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            font-size: 13px;
+            font-weight: root.selected ? 600 : 500;
+            color: root.selected ? Theme.text : Theme.muted;
+            overflow: elide;
+            accessible-role: none;
+        }
     }
 }
 

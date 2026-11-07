@@ -38,7 +38,6 @@ component Chip inherits Pressable {
             vertical-alignment: center;
             font-size: 12px;
             font-weight: root.selected ? 600 : 400;
-            overflow: elide;
             color: root.selected ? (root.kind == "" ? Theme.accent-ink : Theme.kind-fg(root.kind)) : Theme.text;
             accessible-role: none;
         }
@@ -194,57 +193,64 @@ export component AdvGrab inherits FocusScope {
                 accessible-label: self.text;
             }
 
-            if root.listed: HorizontalLayout {
-                spacing: 6px;
+            // The type chips at their natural width, in a row that
+            // scrolls sideways when they do not fit (long translations,
+            // narrow windows). Slint scrolls a chip that gets the keyboard
+            // focus into view.
+            if root.listed: chip-row := Flickable {
+                height: 28px;
+                content-width: max(self.width, chips.preferred-width);
+                content-height: 28px;
                 accessible-role: tab-list;
-                Chip {
-                    // "All" stays whole; the other chips elide first.
-                    min-width: self.preferred-width;
-                    text: @tr("All");
-                    count: root.vm.count-all;
-                    selected: root.vm.chip == "all";
-                    clicked => {
-                        LinksUi.grab-option("chip", "all");
+                chips := HorizontalLayout {
+                    width: chip-row.content-width;
+                    height: 28px;
+                    alignment: start;
+                    spacing: 6px;
+                    Chip {
+                        text: @tr("All");
+                        count: root.vm.count-all;
+                        selected: root.vm.chip == "all";
+                        clicked => {
+                            LinksUi.grab-option("chip", "all");
+                        }
                     }
-                }
-                Chip {
-                    text: @tr("Video");
-                    kind: "media";
-                    count: root.vm.count-video;
-                    selected: root.vm.chip == "video";
-                    clicked => {
-                        LinksUi.grab-option("chip", "video");
+                    Chip {
+                        text: @tr("Video");
+                        kind: "media";
+                        count: root.vm.count-video;
+                        selected: root.vm.chip == "video";
+                        clicked => {
+                            LinksUi.grab-option("chip", "video");
+                        }
                     }
-                }
-                Chip {
-                    text: @tr("Docs");
-                    kind: "file";
-                    count: root.vm.count-docs;
-                    selected: root.vm.chip == "docs";
-                    clicked => {
-                        LinksUi.grab-option("chip", "docs");
+                    Chip {
+                        text: @tr("Docs");
+                        kind: "file";
+                        count: root.vm.count-docs;
+                        selected: root.vm.chip == "docs";
+                        clicked => {
+                            LinksUi.grab-option("chip", "docs");
+                        }
                     }
-                }
-                Chip {
-                    text: @tr("Archives");
-                    kind: "archive";
-                    count: root.vm.count-archives;
-                    selected: root.vm.chip == "archives";
-                    clicked => {
-                        LinksUi.grab-option("chip", "archives");
+                    Chip {
+                        text: @tr("Archives");
+                        kind: "archive";
+                        count: root.vm.count-archives;
+                        selected: root.vm.chip == "archives";
+                        clicked => {
+                            LinksUi.grab-option("chip", "archives");
+                        }
                     }
-                }
-                Chip {
-                    text: @tr("Images");
-                    kind: "image";
-                    count: root.vm.count-images;
-                    selected: root.vm.chip == "images";
-                    clicked => {
-                        LinksUi.grab-option("chip", "images");
+                    Chip {
+                        text: @tr("Images");
+                        kind: "image";
+                        count: root.vm.count-images;
+                        selected: root.vm.chip == "images";
+                        clicked => {
+                            LinksUi.grab-option("chip", "images");
+                        }
                     }
-                }
-                Rectangle {
-                    horizontal-stretch: 1;
                 }
             }
 
